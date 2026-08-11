@@ -1,0 +1,6 @@
+{
+  "name": "Akıllı Şantiye - Yakıt Takip Platformu",
+  "description": "IoT Entegreli Multi-Tenant B2B SaaS Yakıt Takip ve Otomasyon Platformu",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
