@@ -2,6 +2,7 @@
 set -e
 
 echo "Ensuring required labels exist in repository..."
+REPO="${GITHUB_REPOSITORY:-rtosma/YAKITTAKIPSISTEMI}"
 
 LABELS=(
   "security"
@@ -17,7 +18,7 @@ LABELS=(
 
 for label in "${LABELS[@]}"; do
   echo "Checking label: $label"
-  gh label create "$label" --force 2>/dev/null || true
+  gh label create "$label" --repo "$REPO" --force 2>/dev/null || true
 done
 
 echo "Creating GitHub Issues from issue.md..."
