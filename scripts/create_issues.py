@@ -23,6 +23,25 @@ with open("issue.md", "r", encoding="utf-8") as f:
 modules = re.split(r'(?=# Modül \d+:)', content)
 modules = [m.strip() for m in modules if m.strip()]
 
+def ensure_label_exists(label):
+    if is_dry_run:
+        return
+    url = f"https://api.github.com/repos/{repo}/labels"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "User-Agent": "Python-Issue-Creator"
+    }
+    payload = json.dumps({"name": label.strip()}).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req):
+            print(f"  🏷️ Etiket oluşturuldu: {label}")
+    except urllib.error.HTTPError as e:
+        if e.code != 422: # 422 Unprocessable Entity means label already exists
+            print(f"  ⚠️ Etiket uyarısı ({label}): {e.code}")
+
 def create_issue(title, labels, body):
     if is_dry_run:
         return {"number": "DRY-RUN", "html_url": "https://github.com/dry-run"}
@@ -52,6 +71,19 @@ def main():
     mode = "DRY RUN MODU" if is_dry_run else "CANLI MOD"
     print(f"📋 Toplam {len(modules)} adet modül/issue işlenecek... ({mode})\n")
 
+    # Extract all unique labels
+    all_labels = set()
+    for block in modules:
+        label_m = re.search(r'--label\s+"([^"]+)"', block)
+        if label_m:
+            for l in label_m.group(1).split(","):
+                all_labels.add(l.strip())
+
+    print("🏷️ Etiketler kontrol ediliyor/oluşturuluyor...")
+    for label in all_labels:
+        ensure_label_exists(label)
+    print("✅ Etiket kontrolü tamamlandı.\n")
+
     count = 0
     for block in modules:
         title_m = re.search(r'--title\s+"([^"]+)"', block)
@@ -65,16 +97,13 @@ def main():
             body = body_m.group(1).strip()
 
             print(f"[{count}/{len(modules)}] ⏳ İşleniyor: \"{title}\"")
-            print(f"    Etiketler: {', '.join(labels)}")
             try:
                 result = create_issue(title, labels, body)
                 print(f"    ✅ Başarılı! Issue: {result.get('html_url')}\n")
             except Exception as e:
                 print(f"    ❌ Hata: {e}\n")
-        else:
-            print(f"⚠️ Ayrıştırılamayan blok: {block[:60]}...")
 
-    print(f"🎉 İşlem tamamlandı. Toplam {count} issue ayrıştırıldı ve işlendi.")
+    print(f"🎉 İşlem tamamlandı. Toplam {count} issue işlendi.")
 
 if __name__ == "__main__":
     main()
