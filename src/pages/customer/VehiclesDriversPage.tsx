@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { exportToExcelWithTotals } from '../../utils/excelExporter';
+import { Vehicle, Driver } from '../../types';
 
 export const VehiclesDriversPage: React.FC = () => {
   const { vehicles, drivers, selectedSiteFilter, addVehicle, addDriver } = useApp();
@@ -37,12 +39,54 @@ export const VehiclesDriversPage: React.FC = () => {
       fuelCapacityLiters: 500,
       lastRefuelDate: 'Henüz yok',
       lastRefuelLiters: 0,
+      totalRefuelsCount: 0,
       status: 'AKTİF'
     });
 
     setNewPlate('');
     setNewBrand('');
     setIsAddVehOpen(false);
+  };
+
+  const handleExportVehicles = () => {
+    exportToExcelWithTotals<Vehicle>({
+      data: filteredVehicles,
+      sheetName: 'Araç Envanteri',
+      filename: `arac_envanteri_${new Date().toISOString().split('T')[0]}.xlsx`,
+      totalLabelColumnIndex: 0,
+      totalLabel: 'GENEL TOPLAM',
+      columns: [
+        { header: 'Plaka', key: 'plate', width: 14 },
+        { header: 'Marka / Model', key: 'brandModel', width: 22 },
+        { header: 'Araç Tipi', key: 'type', width: 16 },
+        { header: 'Şantiye', key: 'siteName', width: 20 },
+        { header: 'Atanan Şoför', key: 'assignedDriver', width: 20 },
+        { header: 'RFID Tag', key: 'rfidTag', width: 18 },
+        { header: 'Depo Kapasitesi (L)', key: 'fuelCapacityLiters', isTotalable: true, format: 'number', width: 20 },
+        { header: 'Son İkmal (L)', key: 'lastRefuelLiters', isTotalable: true, format: 'number', width: 16 },
+        { header: 'Toplam İkmal Sayısı', key: 'totalRefuelsCount', isTotalable: true, format: 'number', width: 20 }
+      ]
+    });
+  };
+
+  const handleExportDrivers = () => {
+    exportToExcelWithTotals<Driver>({
+      data: filteredDrivers,
+      sheetName: 'Şoför Kadrosu',
+      filename: `sofor_kadrosu_${new Date().toISOString().split('T')[0]}.xlsx`,
+      totalLabelColumnIndex: 0,
+      totalLabel: 'GENEL TOPLAM',
+      columns: [
+        { header: 'Ad Soyad', key: 'name', width: 20 },
+        { header: 'TC Kimlik No', key: 'tcNo', width: 16 },
+        { header: 'Telefon', key: 'phone', width: 16 },
+        { header: 'Ehliyet Sınıfı', key: 'licenseType', width: 14 },
+        { header: 'Atanan Araç', key: 'assignedVehiclePlate', width: 16 },
+        { header: 'Şantiye', key: 'siteName', width: 20 },
+        { header: 'Performans Skoru', key: 'performanceScore', width: 18 },
+        { header: 'Toplam Aldığı Yakıt (L)', key: 'totalFuelPumpedLiters', isTotalable: true, format: 'number', width: 24 }
+      ]
+    });
   };
 
   return (
@@ -62,7 +106,15 @@ export const VehiclesDriversPage: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center space-x-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={activeTab === 'vehicles' ? handleExportVehicles : handleExportDrivers}
+            className="bg-[#20201f] border border-[#353535] hover:border-[#ffdca1]/50 text-[#ffdca1] font-bold px-4 py-2.5 rounded-xl text-xs flex items-center space-x-2 transition-all cursor-pointer shadow"
+          >
+            <span className="material-symbols-outlined text-lg">download</span>
+            <span>{activeTab === 'vehicles' ? 'Araç Listesi Excel (Toplamlı)' : 'Şoför Listesi Excel (Toplamlı)'}</span>
+          </button>
+
           <button
             onClick={() => setIsAddVehOpen(true)}
             className="bg-[#ffdca1] text-[#412d00] font-black px-4 py-2.5 rounded-xl text-xs flex items-center space-x-2 transition-all cursor-pointer shadow"

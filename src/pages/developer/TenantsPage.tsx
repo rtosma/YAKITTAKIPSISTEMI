@@ -1,8 +1,29 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { TenantDetailModal } from '../../components/TenantDetailModal';
 
 export const TenantsPage: React.FC = () => {
-  const { companies, toggleCompanyModule, setSelectedTenantForDetail } = useApp();
+  const { companies, addCompany, setSelectedTenantForDetail } = useApp();
+  const [isAddOpen, setIsAddOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [city, setCity] = useState('');
+  const [taxNumber, setTaxNumber] = useState('');
+
+  const handleSave = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+
+    addCompany({
+      name: name.trim(),
+      city: city || 'İstanbul',
+      taxNumber: taxNumber || '1234567890'
+    });
+
+    setName('');
+    setCity('');
+    setTaxNumber('');
+    setIsAddOpen(false);
+  };
 
   return (
     <div className="space-y-6">
@@ -22,7 +43,7 @@ export const TenantsPage: React.FC = () => {
         </div>
 
         <button
-          onClick={() => alert('Yeni Kiraci Ekleme Formu')}
+          onClick={() => setIsAddOpen(true)}
           className="bg-[#ffb77f] text-[#412d00] font-black px-4 py-2.5 rounded-xl text-xs flex items-center space-x-2 transition-all cursor-pointer shadow"
         >
           <span className="material-symbols-outlined text-lg">domain_add</span>
@@ -74,6 +95,78 @@ export const TenantsPage: React.FC = () => {
           </tbody>
         </table>
       </div>
+
+      {/* ADD COMPANY MODAL */}
+      {isAddOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+          <div className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-6 max-w-md w-full space-y-6">
+            <div className="flex items-center justify-between border-b border-[#353535] pb-4">
+              <h3 className="text-base font-extrabold text-[#e5e2e1] uppercase tracking-wider flex items-center space-x-2">
+                <span className="material-symbols-outlined text-[#ffb77f]">domain_add</span>
+                <span>Yeni Kiracı Firma Kaydı</span>
+              </h3>
+              <button onClick={() => setIsAddOpen(false)} className="text-[#d5c4ab] hover:text-[#e5e2e1]">
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <form onSubmit={handleSave} className="space-y-4">
+              <div>
+                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Firma Ünvanı</label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="örn. Yılmaz İnşaat A.Ş."
+                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffb77f]"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Şehir</label>
+                <input
+                  type="text"
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                  placeholder="örn. Ankara"
+                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffb77f]"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Vergi Numarası</label>
+                <input
+                  type="text"
+                  value={taxNumber}
+                  onChange={(e) => setTaxNumber(e.target.value)}
+                  placeholder="10 haneli VKN"
+                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] font-mono text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffb77f]"
+                />
+              </div>
+
+              <div className="pt-4 border-t border-[#353535] flex items-center justify-end space-x-3">
+                <button
+                  type="button"
+                  onClick={() => setIsAddOpen(false)}
+                  className="px-4 py-2.5 bg-[#20201f] text-[#d5c4ab] rounded-xl text-xs font-bold"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 bg-[#ffb77f] text-[#412d00] rounded-xl text-xs font-black"
+                >
+                  Firmayı Kaydet
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* TENANT DETAIL MODAL */}
+      <TenantDetailModal />
 
     </div>
   );

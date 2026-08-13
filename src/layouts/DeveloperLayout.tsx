@@ -22,27 +22,35 @@ export const DeveloperLayout: React.FC = () => {
   return (
     <div className="flex min-h-screen bg-[#131313] text-[#e5e2e1] font-sans antialiased">
       
+      {/* MOBILE MENU BACKDROP OVERLAY */}
+      {isMobileMenuOpen && (
+        <div 
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs z-30 md:hidden transition-opacity"
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
+      )}
+
       {/* DEVELOPER SIDEBAR */}
-      <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-[#1c1b1b] border-r border-[#353535] p-6 flex flex-col justify-between shrink-0 select-none transition-transform duration-200 md:translate-x-0 ${
+      <aside className={`fixed inset-y-0 left-0 z-40 w-64 h-screen max-h-screen bg-[#1c1b1b] border-r border-[#353535] p-5 flex flex-col justify-between shrink-0 select-none overflow-y-auto transition-transform duration-200 md:translate-x-0 ${
         isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
       }`}>
-        <div className="space-y-8">
+        <div className="space-y-6">
           
           {/* Header Badge */}
-          <div className="bg-[#20201f] border border-[#353535] p-4 rounded-xl flex items-center space-x-3">
-            <div className="w-9 h-9 rounded-lg bg-[#ffb77f] text-[#412d00] flex items-center justify-center font-black">
+          <div className="bg-[#20201f] border border-[#353535] p-3.5 rounded-xl flex items-center space-x-3">
+            <div className="w-9 h-9 rounded-lg bg-[#ffb77f] text-[#412d00] flex items-center justify-center font-black shrink-0">
               <span className="material-symbols-outlined text-xl font-bold">terminal</span>
             </div>
-            <div>
-              <h1 className="font-extrabold text-[#e5e2e1] text-xs uppercase tracking-wider">
+            <div className="min-w-0">
+              <h1 className="font-extrabold text-[#e5e2e1] text-xs uppercase tracking-wider truncate">
                 GELİŞTİRİCİ MERKEZİ
               </h1>
-              <p className="text-[10px] text-[#ffb77f] font-mono font-bold">SÜPER ADMİN PANELİ</p>
+              <p className="text-[10px] text-[#ffb77f] font-mono font-bold truncate">SÜPER ADMİN PANELİ</p>
             </div>
           </div>
 
           {/* Navigation Menu */}
-          <nav className="space-y-1.5">
+          <nav className="space-y-1">
             {navItems.map((item) => {
               const isActive = currentPath === item.path || (item.path === '/admin' && currentPath === '/admin/overview');
               return (
@@ -52,13 +60,13 @@ export const DeveloperLayout: React.FC = () => {
                     navigate(item.path);
                     setIsMobileMenuOpen(false);
                   }}
-                  className={`w-full flex items-center space-x-3 px-3.5 py-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                  className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                     isActive
                       ? 'bg-[#ffb77f] text-[#412d00] shadow-md'
                       : 'text-[#e5e2e1] hover:bg-[#20201f] hover:text-[#ffb77f]'
                   }`}
                 >
-                  <span className="material-symbols-outlined text-lg">{item.icon}</span>
+                  <span className="material-symbols-outlined text-lg shrink-0">{item.icon}</span>
                   <span className="truncate">{item.label}</span>
                 </button>
               );
@@ -68,7 +76,7 @@ export const DeveloperLayout: React.FC = () => {
         </div>
 
         {/* Sidebar Footer - Hardware status */}
-        <div className="pt-6 border-t border-[#353535] space-y-4">
+        <div className="pt-4 mt-6 border-t border-[#353535] space-y-3 shrink-0">
           <div className="bg-[#20201f] p-3 rounded-xl border border-[#353535] text-xs font-mono space-y-1">
             <div className="flex items-center justify-between text-[#d5c4ab] font-bold">
               <span>MQTT BROKER</span>

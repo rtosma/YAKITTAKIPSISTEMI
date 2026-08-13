@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Company } from '../../types';
+import { TenantDetailModal } from '../../components/TenantDetailModal';
 
 export const DeveloperOverviewPage: React.FC = () => {
   const { 
@@ -224,13 +224,13 @@ export const DeveloperOverviewPage: React.FC = () => {
           </div>
 
           {/* Module Toggle Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             
             {/* Toggle: e-İrsaliye */}
             <div className="bg-[#20201f] border border-[#353535] p-4 rounded-xl flex items-center justify-between">
               <div>
                 <h4 className="font-bold text-xs text-[#e5e2e1]">e-İrsaliye Entegrasyonu</h4>
-                <p className="text-[11px] text-[#d5c4ab]">GİB UBL-TR e-İrsaliye otomatik bildirimi</p>
+                <p className="text-[11px] text-[#d5c4ab]">GİB UBL-TR e-İrsaliye bildirimi</p>
               </div>
               <button
                 onClick={() => toggleCompanyModule(activeCompany.id, 'eInvoice')}
@@ -247,8 +247,8 @@ export const DeveloperOverviewPage: React.FC = () => {
             {/* Toggle: AI Anomali Motoru */}
             <div className="bg-[#20201f] border border-[#353535] p-4 rounded-xl flex items-center justify-between">
               <div>
-                <h4 className="font-bold text-xs text-[#e5e2e1]">AI Hırsızlık & Anomali Motoru</h4>
-                <p className="text-[11px] text-[#d5c4ab]">Debimetre vs tank farkı kaçak tespiti</p>
+                <h4 className="font-bold text-xs text-[#e5e2e1]">AI Hırsızlık & Anomali</h4>
+                <p className="text-[11px] text-[#d5c4ab]">Debimetre vs tank kaçak tespiti</p>
               </div>
               <button
                 onClick={() => toggleCompanyModule(activeCompany.id, 'aiAnomaly')}
@@ -266,7 +266,7 @@ export const DeveloperOverviewPage: React.FC = () => {
             <div className="bg-[#20201f] border border-[#353535] p-4 rounded-xl flex items-center justify-between">
               <div>
                 <h4 className="font-bold text-xs text-[#e5e2e1]">Akıllı Ambar & Depo</h4>
-                <p className="text-[11px] text-[#d5c4ab]">Maden & şantiye ana stok yönetimi</p>
+                <p className="text-[11px] text-[#d5c4ab]">Maden & şantiye stok yönetimi</p>
               </div>
               <button
                 onClick={() => toggleCompanyModule(activeCompany.id, 'smartWarehouse')}
@@ -280,11 +280,47 @@ export const DeveloperOverviewPage: React.FC = () => {
               </button>
             </div>
 
+            {/* Toggle: Bakım & Arıza Takibi */}
+            <div className="bg-[#20201f] border border-[#353535] p-4 rounded-xl flex items-center justify-between">
+              <div>
+                <h4 className="font-bold text-xs text-[#e5e2e1]">Bakım & Arıza Takibi</h4>
+                <p className="text-[11px] text-[#d5c4ab]">Km & çalışma saati servis uyarısı</p>
+              </div>
+              <button
+                onClick={() => toggleCompanyModule(activeCompany.id, 'maintenanceTrack')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                  activeCompany.modules.maintenanceTrack
+                    ? 'bg-[#a1e8a2] text-[#412d00]'
+                    : 'bg-[#131313] text-[#d5c4ab] border border-[#353535]'
+                }`}
+              >
+                {activeCompany.modules.maintenanceTrack ? 'AÇIK' : 'KAPALI'}
+              </button>
+            </div>
+
+            {/* Toggle: Şoför Performans Skoru */}
+            <div className="bg-[#20201f] border border-[#353535] p-4 rounded-xl flex items-center justify-between">
+              <div>
+                <h4 className="font-bold text-xs text-[#e5e2e1]">Şoför Performans Skoru</h4>
+                <p className="text-[11px] text-[#d5c4ab]">Sürüş verimliliği & rölanti</p>
+              </div>
+              <button
+                onClick={() => toggleCompanyModule(activeCompany.id, 'driverScore')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-all cursor-pointer ${
+                  activeCompany.modules.driverScore
+                    ? 'bg-[#a1e8a2] text-[#412d00]'
+                    : 'bg-[#131313] text-[#d5c4ab] border border-[#353535]'
+                }`}
+              >
+                {activeCompany.modules.driverScore ? 'AÇIK' : 'KAPALI'}
+              </button>
+            </div>
+
             {/* Toggle: Çapraz Şantiye */}
             <div className="bg-[#20201f] border border-[#353535] p-4 rounded-xl flex items-center justify-between">
               <div>
-                <h4 className="font-bold text-xs text-[#e5e2e1]">Çapraz Şantiye İkmal Yetkisi</h4>
-                <p className="text-[11px] text-[#d5c4ab]">Farklı firma şantiyelerinden ikmal alma</p>
+                <h4 className="font-bold text-xs text-[#e5e2e1]">Çapraz Şantiye İkmal</h4>
+                <p className="text-[11px] text-[#d5c4ab]">Farklı şantiyelerden ikmal yetkisi</p>
               </div>
               <button
                 onClick={() => toggleCompanyModule(activeCompany.id, 'crossSiteAuth')}
@@ -303,63 +339,8 @@ export const DeveloperOverviewPage: React.FC = () => {
 
       </div>
 
-      {/* SLIDE-OVER DRAWER FOR TENANT DETAIL */}
-      {selectedTenantForDetail && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex justify-end">
-          <div className="bg-[#1c1b1b] border-l border-[#353535] w-full max-w-lg p-6 space-y-6 overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-[#353535] pb-4">
-              <div>
-                <span className="text-[10px] font-mono text-[#ffb77f] font-bold uppercase">{selectedTenantForDetail.code}</span>
-                <h3 className="text-lg font-black text-[#e5e2e1] uppercase">{selectedTenantForDetail.name}</h3>
-              </div>
-              <button
-                onClick={() => setSelectedTenantForDetail(null)}
-                className="p-2 text-[#d5c4ab] hover:text-[#e5e2e1]"
-              >
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-
-            <div className="space-y-4 font-mono text-xs">
-              <div className="bg-[#20201f] p-4 rounded-xl space-y-2 border border-[#353535]">
-                <div className="flex justify-between">
-                  <span className="text-[#d5c4ab]">Vergi Numarası:</span>
-                  <span className="text-[#e5e2e1] font-bold">{selectedTenantForDetail.taxNumber}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#d5c4ab]">Şehir:</span>
-                  <span className="text-[#e5e2e1] font-bold">{selectedTenantForDetail.city}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#d5c4ab]">Lisans Durumu:</span>
-                  <span className="text-[#a1e8a2] font-bold">{selectedTenantForDetail.licenseStatus}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[#d5c4ab]">Aylık Tüketim:</span>
-                  <span className="text-[#ffdca1] font-bold">{selectedTenantForDetail.totalFuelThisMonth.toLocaleString('tr-TR')} Litre</span>
-                </div>
-              </div>
-
-              <div>
-                <h4 className="font-extrabold text-[#e5e2e1] uppercase mb-2">Şantiyeler ({selectedTenantForDetail.sites.length})</h4>
-                <div className="space-y-2">
-                  {selectedTenantForDetail.sites.map(s => (
-                    <div key={s.id} className="bg-[#20201f] border border-[#353535] p-3 rounded-xl flex items-center justify-between">
-                      <div>
-                        <p className="font-bold text-[#e5e2e1]">{s.name}</p>
-                        <p className="text-[10px] text-[#d5c4ab]">{s.location}</p>
-                      </div>
-                      <span className="text-[10px] bg-[#353535] text-[#d5c4ab] px-2 py-0.5 rounded">
-                        {s.activeVehiclesCount} Araç / {s.activeTanksCount} Tank
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* TENANT DETAIL MODAL */}
+      <TenantDetailModal />
 
     </div>
   );

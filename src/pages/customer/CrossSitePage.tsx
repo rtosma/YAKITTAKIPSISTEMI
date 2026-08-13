@@ -2,16 +2,32 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 
 export const CrossSitePage: React.FC = () => {
-  const { crossSitePermissions, toggleCrossSiteStatus, vehicles, drivers, currentCompany, showToast } = useApp();
+  const { crossSitePermissions, toggleCrossSiteStatus, vehicles, drivers, currentCompany, addCrossSitePermission } = useApp();
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedPlate, setSelectedPlate] = useState(vehicles[0]?.plate || '35 EGE 40');
-  const [targetSite, setTargetSite] = useState('Gebze Ana Şantiye');
+  const [targetSite, setTargetSite] = useState(currentCompany.sites[0]?.name || 'Gebze Ana Şantiye');
   const [allowedLiters, setAllowedLiters] = useState<number>(300);
 
   const handleCreatePermission = (e: React.FormEvent) => {
     e.preventDefault();
-    showToast(`Çapraz şantiye ikmal yetkisi tanımlandı: ${selectedPlate} → ${targetSite}`);
+    const veh = vehicles.find(v => v.plate === selectedPlate);
+    const drvName = veh ? veh.assignedDriver : (drivers[0]?.name || 'Ahmet Yılmaz');
+    const homeSite = veh ? veh.siteName : 'Orman Şantiyesi';
+
+    const nextWeek = new Date();
+    nextWeek.setDate(nextWeek.getDate() + 7);
+    const expiryDate = nextWeek.toISOString().split('T')[0];
+
+    addCrossSitePermission({
+      vehiclePlate: selectedPlate,
+      driverName: drvName,
+      homeSite,
+      targetSite,
+      allowedLiters: Number(allowedLiters),
+      expiryDate
+    });
+
     setIsModalOpen(false);
   };
 

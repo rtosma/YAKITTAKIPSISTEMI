@@ -27,30 +27,38 @@ export const CustomerLayout: React.FC = () => {
   return (
     <div className="flex min-h-screen bg-[#131313] text-[#e5e2e1] font-sans antialiased">
       
+      {/* MOBILE MENU BACKDROP OVERLAY */}
+      {isMobileMenuOpen && (
+        <div 
+          className="fixed inset-0 bg-black/60 backdrop-blur-xs z-30 md:hidden transition-opacity"
+          onClick={() => setIsMobileMenuOpen(false)}
+        />
+      )}
+
       {/* CUSTOMER SIDEBAR */}
-      <aside className={`fixed inset-y-0 left-0 z-40 w-64 bg-[#1c1b1b] border-r border-[#353535] p-6 flex flex-col justify-between shrink-0 select-none transition-transform duration-200 md:translate-x-0 ${
+      <aside className={`fixed inset-y-0 left-0 z-40 w-64 h-screen max-h-screen bg-[#1c1b1b] border-r border-[#353535] p-5 flex flex-col justify-between shrink-0 select-none overflow-y-auto transition-transform duration-200 md:translate-x-0 ${
         isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
       }`}>
-        <div className="space-y-8">
+        <div className="space-y-6">
           
           {/* Logo & Company Name */}
           <div className="space-y-3">
             <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 rounded-xl bg-[#ffdca1] text-[#412d00] flex items-center justify-center font-black shadow">
+              <div className="w-10 h-10 rounded-xl bg-[#ffdca1] text-[#412d00] flex items-center justify-center font-black shadow shrink-0">
                 <span className="material-symbols-outlined text-2xl">local_gas_station</span>
               </div>
-              <div>
-                <h1 className="font-black text-[#e5e2e1] text-xs uppercase tracking-widest">
+              <div className="min-w-0">
+                <h1 className="font-black text-[#e5e2e1] text-xs uppercase tracking-widest truncate">
                   AKILLI ŞANTİYE
                 </h1>
-                <p className="text-[10px] text-[#ffdca1] font-bold font-mono uppercase tracking-wider">
+                <p className="text-[10px] text-[#ffdca1] font-bold font-mono uppercase tracking-wider truncate">
                   YAKIT TAKİP SİSTEMİ
                 </p>
               </div>
             </div>
 
             {/* Current Firm Name Box */}
-            <div className="bg-[#20201f] border border-[#353535] p-3 rounded-xl">
+            <div className="bg-[#20201f] border border-[#353535] p-2.5 rounded-xl">
               <span className="text-[10px] font-mono text-[#d5c4ab] font-semibold uppercase block">
                 MÜŞTERİ FİRMASI
               </span>
@@ -61,7 +69,7 @@ export const CustomerLayout: React.FC = () => {
           </div>
 
           {/* Navigation Menu */}
-          <nav className="space-y-1.5">
+          <nav className="space-y-1">
             {navItems.map((item) => {
               const isActive = currentPath === item.path || (item.path === '/panel' && currentPath === '/panel/overview');
               return (
@@ -71,13 +79,13 @@ export const CustomerLayout: React.FC = () => {
                     navigate(item.path);
                     setIsMobileMenuOpen(false);
                   }}
-                  className={`w-full flex items-center space-x-3 px-3.5 py-3 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                  className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                     isActive
                       ? 'bg-[#ffdca1] text-[#412d00] shadow-md'
                       : 'text-[#e5e2e1] hover:bg-[#20201f] hover:text-[#ffdca1]'
                   }`}
                 >
-                  <span className="material-symbols-outlined text-lg">{item.icon}</span>
+                  <span className="material-symbols-outlined text-lg shrink-0">{item.icon}</span>
                   <span className="truncate">{item.label}</span>
                 </button>
               );
@@ -87,7 +95,7 @@ export const CustomerLayout: React.FC = () => {
         </div>
 
         {/* Sidebar Footer */}
-        <div className="pt-6 border-t border-[#353535] space-y-3">
+        <div className="pt-4 mt-6 border-t border-[#353535] space-y-2 shrink-0">
           <button
             onClick={() => navigate('/')}
             className="w-full flex items-center justify-center space-x-2 bg-[#20201f] hover:bg-[#282726] border border-[#353535] text-[#d5c4ab] hover:text-[#e5e2e1] py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer"

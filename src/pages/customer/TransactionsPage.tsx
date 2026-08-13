@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
-import * as XLSX from 'xlsx';
+import { exportToExcelWithTotals } from '../../utils/excelExporter';
+import { FuelTransaction } from '../../types';
 
 export const TransactionsPage: React.FC = () => {
   const { transactions, selectedSiteFilter, currentCompany, drivers } = useApp();
@@ -89,55 +90,35 @@ export const TransactionsPage: React.FC = () => {
     setCurrentPage(1);
   };
 
-  // Section 6.3 Real Excel Export with SheetJS
+  // Section 6.3 Real Excel Export with SheetJS & Auto-Calculated Totals
   const handleExportExcel = () => {
     setIsExporting(true);
 
     setTimeout(() => {
-      // Map filtered rows to clean Turkish column titles
-      const exportData = filteredTransactions.map(t => {
-        const [datePart, timePart] = t.timestamp.split(' ');
-        return {
-          'İkmal Tarihi': datePart || t.timestamp,
-          'Saat': timePart || '',
-          'Şantiye Adı': t.siteName,
-          'Araç Plakası': t.vehiclePlate,
-          'Şoför Ad Soyad': t.driverName,
-          'Çekilen Tank': t.tankName,
-          'Debi Hızı (L/dk)': t.flowRateLpm,
-          'İkmal Tipi': t.type,
-          'RFID Onayı': t.rfidAuth ? 'Başarılı' : 'Manuel / Yok',
-          'Pompa Durumu': t.pumpStatus,
-          'Alınan Miktar (Litre)': t.amountLiters
-        };
-      });
-
-      // Create sheet & workbook
-      const worksheet = XLSX.utils.json_to_sheet(exportData);
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, 'Yakıt Hareketleri');
-
-      // Auto-fit column widths
-      const colWidths = [
-        { wch: 14 }, // Tarih
-        { wch: 10 }, // Saat
-        { wch: 22 }, // Şantiye
-        { wch: 16 }, // Plaka
-        { wch: 20 }, // Şoför
-        { wch: 24 }, // Tank
-        { wch: 16 }, // Debi Hızı
-        { wch: 16 }, // İkmal Tipi
-        { wch: 14 }, // RFID
-        { wch: 16 }, // Durum
-        { wch: 20 }  // Litre
-      ];
-      worksheet['!cols'] = colWidths;
-
-      // File format: yakit-hareketleri_YYYY-MM-DD.xlsx
       const today = new Date().toISOString().split('T')[0];
       const filename = `yakit-hareketleri_${today}.xlsx`;
 
-      XLSX.writeFile(workbook, filename);
+      exportToExcelWithTotals<FuelTransaction>({
+        data: filteredTransactions,
+        sheetName: 'Yakıt Hareketleri',
+        filename,
+        totalLabelColumnIndex: 0,
+        totalLabel: 'GENEL TOPLAM',
+        columns: [
+          { header: 'İkmal Tarihi', key: t => t.timestamp.split(' ')[0] || t.timestamp, width: 14 },
+          { header: 'Saat', key: t => t.timestamp.split(' ')[1] || '', width: 10 },
+          { header: 'Şantiye Adı', key: 'siteName', width: 22 },
+          { header: 'Araç Plakası', key: 'vehiclePlate', width: 16 },
+          { header: 'Şoför Ad Soyad', key: 'driverName', width: 20 },
+          { header: 'Çekilen Tank', key: 'tankName', width: 24 },
+          { header: 'Debi Hızı (L/dk)', key: 'flowRateLpm', width: 16 },
+          { header: 'İkmal Tipi', key: 'type', width: 16 },
+          { header: 'RFID Onayı', key: t => t.rfidAuth ? 'Başarılı' : 'Manuel / Yok', width: 14 },
+          { header: 'Pompa Durumu', key: 'pumpStatus', width: 16 },
+          { header: 'Alınan Miktar (Litre)', key: 'amountLiters', isTotalable: true, format: 'number', width: 22 }
+        ]
+      });
+
       setIsExporting(false);
     }, 600);
   };

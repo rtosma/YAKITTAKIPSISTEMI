@@ -74,6 +74,9 @@ interface AppContextType {
   addHardwareLog: (log: Omit<HardwareLog, 'id' | 'timestamp'>) => void;
   clearHardwareLogs: () => void;
   toggleCrossSiteStatus: (id: string) => void;
+  addCrossSitePermission: (perm: Omit<CrossSitePermission, 'id' | 'usedLiters' | 'status'>) => void;
+  addCompany: (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules'>) => void;
+  updateCompanyStatus: (companyId: string, status: 'AKTİF' | 'ASKIDA' | 'DENEME') => void;
 
   // Toast
   toast: ToastState | null;
@@ -178,6 +181,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           setSelectedTenantForDetail(updated);
         }
         showToast(`Modül durumu güncellendi: ${moduleKey} → ${updatedVal ? 'AKTİF' : 'PASİF'}`);
+        return updated;
+      }
+      return c;
+    }));
+  };
+
+  const updateCompanyStatus = (companyId: string, status: 'AKTİF' | 'ASKIDA' | 'DENEME') => {
+    setCompanies(prev => prev.map(c => {
+      if (c.id === companyId) {
+        const updated = { ...c, licenseStatus: status };
+        if (selectedTenantForDetail?.id === companyId) {
+          setSelectedTenantForDetail(updated);
+        }
+        showToast(`${c.name} lisans durumu güncellendi: ${status}`);
         return updated;
       }
       return c;
@@ -315,6 +332,43 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }));
   };
 
+  const addCrossSitePermission = (perm: Omit<CrossSitePermission, 'id' | 'usedLiters' | 'status'>) => {
+    const newPerm: CrossSitePermission = {
+      ...perm,
+      id: 'csp-' + Date.now(),
+      usedLiters: 0,
+      status: 'AKTİF'
+    };
+    setCrossSitePermissions(prev => [newPerm, ...prev]);
+    showToast(`Çapraz şantiye yetkisi eklendi: ${perm.vehiclePlate} → ${perm.targetSite}`);
+  };
+
+  const addCompany = (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules'>) => {
+    const code = 'COMP-' + (companies.length + 1).toString().padStart(2, '0');
+    const newComp: Company = {
+      ...comp,
+      id: 'comp-' + Date.now(),
+      code,
+      sites: [
+        { id: 'site-' + Date.now(), name: `${comp.name} Ana Şantiye`, location: comp.city, activeVehiclesCount: 2, activeTanksCount: 1 }
+      ],
+      totalFuelThisMonth: 0,
+      activeVehiclesCount: 2,
+      licenseExpiry: '2027-12-31',
+      licenseStatus: 'AKTİF',
+      modules: {
+        eInvoice: true,
+        aiAnomaly: true,
+        smartWarehouse: false,
+        maintenanceTrack: true,
+        driverScore: true,
+        crossSiteAuth: true
+      }
+    };
+    setCompanies(prev => [...prev, newComp]);
+    showToast(`Yeni firma sisteme tanımlandı: ${newComp.name}`);
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -348,6 +402,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         addHardwareLog,
         clearHardwareLogs,
         toggleCrossSiteStatus,
+        addCrossSitePermission,
+        addCompany,
+        updateCompanyStatus,
         toast,
         showToast,
         selectedTenantForDetail,
