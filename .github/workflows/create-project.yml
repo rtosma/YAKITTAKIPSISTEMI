@@ -1,0 +1,23 @@
+name: Create GitHub Project Board
+
+on:
+  workflow_dispatch:
+
+permissions:
+  issues: read
+  repository-projects: write
+  contents: read
+
+jobs:
+  create-project:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create Project Board & Add Issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x ./scripts/create_project.sh
+          ./scripts/create_project.sh
