@@ -18,3 +18,14 @@ View your app in AI Studio: https://ai.studio/apps/30c21a90-b814-42e3-b8ec-babf0
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
+
+## 📚 Dokümantasyon
+
+| Doküman | Kime |
+|---|---|
+| [`docs/PROJE-REHBERI.md`](docs/PROJE-REHBERI.md) | Geliştiriciler — mimari, veri modeli, API, MQTT, kurulum, yetki matrisi |
+| [`docs/ISSUES_ROADMAP.md`](docs/ISSUES_ROADMAP.md) | Herkes — 198 iş paketi, issue numaraları, kritik yol |
+| [`docs/SUNUM-REHBERI.md`](docs/SUNUM-REHBERI.md) | Yöneticiler — müşteri sunumu ve SSS |
+| [`docs/SOZLUK.md`](docs/SOZLUK.md) | Herkes — terim sözlüğü |
+
+Yeni katılıyorsan `docs/PROJE-REHBERI.md` ile başla; ortam kurulumu ~30 dakika.
