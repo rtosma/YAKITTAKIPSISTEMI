@@ -92,6 +92,13 @@ interface AppContextType {
   toast: ToastState | null;
   showToast: (message: string, type?: 'success' | 'info' | 'warning' | 'error') => void;
 
+  // Pump Calibration Multiplier & EEPROM Persistence
+  kFactor: number; // Pulse / Litre (Örn: 100.0)
+  calibrationMultiplier: number;
+  setCalibrationMultiplier: (val: number) => void;
+  calculateCalibratedLiters: (rawAmount: number) => number;
+  saveEEPROMCalibration: (newKFactor: number, newMultiplier: number) => void;
+
   // Selected Tenant for Admin Detail View
   selectedTenantForDetail: Company | null;
   setSelectedTenantForDetail: (company: Company | null) => void;
@@ -133,6 +140,45 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [toast, setToast] = useState<ToastState | null>(null);
   const [selectedTenantForDetail, setSelectedTenantForDetail] = useState<Company | null>(null);
   const [tankRefreshKey, setTankRefreshKey] = useState<number>(0);
+
+  // EEPROM Persistent Calibration State (Default: 100.0 Pulse/Litre, Multiplier: 1.0)
+  const [kFactor, setKFactor] = useState<number>(() => {
+    const saved = localStorage.getItem('YAKIT_EEPROM_K_FACTOR');
+    return saved ? parseFloat(saved) : 100.0;
+  });
+
+  const [calibrationMultiplier, setCalibrationMultiplier] = useState<number>(() => {
+    const saved = localStorage.getItem('YAKIT_EEPROM_MULTIPLIER');
+    return saved ? parseFloat(saved) : 1.0;
+  });
+
+  const calculateCalibratedLiters = (rawAmount: number): number => {
+    return Number((rawAmount * calibrationMultiplier).toFixed(2));
+  };
+
+  const saveEEPROMCalibration = (newKFactor: number, newMultiplier: number) => {
+    setKFactor(newKFactor);
+    setCalibrationMultiplier(newMultiplier);
+    localStorage.setItem('YAKIT_EEPROM_K_FACTOR', newKFactor.toString());
+    localStorage.setItem('YAKIT_EEPROM_MULTIPLIER', newMultiplier.toString());
+
+    // Hardware log for EEPROM Flash sync & interrupt verification
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    setHardwareLogs(prev => [
+      ...prev,
+      {
+        id: Date.now().toString(),
+        timestamp: timeStr,
+        deviceCode: 'ESP32_FLOW_ISR',
+        tag: 'EEPROM',
+        message: `[EEPROM_FLASH_WRITE] Address 0x0040 updated: K_Faktoru = ${newKFactor.toFixed(2)} Pulse/L | Multiplier = x${newMultiplier.toFixed(4)}. Hardware Interrupt Verified.`,
+        siteName: 'Sistem Kalibrasyonu'
+      }
+    ]);
+
+    showToast(`Yeni K-Faktörü (${newKFactor.toFixed(2)} Pulse/L) EEPROM/Flash hafızaya yazıldı! Cihaz kapansa da saklanır.`, 'success');
+  };
 
   const currentCompany = companies[currentCompanyIndex] || companies[0];
 
@@ -550,6 +596,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         showToast,
         selectedTenantForDetail,
         setSelectedTenantForDetail,
+        kFactor,
+        calibrationMultiplier,
+        setCalibrationMultiplier,
+        calculateCalibratedLiters,
+        saveEEPROMCalibration,
       }}
     >
       {children}

@@ -13,7 +13,9 @@ export const SiteOperatorPanel: React.FC = () => {
     vehicles, 
     drivers, 
     transactions, 
-    addFuelTransaction 
+    addFuelTransaction,
+    calibrationMultiplier,
+    calculateCalibratedLiters
   } = useApp();
 
   const activeSiteName = currentUser?.siteName || (selectedSiteFilter !== 'TÜMÜ' ? selectedSiteFilter : 'Gebze Ana Şantiye');
@@ -40,14 +42,16 @@ export const SiteOperatorPanel: React.FC = () => {
 
     setIsPumpActive(true);
 
+    const netCalibratedLiters = calculateCalibratedLiters(amountLiters);
+
     setTimeout(() => {
       addFuelTransaction({
         siteName: activeSiteName,
         vehiclePlate: vehicle.plate,
         driverName: driver.name,
         tankName: tank.name,
-        amountLiters: amountLiters,
-        flowRateLpm: 52.4,
+        amountLiters: netCalibratedLiters,
+        flowRateLpm: Number((52.4 * calibrationMultiplier).toFixed(1)),
         pumpStatus: 'TAMAMLANTI',
         type: 'Otomatik',
         rfidAuth: true
@@ -239,15 +243,26 @@ export const SiteOperatorPanel: React.FC = () => {
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-bold text-[#d5c4ab] block">Verilecek Yakıt (Litre)</label>
+                <div className="flex justify-between items-center">
+                  <label className="text-xs font-bold text-[#d5c4ab] block">Verilecek Yakıt (Ham Litre / Pulse)</label>
+                  <span className="text-[10px] font-mono text-[#ffdca1] bg-[#ffdca1]/10 px-1.5 py-0.5 rounded border border-[#ffdca1]/20">
+                    Çarpan: x{calibrationMultiplier}
+                  </span>
+                </div>
                 <input
                   type="number"
-                  min="10"
-                  max="1000"
+                  min="1"
+                  max="10000"
                   value={amountLiters}
                   onChange={(e) => setAmountLiters(Number(e.target.value))}
                   className="w-full p-2.5 bg-[#20201f] border border-[#353535] rounded-xl text-xs font-bold font-mono text-[#a1e8a2] outline-none"
                 />
+                <div className="flex items-center justify-between text-[11px] font-mono pt-1 text-[#d5c4ab]">
+                  <span>Net Pompa Çıkışı:</span>
+                  <span className="text-[#a1e8a2] font-bold">
+                    {calculateCalibratedLiters(amountLiters)} Litre
+                  </span>
+                </div>
               </div>
 
               <button
