@@ -3,7 +3,7 @@ import { useApp } from '../../context/AppContext';
 import { Driver } from '../../types';
 
 export const DriversPage: React.FC = () => {
-  const { drivers, selectedSiteFilter, addDriver, updateDriver, deleteDriver, currentCompany, vehicles } = useApp();
+  const { drivers, selectedSiteFilter, addDriver, updateDriver, deleteDriver, currentCompany, vehicles, isManagerMode, currentUser } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -32,7 +32,7 @@ export const DriversPage: React.FC = () => {
     setPhone('');
     setTcNo('');
     setLicenseType('CE Sınıfı Ağır Vasıta');
-    setSiteName(selectedSiteFilter === 'TÜMÜ' ? currentCompany.sites[0]?.name || 'Gebze Ana Şantiye' : selectedSiteFilter);
+    setSiteName(!isManagerMode && currentUser?.siteName ? currentUser.siteName : (selectedSiteFilter === 'TÜMÜ' ? currentCompany.sites[0]?.name || 'Gebze Ana Şantiye' : selectedSiteFilter));
     setAssignedVehiclePlate('Yok');
     setStatus('SAHADA');
     setIsAddOpen(true);
@@ -275,17 +275,24 @@ export const DriversPage: React.FC = () => {
 
                 <div>
                   <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Bağlı Şantiye</label>
-                  <select
-                    value={siteName}
-                    onChange={(e) => setSiteName(e.target.value)}
-                    className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
-                  >
-                    {currentCompany.sites.map(s => (
-                      <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
+                  {isManagerMode ? (
+                    <select
+                      value={siteName}
+                      onChange={(e) => setSiteName(e.target.value)}
+                      className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
+                    >
+                      {currentCompany.sites.map(s => (
+                        <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="w-full bg-[#0e0e0e] border border-[#a1e8a2]/30 text-[#a1e8a2] text-xs rounded-md p-3 font-bold flex items-center space-x-1.5 select-none">
+                      <span className="material-symbols-outlined text-sm">lock</span>
+                      <span>{currentUser?.siteName || selectedSiteFilter}</span>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -297,11 +304,13 @@ export const DriversPage: React.FC = () => {
                   className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs font-mono rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                 >
                   <option value="Yok">Yok / Atanmadı</option>
-                  {vehicles.map(v => (
-                    <option key={v.id} value={v.plate} className="bg-[#1c1b1b]">
-                      {v.plate} ({v.brandModel})
-                    </option>
-                  ))}
+                  {vehicles
+                    .filter(v => isManagerMode || v.siteName === (currentUser?.siteName || siteName))
+                    .map(v => (
+                      <option key={v.id} value={v.plate} className="bg-[#1c1b1b]">
+                        {v.plate} ({v.brandModel})
+                      </option>
+                    ))}
                 </select>
               </div>
 
@@ -375,17 +384,24 @@ export const DriversPage: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Bağlı Şantiye</label>
-                  <select
-                    value={siteName}
-                    onChange={(e) => setSiteName(e.target.value)}
-                    className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
-                  >
-                    {currentCompany.sites.map(s => (
-                      <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
+                  {isManagerMode ? (
+                    <select
+                      value={siteName}
+                      onChange={(e) => setSiteName(e.target.value)}
+                      className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
+                    >
+                      {currentCompany.sites.map(s => (
+                        <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="w-full bg-[#0e0e0e] border border-[#a1e8a2]/30 text-[#a1e8a2] text-xs rounded-md p-3 font-bold flex items-center space-x-1.5 select-none">
+                      <span className="material-symbols-outlined text-sm">lock</span>
+                      <span>{currentUser?.siteName || selectedSiteFilter}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -396,11 +412,13 @@ export const DriversPage: React.FC = () => {
                     className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] font-mono text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                   >
                     <option value="Yok">Yok</option>
-                    {vehicles.map(v => (
-                      <option key={v.id} value={v.plate} className="bg-[#1c1b1b]">
-                        {v.plate} ({v.brandModel})
-                      </option>
-                    ))}
+                    {vehicles
+                      .filter(v => isManagerMode || v.siteName === (currentUser?.siteName || siteName))
+                      .map(v => (
+                        <option key={v.id} value={v.plate} className="bg-[#1c1b1b]">
+                          {v.plate} ({v.brandModel})
+                        </option>
+                      ))}
                   </select>
                 </div>
               </div>

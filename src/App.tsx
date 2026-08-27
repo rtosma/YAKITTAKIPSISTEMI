@@ -4,6 +4,9 @@ import { AppProvider } from './context/AppContext';
 import { Toast } from './components/Toast';
 
 // Pages & Layouts
+import { LoginPage } from './pages/LoginPage';
+import { SiteLoginPage } from './pages/SiteLoginPage';
+import { SiteOperatorPanel } from './pages/santiye/SiteOperatorPanel';
 import { WelcomeScreen } from './pages/WelcomeScreen';
 import { CustomerLayout } from './layouts/CustomerLayout';
 import { DeveloperLayout } from './layouts/DeveloperLayout';
@@ -35,8 +38,12 @@ export function App() {
       <BrowserRouter>
         <Toast />
         <Routes>
-          {/* Welcome Role Selector */}
-          <Route path="/" element={<WelcomeScreen />} />
+          {/* Home Login Page */}
+          <Route path="/" element={<LoginPage />} />
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/santiye-login" element={<SiteLoginPage />} />
+          <Route path="/santiye-panel" element={<Navigate to="/panel" replace />} />
+          <Route path="/welcome" element={<WelcomeScreen />} />
 
           {/* Customer Panel Routes (/panel/*) */}
           <Route path="/panel" element={<CustomerLayout />}>

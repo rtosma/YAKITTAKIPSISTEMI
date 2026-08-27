@@ -14,14 +14,16 @@ export const INITIAL_COMPANIES: Company[] = [
     id: 'comp-camsa',
     name: 'ÇamSA Pelet & Enerji A.Ş.',
     code: 'CAMSA-01',
+    username: 'camsa',
+    password: '123456',
     taxNumber: '2381092831',
     city: 'Kocaeli / Gebze',
     licenseStatus: 'AKTİF',
     licenseExpiry: '2027-12-31',
     sites: [
-      { id: 'site-gebze', name: 'Gebze Ana Şantiye', location: 'Gebze OIZ 4. Cadde', activeTanksCount: 2, activeVehiclesCount: 18 },
-      { id: 'site-orman', name: 'Orman Şantiyesi', location: 'Karasu Orman Bölgesi', activeTanksCount: 1, activeVehiclesCount: 9 },
-      { id: 'site-silivri', name: 'Silivri Tesisleri', location: 'Silivri Sanayi Bölgesi', activeTanksCount: 1, activeVehiclesCount: 7 }
+      { id: 'site-gebze', name: 'Gebze Ana Şantiye', username: 'gebze-santiye', password: '123456', location: 'Gebze OIZ 4. Cadde', activeTanksCount: 2, activeVehiclesCount: 18 },
+      { id: 'site-orman', name: 'Orman Şantiyesi', username: 'orman-santiye', password: '123456', location: 'Karasu Orman Bölgesi', activeTanksCount: 1, activeVehiclesCount: 9 },
+      { id: 'site-silivri', name: 'Silivri Tesisleri', username: 'silivri-santiye', password: '123456', location: 'Silivri Sanayi Bölgesi', activeTanksCount: 1, activeVehiclesCount: 7 }
     ],
     modules: {
       aiAnomaly: true,
@@ -38,13 +40,15 @@ export const INITIAL_COMPANIES: Company[] = [
     id: 'comp-kusak',
     name: 'Kuşak Beton & İnşaat Ltd.',
     code: 'KUSAK-02',
+    username: 'kusak',
+    password: '123456',
     taxNumber: '4820193841',
     city: 'İstanbul / Maltepe',
     licenseStatus: 'AKTİF',
     licenseExpiry: '2026-11-15',
     sites: [
-      { id: 'site-maltepe', name: 'Maltepe Santral', location: 'Maltepe E5 Yanal', activeTanksCount: 1, activeVehiclesCount: 22 },
-      { id: 'site-pendik', name: 'Pendik Taş Ocağı', location: 'Pendik Kurtköy', activeTanksCount: 2, activeVehiclesCount: 15 }
+      { id: 'site-maltepe', name: 'Maltepe Santral', username: 'maltepe-santiye', password: '123456', location: 'Maltepe E5 Yanal', activeTanksCount: 1, activeVehiclesCount: 22 },
+      { id: 'site-pendik', name: 'Pendik Taş Ocağı', username: 'pendik-santiye', password: '123456', location: 'Pendik Kurtköy', activeTanksCount: 2, activeVehiclesCount: 15 }
     ],
     modules: {
       aiAnomaly: true,
@@ -61,12 +65,14 @@ export const INITIAL_COMPANIES: Company[] = [
     id: 'comp-avrasya',
     name: 'Avrasya Altyapı & Mermer A.Ş.',
     code: 'AVR-03',
+    username: 'avrasya',
+    password: '123456',
     taxNumber: '9182301928',
     city: 'Bursa / İnegöl',
     licenseStatus: 'AKTİF',
     licenseExpiry: '2027-06-30',
     sites: [
-      { id: 'site-inegol', name: 'İnegöl Mermer Ocağı', location: 'Oylat Yolu Mevkii', activeTanksCount: 2, activeVehiclesCount: 14 }
+      { id: 'site-inegol', name: 'İnegöl Mermer Ocağı', username: 'inegol-santiye', password: '123456', location: 'Oylat Yolu Mevkii', activeTanksCount: 2, activeVehiclesCount: 14 }
     ],
     modules: {
       aiAnomaly: false,

@@ -4,7 +4,7 @@ import { TankGauge } from '../../components/TankGauge';
 import { Tank } from '../../types';
 
 export const TankStatusPage: React.FC = () => {
-  const { tanks, selectedSiteFilter, tankRefreshKey, triggerTankRefresh, addTank, updateTank, deleteTank, currentCompany } = useApp();
+  const { tanks, selectedSiteFilter, tankRefreshKey, triggerTankRefresh, addTank, updateTank, deleteTank, currentCompany, isManagerMode, currentUser } = useApp();
 
   // Modal states
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -24,7 +24,7 @@ export const TankStatusPage: React.FC = () => {
 
   const handleOpenAddModal = () => {
     setTankName('');
-    setSiteName(selectedSiteFilter === 'TÜMÜ' ? currentCompany.sites[0]?.name || 'Gebze Ana Şantiye' : selectedSiteFilter);
+    setSiteName(!isManagerMode && currentUser?.siteName ? currentUser.siteName : (selectedSiteFilter === 'TÜMÜ' ? currentCompany.sites[0]?.name || 'Gebze Ana Şantiye' : selectedSiteFilter));
     setCapacityLiters(15000);
     setCurrentLevelLiters(12000);
     setFuelType('Motorin (Euro Diesel)');
@@ -169,17 +169,24 @@ export const TankStatusPage: React.FC = () => {
 
               <div>
                 <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Bağlı Şantiye</label>
-                <select
-                  value={siteName}
-                  onChange={(e) => setSiteName(e.target.value)}
-                  className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
-                >
-                  {currentCompany.sites.map(s => (
-                    <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
+                {isManagerMode ? (
+                  <select
+                    value={siteName}
+                    onChange={(e) => setSiteName(e.target.value)}
+                    className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
+                  >
+                    {currentCompany.sites.map(s => (
+                      <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="w-full bg-[#0e0e0e] border border-[#a1e8a2]/30 text-[#a1e8a2] text-xs rounded-md p-3 font-bold flex items-center space-x-1.5 select-none">
+                    <span className="material-symbols-outlined text-sm">lock</span>
+                    <span>{currentUser?.siteName || selectedSiteFilter}</span>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -265,17 +272,24 @@ export const TankStatusPage: React.FC = () => {
 
               <div>
                 <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Bağlı Şantiye</label>
-                <select
-                  value={siteName}
-                  onChange={(e) => setSiteName(e.target.value)}
-                  className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
-                >
-                  {currentCompany.sites.map(s => (
-                    <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
+                {isManagerMode ? (
+                  <select
+                    value={siteName}
+                    onChange={(e) => setSiteName(e.target.value)}
+                    className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
+                  >
+                    {currentCompany.sites.map(s => (
+                      <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="w-full bg-[#0e0e0e] border border-[#a1e8a2]/30 text-[#a1e8a2] text-xs rounded-md p-3 font-bold flex items-center space-x-1.5 select-none">
+                    <span className="material-symbols-outlined text-sm">lock</span>
+                    <span>{currentUser?.siteName || selectedSiteFilter}</span>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">

@@ -1,0 +1,10 @@
+home page'de login page olacak müşteri yönetici olarka giriş yapacak.
+firma kullanıcı adı ve şifresini giricek.
+login page'den giriş yaptığında panel'e yönlendir.
+
+login page'de altta şantiye giriş butonu olacak.
+buradan şantiye girişinde kullanıcı adı ve şifresini giricek.
+burada araç yönetimi, şoför yönetimi, yakıt hareketi, tank durumu, bildirim ve sistem ayarı olacak.
+
+
+panelde rol seçimi değil çıkış yap olacak.

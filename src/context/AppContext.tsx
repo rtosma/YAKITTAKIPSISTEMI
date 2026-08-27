@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { 
   Company, 
+  Site,
   Vehicle, 
   Driver, 
   FuelTransaction, 
@@ -28,6 +29,15 @@ interface ToastState {
 }
 
 interface AppContextType {
+  // Auth & Permissions Mode State
+  isAuthenticated: boolean;
+  isManagerMode: boolean;
+  setIsManagerMode: (val: boolean) => void;
+  currentUser: { username: string; companyName: string; role: string; siteName?: string } | null;
+  loginCompany: (username: string, password: string) => { success: boolean; error?: string };
+  loginSiteOperator: (username: string, password: string) => { success: boolean; error?: string };
+  logoutCompany: () => void;
+
   // Current Customer Firm State (Default: ÇamSA Pelet)
   currentCompany: Company;
   selectedSiteFilter: string; // 'TÜMÜ' | 'Gebze Ana Şantiye' | 'Orman Şantiyesi' | 'Silivri Tesisleri'
@@ -91,8 +101,24 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [companies, setCompanies] = useState<Company[]>(INITIAL_COMPANIES);
-  const [currentCompanyIndex] = useState<number>(0);
-  const [selectedSiteFilter, setSelectedSiteFilter] = useState<string>('TÜMÜ');
+  const [currentCompanyIndex, setCurrentCompanyIndex] = useState<number>(0);
+  const [rawSelectedSiteFilter, setRawSelectedSiteFilter] = useState<string>('TÜMÜ');
+
+  // Authentication state & Manager Mode toggle
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isManagerMode, setIsManagerMode] = useState<boolean>(true);
+  const [currentUser, setCurrentUser] = useState<{ username: string; companyName: string; role: string; siteName?: string } | null>(null);
+
+  // Enforce selected site filter lock for Site Operator mode
+  const selectedSiteFilter = (!isManagerMode && currentUser?.siteName) ? currentUser.siteName : rawSelectedSiteFilter;
+
+  const setSelectedSiteFilter = (site: string) => {
+    if (!isManagerMode && currentUser?.siteName) {
+      setRawSelectedSiteFilter(currentUser.siteName);
+      return;
+    }
+    setRawSelectedSiteFilter(site);
+  };
 
   const [vehicles, setVehicles] = useState<Vehicle[]>(INITIAL_VEHICLES);
   const [drivers, setDrivers] = useState<Driver[]>(INITIAL_DRIVERS);
@@ -109,6 +135,111 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [tankRefreshKey, setTankRefreshKey] = useState<number>(0);
 
   const currentCompany = companies[currentCompanyIndex] || companies[0];
+
+  const loginCompany = (username: string, password: string): { success: boolean; error?: string } => {
+    const trimmedUsername = username.trim().toLowerCase();
+    const trimmedPassword = password.trim();
+
+    if (!trimmedUsername || !trimmedPassword) {
+      return { success: false, error: 'Firma kullanıcı adı ve şifre zorunludur.' };
+    }
+
+    // Match company by username, code, or name
+    const targetComp = companies.find(
+      c => (c.username && c.username.toLowerCase() === trimmedUsername) ||
+           c.code.toLowerCase() === trimmedUsername ||
+           c.name.toLowerCase().includes(trimmedUsername)
+    );
+
+    if (!targetComp) {
+      return { success: false, error: 'Girilen firma kullanıcı adı veya firma kodu sistemde bulunamadı.' };
+    }
+
+    // Strict password verification
+    const expectedPassword = targetComp.password || '123456';
+    if (trimmedPassword !== expectedPassword) {
+      return { success: false, error: 'Hatalı şifre! Lütfen firma şifrenizi kontrol edip tekrar deneyiniz.' };
+    }
+
+    const targetIdx = companies.findIndex(c => c.id === targetComp.id);
+    if (targetIdx !== -1) {
+      setCurrentCompanyIndex(targetIdx);
+    }
+
+    setIsAuthenticated(true);
+    setIsManagerMode(true);
+    setRawSelectedSiteFilter('TÜMÜ');
+    setCurrentUser({
+      username: targetComp.username || username.trim(),
+      companyName: targetComp.name,
+      role: 'Firma Yöneticisi'
+    });
+
+    showToast(`Giriş Başarılı: ${targetComp.name} Yönetici paneline yönlendiriliyorsunuz`, 'success');
+    return { success: true };
+  };
+
+  const loginSiteOperator = (username: string, password: string): { success: boolean; error?: string } => {
+    const trimmedUsername = username.trim().toLowerCase();
+    const trimmedPassword = password.trim();
+
+    if (!trimmedUsername || !trimmedPassword) {
+      return { success: false, error: 'Şantiye kullanıcı adı ve şifre zorunludur.' };
+    }
+
+    // Search across all companies for a matching site
+    let matchedSite: Site | undefined;
+    let matchedCompany: Company | undefined;
+
+    for (const company of companies) {
+      const site = company.sites.find(
+        s => (s.username && s.username.toLowerCase() === trimmedUsername) ||
+             s.id.toLowerCase() === trimmedUsername ||
+             s.name.toLowerCase().includes(trimmedUsername) ||
+             s.location.toLowerCase().includes(trimmedUsername)
+      );
+      if (site) {
+        matchedSite = site;
+        matchedCompany = company;
+        break;
+      }
+    }
+
+    if (!matchedSite || !matchedCompany) {
+      return { success: false, error: 'Girilen şantiye kullanıcı adı sistemde bulunamadı.' };
+    }
+
+    // Strict password verification for site operator
+    const expectedPassword = matchedSite.password || '123456';
+    if (trimmedPassword !== expectedPassword) {
+      return { success: false, error: 'Hatalı şantiye şifresi! Lütfen şifrenizi kontrol edip tekrar deneyiniz.' };
+    }
+
+    // Switch current company context to matched company
+    const targetIdx = companies.findIndex(c => c.id === matchedCompany!.id);
+    if (targetIdx !== -1) {
+      setCurrentCompanyIndex(targetIdx);
+    }
+
+    setRawSelectedSiteFilter(matchedSite.name);
+    setIsAuthenticated(true);
+    setIsManagerMode(false);
+    setCurrentUser({
+      username: matchedSite.username || username.trim(),
+      companyName: matchedCompany.name,
+      siteName: matchedSite.name,
+      role: 'Şantiye Saha Operatörü'
+    });
+
+    showToast(`Şantiye Girişi Başarılı: ${matchedSite.name} modunda panele yönlendiriliyorsunuz`, 'success');
+    return { success: true };
+  };
+
+  const logoutCompany = () => {
+    setIsAuthenticated(false);
+    setCurrentUser(null);
+    showToast('Oturum kapatıldı. Giriş sayfasına dönüldü.', 'info');
+  };
 
   const triggerTankRefresh = () => {
     setTankRefreshKey(prev => prev + 1);
@@ -345,12 +476,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const addCompany = (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules'>) => {
     const code = 'COMP-' + (companies.length + 1).toString().padStart(2, '0');
+    const compUsername = comp.name.toLowerCase().replace(/[^a-z0-9]/g, '') || 'firma';
     const newComp: Company = {
       ...comp,
       id: 'comp-' + Date.now(),
       code,
+      username: compUsername,
+      password: '123456',
       sites: [
-        { id: 'site-' + Date.now(), name: `${comp.name} Ana Şantiye`, location: comp.city, activeVehiclesCount: 2, activeTanksCount: 1 }
+        { id: 'site-' + Date.now(), name: `${comp.name} Ana Şantiye`, username: `${compUsername}-santiye`, password: '123456', location: comp.city, activeVehiclesCount: 2, activeTanksCount: 1 }
       ],
       totalFuelThisMonth: 0,
       activeVehiclesCount: 2,
@@ -372,6 +506,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   return (
     <AppContext.Provider
       value={{
+        isAuthenticated,
+        isManagerMode,
+        setIsManagerMode,
+        currentUser,
+        loginCompany,
+        loginSiteOperator,
+        logoutCompany,
         currentCompany,
         selectedSiteFilter,
         setSelectedSiteFilter,

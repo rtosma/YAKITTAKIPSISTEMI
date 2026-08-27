@@ -3,7 +3,7 @@ import { useApp } from '../../context/AppContext';
 import { Vehicle } from '../../types';
 
 export const VehiclesPage: React.FC = () => {
-  const { vehicles, selectedSiteFilter, addVehicle, updateVehicle, deleteVehicle, currentCompany, drivers } = useApp();
+  const { vehicles, selectedSiteFilter, addVehicle, updateVehicle, deleteVehicle, currentCompany, drivers, isManagerMode, currentUser } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -262,17 +262,24 @@ export const VehiclesPage: React.FC = () => {
 
                 <div>
                   <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Bağlı Şantiye</label>
-                  <select
-                    value={siteName}
-                    onChange={(e) => setSiteName(e.target.value)}
-                    className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
-                  >
-                    {currentCompany.sites.map(s => (
-                      <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
+                  {isManagerMode ? (
+                    <select
+                      value={siteName}
+                      onChange={(e) => setSiteName(e.target.value)}
+                      className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
+                    >
+                      {currentCompany.sites.map(s => (
+                        <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="w-full bg-[#0e0e0e] border border-[#a1e8a2]/30 text-[#a1e8a2] text-xs rounded-md p-3 font-bold flex items-center space-x-1.5 select-none">
+                      <span className="material-symbols-outlined text-sm">lock</span>
+                      <span>{currentUser?.siteName || selectedSiteFilter}</span>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -365,17 +372,24 @@ export const VehiclesPage: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Bağlı Şantiye</label>
-                  <select
-                    value={siteName}
-                    onChange={(e) => setSiteName(e.target.value)}
-                    className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
-                  >
-                    {currentCompany.sites.map(s => (
-                      <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
+                  {isManagerMode ? (
+                    <select
+                      value={siteName}
+                      onChange={(e) => setSiteName(e.target.value)}
+                      className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
+                    >
+                      {currentCompany.sites.map(s => (
+                        <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
+                          {s.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="w-full bg-[#0e0e0e] border border-[#a1e8a2]/30 text-[#a1e8a2] text-xs rounded-md p-3 font-bold flex items-center space-x-1.5 select-none">
+                      <span className="material-symbols-outlined text-sm">lock</span>
+                      <span>{currentUser?.siteName || selectedSiteFilter}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div>

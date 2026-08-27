@@ -2,10 +2,14 @@ import React from 'react';
 import { useApp } from '../../context/AppContext';
 
 export const NotificationsPage: React.FC = () => {
-  const { tanks } = useApp();
+  const { tanks, selectedSiteFilter } = useApp();
 
-  const criticalTanks = tanks.filter(t => (t.currentLevelLiters / t.capacityLiters) < 0.2);
-  const warningTanks = tanks.filter(t => (t.currentLevelLiters / t.capacityLiters) >= 0.2 && (t.currentLevelLiters / t.capacityLiters) < 0.4);
+  const siteTanks = selectedSiteFilter === 'TÜMÜ'
+    ? tanks
+    : tanks.filter(t => t.siteName === selectedSiteFilter);
+
+  const criticalTanks = siteTanks.filter(t => (t.currentLevelLiters / t.capacityLiters) < 0.2);
+  const warningTanks = siteTanks.filter(t => (t.currentLevelLiters / t.capacityLiters) >= 0.2 && (t.currentLevelLiters / t.capacityLiters) < 0.4);
 
   return (
     <div className="space-y-6">

@@ -2,10 +2,14 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 
 export const SitesPage: React.FC = () => {
-  const { currentCompany, setSelectedSiteFilter } = useApp();
+  const { currentCompany, setSelectedSiteFilter, isManagerMode, currentUser } = useApp();
   const [searchTerm, setSearchTerm] = useState('');
 
-  const filteredSites = currentCompany.sites.filter(s =>
+  const visibleCompanySites = isManagerMode
+    ? currentCompany.sites
+    : currentCompany.sites.filter(s => s.name === currentUser?.siteName);
+
+  const filteredSites = visibleCompanySites.filter(s =>
     s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     s.location.toLowerCase().includes(searchTerm.toLowerCase())
   );

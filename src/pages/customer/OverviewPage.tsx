@@ -12,7 +12,9 @@ export const OverviewPage: React.FC = () => {
     transactions, 
     vehicles, 
     addFuelTransaction,
-    showToast 
+    showToast,
+    isManagerMode,
+    currentUser
   } = useApp();
 
   // Modal State for Quick Fuel Log
@@ -292,15 +294,22 @@ export const OverviewPage: React.FC = () => {
             <form onSubmit={handleCreateRefuel} className="space-y-4">
               <div>
                 <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Şantiye</label>
-                <select
-                  value={refuelSite}
-                  onChange={(e) => setRefuelSite(e.target.value)}
-                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
-                >
-                  {currentCompany.sites.map(s => (
-                    <option key={s.id} value={s.name}>{s.name}</option>
-                  ))}
-                </select>
+                {isManagerMode ? (
+                  <select
+                    value={refuelSite}
+                    onChange={(e) => setRefuelSite(e.target.value)}
+                    className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                  >
+                    {currentCompany.sites.map(s => (
+                      <option key={s.id} value={s.name}>{s.name}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="w-full bg-[#131313] border border-[#a1e8a2]/30 text-[#a1e8a2] text-xs rounded-xl p-3 font-bold flex items-center space-x-1.5 select-none">
+                    <span className="material-symbols-outlined text-sm">lock</span>
+                    <span>{currentUser?.siteName || selectedSiteFilter}</span>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -310,9 +319,11 @@ export const OverviewPage: React.FC = () => {
                   onChange={(e) => setRefuelPlate(e.target.value)}
                   className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
                 >
-                  {vehicles.map(v => (
-                    <option key={v.id} value={v.plate}>{v.plate} — ({v.assignedDriver})</option>
-                  ))}
+                  {vehicles
+                    .filter(v => isManagerMode || v.siteName === (currentUser?.siteName || refuelSite))
+                    .map(v => (
+                      <option key={v.id} value={v.plate}>{v.plate} — ({v.assignedDriver})</option>
+                    ))}
                 </select>
               </div>
 

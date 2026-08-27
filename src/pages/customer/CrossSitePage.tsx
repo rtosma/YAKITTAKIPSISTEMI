@@ -2,12 +2,16 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 
 export const CrossSitePage: React.FC = () => {
-  const { crossSitePermissions, toggleCrossSiteStatus, vehicles, drivers, currentCompany, addCrossSitePermission } = useApp();
+  const { crossSitePermissions, toggleCrossSiteStatus, vehicles, drivers, currentCompany, addCrossSitePermission, isManagerMode, currentUser, selectedSiteFilter } = useApp();
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedPlate, setSelectedPlate] = useState(vehicles[0]?.plate || '35 EGE 40');
   const [targetSite, setTargetSite] = useState(currentCompany.sites[0]?.name || 'Gebze Ana Şantiye');
   const [allowedLiters, setAllowedLiters] = useState<number>(300);
+
+  const visiblePermissions = isManagerMode
+    ? crossSitePermissions
+    : crossSitePermissions.filter(p => p.homeSite === (currentUser?.siteName || selectedSiteFilter) || p.targetSite === (currentUser?.siteName || selectedSiteFilter));
 
   const handleCreatePermission = (e: React.FormEvent) => {
     e.preventDefault();
@@ -74,7 +78,7 @@ export const CrossSitePage: React.FC = () => {
             </tr>
           </thead>
           <tbody className="divide-y divide-[#353535] font-mono">
-            {crossSitePermissions.map(p => (
+            {visiblePermissions.map(p => (
               <tr key={p.id} className="hover:bg-[#282726] transition-colors">
                 <td className="py-3.5 px-4 font-black text-[#ffdca1] text-sm">{p.vehiclePlate}</td>
                 <td className="py-3.5 px-4 text-[#e5e2e1] font-bold">{p.driverName}</td>

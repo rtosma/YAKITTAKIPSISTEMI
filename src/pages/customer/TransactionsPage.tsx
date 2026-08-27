@@ -4,7 +4,7 @@ import { exportToExcelWithTotals } from '../../utils/excelExporter';
 import { FuelTransaction } from '../../types';
 
 export const TransactionsPage: React.FC = () => {
-  const { transactions, selectedSiteFilter, currentCompany, drivers } = useApp();
+  const { transactions, selectedSiteFilter, currentCompany, drivers, isManagerMode, currentUser } = useApp();
 
   // Filter States
   const [startDate, setStartDate] = useState<string>('');
@@ -82,7 +82,7 @@ export const TransactionsPage: React.FC = () => {
   const handleClearFilters = () => {
     setStartDate('');
     setEndDate('');
-    setSiteFilter('TÜMÜ');
+    setSiteFilter(!isManagerMode && currentUser?.siteName ? currentUser.siteName : 'TÜMÜ');
     setSearchTerm('');
     setDriverFilter('TÜMÜ');
     setPumpStatusFilter('TÜMÜ');
@@ -208,18 +208,25 @@ export const TransactionsPage: React.FC = () => {
             <label className="text-[10px] font-mono font-bold text-[#d5c4ab] uppercase block mb-1">
               Şantiye Seçimi
             </label>
-            <select
-              value={siteFilter}
-              onChange={(e) => { setSiteFilter(e.target.value); setCurrentPage(1); }}
-              className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-2 focus:outline-none focus:border-[#ffdca1]"
-            >
-              <option value="TÜMÜ">Tüm Şantiyeler</option>
-              {currentCompany.sites.map(s => (
-                <option key={s.id} value={s.name}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
+            {isManagerMode ? (
+              <select
+                value={siteFilter}
+                onChange={(e) => { setSiteFilter(e.target.value); setCurrentPage(1); }}
+                className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-2 focus:outline-none focus:border-[#ffdca1]"
+              >
+                <option value="TÜMÜ">Tüm Şantiyeler</option>
+                {currentCompany.sites.map(s => (
+                  <option key={s.id} value={s.name}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="w-full bg-[#0e0e0e] border border-[#a1e8a2]/30 text-[#a1e8a2] text-xs rounded-md p-2 font-bold flex items-center space-x-1.5 select-none">
+                <span className="material-symbols-outlined text-sm">lock</span>
+                <span>{currentUser?.siteName || selectedSiteFilter}</span>
+              </div>
+            )}
           </div>
 
           {/* Şoför Dropdown */}
