@@ -278,7 +278,7 @@
 * **Teknik Yığın:** `zod` veya `class-validator` + `class-transformer`
 * **Açıklama:** Tüm API isteklerinin katı şema denetiminden geçirilmesi; tanımsız alanların (`stripUnknown: true`) elenmesi.
 * **Kabul Kriterleri (AC):**
-  - [ ] Negatif yakıt litresi, geçersiz e-posta veya bozuk plaka girişleri `400 Bad Request` ile alan bazlı hata dönmelidir.
+  - [x] Negatif yakıt litresi, geçersiz e-posta veya bozuk plaka girişleri `400 Bad Request` ile alan bazlı hata dönmelidir.
 
 ---
 
