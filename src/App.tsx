@@ -6,8 +6,8 @@ import { Toast } from './components/Toast';
 // Pages & Layouts
 import { LoginPage } from './pages/LoginPage';
 import { SiteLoginPage } from './pages/SiteLoginPage';
-import { SiteOperatorPanel } from './pages/santiye/SiteOperatorPanel';
 import { WelcomeScreen } from './pages/WelcomeScreen';
+import { NotFoundPage } from './pages/NotFoundPage';
 import { CustomerLayout } from './layouts/CustomerLayout';
 import { DeveloperLayout } from './layouts/DeveloperLayout';
 
@@ -68,6 +68,8 @@ export function App() {
             <Route path="ayarlar" element={<SettingsPage />} />
             <Route path="cross-site" element={<CrossSitePage />} />
             <Route path="modules" element={<ModulesPage />} />
+            {/* Unknown sub-route under /panel -> 404 */}
+            <Route path="*" element={<NotFoundPage />} />
           </Route>
 
           {/* Developer Super Admin Panel Routes (/admin/*) */}
@@ -79,10 +81,12 @@ export function App() {
             <Route path="devices" element={<DevicesPage />} />
             <Route path="logs" element={<LiveLogsPage />} />
             <Route path="health" element={<SystemHealthPage />} />
+            {/* Unknown sub-route under /admin -> 404 */}
+            <Route path="*" element={<NotFoundPage />} />
           </Route>
 
-          {/* Fallback Catch-All */}
-          <Route path="*" element={<Navigate to="/" replace />} />
+          {/* Global Fallback Catch-All -> Modern 404 Page */}
+          <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </BrowserRouter>
     </AppProvider>
