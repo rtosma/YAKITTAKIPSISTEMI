@@ -358,6 +358,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     localStorage.removeItem('YAKIT_CURRENT_USER');
     localStorage.removeItem('YAKIT_COMPANY_IDX');
     localStorage.removeItem('YAKIT_SITE_FILTER');
+    localStorage.removeItem('YAKIT_ACCESS_TOKEN');
+    localStorage.removeItem('YAKIT_REFRESH_TOKEN');
     showToast('Oturum kapatıldı. Giriş sayfasına dönüldü.', 'info');
   };
 

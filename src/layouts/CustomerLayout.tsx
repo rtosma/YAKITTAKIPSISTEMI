@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { Outlet, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 
 export const CustomerLayout: React.FC = () => {
@@ -11,8 +11,13 @@ export const CustomerLayout: React.FC = () => {
     setSelectedSiteFilter, 
     logoutCompany, 
     currentUser,
-    isManagerMode
+    isManagerMode,
+    isAuthenticated
   } = useApp();
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 

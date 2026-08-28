@@ -1,11 +1,16 @@
 import React, { useState } from 'react';
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { Outlet, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 
 export const DeveloperLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { simulatedLatencyMs, setSimulatedLatencyMs, isLogStreamActive, setIsLogStreamActive, hardwareDevices } = useApp();
+  const { simulatedLatencyMs, setSimulatedLatencyMs, isLogStreamActive, setIsLogStreamActive, hardwareDevices, isAuthenticated } = useApp();
+
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
+
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   const navItems = [
