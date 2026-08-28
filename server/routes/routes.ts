@@ -16,6 +16,7 @@ import {
   UserRole
 } from '../services/tokenService';
 import { authenticateJWT, authorizeRoles, AuthenticatedRequest } from '../middleware/authMiddleware';
+import { hardwareAuthMiddleware } from '../middleware/hardwareAuthMiddleware';
 
 const router = Router();
 
@@ -256,6 +257,26 @@ router.post(
       tenantId: store?.tenantId || req.user?.tenantId,
       operator: req.user?.username,
       dispenseDetails: sanitizedBody
+    });
+  }
+);
+
+/**
+ * POST /api/v1/telemetry/hardware-data
+ * Protected by AUTH-202 HMAC-SHA256 Hardware Authentication Middleware
+ * Receives verified telemetries from ESP32 & IoT sensors
+ */
+router.post(
+  '/telemetry/hardware-data',
+  hardwareAuthMiddleware,
+  (req: Request, res: Response) => {
+    const hardwareInfo = (req as any).authenticatedHardware;
+    res.json({
+      success: true,
+      message: 'Donanım HMAC-SHA256 doğrulaması başarılı. Telemetri kaydedildi.',
+      hardware: hardwareInfo,
+      receivedData: req.body,
+      timestamp: new Date().toISOString()
     });
   }
 );
