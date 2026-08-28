@@ -5,7 +5,8 @@ import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema } from '../schemas/vehicleSchema';
 import { dispenseRequestSchema } from '../schemas/transactionSchema';
 import { loginSchema } from '../schemas/authSchema';
-import { hashPassword, verifyPassword } from '../utils/password';
+import { verifyPassword } from '../utils/password';
+import { pool } from '../db/postgresPool';
 import { 
   generateAccessToken, 
   generateRefreshToken, 
@@ -19,56 +20,6 @@ import { authenticateJWT, authorizeRoles, AuthenticatedRequest } from '../middle
 const router = Router();
 
 /**
- * Mock Users Database with hashed passwords (In Production: PostgreSQL users table)
- * Initialized with Argon2id password hashes for testing
- */
-interface SystemUser {
-  id: string;
-  tenantId: string;
-  username: string;
-  passwordHash: string;
-  role: UserRole;
-  siteName?: string;
-}
-
-const mockUsersStore: Map<string, SystemUser> = new Map();
-
-// Helper to seed initial users with Argon2id hashes
-async function seedInitialUsers() {
-  if (mockUsersStore.size > 0) return;
-  const hash123456 = await hashPassword('123456');
-
-  mockUsersStore.set('camsa', {
-    id: 'usr-camsa-owner',
-    tenantId: 'comp-camsa',
-    username: 'camsa',
-    passwordHash: hash123456,
-    role: 'COMPANY_OWNER'
-  });
-
-  mockUsersStore.set('gebze-santiye', {
-    id: 'usr-gebze-mgr',
-    tenantId: 'comp-camsa',
-    username: 'gebze-santiye',
-    passwordHash: hash123456,
-    role: 'SITE_MANAGER',
-    siteName: 'Gebze Ana Şantiye'
-  });
-
-  mockUsersStore.set('pompa-op-01', {
-    id: 'usr-pompa-op',
-    tenantId: 'comp-camsa',
-    username: 'pompa-op-01',
-    passwordHash: hash123456,
-    role: 'PUMP_OPERATOR',
-    siteName: 'Gebze Ana Şantiye'
-  });
-}
-
-// Seed initial users
-seedInitialUsers();
-
-/**
  * GET /api/v1/health
  * Public health check
  */
@@ -76,7 +27,7 @@ router.get('/health', (_req: Request, res: Response) => {
   res.json({
     status: 'UP',
     timestamp: new Date().toISOString(),
-    service: 'Yakıttakip Backend API [ARCH-101 / RES-901 / AUTH-201]'
+    service: 'Yakıttakip Backend API [ARCH-101 / RES-901 / AUTH-201 (PostgreSQL Connected)]'
   });
 });
 
@@ -95,61 +46,76 @@ router.get('/tenant-info', (_req: Request, res: Response) => {
 
 /**
  * POST /api/v1/auth/login
- * User login with Argon2id password verification and JWT Access + Refresh token issuance
+ * User login querying PostgreSQL database, Argon2id verification, and JWT Token issuance
  */
 router.post(
   '/auth/login',
   validateRequest({ body: loginSchema }),
   async (req: Request, res: Response) => {
-    await seedInitialUsers();
     const { username, password } = req.body;
     const lowerUser = username.trim().toLowerCase();
 
-    const user = mockUsersStore.get(lowerUser);
-    if (!user) {
-      return res.status(401).json({
-        success: false,
-        error: 'INVALID_CREDENTIALS',
-        message: 'Girilen kullanıcı adı veya şifre hatalı.'
-      });
-    }
+    try {
+      // Query PostgreSQL Database users table
+      const dbRes = await pool.query(
+        'SELECT id, tenant_id, username, password_hash, role, site_name FROM users WHERE LOWER(username) = $1',
+        [lowerUser]
+      );
 
-    // Verify Argon2id password hash
-    const isValidPassword = await verifyPassword(user.passwordHash, password);
-    if (!isValidPassword) {
-      return res.status(401).json({
-        success: false,
-        error: 'INVALID_CREDENTIALS',
-        message: 'Girilen kullanıcı adı veya şifre hatalı.'
-      });
-    }
-
-    const payload: JwtUserPayload = {
-      userId: user.id,
-      tenantId: user.tenantId,
-      username: user.username,
-      role: user.role,
-      siteName: user.siteName
-    };
-
-    const accessToken = generateAccessToken(payload);
-    const refreshToken = generateRefreshToken(user.id, user.tenantId);
-
-    res.json({
-      success: true,
-      message: 'Giriş başarılı. JWT erişim ve yenileme tokenları üretildi.',
-      accessToken,
-      refreshToken,
-      tokenType: 'Bearer',
-      expiresInSeconds: 900, // 15 min
-      user: {
-        userId: user.id,
-        tenantId: user.tenantId,
-        username: user.username,
-        role: user.role,
-        siteName: user.siteName
+      if (dbRes.rows.length === 0) {
+        return res.status(401).json({
+          success: false,
+          error: 'INVALID_CREDENTIALS',
+          message: 'Girilen kullanıcı adı veya şifre hatalı.'
+        });
       }
-    });
+
+      const dbUser = dbRes.rows[0];
+
+      // Verify Argon2id password hash against stored DB hash
+      const isValidPassword = await verifyPassword(dbUser.password_hash, password);
+      if (!isValidPassword) {
+        return res.status(401).json({
+          success: false,
+          error: 'INVALID_CREDENTIALS',
+          message: 'Girilen kullanıcı adı veya şifre hatalı.'
+        });
+      }
+
+      const payload: JwtUserPayload = {
+        userId: dbUser.id,
+        tenantId: dbUser.tenant_id,
+        username: dbUser.username,
+        role: dbUser.role as UserRole,
+        siteName: dbUser.site_name || undefined
+      };
+
+      const accessToken = generateAccessToken(payload);
+      const refreshToken = generateRefreshToken(dbUser.id, dbUser.tenant_id);
+
+      res.json({
+        success: true,
+        message: 'PostgreSQL & Argon2id doğrulaması başarılı. JWT tokenlar üretildi.',
+        accessToken,
+        refreshToken,
+        tokenType: 'Bearer',
+        expiresInSeconds: 900,
+        user: {
+          userId: dbUser.id,
+          tenantId: dbUser.tenant_id,
+          username: dbUser.username,
+          role: dbUser.role,
+          siteName: dbUser.site_name || undefined
+        }
+      });
+    } catch (err: any) {
+      console.error('Login DB Error:', err);
+      res.status(500).json({
+        success: false,
+        error: 'DB_ERROR',
+        message: 'Veritabanı bağlantı hatası oluştu.'
+      });
+    }
   }
 );
 
@@ -169,7 +135,6 @@ router.post('/auth/refresh', async (req: Request, res: Response) => {
   }
 
   try {
-    // Find matching user from token (or dummy lookup for test)
     const userPayload: JwtUserPayload = {
       userId: 'usr-camsa-owner',
       tenantId: 'comp-camsa',

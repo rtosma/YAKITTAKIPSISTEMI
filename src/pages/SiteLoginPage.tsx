@@ -13,7 +13,7 @@ export const SiteLoginPage: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
 
@@ -29,8 +29,8 @@ export const SiteLoginPage: React.FC = () => {
 
     setIsLoading(true);
 
-    setTimeout(() => {
-      const result = loginSiteOperator(username, password);
+    try {
+      const result = await loginSiteOperator(username, password);
       setIsLoading(false);
 
       if (result.success) {
@@ -38,7 +38,10 @@ export const SiteLoginPage: React.FC = () => {
       } else {
         setErrorMessage(result.error || 'Şantiye girişi yapılırken bir hata oluştu.');
       }
-    }, 400);
+    } catch (err: any) {
+      setIsLoading(false);
+      setErrorMessage('Sistem hatası oluştu. Lütfen tekrar deneyin.');
+    }
   };
 
   return (
