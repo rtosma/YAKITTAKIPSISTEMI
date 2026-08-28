@@ -108,13 +108,59 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [companies, setCompanies] = useState<Company[]>(INITIAL_COMPANIES);
-  const [currentCompanyIndex, setCurrentCompanyIndex] = useState<number>(0);
-  const [rawSelectedSiteFilter, setRawSelectedSiteFilter] = useState<string>('TÜMÜ');
+  const [currentCompanyIndex, setCurrentCompanyIndex] = useState<number>(() => {
+    const saved = localStorage.getItem('YAKIT_COMPANY_IDX');
+    return saved ? parseInt(saved, 10) : 0;
+  });
 
-  // Authentication state & Manager Mode toggle
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
-  const [isManagerMode, setIsManagerMode] = useState<boolean>(true);
-  const [currentUser, setCurrentUser] = useState<{ username: string; companyName: string; role: string; siteName?: string } | null>(null);
+  const [rawSelectedSiteFilter, setRawSelectedSiteFilter] = useState<string>(() => {
+    return localStorage.getItem('YAKIT_SITE_FILTER') || 'TÜMÜ';
+  });
+
+  // Authentication state & Manager Mode toggle (Persisted across F5 reloads)
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    return localStorage.getItem('YAKIT_IS_AUTH') === 'true';
+  });
+
+  const [isManagerMode, setIsManagerMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('YAKIT_IS_MANAGER_MODE');
+    return saved !== null ? saved === 'true' : true;
+  });
+
+  const [currentUser, setCurrentUser] = useState<{ username: string; companyName: string; role: string; siteName?: string } | null>(() => {
+    const saved = localStorage.getItem('YAKIT_CURRENT_USER');
+    if (!saved) return null;
+    try {
+      return JSON.parse(saved);
+    } catch {
+      return null;
+    }
+  });
+
+  // Automatically sync Auth & Mode state changes to localStorage
+  useEffect(() => {
+    localStorage.setItem('YAKIT_IS_AUTH', isAuthenticated ? 'true' : 'false');
+  }, [isAuthenticated]);
+
+  useEffect(() => {
+    localStorage.setItem('YAKIT_IS_MANAGER_MODE', isManagerMode ? 'true' : 'false');
+  }, [isManagerMode]);
+
+  useEffect(() => {
+    if (currentUser) {
+      localStorage.setItem('YAKIT_CURRENT_USER', JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem('YAKIT_CURRENT_USER');
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    localStorage.setItem('YAKIT_COMPANY_IDX', currentCompanyIndex.toString());
+  }, [currentCompanyIndex]);
+
+  useEffect(() => {
+    localStorage.setItem('YAKIT_SITE_FILTER', rawSelectedSiteFilter);
+  }, [rawSelectedSiteFilter]);
 
   // Enforce selected site filter lock for Site Operator mode
   const selectedSiteFilter = (!isManagerMode && currentUser?.siteName) ? currentUser.siteName : rawSelectedSiteFilter;
@@ -283,7 +329,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const logoutCompany = () => {
     setIsAuthenticated(false);
+    setIsManagerMode(true);
     setCurrentUser(null);
+    localStorage.removeItem('YAKIT_IS_AUTH');
+    localStorage.removeItem('YAKIT_IS_MANAGER_MODE');
+    localStorage.removeItem('YAKIT_CURRENT_USER');
+    localStorage.removeItem('YAKIT_COMPANY_IDX');
+    localStorage.removeItem('YAKIT_SITE_FILTER');
     showToast('Oturum kapatıldı. Giriş sayfasına dönüldü.', 'info');
   };
 
