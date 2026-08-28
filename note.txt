@@ -2,4 +2,4 @@ Hardware interrupt yapılacak. (Akışmetreden gelen puls (sinyal) kaçırmamak 
 
 yapılan issueler
 [ARCH-101]
-
+[RES-901]
