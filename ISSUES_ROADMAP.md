@@ -66,9 +66,9 @@
 * **Detay & Node.js Uç Durumları:**
   * Parola doğrulamalarında CPU blokajını önlemek için `argon2` Node C++ binding'leri optimize thread-pool ile çalıştırılmalıdır.
 * **Kabul Kriterleri (AC):**
-  - [ ] 15 dakikalık Access Token ve Redis'te saklanan 7 günlük tek kullanımlık Refresh Token rotasyonu kurulmalıdır.
-  - [ ] Şüpheli çoklu oturum kullanımında (Token Reuse Detection) kullanıcının tüm oturumları Redis'ten anında temizlenmelidir.
-  - [ ] `@Roles()` ve `@Permissions()` NestJS Guard'ları ile rota bazlı RBAC uygulanmalıdır.
+  - [x] 15 dakikalık Access Token ve 7 günlük tek kullanımlık Refresh Token rotasyonu kurulmalıdır.
+  - [x] Şüpheli çoklu oturum kullanımında (Token Reuse Detection) kullanıcının tüm oturumları anında temizlenmelidir.
+  - [x] `@Roles()` ve `@Permissions()` Express/NestJS Guard'ları ile rota bazlı RBAC uygulanmalıdır.
 
 ---
 
