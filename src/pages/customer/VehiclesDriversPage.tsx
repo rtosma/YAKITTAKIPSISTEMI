@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { exportToExcelWithTotals } from '../../utils/excelExporter';
 import { Vehicle, Driver } from '../../types';
+import { isValidPlate } from '../../utils/validation';
 
 export const VehiclesDriversPage: React.FC = () => {
   const { vehicles, drivers, selectedSiteFilter, addVehicle, addDriver } = useApp();
@@ -16,6 +17,7 @@ export const VehiclesDriversPage: React.FC = () => {
   const [newBrand, setNewBrand] = useState('');
   const [newType, setNewType] = useState<'Kamyon' | 'Ekskavatör' | 'Dozer' | 'Silindir' | 'Beton Mikseri' | 'Binek Hizmet'>('Kamyon');
   const [newDriver, setNewDriver] = useState('');
+  const [plateError, setPlateError] = useState('');
 
   const filteredVehicles = vehicles
     .filter(v => selectedSiteFilter === 'TÜMÜ' || v.siteName === selectedSiteFilter)
@@ -27,10 +29,15 @@ export const VehiclesDriversPage: React.FC = () => {
 
   const handleCreateVehicle = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPlate.trim()) return;
+    setPlateError('');
+
+    if (!isValidPlate(newPlate)) {
+      setPlateError('Geçersiz Türkiye plaka formatı! (Örn: 34 CTP 82)');
+      return;
+    }
 
     addVehicle({
-      plate: newPlate.toUpperCase(),
+      plate: newPlate.toUpperCase().trim(),
       brandModel: newBrand || 'Volvo FMX 460',
       type: newType,
       rfidTag: `RFID-${Math.floor(100000 + Math.random() * 900000)}`,
@@ -269,11 +276,20 @@ export const VehiclesDriversPage: React.FC = () => {
                 <input
                   type="text"
                   value={newPlate}
-                  onChange={(e) => setNewPlate(e.target.value)}
+                  onChange={(e) => {
+                    setNewPlate(e.target.value);
+                    if (plateError) setPlateError('');
+                  }}
                   placeholder="örn. 34 CTP 99"
-                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] font-mono text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                  className={`w-full bg-[#131313] border ${plateError ? 'border-[#ffb4ab]' : 'border-[#353535]'} text-[#e5e2e1] font-mono text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]`}
                   required
                 />
+                {plateError && (
+                  <p className="text-[11px] font-bold text-[#ffb4ab] mt-1 flex items-center space-x-1">
+                    <span className="material-symbols-outlined text-xs">error</span>
+                    <span>{plateError}</span>
+                  </p>
+                )}
               </div>
 
               <div>

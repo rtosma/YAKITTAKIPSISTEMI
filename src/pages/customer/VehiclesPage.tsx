@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Vehicle } from '../../types';
+import { isValidPlate } from '../../utils/validation';
 
 export const VehiclesPage: React.FC = () => {
   const { vehicles, selectedSiteFilter, addVehicle, updateVehicle, deleteVehicle, currentCompany, drivers, isManagerMode, currentUser } = useApp();
@@ -18,6 +19,7 @@ export const VehiclesPage: React.FC = () => {
   const [assignedDriver, setAssignedDriver] = useState('');
   const [fuelCapacityLiters, setFuelCapacityLiters] = useState(450);
   const [status, setStatus] = useState<'AKTİF' | 'BAKIMDA' | 'PASİF'>('AKTİF');
+  const [plateError, setPlateError] = useState('');
 
   const filteredVehicles = vehicles
     .filter(v => selectedSiteFilter === 'TÜMÜ' || v.siteName === selectedSiteFilter)
@@ -29,6 +31,7 @@ export const VehiclesPage: React.FC = () => {
 
   const handleOpenAdd = () => {
     setPlate('');
+    setPlateError('');
     setBrandModel('');
     setType('Kamyon');
     setSiteName(selectedSiteFilter === 'TÜMÜ' ? currentCompany.sites[0]?.name || 'Gebze Ana Şantiye' : selectedSiteFilter);
@@ -40,7 +43,12 @@ export const VehiclesPage: React.FC = () => {
 
   const handleSaveAdd = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!plate.trim()) return;
+    setPlateError('');
+
+    if (!isValidPlate(plate)) {
+      setPlateError('Geçersiz Türkiye plaka formatı! (Örn: 34 CTP 82 veya 06 A 1234)');
+      return;
+    }
 
     addVehicle({
       plate: plate.toUpperCase().trim(),
@@ -61,6 +69,7 @@ export const VehiclesPage: React.FC = () => {
   const handleOpenEdit = (v: Vehicle) => {
     setEditingVehicle(v);
     setPlate(v.plate);
+    setPlateError('');
     setBrandModel(v.brandModel);
     setType(v.type);
     setSiteName(v.siteName);
@@ -71,7 +80,14 @@ export const VehiclesPage: React.FC = () => {
 
   const handleSaveEdit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingVehicle || !plate.trim()) return;
+    setPlateError('');
+
+    if (!editingVehicle) return;
+
+    if (!isValidPlate(plate)) {
+      setPlateError('Geçersiz Türkiye plaka formatı! (Örn: 34 CTP 82 veya 06 A 1234)');
+      return;
+    }
 
     updateVehicle(editingVehicle.id, {
       plate: plate.toUpperCase().trim(),
@@ -224,11 +240,20 @@ export const VehiclesPage: React.FC = () => {
                 <input
                   type="text"
                   value={plate}
-                  onChange={(e) => setPlate(e.target.value)}
+                  onChange={(e) => {
+                    setPlate(e.target.value);
+                    if (plateError) setPlateError('');
+                  }}
                   placeholder="örn. 34 CTP 99"
-                  className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] font-mono text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
+                  className={`w-full bg-[#0e0e0e] border ${plateError ? 'border-[#ffb4ab]' : 'border-[#514532]/30'} text-[#e5e2e1] font-mono text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]`}
                   required
                 />
+                {plateError && (
+                  <p className="text-[11px] font-bold text-[#ffb4ab] mt-1 flex items-center space-x-1">
+                    <span className="material-symbols-outlined text-xs">error</span>
+                    <span>{plateError}</span>
+                  </p>
+                )}
               </div>
 
               <div>
