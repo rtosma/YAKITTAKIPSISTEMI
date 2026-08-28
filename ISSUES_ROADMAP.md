@@ -28,9 +28,9 @@
 * **Detay & Node.js Uç Durumları:**
   * PgBouncer / Connection Pool kullanıldığında oturum değişkenlerinin (`SET LOCAL app.current_tenant_id = $1`) bir sonraki async event loop iterasyonuna sızmaması için Drizzle/Prisma transaction wrapper içinde çalıştırılması.
 * **Kabul Kriterleri (AC):**
-  - [ ] NestJS / Express Middleware seviyesinde `TenantContextService.run({ tenantId, userId }, next)` kurulmalıdır.
-  - [ ] PostgreSQL RLS politikaları `current_setting('app.current_tenant_id', true)` üzerinden çalıştırılmalıdır.
-  - [ ] Eşzamanlı 50 farklı kiracı isteğinde RLS veri izolasyonu %100 doğrulanmalıdır.
+  - [x] NestJS / Express Middleware seviyesinde `TenantContextService.run({ tenantId, userId }, next)` kurulmalıdır.
+  - [x] PostgreSQL RLS politikaları `current_setting('app.current_tenant_id', true)` üzerinden çalıştırılmalıdır.
+  - [x] Eşzamanlı 50 farklı kiracı isteğinde RLS veri izolasyonu %100 doğrulanmalıdır.
 
 ---
 
