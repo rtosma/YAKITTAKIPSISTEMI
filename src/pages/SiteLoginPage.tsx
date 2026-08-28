@@ -1,11 +1,15 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Navigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useApp } from '../context/AppContext';
 
 export const SiteLoginPage: React.FC = () => {
   const navigate = useNavigate();
-  const { loginSiteOperator } = useApp();
+  const { loginSiteOperator, isAuthenticated } = useApp();
+
+  if (isAuthenticated) {
+    return <Navigate to="/panel" replace />;
+  }
 
   const [username, setUsername] = useState<string>('gebze-santiye');
   const [password, setPassword] = useState<string>('123456');
