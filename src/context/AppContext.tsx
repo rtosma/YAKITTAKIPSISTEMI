@@ -280,13 +280,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       showToast(`PostgreSQL Giriş Başarılı: ${targetComp.name} Yönetici paneline yönlendiriliyorsunuz`, 'success');
       return { success: true };
     } catch (err: any) {
-      // Fallback for offline / network issue
-      console.warn('Backend API erişilemedi, mock fallback kullanılıyor:', err);
-      const targetComp = companies.find(c => c.username?.toLowerCase() === trimmedUsername) || companies[0];
-      setIsAuthenticated(true);
-      setIsManagerMode(true);
-      setCurrentUser({ username: trimmedUsername, companyName: targetComp.name, role: 'Firma Yöneticisi' });
-      return { success: true };
+      console.error('Backend API Hatası:', err);
+      return { success: false, error: 'Sunucuya bağlanılamadı veya şifre doğrulaması başarısız oldu.' };
     }
   };
 
@@ -303,8 +298,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const response = await fetch('http://localhost:5000/api/v1/auth/login', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'X-Tenant-ID': 'comp-camsa'
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ username: trimmedUsername, password: trimmedPassword })
       });
@@ -350,11 +344,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       showToast(`PostgreSQL Şantiye Girişi Başarılı: ${activeSiteName} modunda panele yönlendiriliyorsunuz`, 'success');
       return { success: true };
     } catch (err: any) {
-      console.warn('Backend API erişilemedi, fallback kullanılıyor:', err);
-      setIsAuthenticated(true);
-      setIsManagerMode(false);
-      setCurrentUser({ username: trimmedUsername, companyName: companies[0].name, siteName: 'Gebze Ana Şantiye', role: 'Şantiye Saha Operatörü' });
-      return { success: true };
+      console.error('Backend API Hatası:', err);
+      return { success: false, error: 'Sunucuya bağlanılamadı veya şifre doğrulaması başarısız oldu.' };
     }
   };
 
