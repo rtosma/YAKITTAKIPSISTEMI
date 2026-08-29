@@ -287,8 +287,8 @@
 * **Teknik Yığın:** `pino` / `pino-http` + NestJS Global Exception Filter
 * **Açıklama:** Sunucu hatalarında (stack trace) güvenlik bilgilerinin istemciye sızmasını önleme, JSON formatında `trace_id` ile yapısal log üretme.
 * **Kabul Kriterleri (AC):**
-  - [ ] Beklenmeyen hatalarda istemciye yalnızca `{ success: false, traceId: "uuid", message: "Sunucu hatası" }` dönmelidir.
-  - [ ] Tüm loglar JSON formatında stdout'a basılmalıdır.
+  - [x] Beklenmeyen hatalarda istemciye yalnızca `{ success: false, traceId: "uuid", message: "Sunucu hatası" }` dönmelidir.
+  - [x] Tüm loglar JSON formatında stdout'a basılmalıdır.
 
 ---
 
@@ -323,8 +323,8 @@
 * **Teknik Yığın:** Docker Multi-stage (`node:20-alpine`) + `tini` / dumb-init
 * **Açıklama:** Minimum imaj boyutu (<150MB), non-root user (`node`) ve doğru sinyal yönetimi (SIGTERM/SIGINT) ile container hazırlığı.
 * **Kabul Kriterleri (AC):**
-  - [ ] `NODE_ENV=production` ile devDependencies imajdan temizlenmelidir.
-  - [ ] Container kapatılırken (Graceful Shutdown) aktif ikmal bağlantılarına 30 saniye tamamlanma süresi tanınmalıdır.
+  - [x] `NODE_ENV=production` ile devDependencies imajdan temizlenmelidir.
+  - [x] Container kapatılırken (Graceful Shutdown) aktif ikmal bağlantılarına 30 saniye tamamlanma süresi tanınmalıdır.
 
 ---
 

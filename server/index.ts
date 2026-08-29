@@ -2,14 +2,39 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { TenantContextService } from './middleware/tenantMiddleware';
+import { traceMiddleware, httpLoggerMiddleware } from './middleware/loggerMiddleware';
+import { globalErrorHandler, notFoundHandler, registerProcessExceptionHandlers } from './middleware/errorHandler';
+import { setupGracefulShutdown, isServerShuttingDown } from './utils/shutdown';
+import { logger } from './utils/logger';
+import { pool } from './db/postgresPool';
 import routes from './routes/routes';
 
 dotenv.config();
+
+// Register process-level uncaughtException and unhandledRejection handlers
+registerProcessExceptionHandlers();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 app.use(cors());
+
+// Graceful Shutdown Check Middleware (returns 503 Service Unavailable if shutting down)
+app.use((req, res, next) => {
+  if (isServerShuttingDown()) {
+    res.setHeader('Connection', 'close');
+    return res.status(503).json({
+      success: false,
+      error: 'SERVICE_UNAVAILABLE',
+      message: 'Sunucu kapanma modunda, yeni istek kabul edilmiyor.',
+    });
+  }
+  next();
+});
+
+// Trace ID & Structured Pino Request Logger
+app.use(traceMiddleware);
+app.use(httpLoggerMiddleware);
 
 // Configure express.json to preserve rawBody Buffer for HMAC-SHA256 hardware signature verification
 app.use(express.json({
@@ -30,10 +55,27 @@ app.use('/api/v1', (req, res, next) => {
 // Mount Routes
 app.use('/api/v1', routes);
 
-app.listen(PORT, () => {
-  console.log(`===========================================================`);
-  console.log(`🚀 [ARCH-101] Yakıttakip Backend Sunucusu Başlatıldı!`);
-  console.log(`🌐 Dinlenen Port: http://localhost:${PORT}`);
-  console.log(`🔒 Multi-Tenancy: AsyncLocalStorage & RLS Aktif`);
-  console.log(`===========================================================`);
+// 404 Handler for Unmatched API Endpoints
+app.use('/api/v1', notFoundHandler);
+
+// Global Exception Filter & Error Handler (Must be attached last)
+app.use(globalErrorHandler);
+
+const server = app.listen(PORT, () => {
+  logger.info({
+    port: PORT,
+    environment: process.env.NODE_ENV || 'development',
+    features: ['AsyncLocalStorage RLS', 'HMAC Auth', 'Pino Logger', 'Global Exception Filter', 'Graceful Shutdown'],
+  }, `🚀 [OPS-1101] Yakıttakip Backend Sunucusu Başlatıldı!`);
 });
+
+// Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
+setupGracefulShutdown(server, {
+  timeoutMs: 30000,
+  onShutdown: async () => {
+    logger.info(`🔌 [Shutdown] Veritabanı bağlantı havuzu kapatılıyor...`);
+    await pool.end();
+  },
+});
+
+export default app;

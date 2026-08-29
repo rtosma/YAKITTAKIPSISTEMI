@@ -4,3 +4,6 @@ yapılan issueler
 [ARCH-101]
 [RES-901]
 [AUTH-201]
+[AUTH-202]
+[RES-902]
+[OPS-1101]
