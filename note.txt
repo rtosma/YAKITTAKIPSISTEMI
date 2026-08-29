@@ -7,3 +7,4 @@ yapılan issueler
 [AUTH-202]
 [RES-902]
 [OPS-1101]
+[OPS-1102]

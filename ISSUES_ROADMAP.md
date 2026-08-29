@@ -333,8 +333,8 @@
 * **Teknik Yığın:** GitHub Actions + Trivy Vulnerability Scanner + GCP Cloud Run / K8s
 * **Açıklama:** Her pull request için lint, type-check, test ve güvenlik taramasının otomatik çalışması.
 * **Kabul Kriterleri (AC):**
-  - [ ] Güvenlik açığı (CVE Critical/High) tespit edilen paketler build'i kırmalıdır.
-  - [ ] Production dağıtımları sıfır kesinti (Zero-Downtime Rolling Update) ile yapılmalıdır.
+  - [x] Güvenlik açığı (CVE Critical/High) tespit edilen paketler build'i kırmalıdır.
+  - [x] Production dağıtımları sıfır kesinti (Zero-Downtime Rolling Update) ile yapılmalıdır.
 
 ---
 

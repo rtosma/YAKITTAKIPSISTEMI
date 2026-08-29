@@ -1,0 +1,88 @@
+name: Yakıttakip Enterprise CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  quality-and-tests:
+    name: 🧪 Quality Check & Integration Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Type Check (TypeScript)
+        run: npm run lint
+
+      - name: Run RES-902 Exception Filter & Logging Tests
+        run: npx tsx server/test_res902.ts
+
+      - name: Run OPS-1101 Graceful Shutdown Tests
+        run: npx tsx server/test_ops1101.ts
+
+  build-bundle:
+    name: 📦 Build Server Standalone Bundle
+    needs: quality-and-tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Server Bundle
+        run: npm run build:server
+
+      - name: Verify Bundle Output
+        run: test -f dist/server.js && echo "dist/server.js built successfully"
+
+  docker-security-scan:
+    name: 🔒 Docker Multi-Stage Build & Trivy Security Scan
+    needs: quality-and-tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Local Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: yakittakip-backend:ci-${{ github.sha }}
+
+      - name: Run Trivy Vulnerability Scanner (Critical & High CVEs)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'yakittakip-backend:ci-${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
