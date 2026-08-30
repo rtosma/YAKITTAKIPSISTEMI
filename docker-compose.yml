@@ -1,0 +1,87 @@
+# ==============================================================================
+# Docker Compose — Yakıt Takip Sistemi
+# Servisler: PostgreSQL, Backend (Node.js), Frontend (Nginx)
+# ==============================================================================
+
+services:
+  # --------------------------------------------------------------------------
+  # PostgreSQL 16 Database
+  # --------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: yakittakip_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-yakittakip_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Auto-initialize schema on first startup
+      - ./backend/src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-yakittakip_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - yakit_network
+
+  # --------------------------------------------------------------------------
+  # Backend — Node.js Express API Server
+  # --------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: yakittakip_backend
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-yakittakip_db}
+      JWT_SECRET: ${JWT_SECRET:-yakittakip_jwt_access_secret_key_2026_super_secure}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-yakittakip_jwt_refresh_secret_key_2026_super_secure}
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - yakit_network
+
+  # --------------------------------------------------------------------------
+  # Frontend — Vite React App served via Nginx
+  # --------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api/v1
+    container_name: yakittakip_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - yakit_network
+
+# ==============================================================================
+# Docker Volumes & Networks
+# ==============================================================================
+volumes:
+  pgdata:
+    driver: local
+
+networks:
+  yakit_network:
+    driver: bridge

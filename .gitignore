@@ -1,9 +1,33 @@
+# Dependencies
 node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Build outputs
 build/
 dist/
+backend/dist/
+frontend/dist/
+
+# Coverage
 coverage/
+
+# OS files
 .DS_Store
+
+# Logs
 *.log
+
+# Environment files (except examples)
 .env*
 !.env.example
+backend/.env*
+!backend/.env.example
+frontend/.env*
+!frontend/.env.example
+
+# npm cache
 .npm-cache/
+
+# Docker volumes (if local)
+pgdata/
