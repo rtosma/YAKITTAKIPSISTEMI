@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import { TenantContextService } from './middleware/tenantMiddleware';
+
 import { traceMiddleware, httpLoggerMiddleware } from './middleware/loggerMiddleware';
 import { globalErrorHandler, notFoundHandler, registerProcessExceptionHandlers } from './middleware/errorHandler';
 import { setupGracefulShutdown, isServerShuttingDown } from './utils/shutdown';
@@ -45,14 +45,8 @@ app.use(express.json({
   }
 }));
 
-// Apply Tenant Context Middleware across API routes
-// Unprotected health, auth, and telemetry routes pass without requiring X-Tenant-ID header
-app.use('/api/v1', (req, res, next) => {
-  if (req.path === '/health' || req.path.startsWith('/auth/') || req.path.startsWith('/telemetry/')) {
-    return TenantContextService.middleware({ requireTenant: false })(req, res, next);
-  }
-  return TenantContextService.middleware({ requireTenant: true })(req, res, next);
-});
+// Global middleware to parse JSON bodies
+// Apply Tenant Context is now handled by authenticateJWT middleware per-route.
 
 import swaggerUi from 'swagger-ui-express';
 import swaggerJsdoc from 'swagger-jsdoc';

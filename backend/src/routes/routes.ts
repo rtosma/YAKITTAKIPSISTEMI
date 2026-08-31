@@ -1,17 +1,17 @@
 import { Router, Request, Response } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank } from '../db/tenantDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema } from '../schemas/vehicleSchema';
 import { dispenseRequestSchema } from '../schemas/transactionSchema';
 import { loginSchema } from '../schemas/authSchema';
 import { verifyPassword } from '../utils/password';
 import { pool } from '../db/postgresPool';
-import { 
-  generateAccessToken, 
-  generateRefreshToken, 
-  rotateRefreshToken, 
-  revokeRefreshToken, 
+import {
+  generateAccessToken,
+  generateRefreshToken,
+  rotateRefreshToken,
+  revokeRefreshToken,
   JwtUserPayload,
   UserRole
 } from '../services/tokenService';
@@ -485,6 +485,172 @@ router.delete(
       res.json({
         success: true,
         message: 'Şoför kaydı başarıyla silindi.'
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: 'DB_ERROR',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /tanks:
+ *   get:
+ *     summary: Tank Listesi
+ *     description: RLS kurallarına göre oturum açmış firmanın tanklarını getirir.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Tank listesi başarıyla getirildi.
+ */
+router.get('/tanks', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const tanks = await getTenantTanks();
+    const store = getTenantStore();
+
+    res.json({
+      success: true,
+      tenantId: store?.tenantId || req.user?.tenantId,
+      totalCount: tanks.length,
+      data: tanks
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: 'DB_ERROR',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /tanks:
+ *   post:
+ *     summary: Yeni Tank Ekle
+ *     description: Yeni tank ekler.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Tank başarıyla eklendi.
+ */
+router.post(
+  '/tanks',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { name, capacityLiters, currentLevelLiters, fuelType, status } = req.body;
+      const tankData = {
+        name,
+        capacity_liters: capacityLiters,
+        current_level_liters: currentLevelLiters,
+        fuel_type: fuelType || 'Motorin',
+        status: status || 'GÜVENLİ'
+      };
+
+      const newTank = await createTank(tankData);
+
+      res.json({
+        success: true,
+        message: 'Tank başarıyla kaydedildi.',
+        data: newTank
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: 'DB_ERROR',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /tanks/{id}:
+ *   put:
+ *     summary: Tank Güncelle
+ *     description: Var olan bir tankın bilgilerini günceller.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Tank başarıyla güncellendi.
+ */
+router.put(
+  '/tanks/:id',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const id = req.params.id;
+      const { name, capacityLiters, currentLevelLiters, fuelType, status } = req.body;
+      const updateData = {
+        ...(name && { name }),
+        ...(capacityLiters !== undefined && { capacity_liters: capacityLiters }),
+        ...(currentLevelLiters !== undefined && { current_level_liters: currentLevelLiters }),
+        ...(fuelType && { fuel_type: fuelType }),
+        ...(status && { status })
+      };
+
+      const updatedTank = await updateTank(id, updateData);
+
+      res.json({
+        success: true,
+        message: 'Tank başarıyla güncellendi.',
+        data: updatedTank
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: 'DB_ERROR',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /tanks/{id}:
+ *   delete:
+ *     summary: Tank Sil
+ *     description: Var olan bir tankı siler.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Tank başarıyla silindi.
+ */
+router.delete(
+  '/tanks/:id',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      await deleteTank(req.params.id);
+      res.json({
+        success: true,
+        message: 'Tank kaydı başarıyla silindi.'
       });
     } catch (error: any) {
       res.status(500).json({

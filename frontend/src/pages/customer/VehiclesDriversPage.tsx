@@ -25,6 +25,7 @@ export const VehiclesDriversPage: React.FC = () => {
   const [newDriverTc, setNewDriverTc] = useState('');
   const [newDriverPhone, setNewDriverPhone] = useState('');
   const [newDriverLicense, setNewDriverLicense] = useState('E Sınıfı');
+  const [driverError, setDriverError] = useState('');
 
   const filteredVehicles = vehicles
     .filter(v => selectedSiteFilter === 'TÜMÜ' || v.siteName === selectedSiteFilter)
@@ -64,11 +65,28 @@ export const VehiclesDriversPage: React.FC = () => {
 
   const handleCreateDriver = (e: React.FormEvent) => {
     e.preventDefault();
+    setDriverError('');
+
+    if (newDriverName.trim().length < 3) {
+      setDriverError('Ad soyad en az 3 karakter olmalıdır.');
+      return;
+    }
+
+    if (!/^\d{11}$/.test(newDriverTc.trim())) {
+      setDriverError('TC Kimlik No sadece rakamlardan oluşmalı ve tam 11 haneli olmalıdır.');
+      return;
+    }
+
+    const cleanPhone = newDriverPhone.replace(/\D/g, '');
+    if (cleanPhone.length < 10) {
+      setDriverError('Lütfen geçerli bir telefon numarası giriniz (En az 10 hane).');
+      return;
+    }
     
     addDriver({
-      name: newDriverName,
-      tcNo: newDriverTc || '11111111111',
-      phone: newDriverPhone || '555-000-0000',
+      name: newDriverName.trim(),
+      tcNo: newDriverTc.trim(),
+      phone: newDriverPhone.trim(),
       licenseType: newDriverLicense,
       rfidCardId: `CRD-${Math.floor(100000 + Math.random() * 900000)}`,
       status: 'AKTİF',
@@ -391,6 +409,13 @@ export const VehiclesDriversPage: React.FC = () => {
                 <span className="material-symbols-outlined">close</span>
               </button>
             </div>
+
+            {driverError && (
+              <div className="bg-[#ffb4ab]/10 border border-[#ffb4ab]/30 text-[#ffb4ab] px-3 py-2 rounded-lg text-xs font-bold flex items-center space-x-2">
+                <span className="material-symbols-outlined text-sm">error</span>
+                <span>{driverError}</span>
+              </div>
+            )}
 
             <form onSubmit={handleCreateDriver} className="space-y-4">
               <div>

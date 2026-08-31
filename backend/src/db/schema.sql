@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS vehicles (
     brand_model VARCHAR(128) NOT NULL,
     vehicle_type VARCHAR(64) NOT NULL,
     rfid_tag VARCHAR(64) NOT NULL,
+    site_name VARCHAR(128) DEFAULT 'Gebze Ana Şantiye',
     status VARCHAR(32) DEFAULT 'AKTİF',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS tanks (
     capacity_liters NUMERIC(10, 2) NOT NULL,
     current_level_liters NUMERIC(10, 2) NOT NULL,
     fuel_type VARCHAR(64) DEFAULT 'Motorin',
+    site_name VARCHAR(128) DEFAULT 'Gebze Ana Şantiye',
     status VARCHAR(32) DEFAULT 'GÜVENLİ',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -43,6 +45,7 @@ CREATE TABLE IF NOT EXISTS drivers (
     phone VARCHAR(32),
     license_type VARCHAR(32),
     rfid_card_id VARCHAR(64) NOT NULL,
+    site_name VARCHAR(128) DEFAULT 'Gebze Ana Şantiye',
     status VARCHAR(32) DEFAULT 'AKTİF',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -82,6 +85,23 @@ ALTER TABLE vehicles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tanks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE drivers ENABLE ROW LEVEL SECURITY;
+
+-- Create app_user role for RLS enforcement (since superusers bypass RLS)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'app_user') THEN
+    CREATE ROLE app_user WITH NOLOGIN;
+  END IF;
+END
+$$;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO app_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO app_user;
+
+-- Force RLS even for table owners
+ALTER TABLE vehicles FORCE ROW LEVEL SECURITY;
+ALTER TABLE tanks FORCE ROW LEVEL SECURITY;
+ALTER TABLE users FORCE ROW LEVEL SECURITY;
+ALTER TABLE drivers FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
