@@ -79,8 +79,8 @@
 * **Detay & Node.js Uç Durumları:**
   * Express/NestJS `body-parser` JSON'a çevirmeden önceki **RAW Buffer** saklanmalı ve imza doğrulaması saf buffer üzerinden yapılmalıdır.
 * **Kabul Kriterleri (AC):**
-  - [ ] 30 saniyeden eski `timestamp` içeren paketler (Replay Attack) `401 Unauthorized` ile reddedilmelidir.
-  - [ ] Zamanlama saldırılarını (Timing Attacks) önlemek için `crypto.timingSafeEqual` kullanılmalıdır.
+  - [x] 30 saniyeden eski `timestamp` içeren paketler (Replay Attack) `401 Unauthorized` ile reddedilmelidir.
+  - [x] Zamanlama saldırılarını (Timing Attacks) önlemek için `crypto.timingSafeEqual` kullanılmalıdır.
 
 ---
 
