@@ -1,6 +1,6 @@
 # ==============================================================================
 # Docker Compose — Yakıt Takip Sistemi
-# Servisler: PostgreSQL, Backend (Node.js), Frontend (Nginx)
+# Servisler: PostgreSQL, Redis, EMQX (MQTT), Backend (Node.js), Frontend (Nginx)
 # ==============================================================================
 
 services:
@@ -31,6 +31,48 @@ services:
       - yakit_network
 
   # --------------------------------------------------------------------------
+  # Redis - Cache & State Management (for LWT & IoT Device States)
+  # --------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: yakittakip_redis
+    restart: unless-stopped
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - yakit_network
+
+  # --------------------------------------------------------------------------
+  # EMQX - High Performance MQTT v5 Broker
+  # --------------------------------------------------------------------------
+  emqx:
+    image: emqx:5.8.0
+    container_name: yakittakip_emqx
+    restart: unless-stopped
+    ports:
+      - "1883:1883"     # MQTT/TCP
+      - "8083:8083"     # MQTT/WebSocket
+      - "18083:18083"   # Dashboard
+    environment:
+      EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USER:-admin}
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASS:-public}
+      EMQX_ALLOW_ANONYMOUS: "true" # For dev environments, allow anonymous MQTT clients
+    healthcheck:
+      test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - emqxdata:/opt/emqx/data
+    networks:
+      - yakit_network
+
+  # --------------------------------------------------------------------------
   # Backend — Node.js Express API Server
   # --------------------------------------------------------------------------
   backend:
@@ -49,10 +91,17 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-yakittakip_db}
       JWT_SECRET: ${JWT_SECRET:-yakittakip_jwt_access_secret_key_2026_super_secure}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-yakittakip_jwt_refresh_secret_key_2026_super_secure}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      MQTT_URL: mqtt://emqx:1883
     ports:
       - "5000:5000"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      emqx:
         condition: service_healthy
     networks:
       - yakit_network
@@ -80,6 +129,10 @@ services:
 # ==============================================================================
 volumes:
   pgdata:
+    driver: local
+  redisdata:
+    driver: local
+  emqxdata:
     driver: local
 
 networks:

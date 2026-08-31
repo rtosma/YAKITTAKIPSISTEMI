@@ -103,8 +103,8 @@
 * **Teknik Yığın:** `mqtt` (MQTT.js) + EMQX Broker + Node.js Worker Threads
 * **Açıklama:** Sahadaki yüzlerce pompadan gelen verilerin `telemetry/v1/{tenantId}/{siteId}/{deviceType}/{deviceId}/data` topic'lerinden dinlenip parse edilmesi.
 * **Kabul Kriterleri (AC):**
-  - [ ] MQTT QoS 1 seviyesinde bağlantı kurulmalı ve otomatik reconnect mekanizması uygulanmalıdır.
-  - [ ] Cihazların koptuğunu anında anlamak için `LWT (Last Will and Testament)` mesajları yakalanıp Redis'e cihaz çevrimdışı (`OFFLINE`) yazılmalıdır.
+  - [x] MQTT QoS 1 seviyesinde bağlantı kurulmalı ve otomatik reconnect mekanizması uygulanmalıdır.
+  - [x] Cihazların koptuğunu anında anlamak için `LWT (Last Will and Testament)` mesajları yakalanıp Redis'e cihaz çevrimdışı (`OFFLINE`) yazılmalıdır.
 
 ---
 

@@ -7,6 +7,8 @@ import { globalErrorHandler, notFoundHandler, registerProcessExceptionHandlers }
 import { setupGracefulShutdown, isServerShuttingDown } from './utils/shutdown';
 import { logger } from './utils/logger';
 import { pool } from './db/postgresPool';
+import { redisPool } from './db/redisPool';
+import { mqttService } from './iot/mqttClient';
 import routes from './routes/routes';
 
 dotenv.config();
@@ -65,14 +67,27 @@ const server = app.listen(PORT, () => {
   logger.info({
     port: PORT,
     environment: process.env.NODE_ENV || 'development',
-    features: ['AsyncLocalStorage RLS', 'HMAC Auth', 'Pino Logger', 'Global Exception Filter', 'Graceful Shutdown'],
+    features: ['AsyncLocalStorage RLS', 'HMAC Auth', 'Pino Logger', 'Global Exception Filter', 'Graceful Shutdown', 'MQTT & LWT'],
   }, `🚀 [OPS-1101] Yakıttakip Backend Sunucusu Başlatıldı!`);
+
+  // Start MQTT Listener
+  if (process.env.MQTT_URL !== '__CI_SKIP__') {
+    mqttService.connect();
+  }
 });
 
 // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
 setupGracefulShutdown(server, {
   timeoutMs: 30000,
   onShutdown: async () => {
+    logger.info(`🔌 [Shutdown] Eknak kaynak temizliği çalıştırılıyor...`);
+    
+    // MQTT disconnect
+    await mqttService.disconnect();
+    
+    // Redis disconnect
+    await redisPool.close();
+    
     logger.info(`🔌 [Shutdown] Veritabanı bağlantı havuzu kapatılıyor...`);
     await pool.end();
   },
