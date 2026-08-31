@@ -27,6 +27,9 @@ jobs:
           cd backend && npm ci
           cd ../frontend && npm ci
 
+      - name: Build Backend Bundle
+        run: cd backend && npm run build
+
       - name: Type Check (TypeScript)
         run: npm run lint
 
@@ -35,6 +38,8 @@ jobs:
 
       - name: Run OPS-1101 Graceful Shutdown Tests
         run: cd backend && npx tsx test/test_ops1101.ts
+        env:
+          POSTGRES_HOST: __CI_SKIP__
 
   build-bundle:
     name: 📦 Build Standalone Bundles
