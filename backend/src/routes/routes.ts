@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver } from '../db/tenantDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema } from '../schemas/vehicleSchema';
 import { dispenseRequestSchema } from '../schemas/transactionSchema';
@@ -21,8 +21,14 @@ import { hardwareAuthMiddleware } from '../middleware/hardwareAuthMiddleware';
 const router = Router();
 
 /**
- * GET /api/v1/health
- * Public health check
+ * @swagger
+ * /health:
+ *   get:
+ *     summary: API Sağlık Durumu Kontrolü
+ *     description: Sistemin ayakta olup olmadığını kontrol eder.
+ *     responses:
+ *       200:
+ *         description: Başarılı, sistem ayakta.
  */
 router.get('/health', (_req: Request, res: Response) => {
   res.json({
@@ -192,8 +198,16 @@ router.get('/auth/me', authenticateJWT, (req: AuthenticatedRequest, res: Respons
 });
 
 /**
- * GET /api/v1/vehicles
- * Protected endpoint returning vehicles filtered by RLS
+ * @swagger
+ * /vehicles:
+ *   get:
+ *     summary: Araç Listesi
+ *     description: RLS kurallarına göre oturum açmış firmanın araçlarını getirir.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Araç listesi başarıyla getirildi.
  */
 router.get('/vehicles', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -225,16 +239,260 @@ router.post(
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
   validateRequest({ body: createVehicleSchema }),
   async (req: AuthenticatedRequest, res: Response) => {
-    const sanitizedBody = req.body;
+    try {
+      const sanitizedBody = req.body;
+      const vehicleData = {
+        plate: sanitizedBody.plate,
+        brand_model: sanitizedBody.brandModel,
+        vehicle_type: sanitizedBody.type,
+        rfid_tag: sanitizedBody.rfidTag,
+        status: sanitizedBody.status || 'AKTİF'
+      };
+
+      const newVehicle = await createVehicle(vehicleData);
+
+      res.json({
+        success: true,
+        message: 'Araç başarıyla doğrulandı ve kaydedildi.',
+        data: newVehicle
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: 'DB_ERROR',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * PUT /api/v1/vehicles/:id
+ * Protected endpoint requiring COMPANY_OWNER or SITE_MANAGER role
+ */
+router.put(
+  '/vehicles/:id',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const id = req.params.id;
+      const { plate, brandModel, type, rfidTag, status } = req.body;
+      const updateData = {
+        ...(plate && { plate }),
+        ...(brandModel && { brand_model: brandModel }),
+        ...(type && { vehicle_type: type }),
+        ...(rfidTag && { rfid_tag: rfidTag }),
+        ...(status && { status })
+      };
+
+      const updatedVehicle = await updateVehicle(id, updateData);
+
+      res.json({
+        success: true,
+        message: 'Araç başarıyla güncellendi.',
+        data: updatedVehicle
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: 'DB_ERROR',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * DELETE /api/v1/vehicles/:id
+ * Protected endpoint requiring COMPANY_OWNER or SITE_MANAGER role
+ */
+router.delete(
+  '/vehicles/:id',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      await deleteVehicle(req.params.id);
+      res.json({
+        success: true,
+        message: 'Araç kaydı başarıyla silindi.'
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: 'DB_ERROR',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /drivers:
+ *   get:
+ *     summary: Şoför Listesi
+ *     description: RLS kurallarına göre oturum açmış firmanın şoförlerini getirir.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Şoför listesi başarıyla getirildi.
+ */
+router.get('/drivers', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const drivers = await getTenantDrivers();
     const store = getTenantStore();
 
     res.json({
       success: true,
-      message: 'Araç başarıyla doğrulandı ve kaydedildi.',
       tenantId: store?.tenantId || req.user?.tenantId,
-      createdBy: req.user?.username,
-      sanitizedData: sanitizedBody
+      totalCount: drivers.length,
+      data: drivers
     });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: 'DB_ERROR',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /drivers:
+ *   post:
+ *     summary: Yeni Şoför Ekle
+ *     description: Yeni şoför ekler.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Şoför başarıyla eklendi.
+ */
+router.post(
+  '/drivers',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { name, tcNo, phone, licenseType, rfidCardId, status } = req.body;
+      const driverData = {
+        name,
+        tc_no: tcNo,
+        phone,
+        license_type: licenseType,
+        rfid_card_id: rfidCardId,
+        status: status || 'AKTİF'
+      };
+
+      const newDriver = await createDriver(driverData);
+
+      res.json({
+        success: true,
+        message: 'Şoför başarıyla kaydedildi.',
+        data: newDriver
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: 'DB_ERROR',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /drivers/{id}:
+ *   put:
+ *     summary: Şoför Güncelle
+ *     description: Var olan bir şoförün bilgilerini günceller.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Şoför başarıyla güncellendi.
+ */
+router.put(
+  '/drivers/:id',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const id = req.params.id;
+      const { name, tcNo, phone, licenseType, rfidCardId, status } = req.body;
+      const updateData = {
+        ...(name && { name }),
+        ...(tcNo && { tc_no: tcNo }),
+        ...(phone && { phone }),
+        ...(licenseType && { license_type: licenseType }),
+        ...(rfidCardId && { rfid_card_id: rfidCardId }),
+        ...(status && { status })
+      };
+
+      const updatedDriver = await updateDriver(id, updateData);
+
+      res.json({
+        success: true,
+        message: 'Şoför başarıyla güncellendi.',
+        data: updatedDriver
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: 'DB_ERROR',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /drivers/{id}:
+ *   delete:
+ *     summary: Şoför Sil
+ *     description: Var olan bir şoförü siler.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Şoför başarıyla silindi.
+ */
+router.delete(
+  '/drivers/:id',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      await deleteDriver(req.params.id);
+      res.json({
+        success: true,
+        message: 'Şoför kaydı başarıyla silindi.'
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: 'DB_ERROR',
+        message: error.message
+      });
+    }
   }
 );
 

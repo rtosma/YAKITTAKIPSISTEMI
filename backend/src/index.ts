@@ -54,6 +54,41 @@ app.use('/api/v1', (req, res, next) => {
   return TenantContextService.middleware({ requireTenant: true })(req, res, next);
 });
 
+import swaggerUi from 'swagger-ui-express';
+import swaggerJsdoc from 'swagger-jsdoc';
+
+// Configure Swagger
+const swaggerOptions = {
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'Yakıttakip Sistemi API',
+      version: '1.0.0',
+      description: 'Saha ikmal ve araç yakıt takip sistemi API dokümantasyonu',
+    },
+    servers: [
+      {
+        url: 'http://localhost:5000',
+        description: 'Development Server',
+      },
+    ],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+        },
+      },
+    },
+    security: [{ bearerAuth: [] }],
+  },
+  apis: ['./src/routes/*.ts'], // read JSDoc from routes
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
 // Mount Routes
 app.use('/api/v1', routes);
 

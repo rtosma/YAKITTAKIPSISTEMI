@@ -34,6 +34,19 @@ CREATE TABLE IF NOT EXISTS tanks (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 3. Drivers Table
+CREATE TABLE IF NOT EXISTS drivers (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    name VARCHAR(128) NOT NULL,
+    tc_no VARCHAR(11) NOT NULL,
+    phone VARCHAR(32),
+    license_type VARCHAR(32),
+    rfid_card_id VARCHAR(64) NOT NULL,
+    status VARCHAR(32) DEFAULT 'AKTİF',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ==============================================================================
 -- [AUTH-201] Users Table & Refresh Tokens Rotation Store
 -- ==============================================================================
@@ -68,6 +81,7 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
 ALTER TABLE vehicles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tanks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE drivers ENABLE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -88,6 +102,12 @@ CREATE POLICY tanks_tenant_isolation_policy ON tanks
 
 -- Create Tenant Isolation Policy for users
 CREATE POLICY users_tenant_isolation_policy ON users
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- Create Tenant Isolation Policy for drivers
+CREATE POLICY drivers_tenant_isolation_policy ON drivers
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

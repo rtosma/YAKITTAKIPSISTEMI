@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node dist/server.cjs",
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --external:argon2 --external:pg-native --outfile=dist/server.cjs",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --external:argon2 --external:pg-native --external:swagger-ui-express --external:swagger-jsdoc --outfile=dist/server.cjs",
     "seed": "tsx src/db/seed.ts",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist"
@@ -22,6 +22,8 @@
     "pg": "^8.23.0",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
+    "swagger-jsdoc": "^6.3.0",
+    "swagger-ui-express": "^5.0.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -32,6 +34,8 @@
     "@types/node": "^22.14.0",
     "@types/pg": "^8.23.1",
     "@types/pino-http": "^5.8.4",
+    "@types/swagger-jsdoc": "^6.0.4",
+    "@types/swagger-ui-express": "^4.1.8",
     "esbuild": "^0.25.0",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2"

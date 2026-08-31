@@ -19,6 +19,13 @@ export const VehiclesDriversPage: React.FC = () => {
   const [newDriver, setNewDriver] = useState('');
   const [plateError, setPlateError] = useState('');
 
+  // Driver Modal State
+  const [isAddDriverOpen, setIsAddDriverOpen] = useState(false);
+  const [newDriverName, setNewDriverName] = useState('');
+  const [newDriverTc, setNewDriverTc] = useState('');
+  const [newDriverPhone, setNewDriverPhone] = useState('');
+  const [newDriverLicense, setNewDriverLicense] = useState('E Sınıfı');
+
   const filteredVehicles = vehicles
     .filter(v => selectedSiteFilter === 'TÜMÜ' || v.siteName === selectedSiteFilter)
     .filter(v => v.plate.toLowerCase().includes(searchTerm.toLowerCase()) || v.assignedDriver.toLowerCase().includes(searchTerm.toLowerCase()));
@@ -53,6 +60,27 @@ export const VehiclesDriversPage: React.FC = () => {
     setNewPlate('');
     setNewBrand('');
     setIsAddVehOpen(false);
+  };
+
+  const handleCreateDriver = (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    addDriver({
+      name: newDriverName,
+      tcNo: newDriverTc || '11111111111',
+      phone: newDriverPhone || '555-000-0000',
+      licenseType: newDriverLicense,
+      rfidCardId: `CRD-${Math.floor(100000 + Math.random() * 900000)}`,
+      status: 'AKTİF',
+      assignedVehiclePlate: 'Atanmadı',
+      siteName: selectedSiteFilter === 'TÜMÜ' ? 'Gebze Ana Şantiye' : selectedSiteFilter,
+      performanceScore: 100
+    });
+
+    setNewDriverName('');
+    setNewDriverTc('');
+    setNewDriverPhone('');
+    setIsAddDriverOpen(false);
   };
 
   const handleExportVehicles = () => {
@@ -123,11 +151,11 @@ export const VehiclesDriversPage: React.FC = () => {
           </button>
 
           <button
-            onClick={() => setIsAddVehOpen(true)}
+            onClick={() => activeTab === 'vehicles' ? setIsAddVehOpen(true) : setIsAddDriverOpen(true)}
             className="bg-[#ffdca1] text-[#412d00] font-black px-4 py-2.5 rounded-xl text-xs flex items-center space-x-2 transition-all cursor-pointer shadow"
           >
             <span className="material-symbols-outlined text-lg">add</span>
-            <span>Yeni Araç Tanımla</span>
+            <span>{activeTab === 'vehicles' ? 'Yeni Araç Tanımla' : 'Yeni Şoför Tanımla'}</span>
           </button>
         </div>
       </div>
@@ -343,6 +371,92 @@ export const VehiclesDriversPage: React.FC = () => {
                   className="px-5 py-2.5 bg-[#ffdca1] text-[#412d00] rounded-xl text-xs font-black"
                 >
                   Aracı Kaydet
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ADD DRIVER MODAL */}
+      {isAddDriverOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+          <div className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-6 max-w-md w-full space-y-6">
+            <div className="flex items-center justify-between border-b border-[#353535] pb-4">
+              <h3 className="text-base font-extrabold text-[#e5e2e1] uppercase tracking-wider flex items-center space-x-2">
+                <span className="material-symbols-outlined text-[#ffdca1]">badge</span>
+                <span>Yeni Şoför Tanımla</span>
+              </h3>
+              <button onClick={() => setIsAddDriverOpen(false)} className="text-[#d5c4ab] hover:text-[#e5e2e1]">
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateDriver} className="space-y-4">
+              <div>
+                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Ad Soyad</label>
+                <input
+                  type="text"
+                  value={newDriverName}
+                  onChange={(e) => setNewDriverName(e.target.value)}
+                  placeholder="örn. Ahmet Yılmaz"
+                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] font-mono text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">TC Kimlik No</label>
+                <input
+                  type="text"
+                  value={newDriverTc}
+                  onChange={(e) => setNewDriverTc(e.target.value)}
+                  placeholder="11 haneli TC no"
+                  maxLength={11}
+                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Telefon Numarası</label>
+                <input
+                  type="text"
+                  value={newDriverPhone}
+                  onChange={(e) => setNewDriverPhone(e.target.value)}
+                  placeholder="örn. 555-123-4567"
+                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Ehliyet Sınıfı</label>
+                <select
+                  value={newDriverLicense}
+                  onChange={(e) => setNewDriverLicense(e.target.value)}
+                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                >
+                  <option value="B Sınıfı">B Sınıfı (Binek/Hafif Ticari)</option>
+                  <option value="C Sınıfı">C Sınıfı (Kamyon)</option>
+                  <option value="D Sınıfı">D Sınıfı (Otobüs)</option>
+                  <option value="E Sınıfı">E Sınıfı (Ağır Vasıta / Tır)</option>
+                  <option value="G Sınıfı">G Sınıfı (İş Makinesi)</option>
+                </select>
+              </div>
+
+              <div className="pt-4 border-t border-[#353535] flex items-center justify-end space-x-3">
+                <button
+                  type="button"
+                  onClick={() => setIsAddDriverOpen(false)}
+                  className="px-4 py-2.5 bg-[#20201f] text-[#d5c4ab] rounded-xl text-xs font-bold"
+                >
+                  İptal
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 bg-[#ffdca1] text-[#412d00] rounded-xl text-xs font-black"
+                >
+                  Şoförü Kaydet
                 </button>
               </div>
             </form>

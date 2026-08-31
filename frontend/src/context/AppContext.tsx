@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+import { apiFetch } from '../utils/api';
 import { 
   Company, 
   Site,
@@ -73,14 +74,16 @@ interface AppContextType {
   deleteTank: (id: string) => void;
 
   // Vehicle CRUD
-  addVehicle: (vehicle: Omit<Vehicle, 'id' | 'totalRefuelsCount'>) => void;
-  updateVehicle: (id: string, updatedVehicle: Partial<Vehicle>) => void;
-  deleteVehicle: (id: string) => void;
+  fetchVehicles: () => Promise<void>;
+  addVehicle: (vehicle: Omit<Vehicle, 'id' | 'totalRefuelsCount'>) => Promise<void>;
+  updateVehicle: (id: string, updatedVehicle: Partial<Vehicle>) => Promise<void>;
+  deleteVehicle: (id: string) => Promise<void>;
 
   // Driver CRUD
-  addDriver: (driver: Omit<Driver, 'id' | 'totalFuelPumpedLiters'>) => void;
-  updateDriver: (id: string, updatedDriver: Partial<Driver>) => void;
-  deleteDriver: (id: string) => void;
+  fetchDrivers: () => Promise<void>;
+  addDriver: (driver: Omit<Driver, 'id' | 'totalFuelPumpedLiters'>) => Promise<void>;
+  updateDriver: (id: string, updatedDriver: Partial<Driver>) => Promise<void>;
+  deleteDriver: (id: string) => Promise<void>;
 
   addFuelTransaction: (tx: Omit<FuelTransaction, 'id' | 'timestamp'>) => void;
   addHardwareLog: (log: Omit<HardwareLog, 'id' | 'timestamp'>) => void;
@@ -488,47 +491,166 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // Vehicle CRUD
-  const addVehicle = (newVeh: Omit<Vehicle, 'id' | 'totalRefuelsCount'>) => {
-    const v: Vehicle = {
-      ...newVeh,
-      id: 'veh-' + Date.now(),
-      totalRefuelsCount: 0
-    };
-    setVehicles(prev => [v, ...prev]);
-    showToast(`Yeni araç eklendi: ${v.plate}`);
+  const fetchVehicles = async () => {
+    try {
+      const response = await apiFetch('/vehicles');
+      if (response.success && response.data) {
+        // Backend returns snake_case for DB fields, so we map them to camelCase
+        const mappedVehicles: Vehicle[] = response.data.map((v: any) => ({
+          id: v.id,
+          plate: v.plate,
+          brandModel: v.brand_model,
+          type: v.vehicle_type,
+          rfidTag: v.rfid_tag,
+          status: v.status,
+          siteName: currentUser?.siteName || 'Gebze Ana Şantiye', // Map site properly in real app
+          totalRefuelsCount: 0 // Mock stat for now
+        }));
+        setVehicles(mappedVehicles);
+      }
+    } catch (err: any) {
+      showToast(`Araçlar getirilirken hata: ${err.message}`, 'error');
+    }
   };
 
-  const updateVehicle = (id: string, updatedVeh: Partial<Vehicle>) => {
-    setVehicles(prev => prev.map(v => (v.id === id ? { ...v, ...updatedVeh } : v)));
-    showToast('Araç bilgileri güncellendi');
+  const addVehicle = async (newVeh: Omit<Vehicle, 'id' | 'totalRefuelsCount'>) => {
+    try {
+      const payload = {
+        plate: newVeh.plate,
+        brandModel: newVeh.brandModel,
+        type: newVeh.type,
+        rfidTag: newVeh.rfidTag,
+        fuelCapacityLiters: newVeh.fuelCapacityLiters || 450,
+        status: newVeh.status
+      };
+      await apiFetch('/vehicles', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      showToast(`Yeni araç kaydedildi: ${newVeh.plate}`);
+      await fetchVehicles();
+    } catch (err: any) {
+      showToast(`Araç eklenirken hata: ${err.message}`, 'error');
+    }
   };
 
-  const deleteVehicle = (id: string) => {
-    const target = vehicles.find(v => v.id === id);
-    setVehicles(prev => prev.filter(v => v.id !== id));
-    showToast(`Araç kaydı silindi: ${target?.plate || id}`, 'warning');
+  const updateVehicle = async (id: string, updatedVeh: Partial<Vehicle>) => {
+    try {
+      const payload = {
+        ...(updatedVeh.plate && { plate: updatedVeh.plate }),
+        ...(updatedVeh.brandModel && { brandModel: updatedVeh.brandModel }),
+        ...(updatedVeh.type && { type: updatedVeh.type }),
+        ...(updatedVeh.rfidTag && { rfidTag: updatedVeh.rfidTag }),
+        ...(updatedVeh.fuelCapacityLiters && { fuelCapacityLiters: updatedVeh.fuelCapacityLiters }),
+        ...(updatedVeh.status && { status: updatedVeh.status })
+      };
+      await apiFetch(`/vehicles/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      });
+      showToast('Araç bilgileri güncellendi');
+      await fetchVehicles();
+    } catch (err: any) {
+      showToast(`Araç güncellenirken hata: ${err.message}`, 'error');
+    }
   };
+
+  const deleteVehicle = async (id: string) => {
+    try {
+      await apiFetch(`/vehicles/${id}`, {
+        method: 'DELETE'
+      });
+      showToast(`Araç kaydı silindi`, 'warning');
+      await fetchVehicles();
+    } catch (err: any) {
+      showToast(`Araç silinirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchVehicles();
+      fetchDrivers();
+    }
+  }, [isAuthenticated]);
 
   // Driver CRUD
-  const addDriver = (newDrv: Omit<Driver, 'id' | 'totalFuelPumpedLiters'>) => {
-    const d: Driver = {
-      ...newDrv,
-      id: 'drv-' + Date.now(),
-      totalFuelPumpedLiters: 0
-    };
-    setDrivers(prev => [d, ...prev]);
-    showToast(`Yeni şoför eklendi: ${d.name}`);
+  const fetchDrivers = async () => {
+    try {
+      const response = await apiFetch('/drivers');
+      if (response.success && response.data) {
+        const mappedDrivers: Driver[] = response.data.map((d: any) => ({
+          id: d.id,
+          name: d.name,
+          tcNo: d.tc_no,
+          phone: d.phone,
+          licenseType: d.license_type,
+          rfidCardId: d.rfid_card_id,
+          status: d.status,
+          siteName: currentUser?.siteName || 'Gebze Ana Şantiye',
+          assignedVehiclePlate: 'Atanmadı', // TODO: Map this correctly from relations
+          performanceScore: 100, // Mock
+          totalFuelPumpedLiters: 0 // Mock
+        }));
+        setDrivers(mappedDrivers);
+      }
+    } catch (err: any) {
+      showToast(`Şoförler getirilirken hata: ${err.message}`, 'error');
+    }
   };
 
-  const updateDriver = (id: string, updatedDrv: Partial<Driver>) => {
-    setDrivers(prev => prev.map(d => (d.id === id ? { ...d, ...updatedDrv } : d)));
-    showToast('Şoför bilgileri güncellendi');
+  const addDriver = async (newDrv: Omit<Driver, 'id' | 'totalFuelPumpedLiters'>) => {
+    try {
+      const payload = {
+        name: newDrv.name,
+        tcNo: newDrv.tcNo,
+        phone: newDrv.phone,
+        licenseType: newDrv.licenseType,
+        rfidCardId: newDrv.rfidCardId,
+        status: newDrv.status
+      };
+      await apiFetch('/drivers', {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+      showToast(`Yeni şoför eklendi: ${newDrv.name}`);
+      await fetchDrivers();
+    } catch (err: any) {
+      showToast(`Şoför eklenirken hata: ${err.message}`, 'error');
+    }
   };
 
-  const deleteDriver = (id: string) => {
-    const target = drivers.find(d => d.id === id);
-    setDrivers(prev => prev.filter(d => d.id !== id));
-    showToast(`Şoför kaydı silindi: ${target?.name || id}`, 'warning');
+  const updateDriver = async (id: string, updatedDrv: Partial<Driver>) => {
+    try {
+      const payload = {
+        ...(updatedDrv.name && { name: updatedDrv.name }),
+        ...(updatedDrv.tcNo && { tcNo: updatedDrv.tcNo }),
+        ...(updatedDrv.phone && { phone: updatedDrv.phone }),
+        ...(updatedDrv.licenseType && { licenseType: updatedDrv.licenseType }),
+        ...(updatedDrv.rfidCardId && { rfidCardId: updatedDrv.rfidCardId }),
+        ...(updatedDrv.status && { status: updatedDrv.status })
+      };
+      await apiFetch(`/drivers/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload)
+      });
+      showToast('Şoför bilgileri güncellendi');
+      await fetchDrivers();
+    } catch (err: any) {
+      showToast(`Şoför güncellenirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  const deleteDriver = async (id: string) => {
+    try {
+      await apiFetch(`/drivers/${id}`, {
+        method: 'DELETE'
+      });
+      showToast(`Şoför kaydı silindi`, 'warning');
+      await fetchDrivers();
+    } catch (err: any) {
+      showToast(`Şoför silinirken hata: ${err.message}`, 'error');
+    }
   };
 
   const addFuelTransaction = (newTx: Omit<FuelTransaction, 'id' | 'timestamp'>) => {
@@ -657,9 +779,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         addTank,
         updateTank,
         deleteTank,
+        fetchVehicles,
         addVehicle,
         updateVehicle,
         deleteVehicle,
+        fetchDrivers,
         addDriver,
         updateDriver,
         deleteDriver,

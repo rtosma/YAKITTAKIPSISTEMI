@@ -50,6 +50,9 @@ COPY --from=builder /app/dist/server.cjs ./dist/server.cjs
 # Copy database schema and seed files (needed for init scripts)
 COPY src/db/schema.sql ./src/db/schema.sql
 
+# Copy route definitions so swagger-jsdoc can parse OpenAPI comments
+COPY src/routes ./src/routes
+
 # Change ownership to non-root 'node' user
 RUN chown -R node:node /app
 
