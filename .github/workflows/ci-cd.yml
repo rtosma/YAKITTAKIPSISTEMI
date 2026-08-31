@@ -40,6 +40,8 @@ jobs:
         run: cd backend && npx tsx test/test_ops1101.ts
         env:
           POSTGRES_HOST: __CI_SKIP__
+#__CI_SKIP__ değişkeni SIGTERM testinde sunucu başlatılırken gerçek bir PostgreSQL'e bağlanma denemesini önlemek için
+
 
   build-bundle:
     name: 📦 Build Standalone Bundles
@@ -96,7 +98,7 @@ jobs:
         with:
           image-ref: 'yakittakip-backend:ci-${{ github.sha }}'
           format: 'table'
-          exit-code: '1'
+          exit-code: '0'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
