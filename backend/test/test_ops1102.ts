@@ -19,7 +19,9 @@ function runOps1102Tests() {
     }
   };
 
-  const rootDir = process.cwd();
+  const rootDir = fs.existsSync(path.join(process.cwd(), '.github'))
+    ? process.cwd()
+    : path.join(process.cwd(), '..');
   const workflowPath = path.join(rootDir, '.github', 'workflows', 'ci-cd.yml');
 
   // 1. Workflow file existence check
@@ -38,11 +40,11 @@ function runOps1102Tests() {
 
     // 4. Quality & Integration test execution check
     assert(content.includes('npm run lint'), 'Lint / TypeScript denetimi çalıştırılmalı');
-    assert(content.includes('server/test_res902.ts'), 'test_res902.ts entegrasyon testi çalıştırılmalı');
-    assert(content.includes('server/test_ops1101.ts'), 'test_ops1101.ts entegrasyon testi çalıştırılmalı');
+    assert(content.includes('test/test_res902.ts'), 'test_res902.ts entegrasyon testi çalıştırılmalı');
+    assert(content.includes('test/test_ops1101.ts'), 'test_ops1101.ts entegrasyon testi çalıştırılmalı');
 
     // 5. Standalone build check
-    assert(content.includes('npm run build:server'), 'Server standalone build komutu çalıştırılmalı');
+    assert(content.includes('npm run build'), 'Standalone build komutu çalıştırılmalı');
 
     // 6. Trivy Security Vulnerability Scanner check (AC Rule: CVE Critical/High breaks build)
     assert(content.includes('aquasecurity/trivy-action'), 'Aquasecurity Trivy vulnerability scanner eklentisi bulunmalı');

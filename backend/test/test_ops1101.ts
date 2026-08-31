@@ -23,7 +23,9 @@ async function runOps1101Tests() {
   const rootDir = process.cwd();
 
   // 1. Check Dockerfile exists & includes multi-stage build structure
-  const dockerfilePath = path.join(rootDir, 'Dockerfile');
+  const dockerfilePath = fs.existsSync(path.join(rootDir, 'Dockerfile'))
+    ? path.join(rootDir, 'Dockerfile')
+    : path.join(rootDir, 'backend', 'Dockerfile');
   assert(fs.existsSync(dockerfilePath), 'Dockerfile oluşturulmuş olmalı');
   
   if (fs.existsSync(dockerfilePath)) {
@@ -36,7 +38,9 @@ async function runOps1101Tests() {
   }
 
   // 2. Check .dockerignore exists & ignores node_modules / .git / .env
-  const dockerIgnorePath = path.join(rootDir, '.dockerignore');
+  const dockerIgnorePath = fs.existsSync(path.join(rootDir, '.dockerignore'))
+    ? path.join(rootDir, '.dockerignore')
+    : path.join(rootDir, 'backend', '.dockerignore');
   assert(fs.existsSync(dockerIgnorePath), '.dockerignore oluşturulmuş olmalı');
 
   if (fs.existsSync(dockerIgnorePath)) {
@@ -46,18 +50,24 @@ async function runOps1101Tests() {
     assert(ignoreContent.includes('.env'), '.dockerignore .env içermeli');
   }
 
-  // 3. Check Standalone Server Bundle (dist/server.js)
-  const bundlePath = path.join(rootDir, 'dist', 'server.js');
-  assert(fs.existsSync(bundlePath), 'dist/server.js derlenmiş bundle mevcut olmalı');
+  // 3. Check Standalone Server Bundle (dist/server.cjs)
+  const bundlePath = fs.existsSync(path.join(rootDir, 'dist', 'server.cjs'))
+    ? path.join(rootDir, 'dist', 'server.cjs')
+    : path.join(rootDir, 'backend', 'dist', 'server.cjs');
+  assert(fs.existsSync(bundlePath), 'dist/server.cjs derlenmiş bundle mevcut olmalı');
   if (fs.existsSync(bundlePath)) {
     const stat = fs.statSync(bundlePath);
-    assert(stat.size > 100000, `dist/server.js makul büyüklükte olmalı (Mevcut: ${(stat.size / 1024 / 1024).toFixed(2)} MB)`);
+    assert(stat.size > 100000, `dist/server.cjs makul büyüklükte olmalı (Mevcut: ${(stat.size / 1024 / 1024).toFixed(2)} MB)`);
   }
 
   // 4. Test Graceful Shutdown Signal (SIGTERM)
   console.log('\n  ⚙️ Sunucu prosesi SIGTERM sinyali testi başlatılıyor (Port 5088)...');
   
-  const serverProcess = spawn('npx', ['tsx', 'server/index.ts'], {
+  const indexPath = fs.existsSync(path.join(rootDir, 'src', 'index.ts'))
+    ? 'src/index.ts'
+    : 'backend/src/index.ts';
+
+  const serverProcess = spawn('npx', ['tsx', indexPath], {
     cwd: rootDir,
     env: { ...process.env, PORT: '5088', LOG_LEVEL: 'info' },
     stdio: ['ignore', 'pipe', 'pipe'],

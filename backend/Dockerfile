@@ -7,6 +7,9 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# Install build dependencies for native modules (argon2)
+RUN apk add --no-cache python3 make g++
+
 # Copy package files first for Docker layer caching
 COPY package.json package-lock.json* ./
 
@@ -24,8 +27,8 @@ RUN npm run build
 # ==============================================================================
 FROM node:20-alpine AS runner
 
-# Install tini for proper PID 1 init & signal reaping (SIGTERM, SIGINT)
-RUN apk add --no-cache tini wget
+# Install tini for proper PID 1 init & signal reaping (SIGTERM, SIGINT) and build tools for native module installation
+RUN apk add --no-cache tini wget python3 make g++
 
 WORKDIR /app
 
@@ -38,8 +41,11 @@ COPY package.json package-lock.json* ./
 # Install production dependencies only (argon2 native bindings, pg, etc.)
 RUN npm ci --omit=dev && npm cache clean --force
 
+# Clean build dependencies to optimize container image size
+RUN apk del python3 make g++
+
 # Copy built server bundle from builder stage
-COPY --from=builder /app/dist/server.js ./dist/server.js
+COPY --from=builder /app/dist/server.cjs ./dist/server.cjs
 
 # Copy database schema and seed files (needed for init scripts)
 COPY src/db/schema.sql ./src/db/schema.sql
@@ -60,4 +66,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 ENTRYPOINT ["/sbin/tini", "--"]
 
 # Start production server
-CMD ["node", "dist/server.js"]
+CMD ["node", "dist/server.cjs"]

@@ -21,20 +21,23 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Install Dependencies
-        run: npm ci
+      - name: Install Monorepo Dependencies
+        run: |
+          npm ci
+          cd backend && npm ci
+          cd ../frontend && npm ci
 
       - name: Type Check (TypeScript)
         run: npm run lint
 
       - name: Run RES-902 Exception Filter & Logging Tests
-        run: npx tsx server/test_res902.ts
+        run: cd backend && npx tsx test/test_res902.ts
 
       - name: Run OPS-1101 Graceful Shutdown Tests
-        run: npx tsx server/test_ops1101.ts
+        run: cd backend && npx tsx test/test_ops1101.ts
 
   build-bundle:
-    name: 📦 Build Server Standalone Bundle
+    name: 📦 Build Standalone Bundles
     needs: quality-and-tests
     runs-on: ubuntu-latest
 
@@ -48,14 +51,20 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Install Dependencies
-        run: npm ci
+      - name: Install Monorepo Dependencies
+        run: |
+          npm ci
+          cd backend && npm ci
+          cd ../frontend && npm ci
 
-      - name: Build Server Bundle
-        run: npm run build:server
+      - name: Build All Bundles
+        run: npm run build
 
-      - name: Verify Bundle Output
-        run: test -f dist/server.js && echo "dist/server.js built successfully"
+      - name: Verify Backend Bundle Output
+        run: test -f backend/dist/server.cjs && echo "backend/dist/server.cjs built successfully"
+
+      - name: Verify Frontend Bundle Output
+        run: test -f frontend/dist/index.html && echo "frontend/dist/index.html built successfully"
 
   docker-security-scan:
     name: 🔒 Docker Multi-Stage Build & Trivy Security Scan
@@ -69,11 +78,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Local Docker Image
+      - name: Build Local Backend Docker Image
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: ./Dockerfile
+          context: ./backend
+          file: ./backend/Dockerfile
           load: true
           tags: yakittakip-backend:ci-${{ github.sha }}
 

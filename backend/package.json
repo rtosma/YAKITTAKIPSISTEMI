@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "start": "node dist/server.js",
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --external:argon2 --external:pg-native --outfile=dist/server.js",
+    "start": "node dist/server.cjs",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --external:argon2 --external:pg-native --outfile=dist/server.cjs",
     "seed": "tsx src/db/seed.ts",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist"
