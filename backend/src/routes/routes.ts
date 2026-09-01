@@ -1,8 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createTenantSite, deleteTenantSite } from '../db/tenantDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema } from '../schemas/vehicleSchema';
+import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
 import { dispenseRequestSchema } from '../schemas/transactionSchema';
 import { loginSchema } from '../schemas/authSchema';
 import { verifyPassword } from '../utils/password';
@@ -199,6 +200,107 @@ router.get('/auth/me', authenticateJWT, (req: AuthenticatedRequest, res: Respons
 
 /**
  * @swagger
+ * /sites:
+ *   get:
+ *     summary: Şantiye Listesi
+ *     description: Firmaya ait sistemde kayıtlı olan (kullanıcılar, tanklar, araçlar, şoförler üzerinden çıkarılan) tüm benzersiz şantiyeleri listeler.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Şantiye listesi başarıyla getirildi.
+ */
+router.get('/sites', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const sites = await getTenantSites();
+    res.json({
+      success: true,
+      data: sites
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      error: 'DB_ERROR',
+      message: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/v1/sites
+ * Create/register a new site for the tenant in DB
+ */
+router.post(
+  '/sites',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { siteName, location } = req.body;
+      if (!siteName || typeof siteName !== 'string' || !siteName.trim()) {
+        return res.status(400).json({
+          success: false,
+          error: 'VALIDATION_ERROR',
+          message: 'Geçerli bir şantiye adı giriniz.'
+        });
+      }
+
+      const trimmedSiteName = siteName.trim();
+      const newSite = await createTenantSite(trimmedSiteName, location || 'Türkiye');
+
+      res.json({
+        success: true,
+        message: `'${trimmedSiteName}' şantiyesi veritabanına başarıyla eklendi.`,
+        data: newSite
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: 'DB_ERROR',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * DELETE /api/v1/sites/:siteName
+ * Delete a site for the tenant in DB
+ */
+router.delete(
+  '/sites/:siteName',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { siteName } = req.params;
+      if (!siteName) {
+        return res.status(400).json({
+          success: false,
+          error: 'VALIDATION_ERROR',
+          message: 'Şantiye adı gereklidir.'
+        });
+      }
+
+      const decodedSiteName = decodeURIComponent(siteName);
+      await deleteTenantSite(decodedSiteName);
+
+      res.json({
+        success: true,
+        message: `'${decodedSiteName}' şantiyesi veritabanından başarıyla silindi.`
+      });
+    } catch (error: any) {
+      res.status(500).json({
+        success: false,
+        error: 'DB_ERROR',
+        message: error.message
+      });
+    }
+  }
+);
+
+/**
+ * @swagger
  * /vehicles:
  *   get:
  *     summary: Araç Listesi
@@ -246,6 +348,7 @@ router.post(
         brand_model: sanitizedBody.brandModel,
         vehicle_type: sanitizedBody.type,
         rfid_tag: sanitizedBody.rfidTag,
+        site_name: sanitizedBody.siteName || sanitizedBody.site_name || 'Gebze Ana Şantiye',
         status: sanitizedBody.status || 'AKTİF'
       };
 
@@ -277,12 +380,13 @@ router.put(
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const id = req.params.id;
-      const { plate, brandModel, type, rfidTag, status } = req.body;
+      const { plate, brandModel, type, rfidTag, siteName, status } = req.body;
       const updateData = {
         ...(plate && { plate }),
         ...(brandModel && { brand_model: brandModel }),
         ...(type && { vehicle_type: type }),
         ...(rfidTag && { rfid_tag: rfidTag }),
+        ...(siteName && { site_name: siteName }),
         ...(status && { status })
       };
 
@@ -376,15 +480,17 @@ router.post(
   '/drivers',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ body: createDriverSchema }),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const { name, tcNo, phone, licenseType, rfidCardId, status } = req.body;
+      const { name, tcNo, phone, licenseType, rfidCardId, siteName, status } = req.body;
       const driverData = {
         name,
         tc_no: tcNo,
         phone,
         license_type: licenseType,
         rfid_card_id: rfidCardId,
+        site_name: siteName || 'Gebze Ana Şantiye',
         status: status || 'AKTİF'
       };
 
@@ -427,16 +533,18 @@ router.put(
   '/drivers/:id',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ body: updateDriverSchema }),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const id = req.params.id;
-      const { name, tcNo, phone, licenseType, rfidCardId, status } = req.body;
+      const { name, tcNo, phone, licenseType, rfidCardId, siteName, status } = req.body;
       const updateData = {
         ...(name && { name }),
         ...(tcNo && { tc_no: tcNo }),
         ...(phone && { phone }),
         ...(licenseType && { license_type: licenseType }),
         ...(rfidCardId && { rfid_card_id: rfidCardId }),
+        ...(siteName && { site_name: siteName }),
         ...(status && { status })
       };
 
@@ -546,12 +654,13 @@ router.post(
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
   async (req: AuthenticatedRequest, res: Response) => {
     try {
-      const { name, capacityLiters, currentLevelLiters, fuelType, status } = req.body;
+      const { name, capacityLiters, currentLevelLiters, fuelType, siteName, status } = req.body;
       const tankData = {
         name,
         capacity_liters: capacityLiters,
         current_level_liters: currentLevelLiters,
         fuel_type: fuelType || 'Motorin',
+        site_name: siteName || 'Gebze Ana Şantiye',
         status: status || 'GÜVENLİ'
       };
 
@@ -597,12 +706,13 @@ router.put(
   async (req: AuthenticatedRequest, res: Response) => {
     try {
       const id = req.params.id;
-      const { name, capacityLiters, currentLevelLiters, fuelType, status } = req.body;
+      const { name, capacityLiters, currentLevelLiters, fuelType, siteName, status } = req.body;
       const updateData = {
         ...(name && { name }),
         ...(capacityLiters !== undefined && { capacity_liters: capacityLiters }),
         ...(currentLevelLiters !== undefined && { current_level_liters: currentLevelLiters }),
         ...(fuelType && { fuel_type: fuelType }),
+        ...(siteName && { site_name: siteName }),
         ...(status && { status })
       };
 

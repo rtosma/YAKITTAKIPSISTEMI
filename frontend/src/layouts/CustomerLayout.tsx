@@ -12,7 +12,8 @@ export const CustomerLayout: React.FC = () => {
     logoutCompany, 
     currentUser,
     isManagerMode,
-    isAuthenticated
+    isAuthenticated,
+    sites
   } = useApp();
 
   if (!isAuthenticated) {
@@ -20,6 +21,10 @@ export const CustomerLayout: React.FC = () => {
   }
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+
+  const availableSites = React.useMemo(() => {
+    return sites;
+  }, [sites]);
 
   const allNavItems = [
     { label: 'Genel Bakış', path: '/panel', icon: 'dashboard', id: 'overview' },
@@ -199,10 +204,10 @@ export const CustomerLayout: React.FC = () => {
                   onChange={(e) => setSelectedSiteFilter(e.target.value)}
                   className="bg-transparent text-xs font-bold text-[#e5e2e1] focus:outline-none cursor-pointer"
                 >
-                  <option value="TÜMÜ" className="bg-[#1c1b1b] text-[#e5e2e1]">Tüm Şantiyeler ({currentCompany.sites.length})</option>
-                  {currentCompany.sites.map(site => (
-                    <option key={site.id} value={site.name} className="bg-[#1c1b1b] text-[#e5e2e1]">
-                      {site.name}
+                  <option value="TÜMÜ" className="bg-[#1c1b1b] text-[#e5e2e1]">Tüm Şantiyeler ({availableSites.length})</option>
+                  {availableSites.map(siteName => (
+                    <option key={siteName} value={siteName} className="bg-[#1c1b1b] text-[#e5e2e1]">
+                      {siteName}
                     </option>
                   ))}
                 </select>

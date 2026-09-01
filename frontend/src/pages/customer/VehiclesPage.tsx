@@ -4,7 +4,9 @@ import { Vehicle } from '../../types';
 import { isValidPlate } from '../../utils/validation';
 
 export const VehiclesPage: React.FC = () => {
-  const { vehicles, selectedSiteFilter, addVehicle, updateVehicle, deleteVehicle, currentCompany, drivers, isManagerMode, currentUser } = useApp();
+  const { vehicles, selectedSiteFilter, addVehicle, updateVehicle, deleteVehicle, currentCompany, drivers, isManagerMode, currentUser, sites } = useApp();
+
+  const availableSites = Array.from(new Set([...sites, ...currentCompany.sites.map(s => s.name)])).filter(Boolean);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -15,7 +17,7 @@ export const VehiclesPage: React.FC = () => {
   const [plate, setPlate] = useState('');
   const [brandModel, setBrandModel] = useState('');
   const [type, setType] = useState<Vehicle['type']>('Kamyon');
-  const [siteName, setSiteName] = useState(currentCompany.sites[0]?.name || 'Gebze Ana Şantiye');
+  const [siteName, setSiteName] = useState(availableSites[0] || 'Gebze Ana Şantiye');
   const [assignedDriver, setAssignedDriver] = useState('');
   const [fuelCapacityLiters, setFuelCapacityLiters] = useState(450);
   const [status, setStatus] = useState<'AKTİF' | 'BAKIMDA' | 'PASİF'>('AKTİF');
@@ -34,7 +36,7 @@ export const VehiclesPage: React.FC = () => {
     setPlateError('');
     setBrandModel('');
     setType('Kamyon');
-    setSiteName(selectedSiteFilter === 'TÜMÜ' ? currentCompany.sites[0]?.name || 'Gebze Ana Şantiye' : selectedSiteFilter);
+    setSiteName(selectedSiteFilter === 'TÜMÜ' ? availableSites[0] || 'Gebze Ana Şantiye' : selectedSiteFilter);
     setAssignedDriver(drivers[0]?.name || 'Atanmadı');
     setFuelCapacityLiters(450);
     setStatus('AKTİF');
@@ -293,9 +295,9 @@ export const VehiclesPage: React.FC = () => {
                       onChange={(e) => setSiteName(e.target.value)}
                       className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                     >
-                      {currentCompany.sites.map(s => (
-                        <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
-                          {s.name}
+                      {availableSites.map(sName => (
+                        <option key={sName} value={sName} className="bg-[#1c1b1b]">
+                          {sName}
                         </option>
                       ))}
                     </select>
@@ -403,9 +405,9 @@ export const VehiclesPage: React.FC = () => {
                       onChange={(e) => setSiteName(e.target.value)}
                       className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                     >
-                      {currentCompany.sites.map(s => (
-                        <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
-                          {s.name}
+                      {availableSites.map(sName => (
+                        <option key={sName} value={sName} className="bg-[#1c1b1b]">
+                          {sName}
                         </option>
                       ))}
                     </select>

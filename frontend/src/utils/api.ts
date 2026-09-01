@@ -17,6 +17,7 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
   }
 
   const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    cache: 'no-store', // Always fetch fresh data, ignore browser cache
     ...options,
     headers,
   });

@@ -31,6 +31,8 @@ interface ToastState {
   type: 'success' | 'info' | 'warning' | 'error';
 }
 
+
+
 interface AppContextType {
   // Auth & Permissions Mode State
   isAuthenticated: boolean;
@@ -87,9 +89,6 @@ interface AppContextType {
 
   // Tank CRUD
   fetchTanks: () => Promise<void>;
-  addTank: (tank: Omit<Tank, 'id'>) => Promise<void>;
-  updateTank: (id: string, updatedTank: Partial<Tank>) => Promise<void>;
-  deleteTank: (id: string) => Promise<void>;
 
   addFuelTransaction: (tx: Omit<FuelTransaction, 'id' | 'timestamp'>) => void;
   addHardwareLog: (log: Omit<HardwareLog, 'id' | 'timestamp'>) => void;
@@ -103,6 +102,10 @@ interface AppContextType {
   toast: ToastState | null;
   showToast: (message: string, type?: 'success' | 'info' | 'warning' | 'error') => void;
 
+  // Selected Tenant for Admin Detail View
+  selectedTenantForDetail: Company | null;
+  setSelectedTenantForDetail: (company: Company | null) => void;
+
   // Pump Calibration Multiplier & EEPROM Persistence
   kFactor: number; // Pulse / Litre (Örn: 100.0)
   calibrationMultiplier: number;
@@ -110,9 +113,11 @@ interface AppContextType {
   calculateCalibratedLiters: (rawAmount: number) => number;
   saveEEPROMCalibration: (newKFactor: number, newMultiplier: number) => void;
 
-  // Selected Tenant for Admin Detail View
-  selectedTenantForDetail: Company | null;
-  setSelectedTenantForDetail: (company: Company | null) => void;
+  // Real DB Sites
+  sites: string[];
+  fetchSites: () => Promise<void>;
+  addSite: (siteName: string) => Promise<void>;
+  deleteSite: (siteName: string) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -187,6 +192,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [tanks, setTanks] = useState<Tank[]>([]);
+  const [sites, setSites] = useState<string[]>([]);
   const [transactions, setTransactions] = useState<FuelTransaction[]>(INITIAL_TRANSACTIONS);
   const [crossSitePermissions, setCrossSitePermissions] = useState<CrossSitePermission[]>(INITIAL_CROSS_SITE_PERMISSIONS);
   const [hardwareDevices, setHardwareDevices] = useState<HardwareDevice[]>(INITIAL_HARDWARE_DEVICES);
@@ -465,6 +471,60 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }));
   };
 
+  // Sites Fetch
+  const fetchSites = async () => {
+    try {
+      const response = await apiFetch('/sites');
+      if (response.success && response.data) {
+        setSites(response.data);
+      }
+    } catch (err: any) {
+      console.error('Şantiyeler getirilirken hata:', err);
+    }
+  };
+
+  const addSite = async (siteName: string) => {
+    try {
+      const response = await apiFetch('/sites', {
+        method: 'POST',
+        body: JSON.stringify({ siteName })
+      });
+      if (response.success) {
+        showToast(`Yeni şantiye eklendi: ${siteName}`);
+        await fetchSites();
+        await fetchTanks();
+      }
+    } catch (err: any) {
+      showToast(`Şantiye eklenirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  const deleteSite = async (siteName: string) => {
+    try {
+      const response = await apiFetch(`/sites/${encodeURIComponent(siteName)}`, {
+        method: 'DELETE'
+      });
+      if (response.success) {
+        showToast(`Şantiye silindi: ${siteName}`, 'warning');
+        await fetchSites();
+        await fetchVehicles();
+        await fetchDrivers();
+        await fetchTanks();
+      }
+    } catch (err: any) {
+      showToast(`Şantiye silinirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  // Automatically fetch DB sites, vehicles, drivers & tanks when user is authenticated
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchSites();
+      fetchVehicles();
+      fetchDrivers();
+      fetchTanks();
+    }
+  }, [isAuthenticated]);
 
   // Vehicle CRUD
   const fetchVehicles = async () => {
@@ -500,6 +560,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         brandModel: newVeh.brandModel,
         type: newVeh.type,
         rfidTag: newVeh.rfidTag,
+        siteName: newVeh.siteName,
         fuelCapacityLiters: newVeh.fuelCapacityLiters || 450,
         status: newVeh.status
       };
@@ -509,6 +570,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       });
       showToast(`Yeni araç kaydedildi: ${newVeh.plate}`);
       await fetchVehicles();
+      await fetchSites();
     } catch (err: any) {
       showToast(`Araç eklenirken hata: ${err.message}`, 'error');
     }
@@ -521,6 +583,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...(updatedVeh.brandModel && { brandModel: updatedVeh.brandModel }),
         ...(updatedVeh.type && { type: updatedVeh.type }),
         ...(updatedVeh.rfidTag && { rfidTag: updatedVeh.rfidTag }),
+        ...(updatedVeh.siteName && { siteName: updatedVeh.siteName }),
         ...(updatedVeh.fuelCapacityLiters && { fuelCapacityLiters: updatedVeh.fuelCapacityLiters }),
         ...(updatedVeh.status && { status: updatedVeh.status })
       };
@@ -530,6 +593,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       });
       showToast('Araç bilgileri güncellendi');
       await fetchVehicles();
+      await fetchSites();
     } catch (err: any) {
       showToast(`Araç güncellenirken hata: ${err.message}`, 'error');
     }
@@ -549,6 +613,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   useEffect(() => {
     if (isAuthenticated) {
+      fetchSites();
       fetchVehicles();
       fetchDrivers();
       fetchTanks();
@@ -588,6 +653,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         phone: newDrv.phone,
         licenseType: newDrv.licenseType,
         rfidCardId: newDrv.rfidCardId,
+        siteName: newDrv.siteName,
         status: newDrv.status
       };
       await apiFetch('/drivers', {
@@ -596,6 +662,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       });
       showToast(`Yeni şoför eklendi: ${newDrv.name}`);
       await fetchDrivers();
+      await fetchSites();
     } catch (err: any) {
       showToast(`Şoför eklenirken hata: ${err.message}`, 'error');
     }
@@ -609,6 +676,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...(updatedDrv.phone && { phone: updatedDrv.phone }),
         ...(updatedDrv.licenseType && { licenseType: updatedDrv.licenseType }),
         ...(updatedDrv.rfidCardId && { rfidCardId: updatedDrv.rfidCardId }),
+        ...(updatedDrv.siteName && { siteName: updatedDrv.siteName }),
         ...(updatedDrv.status && { status: updatedDrv.status })
       };
       await apiFetch(`/drivers/${id}`, {
@@ -617,6 +685,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       });
       showToast('Şoför bilgileri güncellendi');
       await fetchDrivers();
+      await fetchSites();
     } catch (err: any) {
       showToast(`Şoför güncellenirken hata: ${err.message}`, 'error');
     }
@@ -665,6 +734,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         capacityLiters: newTank.capacityLiters,
         currentLevelLiters: newTank.currentLevelLiters,
         fuelType: newTank.fuelType,
+        siteName: newTank.siteName,
         status: newTank.status
       };
       await apiFetch('/tanks', {
@@ -673,6 +743,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       });
       showToast(`Yeni tank eklendi: ${newTank.name}`);
       await fetchTanks();
+      await fetchSites();
     } catch (err: any) {
       showToast(`Tank eklenirken hata: ${err.message}`, 'error');
     }
@@ -685,6 +756,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...(updatedTank.capacityLiters !== undefined && { capacityLiters: updatedTank.capacityLiters }),
         ...(updatedTank.currentLevelLiters !== undefined && { currentLevelLiters: updatedTank.currentLevelLiters }),
         ...(updatedTank.fuelType && { fuelType: updatedTank.fuelType }),
+        ...(updatedTank.siteName && { siteName: updatedTank.siteName }),
         ...(updatedTank.status && { status: updatedTank.status })
       };
       await apiFetch(`/tanks/${id}`, {
@@ -693,6 +765,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       });
       showToast('Tank bilgileri güncellendi');
       await fetchTanks();
+      await fetchSites();
     } catch (err: any) {
       showToast(`Tank güncellenirken hata: ${err.message}`, 'error');
     }
@@ -845,6 +918,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         updateDriver,
         deleteDriver,
         fetchTanks,
+        sites,
+        fetchSites,
+        addSite,
+        deleteSite,
         addFuelTransaction,
         addHardwareLog,
         clearHardwareLogs,

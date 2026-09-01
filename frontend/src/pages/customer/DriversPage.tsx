@@ -3,7 +3,9 @@ import { useApp } from '../../context/AppContext';
 import { Driver } from '../../types';
 
 export const DriversPage: React.FC = () => {
-  const { drivers, selectedSiteFilter, addDriver, updateDriver, deleteDriver, currentCompany, vehicles, isManagerMode, currentUser } = useApp();
+  const { drivers, selectedSiteFilter, addDriver, updateDriver, deleteDriver, currentCompany, vehicles, isManagerMode, currentUser, sites } = useApp();
+
+  const availableSites = Array.from(new Set([...sites, ...currentCompany.sites.map(s => s.name)])).filter(Boolean);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -15,7 +17,7 @@ export const DriversPage: React.FC = () => {
   const [phone, setPhone] = useState('');
   const [tcNo, setTcNo] = useState('');
   const [licenseType, setLicenseType] = useState('CE Sınıfı Ağır Vasıta');
-  const [siteName, setSiteName] = useState(currentCompany.sites[0]?.name || 'Gebze Ana Şantiye');
+  const [siteName, setSiteName] = useState(availableSites[0] || 'Gebze Ana Şantiye');
   const [assignedVehiclePlate, setAssignedVehiclePlate] = useState('Yok');
   const [status, setStatus] = useState<Driver['status']>('SAHADA');
 
@@ -281,9 +283,9 @@ export const DriversPage: React.FC = () => {
                       onChange={(e) => setSiteName(e.target.value)}
                       className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                     >
-                      {currentCompany.sites.map(s => (
-                        <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
-                          {s.name}
+                      {availableSites.map(sName => (
+                        <option key={sName} value={sName} className="bg-[#1c1b1b]">
+                          {sName}
                         </option>
                       ))}
                     </select>
@@ -390,9 +392,9 @@ export const DriversPage: React.FC = () => {
                       onChange={(e) => setSiteName(e.target.value)}
                       className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                     >
-                      {currentCompany.sites.map(s => (
-                        <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
-                          {s.name}
+                      {availableSites.map(sName => (
+                        <option key={sName} value={sName} className="bg-[#1c1b1b]">
+                          {sName}
                         </option>
                       ))}
                     </select>

@@ -12,7 +12,8 @@ export const createVehicleSchema = z.object({
   rfidTag: z.string({ message: 'RFID Etiketi (tag) zorunludur.' })
     .min(3, 'RFID tag en az 3 karakter olmalıdır.'),
   fuelCapacityLiters: z.number({ message: 'Yakıt kapasitesi zorunludur.' })
-    .positive('Yakıt kapasitesi 0\'dan büyük bir sayı olmalıdır.')
+    .positive('Yakıt kapasitesi 0\'dan büyük bir sayı olmalıdır.'),
+  siteName: z.string().optional()
 });
 
 export type CreateVehicleDTO = z.infer<typeof createVehicleSchema>;

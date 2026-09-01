@@ -4,7 +4,9 @@ import { TankGauge } from '../../components/TankGauge';
 import { Tank } from '../../types';
 
 export const TankStatusPage: React.FC = () => {
-  const { tanks, selectedSiteFilter, tankRefreshKey, triggerTankRefresh, addTank, updateTank, deleteTank, currentCompany, isManagerMode, currentUser } = useApp();
+  const { tanks, selectedSiteFilter, tankRefreshKey, triggerTankRefresh, addTank, updateTank, deleteTank, currentCompany, isManagerMode, currentUser, sites } = useApp();
+
+  const availableSites = Array.from(new Set([...sites, ...currentCompany.sites.map(s => s.name)])).filter(Boolean);
 
   // Modal states
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -13,7 +15,7 @@ export const TankStatusPage: React.FC = () => {
 
   // Form states
   const [tankName, setTankName] = useState('');
-  const [siteName, setSiteName] = useState(currentCompany.sites[0]?.name || 'Gebze Ana Şantiye');
+  const [siteName, setSiteName] = useState(availableSites[0] || 'Gebze Ana Şantiye');
   const [capacityLiters, setCapacityLiters] = useState(15000);
   const [currentLevelLiters, setCurrentLevelLiters] = useState(12000);
   const [fuelType, setFuelType] = useState<'Motorin (Euro Diesel)' | 'Benzin (95)'>('Motorin (Euro Diesel)');
@@ -175,9 +177,9 @@ export const TankStatusPage: React.FC = () => {
                     onChange={(e) => setSiteName(e.target.value)}
                     className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                   >
-                    {currentCompany.sites.map(s => (
-                      <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
-                        {s.name}
+                    {availableSites.map(sName => (
+                      <option key={sName} value={sName} className="bg-[#1c1b1b]">
+                        {sName}
                       </option>
                     ))}
                   </select>
@@ -278,9 +280,9 @@ export const TankStatusPage: React.FC = () => {
                     onChange={(e) => setSiteName(e.target.value)}
                     className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                   >
-                    {currentCompany.sites.map(s => (
-                      <option key={s.id} value={s.name} className="bg-[#1c1b1b]">
-                        {s.name}
+                    {availableSites.map(sName => (
+                      <option key={sName} value={sName} className="bg-[#1c1b1b]">
+                        {sName}
                       </option>
                     ))}
                   </select>

@@ -94,6 +94,16 @@ BEGIN
   END IF;
 END
 $$;
+-- 5. Sites Table with Tenant ID
+CREATE TABLE IF NOT EXISTS sites (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    name VARCHAR(128) NOT NULL,
+    location VARCHAR(255) DEFAULT 'Türkiye',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_tenant_site_name UNIQUE(tenant_id, name)
+);
+
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO app_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO app_user;
 
@@ -102,11 +112,14 @@ ALTER TABLE vehicles FORCE ROW LEVEL SECURITY;
 ALTER TABLE tanks FORCE ROW LEVEL SECURITY;
 ALTER TABLE users FORCE ROW LEVEL SECURITY;
 ALTER TABLE drivers FORCE ROW LEVEL SECURITY;
+ALTER TABLE sites FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
 DROP POLICY IF EXISTS tanks_tenant_isolation_policy ON tanks;
 DROP POLICY IF EXISTS users_tenant_isolation_policy ON users;
+DROP POLICY IF EXISTS drivers_tenant_isolation_policy ON drivers;
+DROP POLICY IF EXISTS sites_tenant_isolation_policy ON sites;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -128,6 +141,12 @@ CREATE POLICY users_tenant_isolation_policy ON users
 
 -- Create Tenant Isolation Policy for drivers
 CREATE POLICY drivers_tenant_isolation_policy ON drivers
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- Create Tenant Isolation Policy for sites
+CREATE POLICY sites_tenant_isolation_policy ON sites
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

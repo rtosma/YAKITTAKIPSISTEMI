@@ -12,6 +12,115 @@ export interface VehicleRecord {
   status: string;
 }
 
+export interface HardwareLogRecord {
+  id: string;
+  tenant_id: string;
+  device_code: string;
+  tag: string;
+  message: string;
+  site_name: string;
+  created_at: Date;
+}
+
+export interface SiteRecord {
+  id: string;
+  tenant_id: string;
+  name: string;
+  location: string;
+  created_at: Date;
+}
+
+export async function getTenantSites(): Promise<string[]> {
+  const tenantId = getTenantId();
+  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SET LOCAL ROLE app_user;');
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+    
+    // RLS will ensure we only see the current tenant's data in these queries
+    const result = await client.query(`
+      SELECT DISTINCT site_name FROM (
+        SELECT name AS site_name FROM sites
+        UNION
+        SELECT site_name FROM users WHERE site_name IS NOT NULL
+        UNION
+        SELECT site_name FROM tanks WHERE site_name IS NOT NULL
+        UNION
+        SELECT site_name FROM vehicles WHERE site_name IS NOT NULL
+        UNION
+        SELECT site_name FROM drivers WHERE site_name IS NOT NULL
+      ) AS all_sites
+      ORDER BY site_name ASC
+    `);
+    
+    await client.query('COMMIT');
+    return result.rows.map(row => row.site_name);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function createTenantSite(siteName: string, location: string = 'Türkiye'): Promise<SiteRecord> {
+  const tenantId = getTenantId();
+  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SET LOCAL ROLE app_user;');
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+
+    const id = `site-${Date.now()}`;
+    const result = await client.query(
+      `INSERT INTO sites (id, tenant_id, name, location)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant_id, name) DO UPDATE SET location = EXCLUDED.location
+       RETURNING *`,
+      [id, tenantId, siteName, location]
+    );
+
+    await client.query('COMMIT');
+    return result.rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deleteTenantSite(siteName: string): Promise<boolean> {
+  const tenantId = getTenantId();
+  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SET LOCAL ROLE app_user;');
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+
+    // Delete from sites table
+    await client.query('DELETE FROM sites WHERE name = $1', [siteName]);
+
+    // Disassociate site_name from vehicles, drivers, tanks, users
+    await client.query("UPDATE vehicles SET site_name = 'Atanmadı' WHERE site_name = $1", [siteName]);
+    await client.query("UPDATE drivers SET site_name = 'Atanmadı' WHERE site_name = $1", [siteName]);
+    await client.query("UPDATE tanks SET site_name = 'Atanmadı' WHERE site_name = $1", [siteName]);
+    await client.query("UPDATE users SET site_name = NULL WHERE site_name = $1", [siteName]);
+
+    await client.query('COMMIT');
+    return true;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
 export interface DriverRecord {
   id: string;
   tenant_id: string;
@@ -58,6 +167,7 @@ export async function getTenantVehicles(): Promise<VehicleRecord[]> {
       brand_model: row.brand_model,
       vehicle_type: row.vehicle_type,
       rfid_tag: row.rfid_tag,
+      site_name: row.site_name,
       status: row.status
     }));
   } catch (err) {
