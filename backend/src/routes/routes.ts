@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createTenantSite, deleteTenantSite } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createTenantSite, deleteTenantSite, getTenantCompanyProfile } from '../db/tenantDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
@@ -143,14 +143,26 @@ router.post('/auth/refresh', async (req: Request, res: Response) => {
   }
 
   try {
-    const userPayload: JwtUserPayload = {
-      userId: 'usr-camsa-owner',
-      tenantId: 'comp-camsa',
-      username: 'camsa',
-      role: 'COMPANY_OWNER'
-    };
+    // Resolve the refresh token's real owner from PostgreSQL — rotateRefreshToken
+    // calls this with the userId/tenantId taken from the verified token record,
+    // so the caller can never dictate whose identity the new tokens carry.
+    const newTokens = await rotateRefreshToken(refreshToken, async (userId, tenantId) => {
+      const dbRes = await pool.query(
+        'SELECT id, tenant_id, username, role, site_name FROM users WHERE id = $1 AND tenant_id = $2',
+        [userId, tenantId]
+      );
+      if (dbRes.rows.length === 0) return null;
 
-    const newTokens = await rotateRefreshToken(refreshToken, userPayload);
+      const dbUser = dbRes.rows[0];
+      const payload: JwtUserPayload = {
+        userId: dbUser.id,
+        tenantId: dbUser.tenant_id,
+        username: dbUser.username,
+        role: dbUser.role as UserRole,
+        siteName: dbUser.site_name || undefined
+      };
+      return payload;
+    });
 
     res.json({
       success: true,
@@ -196,6 +208,40 @@ router.get('/auth/me', authenticateJWT, (req: AuthenticatedRequest, res: Respons
     message: 'Kimlik bilgileri doğrulandı.',
     user: req.user
   });
+});
+
+/**
+ * @swagger
+ * /companies/me:
+ *   get:
+ *     summary: Oturum Açan Firmanın Profili
+ *     description: >
+ *       JWT'deki tenant'a ait firma bilgisini döndürür (ad, kod, vergi no, şehir,
+ *       lisans, modüller, şantiyeler). SITE_MANAGER rolünde yalnızca kullanıcının
+ *       kendi şantiyesi listelenir; COMPANY_OWNER tüm şantiyeleri görür.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Firma profili başarıyla getirildi.
+ *       404:
+ *         description: Tenant'a karşılık gelen firma bulunamadı.
+ */
+router.get('/companies/me', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const profile = await getTenantCompanyProfile({
+      role: req.user?.role,
+      siteName: req.user?.siteName
+    });
+    res.json({ success: true, data: profile });
+  } catch (error: any) {
+    const notFound = error.message === 'COMPANY_NOT_FOUND';
+    res.status(notFound ? 404 : 500).json({
+      success: false,
+      error: notFound ? 'NOT_FOUND' : 'DB_ERROR',
+      message: error.message
+    });
+  }
 });
 
 /**

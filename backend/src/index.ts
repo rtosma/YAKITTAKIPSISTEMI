@@ -1,6 +1,5 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 
 import { traceMiddleware, httpLoggerMiddleware } from './middleware/loggerMiddleware';
 import { globalErrorHandler, notFoundHandler, registerProcessExceptionHandlers } from './middleware/errorHandler';
@@ -11,7 +10,12 @@ import { redisPool } from './db/redisPool';
 import { mqttService } from './iot/mqttClient';
 import routes from './routes/routes';
 
-dotenv.config();
+// NOTE: environment variables are loaded by ./bootstrap.ts (the real process
+// entry point — see package.json `dev`/`build`), BEFORE this module or any of
+// its imports evaluate. Do not call dotenv.config() here: by the time this
+// file's own top-level code would run, everything it imports above (down to
+// tokenService's module-scope JWT secret reads) has already been evaluated,
+// so a dotenv.config() call at this point would always be too late.
 
 // Register process-level uncaughtException and unhandledRejection handlers
 registerProcessExceptionHandlers();

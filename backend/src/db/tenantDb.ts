@@ -30,6 +30,88 @@ export interface SiteRecord {
   created_at: Date;
 }
 
+export interface CompanySiteProfile {
+  id: string;
+  name: string;
+  location: string;
+  activeTanksCount: number;
+  activeVehiclesCount: number;
+}
+
+export interface CompanyProfile {
+  id: string;
+  name: string;
+  code: string | null;
+  taxNumber: string;
+  city: string | null;
+  licenseStatus: string;
+  licenseExpiry: string | null;
+  modules: Record<string, boolean>;
+  sites: CompanySiteProfile[];
+  activeVehiclesCount: number;
+  totalFuelThisMonth: number;
+}
+
+/**
+ * Oturum açmış tenant'ın firma profilini döndürür.
+ * - COMPANY_OWNER / SUPER_ADMIN: firmanın tüm şantiyelerini görür.
+ * - SITE_MANAGER: yalnızca kendi şantiyesini (token'daki site_name) görür.
+ * `companies` tablosu tenant kaydının kendisidir; RLS yerine doğrudan
+ * id = tenantId ile filtrelenir, diğer tablolar tenant_id ile kısıtlanır.
+ */
+export async function getTenantCompanyProfile(opts?: { role?: string; siteName?: string }): Promise<CompanyProfile> {
+  const tenantId = getTenantId();
+  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
+
+  const companyRes = await pool.query(
+    `SELECT id, name, tax_number, code, city, license_status, license_expiry, modules
+     FROM companies WHERE id = $1`,
+    [tenantId]
+  );
+  if (companyRes.rows.length === 0) throw new Error('COMPANY_NOT_FOUND');
+  const c = companyRes.rows[0];
+
+  const restrictSite = opts?.role === 'SITE_MANAGER' && opts?.siteName ? opts.siteName : null;
+
+  const sitesRes = await pool.query(
+    `SELECT s.id, s.name, s.location,
+       (SELECT COUNT(*)::int FROM tanks t   WHERE t.tenant_id = $1 AND t.site_name = s.name)   AS active_tanks_count,
+       (SELECT COUNT(*)::int FROM vehicles v WHERE v.tenant_id = $1 AND v.site_name = s.name) AS active_vehicles_count
+     FROM sites s
+     WHERE s.tenant_id = $1 AND ($2::text IS NULL OR s.name = $2)
+     ORDER BY s.name ASC`,
+    [tenantId, restrictSite]
+  );
+
+  const vehRes = await pool.query(
+    `SELECT COUNT(*)::int AS cnt FROM vehicles
+     WHERE tenant_id = $1 AND ($2::text IS NULL OR site_name = $2)`,
+    [tenantId, restrictSite]
+  );
+
+  return {
+    id: c.id,
+    name: c.name,
+    code: c.code,
+    taxNumber: c.tax_number,
+    city: c.city,
+    licenseStatus: c.license_status || 'AKTİF',
+    licenseExpiry: c.license_expiry
+      ? new Date(c.license_expiry).toISOString().slice(0, 10)
+      : null,
+    modules: c.modules || {},
+    sites: sitesRes.rows.map((s) => ({
+      id: s.id,
+      name: s.name,
+      location: s.location,
+      activeTanksCount: s.active_tanks_count,
+      activeVehiclesCount: s.active_vehicles_count
+    })),
+    activeVehiclesCount: vehRes.rows[0].cnt,
+    totalFuelThisMonth: 0
+  };
+}
+
 export async function getTenantSites(): Promise<string[]> {
   const tenantId = getTenantId();
   if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');

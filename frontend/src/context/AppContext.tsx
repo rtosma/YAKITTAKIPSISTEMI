@@ -14,16 +14,11 @@ import {
   HardwareLog,
   CompanyModule
 } from '../types';
-import { 
-  INITIAL_COMPANIES, 
-  INITIAL_VEHICLES, 
-  INITIAL_DRIVERS, 
-  INITIAL_TANKS, 
-  INITIAL_TRANSACTIONS, 
-  INITIAL_CROSS_SITE_PERMISSIONS, 
-  INITIAL_HARDWARE_DEVICES, 
-  INITIAL_HARDWARE_LOGS 
-} from '../mock';
+// NOTE: Oturum açıldığında firma bilgisi de dahil her şey PostgreSQL backend'inden
+// (apiFetch) çekiliyor: firma profili -> GET /companies/me (yalnızca giriş yapan
+// tenant, SITE_MANAGER için tek şantiye). INITIAL_COMPANIES yalnızca giriş
+// yapılmadan önceki ilk state ve auth'suz /admin (Süper Admin) paneli için durur.
+import { INITIAL_COMPANIES } from '../mock';
 
 interface ToastState {
   id: string;
@@ -193,10 +188,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [tanks, setTanks] = useState<Tank[]>([]);
   const [sites, setSites] = useState<string[]>([]);
-  const [transactions, setTransactions] = useState<FuelTransaction[]>(INITIAL_TRANSACTIONS);
-  const [crossSitePermissions, setCrossSitePermissions] = useState<CrossSitePermission[]>(INITIAL_CROSS_SITE_PERMISSIONS);
-  const [hardwareDevices, setHardwareDevices] = useState<HardwareDevice[]>(INITIAL_HARDWARE_DEVICES);
-  const [hardwareLogs, setHardwareLogs] = useState<HardwareLog[]>(INITIAL_HARDWARE_LOGS);
+  // Bu koleksiyonların henüz backend endpoint'i yok; boş başlarlar ve yalnızca
+  // kullanıcı eylemleriyle (ikmal kaydı, yetki ekleme, IoT logu) dolarlar.
+  const [transactions, setTransactions] = useState<FuelTransaction[]>([]);
+  const [crossSitePermissions, setCrossSitePermissions] = useState<CrossSitePermission[]>([]);
+  const [hardwareDevices, setHardwareDevices] = useState<HardwareDevice[]>([]);
+  const [hardwareLogs, setHardwareLogs] = useState<HardwareLog[]>([]);
 
   const [simulatedLatencyMs, setSimulatedLatencyMs] = useState<number>(14);
   const [isLogStreamActive, setIsLogStreamActive] = useState<boolean>(true);
@@ -274,27 +271,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       localStorage.setItem('YAKIT_ACCESS_TOKEN', data.accessToken);
       localStorage.setItem('YAKIT_REFRESH_TOKEN', data.refreshToken);
 
-      const targetComp = companies.find(
-        c => (c.username && c.username.toLowerCase() === trimmedUsername) ||
-             c.code.toLowerCase() === trimmedUsername ||
-             c.name.toLowerCase().includes(trimmedUsername)
-      ) || companies[0];
-
-      const targetIdx = companies.findIndex(c => c.id === targetComp.id);
-      if (targetIdx !== -1) {
-        setCurrentCompanyIndex(targetIdx);
-      }
+      // Firma bilgisi artık mock eşleştirmeyle değil, DB'den (/companies/me) çekiliyor.
+      const profile = await fetchCompanyProfile();
+      const companyName = profile?.name || data.user?.username || username.trim();
 
       setIsAuthenticated(true);
       setIsManagerMode(true);
       setRawSelectedSiteFilter('TÜMÜ');
       setCurrentUser({
-        username: data.user?.username || targetComp.username || username.trim(),
-        companyName: targetComp.name,
+        username: data.user?.username || username.trim(),
+        companyName,
         role: 'Firma Yöneticisi'
       });
 
-      showToast(`PostgreSQL Giriş Başarılı: ${targetComp.name} Yönetici paneline yönlendiriliyorsunuz`, 'success');
+      showToast(`PostgreSQL Giriş Başarılı: ${companyName} Yönetici paneline yönlendiriliyorsunuz`, 'success');
       return { success: true };
     } catch (err: any) {
       console.error('Backend API Hatası:', err);
@@ -330,35 +320,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       localStorage.setItem('YAKIT_ACCESS_TOKEN', data.accessToken);
       localStorage.setItem('YAKIT_REFRESH_TOKEN', data.refreshToken);
 
-      let matchedSite: Site | undefined;
-      let matchedCompany: Company | undefined;
-
-      for (const company of companies) {
-        const site = company.sites.find(
-          s => (s.username && s.username.toLowerCase() === trimmedUsername) ||
-               s.id.toLowerCase() === trimmedUsername
-        );
-        if (site) {
-          matchedSite = site;
-          matchedCompany = company;
-          break;
-        }
-      }
-
-      const activeComp = matchedCompany || companies[0];
-      const activeSiteName = data.user?.siteName || matchedSite?.name || 'Gebze Ana Şantiye';
+      // Şantiye operatörünün firması ve şantiyesi DB'den (/companies/me) geliyor;
+      // SITE_MANAGER token'ında yalnızca kendi şantiyesi döner.
+      const profile = await fetchCompanyProfile();
+      const activeSiteName = data.user?.siteName || profile?.sites[0]?.name || '';
+      const companyName = profile?.name || username.trim();
 
       setRawSelectedSiteFilter(activeSiteName);
       setIsAuthenticated(true);
       setIsManagerMode(false);
       setCurrentUser({
         username: data.user?.username || username.trim(),
-        companyName: activeComp.name,
+        companyName,
         siteName: activeSiteName,
         role: 'Şantiye Saha Operatörü'
       });
 
-      showToast(`PostgreSQL Şantiye Girişi Başarılı: ${activeSiteName} modunda panele yönlendiriliyorsunuz`, 'success');
+      showToast(`PostgreSQL Şantiye Girişi Başarılı: ${activeSiteName || companyName} modunda panele yönlendiriliyorsunuz`, 'success');
       return { success: true };
     } catch (err: any) {
       console.error('Backend API Hatası:', err);
@@ -402,38 +380,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return () => clearInterval(interval);
   }, []);
 
-  // Simulate live IoT Log Stream
-  useEffect(() => {
-    if (!isLogStreamActive) return;
-
-    const sampleLogs = [
-      { tag: 'MQTT' as const, msg: '[MQTT_PUB] Topic: camsa/gebze/telemetry Payload: {"flow_rate": 48.2, "rssi": -65}', site: 'Gebze Ana Şantiye', dev: 'ESP32_PUMP_01' },
-      { tag: 'RFID' as const, msg: '[RFID] Plaka 34 BKT 19 Okundu → Auth: Başarılı (CARD-881203)', site: 'Gebze Ana Şantiye', dev: 'ESP32_RFID_01' },
-      { tag: 'PUMP' as const, msg: '[PUMP] Pompa #1 Akış Başladı — 51.8 Litre/dk (Solenoid RÖLE: AÇIK)', site: 'Gebze Ana Şantiye', dev: 'ESP32_PUMP_01' },
-      { tag: 'SENSOR' as const, msg: '[SENSOR] Tank-1 Ultrasonik Seviye: 14,830 Litre (%74.1) | 18.5°C', site: 'Gebze Ana Şantiye', dev: 'ESP32_TANK_01' },
-      { tag: 'WARN' as const, msg: '[WARN] Tank-3 (Silivri) Seviye %12.8 KRİTİK EŞİK DÜŞÜKLÜĞÜ', site: 'Silivri Tesisleri', dev: 'ESP32_TANK_03' },
-    ];
-
-    const interval = setInterval(() => {
-      const log = sampleLogs[Math.floor(Math.random() * sampleLogs.length)];
-      const now = new Date();
-      const timeStr = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-      setHardwareLogs(prev => [
-        ...prev.slice(-49), // keep last 50
-        {
-          id: Date.now().toString() + Math.random().toString(36).substring(2, 5),
-          timestamp: timeStr,
-          deviceCode: log.dev,
-          tag: log.tag,
-          message: log.msg,
-          siteName: log.site
-        }
-      ]);
-    }, 3500);
-
-    return () => clearInterval(interval);
-  }, [isLogStreamActive]);
+  // NOT: Sahte IoT log akışı simülasyonu kaldırıldı. hardwareLogs artık yalnızca
+  // gerçek kullanıcı eylemleriyle (addHardwareLog / EEPROM kalibrasyon kaydı) dolar.
+  // Gerçek telemetri için ileride bir /telemetry veya /hardware-logs endpoint'i eklenmeli.
 
   // Actions
   const toggleCompanyModule = (companyId: string, moduleKey: keyof CompanyModule) => {
@@ -469,6 +418,51 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
       return c;
     }));
+  };
+
+  // Firma profili — yalnızca oturum açan tenant'ın firması DB'den (/companies/me).
+  // SITE_MANAGER (şantiye) girişinde backend yalnızca o şantiyeyi döndürür.
+  const fetchCompanyProfile = async (): Promise<Company | null> => {
+    try {
+      const response = await apiFetch('/companies/me');
+      if (response.success && response.data) {
+        const d = response.data;
+        const company: Company = {
+          id: d.id,
+          name: d.name,
+          code: d.code || String(d.id || '').toUpperCase(),
+          taxNumber: d.taxNumber || '',
+          city: d.city || '',
+          licenseStatus: d.licenseStatus || 'AKTİF',
+          licenseExpiry: d.licenseExpiry || '',
+          sites: Array.isArray(d.sites)
+            ? d.sites.map((s: any) => ({
+                id: s.id,
+                name: s.name,
+                location: s.location || '',
+                activeTanksCount: s.activeTanksCount ?? 0,
+                activeVehiclesCount: s.activeVehiclesCount ?? 0
+              }))
+            : [],
+          modules: {
+            aiAnomaly: !!d.modules?.aiAnomaly,
+            eInvoice: !!d.modules?.eInvoice,
+            smartWarehouse: !!d.modules?.smartWarehouse,
+            maintenanceTrack: !!d.modules?.maintenanceTrack,
+            driverScore: !!d.modules?.driverScore,
+            crossSiteAuth: !!d.modules?.crossSiteAuth
+          },
+          activeVehiclesCount: d.activeVehiclesCount ?? 0,
+          totalFuelThisMonth: d.totalFuelThisMonth ?? 0
+        };
+        setCompanies([company]);
+        setCurrentCompanyIndex(0);
+        return company;
+      }
+    } catch (err: any) {
+      console.error('Firma profili getirilirken hata:', err);
+    }
+    return null;
   };
 
   // Sites Fetch
@@ -516,9 +510,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  // Automatically fetch DB sites, vehicles, drivers & tanks when user is authenticated
+  // Automatically fetch DB company profile, sites, vehicles, drivers & tanks when user is authenticated
+  // (F5 sonrası token localStorage'da kaldığından bu effect firma bilgisini yeniden kurar)
   useEffect(() => {
     if (isAuthenticated) {
+      fetchCompanyProfile();
       fetchSites();
       fetchVehicles();
       fetchDrivers();
@@ -610,15 +606,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       showToast(`Araç silinirken hata: ${err.message}`, 'error');
     }
   };
-
-  useEffect(() => {
-    if (isAuthenticated) {
-      fetchSites();
-      fetchVehicles();
-      fetchDrivers();
-      fetchTanks();
-    }
-  }, [isAuthenticated]);
 
   // Driver CRUD
   const fetchDrivers = async () => {

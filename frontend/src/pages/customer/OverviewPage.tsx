@@ -1,7 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
-import { HOURLY_CONSUMPTION_DATA } from '../../mock';
 import { TankGauge } from '../../components/TankGauge';
 
 export const OverviewPage: React.FC = () => {
@@ -39,6 +38,22 @@ export const OverviewPage: React.FC = () => {
   const totalTankCapacity = filteredTanks.reduce((acc, t) => acc + t.capacityLiters, 0);
   const currentTankTotal = filteredTanks.reduce((acc, t) => acc + t.currentLevelLiters, 0);
   const tankPercentage = totalTankCapacity > 0 ? Math.round((currentTankTotal / totalTankCapacity) * 100) : 0;
+
+  // Saatlik tüketim grafiği: mock veri yerine gerçek işlem kayıtlarından 2 saatlik
+  // dilimlere göre türetilir. Kayıt yoksa grafik düz sıfır çizgisi gösterir.
+  const hourlyConsumptionData = useMemo(() => {
+    const buckets = Array.from({ length: 12 }, (_, i) => ({
+      hour: `${String(i * 2).padStart(2, '0')}:00`,
+      Total: 0
+    }));
+    filteredTransactions.forEach(tx => {
+      const hourPart = Number(tx.timestamp?.slice(11, 13));
+      if (Number.isNaN(hourPart)) return;
+      const slot = Math.min(11, Math.floor(hourPart / 2));
+      buckets[slot].Total += tx.amountLiters;
+    });
+    return buckets;
+  }, [filteredTransactions]);
 
   const todayOutputLiters = filteredTransactions.reduce((acc, t) => acc + t.amountLiters, 0);
   const activeVehiclesCount = selectedSiteFilter === 'TÜMÜ'
@@ -173,7 +188,7 @@ export const OverviewPage: React.FC = () => {
 
           <div className="h-64 w-full pt-2">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={HOURLY_CONSUMPTION_DATA} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+              <AreaChart data={hourlyConsumptionData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                 <defs>
                   <linearGradient id="amberGlow" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#ffdca1" stopOpacity={0.3}/>

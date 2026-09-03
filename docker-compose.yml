@@ -89,8 +89,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-yakittakip_db}
-      JWT_SECRET: ${JWT_SECRET:-yakittakip_jwt_access_secret_key_2026_super_secure}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-yakittakip_jwt_refresh_secret_key_2026_super_secure}
+      # No insecure default here on purpose: the backend now fails fast at
+      # startup if these are missing (see backend/src/services/tokenService.ts).
+      # Set real, random values in your .env — copy .env.example and edit it.
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET .env dosyasında tanımlanmalıdır}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET .env dosyasında tanımlanmalıdır}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       MQTT_URL: mqtt://emqx:1883

@@ -4,9 +4,9 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch src/bootstrap.ts",
     "start": "node dist/server.cjs",
-    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=cjs --external:argon2 --external:pg-native --external:swagger-ui-express --external:swagger-jsdoc --outfile=dist/server.cjs",
+    "build": "esbuild src/bootstrap.ts --bundle --platform=node --target=node20 --format=cjs --external:argon2 --external:pg-native --external:swagger-ui-express --external:swagger-jsdoc --outfile=dist/server.cjs",
     "seed": "tsx src/db/seed.ts",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist"

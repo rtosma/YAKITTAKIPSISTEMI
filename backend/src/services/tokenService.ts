@@ -1,8 +1,26 @@
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'yakittakip_jwt_access_secret_key_2026_super_secure';
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'yakittakip_jwt_refresh_secret_key_2026_super_secure';
+/**
+ * SECURITY: no hardcoded fallback. A default secret baked into source control
+ * means anyone who reads the repo can forge valid access/refresh tokens for
+ * any tenant/role. Fail fast at startup instead of silently running insecure.
+ * (Requires `./bootstrap.ts` to be the process entry point so `.env` is
+ * loaded before this module evaluates — see bootstrap.ts for why.)
+ */
+function requireSecret(envVar: string): string {
+  const value = process.env[envVar];
+  if (!value || value.trim().length === 0) {
+    throw new Error(
+      `FATAL: ${envVar} ortam değişkeni tanımlı değil. JWT imzalama için zorunludur. ` +
+      `.env dosyanızı .env.example üzerinden oluşturup güçlü, rastgele bir değer atayın.`
+    );
+  }
+  return value;
+}
+
+const JWT_SECRET = requireSecret('JWT_SECRET');
+const JWT_REFRESH_SECRET = requireSecret('JWT_REFRESH_SECRET');
 
 export type UserRole = 'SUPER_ADMIN' | 'COMPANY_OWNER' | 'SITE_MANAGER' | 'PUMP_OPERATOR' | 'DRIVER';
 
@@ -78,8 +96,16 @@ export function generateRefreshToken(userId: string, tenantId: string): string {
 
 /**
  * Rotate Refresh Token with Single-Use Enforcement & Theft Reuse Detection
+ *
+ * SECURITY: the caller MUST NOT be able to dictate whose identity the new tokens
+ * carry. `fetchUserPayload` is invoked with the userId/tenantId embedded in the
+ * (cryptographically verified) old refresh token record and must resolve the
+ * CURRENT identity from the database — never accept a payload from the request.
  */
-export async function rotateRefreshToken(oldRefreshToken: string, userPayload: JwtUserPayload): Promise<{ accessToken: string; refreshToken: string }> {
+export async function rotateRefreshToken(
+  oldRefreshToken: string,
+  fetchUserPayload: (userId: string, tenantId: string) => Promise<JwtUserPayload | null>
+): Promise<{ accessToken: string; refreshToken: string }> {
   let decoded: any;
   try {
     decoded = jwt.verify(oldRefreshToken, JWT_REFRESH_SECRET);
@@ -100,6 +126,13 @@ export async function rotateRefreshToken(oldRefreshToken: string, userPayload: J
   // Mark current token as used and revoked (single-use constraint)
   tokenRecord.used = true;
   tokenRecord.isRevoked = true;
+
+  // Re-resolve the REAL, current identity from the database using the token
+  // record's own userId/tenantId — never trust a caller-supplied payload.
+  const userPayload = await fetchUserPayload(tokenRecord.userId, tokenRecord.tenantId);
+  if (!userPayload) {
+    throw new Error('INVALID_REFRESH_TOKEN: Kullanıcı artık mevcut değil veya devre dışı bırakılmış.');
+  }
 
   // Issue new Access Token (15 min) and new Refresh Token (7 days)
   const newAccessToken = generateAccessToken(userPayload);
