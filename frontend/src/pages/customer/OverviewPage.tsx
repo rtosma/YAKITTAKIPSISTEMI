@@ -47,8 +47,12 @@ export const OverviewPage: React.FC = () => {
       Total: 0
     }));
     filteredTransactions.forEach(tx => {
-      const hourPart = Number(tx.timestamp?.slice(11, 13));
-      if (Number.isNaN(hourPart)) return;
+      // timestamp yerelleştirilmiş bir görüntü metni ('03.09.2026 10:30:00');
+      // sabit karakter pozisyonuna güvenmeden HH:MM içinden saati çekiyoruz.
+      const hourMatch = tx.timestamp?.match(/(\d{1,2}):\d{2}/);
+      if (!hourMatch) return;
+      const hourPart = Number(hourMatch[1]);
+      if (Number.isNaN(hourPart) || hourPart > 23) return;
       const slot = Math.min(11, Math.floor(hourPart / 2));
       buckets[slot].Total += tx.amountLiters;
     });
