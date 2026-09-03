@@ -109,16 +109,15 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- 5. Refresh Tokens Table
-CREATE TABLE IF NOT EXISTS refresh_tokens (
-    id VARCHAR(64) PRIMARY KEY,
-    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-    token_hash VARCHAR(255) NOT NULL,
-    is_revoked BOOLEAN DEFAULT FALSE,
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
+-- 5. Refresh Tokens — KASITLI OLARAK YOK.
+-- Refresh token rotasyonu + reuse-detection tamamen Redis'te tutuluyor
+-- (bkz. backend/src/services/tokenService.ts): `refresh_token:{jti}` ve
+-- `refresh_tokens_by_user:{userId}` anahtarları, 7 günlük TTL ile kendi
+-- kendini temizler. Daha önce burada duran `refresh_tokens` tablosu hiçbir
+-- kod tarafından yazılmıyor/okunmuyordu; yanıltıcı olduğu için kaldırıldı.
+-- Uzun vadeli oturum denetimi (audit) gerekirse ayrı bir `login_audit`
+-- tablosu eklenmeli — token durumunu aynalayan bir tablo değil.
+DROP TABLE IF EXISTS refresh_tokens;
 
 -- ==============================================================================
 -- 6. Enable Row Level Security (RLS) Policies

@@ -37,6 +37,12 @@ services:
     image: redis:7-alpine
     container_name: yakittakip_redis
     restart: unless-stopped
+    # AOF (Append Only File) etkin: refresh token store + IoT cihaz durumu
+    # Redis'te tutulduğu için, bir crash'te yalnızca RDB snapshot'ına güvenmek
+    # (varsayılan: 60 sn'de 10000 / 300 sn'de 100 / 1 saatte 1 yazım) son
+    # ~1 saate kadar yazımı kaybettirebilir → tüm kullanıcılar toplu logout.
+    # everysec fsync ile kayıp en fazla ~1 sn'ye iner.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     volumes:
       - redisdata:/data
     healthcheck:
