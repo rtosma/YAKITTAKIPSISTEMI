@@ -11,7 +11,12 @@ export interface VehicleRecord {
   site_name: string;
   status: string;
   fuel_capacity_liters: number | null;
+  assigned_driver_name: string | null;
 }
+
+// Şoför/araç formlarının "atanmadı" durumu için kullandığı sentinel değerler —
+// bunlardan biri gelirse ilişki NULL'a çekilir (bkz. createDriver/updateDriver).
+const UNASSIGNED_SENTINELS = new Set(['Atanmadı', 'Yok', '']);
 
 export interface HardwareLogRecord {
   id: string;
@@ -214,6 +219,9 @@ export interface DriverRecord {
   rfid_card_id: string;
   site_name: string;
   status: string;
+  // Gerçek bir kolon değil — vehicles.assigned_driver_name = drivers.name
+  // eşleşmesinden türetilir (bkz. getTenantDrivers).
+  assigned_vehicle_plate: string | null;
 }
 
 export interface TankRecord {
@@ -252,7 +260,8 @@ export async function getTenantVehicles(): Promise<VehicleRecord[]> {
       rfid_tag: row.rfid_tag,
       site_name: row.site_name,
       status: row.status,
-      fuel_capacity_liters: row.fuel_capacity_liters !== null ? Number(row.fuel_capacity_liters) : null
+      fuel_capacity_liters: row.fuel_capacity_liters !== null ? Number(row.fuel_capacity_liters) : null,
+      assigned_driver_name: row.assigned_driver_name
     }));
   } catch (err) {
     await client.query('ROLLBACK');
@@ -271,10 +280,13 @@ export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'
     await client.query('BEGIN');
     await client.query('SET LOCAL ROLE app_user;');
     await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+    const assignedDriverName = data.assigned_driver_name && !UNASSIGNED_SENTINELS.has(data.assigned_driver_name)
+      ? data.assigned_driver_name
+      : null;
     const result = await client.query(
-      `INSERT INTO vehicles (id, tenant_id, plate, brand_model, vehicle_type, rfid_tag, site_name, status, fuel_capacity_liters)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-      [id, tenantId, data.plate, data.brand_model, data.vehicle_type, data.rfid_tag, data.site_name, data.status, data.fuel_capacity_liters ?? null]
+      `INSERT INTO vehicles (id, tenant_id, plate, brand_model, vehicle_type, rfid_tag, site_name, status, fuel_capacity_liters, assigned_driver_name)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [id, tenantId, data.plate, data.brand_model, data.vehicle_type, data.rfid_tag, data.site_name, data.status, data.fuel_capacity_liters ?? null, assignedDriverName]
     );
     await client.query('COMMIT');
     return result.rows[0];
@@ -302,6 +314,11 @@ export async function updateVehicle(id: string, data: Partial<VehicleRecord>): P
       if (['plate', 'brand_model', 'vehicle_type', 'rfid_tag', 'site_name', 'status', 'fuel_capacity_liters'].includes(key) && value !== undefined) {
         fields.push(`${key} = $${queryIdx}`);
         values.push(value);
+        queryIdx++;
+      }
+      if (key === 'assigned_driver_name' && value !== undefined) {
+        fields.push(`assigned_driver_name = $${queryIdx}`);
+        values.push(typeof value === 'string' && !UNASSIGNED_SENTINELS.has(value) ? value : null);
         queryIdx++;
       }
     }
@@ -357,7 +374,16 @@ export async function getTenantDrivers(): Promise<DriverRecord[]> {
     await client.query('BEGIN');
     await client.query('SET LOCAL ROLE app_user;');
     await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
-    const result = await client.query('SELECT * FROM drivers ORDER BY created_at DESC');
+    // assigned_vehicle_plate gerçek bir kolon değil — vehicles.assigned_driver_name
+    // eşleşmesinden korele bir alt sorguyla türetiliyor (LIMIT 1: bir şoföre
+    // birden fazla araç atanmışsa — normal akışta olmamalı — çift satır yerine
+    // rastgele birini gösterir).
+    const result = await client.query(`
+      SELECT d.*,
+        (SELECT v.plate FROM vehicles v WHERE v.assigned_driver_name = d.name AND v.tenant_id = d.tenant_id LIMIT 1) AS assigned_vehicle_plate
+      FROM drivers d
+      ORDER BY d.created_at DESC
+    `);
     await client.query('COMMIT');
     return result.rows;
   } catch (err) {
@@ -365,6 +391,35 @@ export async function getTenantDrivers(): Promise<DriverRecord[]> {
     throw err;
   } finally {
     client.release();
+  }
+}
+
+/**
+ * Bir şoförü verilen plakadaki araca atar (vehicles.assigned_driver_name
+ * kolonunu günceller); önce bu şoförün önceden atanmış olabileceği BAŞKA bir
+ * aracı boşaltarak 1 şoför : 1 araç tutarlılığını korur. plate sentinel
+ * ('Atanmadı'/'Yok'/boş) ise sadece eski atamayı temizler.
+ */
+async function syncDriverVehicleAssignment(
+  client: import('pg').PoolClient,
+  tenantId: string,
+  driverName: string,
+  plate: string | null | undefined
+): Promise<void> {
+  // Bu şoföre önceden atanmış olabilecek her aracı boşalt.
+  await client.query(
+    'UPDATE vehicles SET assigned_driver_name = NULL WHERE assigned_driver_name = $1 AND tenant_id = $2',
+    [driverName, tenantId]
+  );
+
+  const normalizedPlate = plate && !UNASSIGNED_SENTINELS.has(plate) ? plate : null;
+  if (normalizedPlate) {
+    // Hedef araç bu tenant'ta yoksa sessizce yok sayılır (serbest metin plaka
+    // girilmiş olabilir) — ikmal kaydında tank eşleşmesiyle aynı toleranslı desen.
+    await client.query(
+      'UPDATE vehicles SET assigned_driver_name = $1 WHERE plate = $2 AND tenant_id = $3',
+      [driverName, normalizedPlate, tenantId]
+    );
   }
 }
 
@@ -378,12 +433,17 @@ export async function createDriver(data: Omit<DriverRecord, 'id' | 'tenant_id'>)
     await client.query('SET LOCAL ROLE app_user;');
     await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
     const result = await client.query(
-      `INSERT INTO drivers (id, tenant_id, name, tc_no, phone, license_type, rfid_card_id, site_name, status) 
+      `INSERT INTO drivers (id, tenant_id, name, tc_no, phone, license_type, rfid_card_id, site_name, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [id, tenantId, data.name, data.tc_no, data.phone, data.license_type, data.rfid_card_id, data.site_name, data.status]
     );
+
+    if (data.assigned_vehicle_plate !== undefined) {
+      await syncDriverVehicleAssignment(client, tenantId, data.name, data.assigned_vehicle_plate);
+    }
+
     await client.query('COMMIT');
-    return result.rows[0];
+    return { ...result.rows[0], assigned_vehicle_plate: data.assigned_vehicle_plate ?? null };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
@@ -412,19 +472,32 @@ export async function updateDriver(id: string, data: Partial<DriverRecord>): Pro
       }
     }
 
-    if (fields.length === 0) {
+    if (fields.length === 0 && data.assigned_vehicle_plate === undefined) {
       await client.query('ROLLBACK');
       throw new Error('Güncellenecek alan bulunamadı.');
     }
 
-    values.push(id);
-    const result = await client.query(
-      `UPDATE drivers SET ${fields.join(', ')} WHERE id = $${queryIdx} RETURNING *`,
-      values
-    );
+    let updatedDriver: any;
+    if (fields.length > 0) {
+      values.push(id);
+      const result = await client.query(
+        `UPDATE drivers SET ${fields.join(', ')} WHERE id = $${queryIdx} RETURNING *`,
+        values
+      );
+      if (result.rows.length === 0) throw new Error('Şoför bulunamadı veya yetkiniz yok.');
+      updatedDriver = result.rows[0];
+    } else {
+      const result = await client.query('SELECT * FROM drivers WHERE id = $1', [id]);
+      if (result.rows.length === 0) throw new Error('Şoför bulunamadı veya yetkiniz yok.');
+      updatedDriver = result.rows[0];
+    }
+
+    if (data.assigned_vehicle_plate !== undefined) {
+      await syncDriverVehicleAssignment(client, tenantId, updatedDriver.name, data.assigned_vehicle_plate);
+    }
+
     await client.query('COMMIT');
-    if (result.rows.length === 0) throw new Error('Şoför bulunamadı veya yetkiniz yok.');
-    return result.rows[0];
+    return { ...updatedDriver, assigned_vehicle_plate: data.assigned_vehicle_plate ?? null };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;

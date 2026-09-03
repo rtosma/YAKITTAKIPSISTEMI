@@ -568,7 +568,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           brandModel: v.brand_model,
           type: v.vehicle_type,
           siteName: v.site_name || 'Gebze Ana Şantiye',
-          assignedDriver: 'Atanmadı', // TODO: Fetch from relations
+          assignedDriver: v.assigned_driver_name || 'Atanmadı',
           rfidTag: v.rfid_tag,
           fuelCapacityLiters: v.fuel_capacity_liters != null ? Number(v.fuel_capacity_liters) : 0,
           lastRefuelDate: 'Henüz yok', // TODO: Calculate from transactions
@@ -592,7 +592,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         rfidTag: newVeh.rfidTag,
         siteName: newVeh.siteName,
         fuelCapacityLiters: newVeh.fuelCapacityLiters || 450,
-        status: newVeh.status
+        status: newVeh.status,
+        assignedDriver: newVeh.assignedDriver
       };
       await apiFetch('/vehicles', {
         method: 'POST',
@@ -601,6 +602,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       showToast(`Yeni araç kaydedildi: ${newVeh.plate}`);
       await fetchVehicles();
       await fetchSites();
+      await fetchDrivers();
     } catch (err: any) {
       showToast(`Araç eklenirken hata: ${err.message}`, 'error');
     }
@@ -615,7 +617,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...(updatedVeh.rfidTag && { rfidTag: updatedVeh.rfidTag }),
         ...(updatedVeh.siteName && { siteName: updatedVeh.siteName }),
         ...(updatedVeh.fuelCapacityLiters && { fuelCapacityLiters: updatedVeh.fuelCapacityLiters }),
-        ...(updatedVeh.status && { status: updatedVeh.status })
+        ...(updatedVeh.status && { status: updatedVeh.status }),
+        ...(updatedVeh.assignedDriver !== undefined && { assignedDriver: updatedVeh.assignedDriver })
       };
       await apiFetch(`/vehicles/${id}`, {
         method: 'PUT',
@@ -624,6 +627,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       showToast('Araç bilgileri güncellendi');
       await fetchVehicles();
       await fetchSites();
+      await fetchDrivers();
     } catch (err: any) {
       showToast(`Araç güncellenirken hata: ${err.message}`, 'error');
     }
@@ -655,7 +659,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           rfidCardId: d.rfid_card_id,
           status: d.status,
           siteName: d.site_name || 'Gebze Ana Şantiye',
-          assignedVehiclePlate: 'Atanmadı', // TODO: Map this correctly from relations
+          assignedVehiclePlate: d.assigned_vehicle_plate || 'Atanmadı',
           performanceScore: 100, // Mock
           totalFuelPumpedLiters: 0 // Mock
         }));
@@ -675,7 +679,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         licenseType: newDrv.licenseType,
         rfidCardId: newDrv.rfidCardId,
         siteName: newDrv.siteName,
-        status: newDrv.status
+        status: newDrv.status,
+        assignedVehiclePlate: newDrv.assignedVehiclePlate
       };
       await apiFetch('/drivers', {
         method: 'POST',
@@ -684,6 +689,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       showToast(`Yeni şoför eklendi: ${newDrv.name}`);
       await fetchDrivers();
       await fetchSites();
+      // Şoför-araç ataması çift yönlü senkronize edilir (bkz. backend
+      // syncDriverVehicleAssignment) — vehicles listesi de güncel kalmalı.
+      await fetchVehicles();
     } catch (err: any) {
       showToast(`Şoför eklenirken hata: ${err.message}`, 'error');
     }
@@ -698,7 +706,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...(updatedDrv.licenseType && { licenseType: updatedDrv.licenseType }),
         ...(updatedDrv.rfidCardId && { rfidCardId: updatedDrv.rfidCardId }),
         ...(updatedDrv.siteName && { siteName: updatedDrv.siteName }),
-        ...(updatedDrv.status && { status: updatedDrv.status })
+        ...(updatedDrv.status && { status: updatedDrv.status }),
+        ...(updatedDrv.assignedVehiclePlate !== undefined && { assignedVehiclePlate: updatedDrv.assignedVehiclePlate })
       };
       await apiFetch(`/drivers/${id}`, {
         method: 'PUT',
@@ -707,6 +716,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       showToast('Şoför bilgileri güncellendi');
       await fetchDrivers();
       await fetchSites();
+      await fetchVehicles();
     } catch (err: any) {
       showToast(`Şoför güncellenirken hata: ${err.message}`, 'error');
     }

@@ -33,6 +33,11 @@ CREATE TABLE IF NOT EXISTS vehicles (
     site_name VARCHAR(128) DEFAULT 'Gebze Ana Şantiye',
     status VARCHAR(32) DEFAULT 'AKTİF',
     fuel_capacity_liters NUMERIC(10, 2),
+    -- Atanan şoförün adı — araç/şoför formlarından (VehiclesPage & DriversPage)
+    -- çift yönlü set edilebilir; tek doğruluk kaynağı burasıdır (bkz.
+    -- tenantDb.ts createDriver/updateDriver, şoför tarafından yapılan atamayı
+    -- buraya yazar). Basit VARCHAR — mevcut site_name deseniyle tutarlı, FK değil.
+    assigned_driver_name VARCHAR(128),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -40,6 +45,7 @@ CREATE TABLE IF NOT EXISTS vehicles (
 -- (createVehicleSchema fuelCapacityLiters'ı zorunlu kılıp doğruluyordu ama
 -- hiçbir DB kolonu olmadığı için değer sessizce atılıyordu — bkz. routes.ts)
 ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS fuel_capacity_liters NUMERIC(10, 2);
+ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS assigned_driver_name VARCHAR(128);
 
 -- 3. Tanks Table with Tenant ID
 CREATE TABLE IF NOT EXISTS tanks (

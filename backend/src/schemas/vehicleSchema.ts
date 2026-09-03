@@ -13,7 +13,10 @@ export const createVehicleSchema = z.object({
     .min(3, 'RFID tag en az 3 karakter olmalıdır.'),
   fuelCapacityLiters: z.number({ message: 'Yakıt kapasitesi zorunludur.' })
     .positive('Yakıt kapasitesi 0\'dan büyük bir sayı olmalıdır.'),
-  siteName: z.string().optional()
+  siteName: z.string().optional(),
+  // Serbest metin şoför adı — bkz. tenantDb.ts vehicles.assigned_driver_name.
+  // 'Atanmadı' gibi sentinel değerler backend'de NULL'a normalize edilir.
+  assignedDriver: z.string().optional()
 });
 
 export const updateVehicleSchema = createVehicleSchema.partial();

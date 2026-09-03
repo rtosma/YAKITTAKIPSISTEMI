@@ -386,7 +386,8 @@ router.post(
         rfid_tag: sanitizedBody.rfidTag,
         site_name: sanitizedBody.siteName || sanitizedBody.site_name || 'Gebze Ana Şantiye',
         status: sanitizedBody.status || 'AKTİF',
-        fuel_capacity_liters: sanitizedBody.fuelCapacityLiters ?? null
+        fuel_capacity_liters: sanitizedBody.fuelCapacityLiters ?? null,
+        assigned_driver_name: sanitizedBody.assignedDriver ?? null
       };
 
       const newVehicle = await createVehicle(vehicleData);
@@ -414,7 +415,7 @@ router.put(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const id = req.params.id;
-      const { plate, brandModel, type, rfidTag, siteName, status, fuelCapacityLiters } = req.body;
+      const { plate, brandModel, type, rfidTag, siteName, status, fuelCapacityLiters, assignedDriver } = req.body;
       const updateData = {
         ...(plate && { plate }),
         ...(brandModel && { brand_model: brandModel }),
@@ -422,7 +423,8 @@ router.put(
         ...(rfidTag && { rfid_tag: rfidTag }),
         ...(siteName && { site_name: siteName }),
         ...(status && { status }),
-        ...(fuelCapacityLiters !== undefined && { fuel_capacity_liters: fuelCapacityLiters })
+        ...(fuelCapacityLiters !== undefined && { fuel_capacity_liters: fuelCapacityLiters }),
+        ...(assignedDriver !== undefined && { assigned_driver_name: assignedDriver })
       };
 
       const updatedVehicle = await updateVehicle(id, updateData);
@@ -506,7 +508,7 @@ router.post(
   validateRequest({ body: createDriverSchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const { name, tcNo, phone, licenseType, rfidCardId, siteName, status } = req.body;
+      const { name, tcNo, phone, licenseType, rfidCardId, siteName, status, assignedVehiclePlate } = req.body;
       const driverData = {
         name,
         tc_no: tcNo,
@@ -514,7 +516,8 @@ router.post(
         license_type: licenseType,
         rfid_card_id: rfidCardId,
         site_name: siteName || 'Gebze Ana Şantiye',
-        status: status || 'AKTİF'
+        status: status || 'AKTİF',
+        assigned_vehicle_plate: assignedVehiclePlate
       };
 
       const newDriver = await createDriver(driverData);
@@ -556,7 +559,7 @@ router.put(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const id = req.params.id;
-      const { name, tcNo, phone, licenseType, rfidCardId, siteName, status } = req.body;
+      const { name, tcNo, phone, licenseType, rfidCardId, siteName, status, assignedVehiclePlate } = req.body;
       const updateData = {
         ...(name && { name }),
         ...(tcNo && { tc_no: tcNo }),
@@ -564,7 +567,8 @@ router.put(
         ...(licenseType && { license_type: licenseType }),
         ...(rfidCardId && { rfid_card_id: rfidCardId }),
         ...(siteName && { site_name: siteName }),
-        ...(status && { status })
+        ...(status && { status }),
+        ...(assignedVehiclePlate !== undefined && { assigned_vehicle_plate: assignedVehiclePlate })
       };
 
       const updatedDriver = await updateDriver(id, updateData);

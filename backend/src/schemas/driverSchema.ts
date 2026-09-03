@@ -7,7 +7,10 @@ export const createDriverSchema = z.object({
   licenseType: z.string().optional(),
   rfidCardId: z.string().min(1, 'RFID Kart ID zorunludur.'),
   siteName: z.string().optional(),
-  status: z.string().optional()
+  status: z.string().optional(),
+  // Serbest metin araç plakası — bkz. tenantDb.ts syncDriverVehicleAssignment.
+  // 'Yok'/'Atanmadı' gibi sentinel değerler backend'de atamayı temizler.
+  assignedVehiclePlate: z.string().optional()
 });
 
 export const updateDriverSchema = createDriverSchema.partial();
