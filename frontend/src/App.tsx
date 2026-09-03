@@ -1,7 +1,24 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppProvider } from './context/AppContext';
 import { Toast } from './components/Toast';
+
+// FE-802 — TransactionsPage'in sunucu taraflı sayfalı/filtreli sorguları
+// için tek bir global QueryClient. staleTime > 0: aynı filtre/sayfa
+// kombinasyonuna kısa sürede geri dönüldüğünde (ör. sayfalar arası ileri-geri)
+// gereksiz tekrar istek atılmaz; refetchOnWindowFocus kapalı çünkü bu liste
+// zaten Socket.io ile dispense:completed olayında AppContext tarafında ayrıca
+// canlı güncelleniyor (bkz. AppContext.tsx socket effect'i).
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      refetchOnWindowFocus: false,
+      retry: 1
+    }
+  }
+});
 
 // Pages & Layouts
 import { LoginPage } from './pages/LoginPage';
@@ -36,6 +53,7 @@ import { SystemHealthPage } from './pages/developer/SystemHealthPage';
 
 export function App() {
   return (
+    <QueryClientProvider client={queryClient}>
     <AppProvider>
       <BrowserRouter>
         <Toast />
@@ -93,6 +111,7 @@ export function App() {
         </Routes>
       </BrowserRouter>
     </AppProvider>
+    </QueryClientProvider>
   );
 }
 

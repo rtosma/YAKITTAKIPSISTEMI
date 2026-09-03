@@ -1,10 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { exportToExcelWithTotals } from '../../utils/excelExporter';
 import { FuelTransaction } from '../../types';
+import { useTransactionsQuery, useDebouncedValue, fetchAllFilteredTransactions, TransactionQueryFilters } from '../../hooks/useTransactionsQuery';
 
 export const TransactionsPage: React.FC = () => {
-  const { transactions, selectedSiteFilter, currentCompany, drivers, isManagerMode, currentUser } = useApp();
+  const { selectedSiteFilter, currentCompany, drivers, isManagerMode, currentUser, showToast } = useApp();
 
   // Filter States
   const [startDate, setStartDate] = useState<string>('');
@@ -23,60 +24,51 @@ export const TransactionsPage: React.FC = () => {
   const pageSize = 10;
 
   // Sync with global header site filter if user changes header
-  React.useEffect(() => {
+  useEffect(() => {
     setSiteFilter(selectedSiteFilter);
     setCurrentPage(1);
   }, [selectedSiteFilter]);
 
-  // Real-time client-side filtered data
-  const filteredTransactions = useMemo(() => {
-    return transactions.filter(t => {
-      // Date filter
-      if (startDate) {
-        const txDate = t.timestamp.split(' ')[0];
-        if (txDate < startDate) return false;
-      }
-      if (endDate) {
-        const txDate = t.timestamp.split(' ')[0];
-        if (txDate > endDate) return false;
-      }
+  // FE-802 — arama kutusu her tuş vuruşunda değil, kullanıcı yazmayı
+  // bitirdikten ~400ms sonra sunucuya gitsin.
+  const debouncedSearchTerm = useDebouncedValue(searchTerm, 400);
 
-      // Site filter
-      if (siteFilter !== 'TÜMÜ' && t.siteName !== siteFilter) return false;
+  // Sunucuya gidecek filtre seti — bunlardan biri değiştiğinde React Query
+  // otomatik olarak yeni bir sayfa isteği atar (queryKey bu nesneyi içeriyor).
+  const filters: TransactionQueryFilters = useMemo(() => ({
+    page: currentPage,
+    pageSize,
+    startDate: startDate || undefined,
+    endDate: endDate || undefined,
+    siteName: siteFilter !== 'TÜMÜ' ? siteFilter : undefined,
+    driverName: driverFilter !== 'TÜMÜ' ? driverFilter : undefined,
+    pumpStatus: pumpStatusFilter !== 'TÜMÜ' ? (pumpStatusFilter as any) : undefined,
+    type: selectedType !== 'TÜMÜ' ? (selectedType as any) : undefined,
+    search: debouncedSearchTerm || undefined
+  }), [currentPage, startDate, endDate, siteFilter, driverFilter, pumpStatusFilter, selectedType, debouncedSearchTerm]);
 
-      // Driver filter
-      if (driverFilter !== 'TÜMÜ' && t.driverName !== driverFilter) return false;
+  const { data, isLoading, isFetching, isPlaceholderData, isError, error } = useTransactionsQuery(filters);
 
-      // Pump status filter
-      if (pumpStatusFilter !== 'TÜMÜ' && t.pumpStatus !== pumpStatusFilter) return false;
+  const transactions = data?.transactions ?? [];
+  const totalCount = data?.totalCount ?? 0;
+  const totalPages = data?.totalPages ?? 1;
+  const totalFilteredLiters = data?.totalLiters ?? 0;
 
-      // Type filter
-      if (selectedType !== 'TÜMÜ' && t.type !== selectedType) return false;
+  useEffect(() => {
+    if (isError) {
+      showToast(`İkmal geçmişi getirilirken hata: ${error?.message}`, 'error');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isError]);
 
-      // Search term (Plate, driver, tank)
-      if (searchTerm.trim()) {
-        const term = searchTerm.toLowerCase();
-        const matchesPlate = t.vehiclePlate.toLowerCase().includes(term);
-        const matchesDriver = t.driverName.toLowerCase().includes(term);
-        const matchesTank = t.tankName.toLowerCase().includes(term);
-        if (!matchesPlate && !matchesDriver && !matchesTank) return false;
-      }
-
-      return true;
-    });
-  }, [transactions, startDate, endDate, siteFilter, driverFilter, pumpStatusFilter, selectedType, searchTerm]);
-
-  // Total volume of filtered results
-  const totalFilteredLiters = useMemo(() => {
-    return filteredTransactions.reduce((acc, t) => acc + t.amountLiters, 0);
-  }, [filteredTransactions]);
-
-  // Paginated Data
-  const totalPages = Math.ceil(filteredTransactions.length / pageSize) || 1;
-  const paginatedTransactions = useMemo(() => {
-    const start = (currentPage - 1) * pageSize;
-    return filteredTransactions.slice(start, start + pageSize);
-  }, [filteredTransactions, currentPage, pageSize]);
+  // Bir filtre sayfa sayısını filtrelenmiş sonucu currentPage'in ötesine
+  // düşürürse (ör. arama sonucu 2 sayfaya iniyor ama 5. sayfadaydık) son
+  // geçerli sayfaya geri çek.
+  useEffect(() => {
+    if (data && currentPage > data.totalPages) {
+      setCurrentPage(data.totalPages);
+    }
+  }, [data, currentPage]);
 
   // Clear filters
   const handleClearFilters = () => {
@@ -90,16 +82,28 @@ export const TransactionsPage: React.FC = () => {
     setCurrentPage(1);
   };
 
-  // Section 6.3 Real Excel Export with SheetJS & Auto-Calculated Totals
-  const handleExportExcel = () => {
+  // Section 6.3 Real Excel Export with SheetJS & Auto-Calculated Totals.
+  // Ekranda görünen tek sayfa değil, filtreye uyan TÜM kayıtlar dışa
+  // aktarılıyor — bkz. fetchAllFilteredTransactions (birden fazla sayfa
+  // isteğini birleştirir).
+  const handleExportExcel = async () => {
     setIsExporting(true);
+    try {
+      const allFiltered = await fetchAllFilteredTransactions({
+        startDate: startDate || undefined,
+        endDate: endDate || undefined,
+        siteName: siteFilter !== 'TÜMÜ' ? siteFilter : undefined,
+        driverName: driverFilter !== 'TÜMÜ' ? driverFilter : undefined,
+        pumpStatus: pumpStatusFilter !== 'TÜMÜ' ? (pumpStatusFilter as any) : undefined,
+        type: selectedType !== 'TÜMÜ' ? (selectedType as any) : undefined,
+        search: debouncedSearchTerm || undefined
+      });
 
-    setTimeout(() => {
       const today = new Date().toISOString().split('T')[0];
       const filename = `yakit-hareketleri_${today}.xlsx`;
 
       exportToExcelWithTotals<FuelTransaction>({
-        data: filteredTransactions,
+        data: allFiltered,
         sheetName: 'Yakıt Hareketleri',
         filename,
         totalLabelColumnIndex: 0,
@@ -118,14 +122,16 @@ export const TransactionsPage: React.FC = () => {
           { header: 'Alınan Miktar (Litre)', key: 'amountLiters', isTotalable: true, format: 'number', width: 22 }
         ]
       });
-
+    } catch (err: any) {
+      showToast(`Excel dışa aktarımı sırasında hata: ${err.message}`, 'error');
+    } finally {
       setIsExporting(false);
-    }, 600);
+    }
   };
 
   return (
     <div className="space-y-6">
-      
+
       {/* Page Header */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 bg-[#1c1b1b] border border-[#514532]/25 p-6 rounded-xl">
         <div className="space-y-1">
@@ -155,7 +161,7 @@ export const TransactionsPage: React.FC = () => {
           {/* Section 6.3 Excel Export Primary Button */}
           <button
             onClick={handleExportExcel}
-            disabled={isExporting || filteredTransactions.length === 0}
+            disabled={isExporting || totalCount === 0}
             className="px-5 py-3 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] hover:from-[#ffdca1] hover:to-[#ffb77f] text-[#412d00] font-black rounded-md text-xs flex items-center space-x-2 transition-all cursor-pointer shadow-sm disabled:opacity-50"
           >
             {isExporting ? (
@@ -175,7 +181,7 @@ export const TransactionsPage: React.FC = () => {
 
       {/* SECTION 6.1 Yatay Filtre Çubuğu */}
       <div className="bg-[#1c1b1b] border border-[#514532]/25 p-4 rounded-xl space-y-4">
-        
+
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
           {/* Başlangıç Tarihi */}
           <div>
@@ -287,8 +293,11 @@ export const TransactionsPage: React.FC = () => {
 
         {/* Filter Bottom Bar: Results counter & Clear ghost button */}
         <div className="flex items-center justify-between pt-3 border-t border-[#514532]/20 text-xs font-mono">
-          <span className="text-[#ffdca1] font-bold">
-            {filteredTransactions.length} ikmal hareketi bulundu
+          <span className="text-[#ffdca1] font-bold flex items-center gap-2">
+            {totalCount} ikmal hareketi bulundu
+            {isFetching && (
+              <span className="w-3 h-3 border-2 border-[#ffdca1] border-t-transparent rounded-full animate-spin" title="Güncelleniyor..." />
+            )}
           </span>
 
           <button
@@ -303,7 +312,7 @@ export const TransactionsPage: React.FC = () => {
       </div>
 
       {/* SECTION 6.2 Tablo */}
-      <div className="bg-[#1c1b1b] border border-[#514532]/25 rounded-xl p-6 space-y-4 overflow-hidden">
+      <div className={`bg-[#1c1b1b] border border-[#514532]/25 rounded-xl p-6 space-y-4 overflow-hidden transition-opacity ${isPlaceholderData ? 'opacity-60' : 'opacity-100'}`}>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
@@ -320,7 +329,18 @@ export const TransactionsPage: React.FC = () => {
               </tr>
             </thead>
             <tbody className="divide-y divide-[#514532]/20 font-mono">
-              {paginatedTransactions.map(t => (
+              {isLoading && (
+                <tr>
+                  <td colSpan={9} className="py-12 text-center text-[#d5c4ab]">
+                    <span className="inline-flex items-center gap-2">
+                      <span className="w-4 h-4 border-2 border-[#ffdca1] border-t-transparent rounded-full animate-spin" />
+                      Yükleniyor...
+                    </span>
+                  </td>
+                </tr>
+              )}
+
+              {!isLoading && transactions.map(t => (
                 <tr key={t.id} className="hover:bg-[#20201f] transition-colors">
                   <td className="py-3.5 px-4 text-[#d5c4ab]">{t.timestamp}</td>
                   <td className="py-3.5 px-4 font-bold text-[#e5e2e1]">{t.siteName}</td>
@@ -350,7 +370,7 @@ export const TransactionsPage: React.FC = () => {
                 </tr>
               ))}
 
-              {filteredTransactions.length === 0 && (
+              {!isLoading && transactions.length === 0 && (
                 <tr>
                   <td colSpan={9} className="py-12 text-center text-[#d5c4ab]">
                     Filtre kriterlerine uygun yakıt hareketi bulunamadı.
@@ -365,7 +385,7 @@ export const TransactionsPage: React.FC = () => {
         {totalPages > 1 && (
           <div className="flex items-center justify-between pt-4 border-t border-[#514532]/20 font-mono text-xs">
             <span className="text-[#d5c4ab]">
-              Sayfa {currentPage} / {totalPages} (Toplam {filteredTransactions.length} Kayıt)
+              Sayfa {currentPage} / {totalPages} (Toplam {totalCount} Kayıt)
             </span>
 
             <div className="flex items-center space-x-2">
@@ -377,7 +397,7 @@ export const TransactionsPage: React.FC = () => {
                 Önceki
               </button>
               <button
-                disabled={currentPage === totalPages}
+                disabled={currentPage === totalPages || isPlaceholderData}
                 onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
                 className="px-3 py-1.5 bg-[#20201f] hover:bg-[#2a2a2a] disabled:opacity-40 text-[#e5e2e1] rounded-md text-xs cursor-pointer"
               >

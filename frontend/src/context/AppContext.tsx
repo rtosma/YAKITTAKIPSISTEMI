@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 import { apiFetch, UNAUTHORIZED_EVENT } from '../utils/api';
@@ -129,6 +130,10 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  // FE-802: TransactionsPage kendi TanStack Query önbelleğinden okuyor — bir
+  // dispense olayı Socket.io üzerinden geldiğinde o önbelleği de geçersiz
+  // kılmak için (bkz. aşağıdaki handleDispenseCompleted).
+  const queryClient = useQueryClient();
   const [companies, setCompanies] = useState<Company[]>(INITIAL_COMPANIES);
   const [currentCompanyIndex, setCurrentCompanyIndex] = useState<number>(() => {
     const saved = localStorage.getItem('YAKIT_COMPANY_IDX');
@@ -432,6 +437,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // başlattıysam addFuelTransaction kendi fetchTransactions'ını zaten
       // çağırdı) — id'ye göre tekilleştir.
       setTransactions(prev => prev.some(p => p.id === newTx.id) ? prev : [newTx, ...prev]);
+
+      // TransactionsPage'in sunucu taraflı sayfalı sorgusu ayrı bir önbellekte
+      // yaşıyor (bkz. useTransactionsQuery) — o sayfa açıksa yeni ikmali
+      // görebilsin diye geçersiz kılınıyor (React Query açık sorguları
+      // otomatik olarak arka planda yeniden çeker).
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
     };
 
     // FE-801 AC: bağlantı koptuğunda "Bağlantı Yenileniyor..." uyarısı +
@@ -923,7 +934,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const fetchTransactions = async () => {
     try {
-      const response = await apiFetch('/transactions');
+      // Bu global liste; genel bakış/arşiv gibi widget'ların "son N hareket"
+      // ihtiyacı için makul bir üst sınırla (200) tek seferde çekiliyor.
+      // Tam sayfalı/filtreli geçmiş tablosu (TransactionsPage) artık kendi
+      // TanStack Query kancasıyla ayrıca sunucu taraflı sayfalama yapıyor
+      // (bkz. src/hooks/useTransactionsQuery.ts) — FE-802.
+      const response = await apiFetch('/transactions?page=1&pageSize=200');
       if (response.success && response.data) {
         const mappedTransactions: FuelTransaction[] = response.data.map((t: any) => ({
           id: t.id,

@@ -1,12 +1,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createTenantSite, deleteTenantSite, getTenantCompanyProfile, getTenantTransactions, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createTenantSite, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus } from '../db/tenantDb';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
 import { createTankSchema, updateTankSchema } from '../schemas/tankSchema';
-import { dispenseRequestSchema } from '../schemas/transactionSchema';
+import { dispenseRequestSchema, transactionQuerySchema } from '../schemas/transactionSchema';
 import { createCrossSitePermissionSchema, updateCrossSitePermissionStatusSchema } from '../schemas/crossSiteSchema';
 import { createCompanySchema, updateCompanySchema } from '../schemas/companySchema';
 import { loginSchema } from '../schemas/authSchema';
@@ -965,26 +965,78 @@ router.post(
  * @swagger
  * /transactions:
  *   get:
- *     summary: İkmal Geçmişi
- *     description: RLS kurallarına göre oturum açmış firmanın son 200 ikmal kaydını getirir.
+ *     summary: İkmal Geçmişi (FE-802 — sunucu taraflı sayfalama)
+ *     description: RLS kurallarına göre oturum açmış firmanın ikmal geçmişini sayfalı ve filtreli olarak getirir.
  *     security:
  *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, default: 10, maximum: 100 }
+ *       - in: query
+ *         name: startDate
+ *         schema: { type: string, format: date }
+ *       - in: query
+ *         name: endDate
+ *         schema: { type: string, format: date }
+ *       - in: query
+ *         name: siteName
+ *         schema: { type: string }
+ *       - in: query
+ *         name: driverName
+ *         schema: { type: string }
+ *       - in: query
+ *         name: pumpStatus
+ *         schema: { type: string, enum: [TAMAMLANTI, DURDURULDU, ANOMALİ] }
+ *       - in: query
+ *         name: type
+ *         schema: { type: string, enum: [Otomatik, Manuel, Çapraz Şantiye] }
+ *       - in: query
+ *         name: search
+ *         schema: { type: string }
  *     responses:
  *       200:
- *         description: İkmal geçmişi başarıyla getirildi.
+ *         description: İkmal geçmişi sayfası başarıyla getirildi.
  */
-router.get('/transactions', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-  try {
-    const transactions = await getTenantTransactions();
-    res.json({
-      success: true,
-      totalCount: transactions.length,
-      data: transactions
-    });
-  } catch (error: any) {
-    next(error);
+router.get(
+  '/transactions',
+  authenticateJWT,
+  validateRequest({ query: transactionQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as {
+        page: number;
+        pageSize: number;
+        startDate?: string;
+        endDate?: string;
+        siteName?: string;
+        driverName?: string;
+        pumpStatus?: string;
+        type?: string;
+        search?: string;
+      };
+
+      const result = await getTenantTransactionsPaginated(q);
+
+      res.json({
+        success: true,
+        data: result.data,
+        pagination: {
+          page: result.page,
+          pageSize: result.pageSize,
+          totalCount: result.totalCount,
+          totalPages: result.totalPages,
+          totalLiters: result.totalLiters
+        }
+      });
+    } catch (error: any) {
+      next(error);
+    }
   }
-});
+);
 
 /**
  * @swagger

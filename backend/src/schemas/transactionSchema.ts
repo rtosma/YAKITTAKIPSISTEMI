@@ -22,3 +22,25 @@ export const dispenseRequestSchema = z.object({
 });
 
 export type DispenseRequestDTO = z.infer<typeof dispenseRequestSchema>;
+
+/**
+ * FE-802 — GET /transactions artık tüm geçmişi (eskiden sabit LIMIT 200)
+ * tek seferde döndürmek yerine sunucu taraflı sayfalama + filtreleme
+ * yapıyor. Filtre alanlarının hepsi opsiyonel; boş/gönderilmemiş bir alan
+ * o kritere göre daraltma uygulamaz.
+ */
+export const transactionQuerySchema = z.object({
+  page: z.coerce.number({ message: 'Sayfa numarası geçerli bir sayı olmalıdır.' })
+    .int().positive().default(1),
+  pageSize: z.coerce.number({ message: 'Sayfa boyutu geçerli bir sayı olmalıdır.' })
+    .int().positive().max(100, 'Sayfa boyutu en fazla 100 olabilir.').default(10),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Başlangıç tarihi YYYY-AA-GG formatında olmalıdır.').optional(),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Bitiş tarihi YYYY-AA-GG formatında olmalıdır.').optional(),
+  siteName: z.string().min(1).optional(),
+  driverName: z.string().min(1).optional(),
+  pumpStatus: z.enum(['TAMAMLANTI', 'DURDURULDU', 'ANOMALİ']).optional(),
+  type: z.enum(['Otomatik', 'Manuel', 'Çapraz Şantiye']).optional(),
+  search: z.string().min(1).max(128).optional()
+});
+
+export type TransactionQueryDTO = z.infer<typeof transactionQuerySchema>;

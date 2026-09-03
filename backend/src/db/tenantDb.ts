@@ -646,20 +646,116 @@ export interface TransactionRecord {
   created_at: string;
 }
 
-export async function getTenantTransactions(): Promise<TransactionRecord[]> {
+export interface TransactionFilters {
+  page?: number;
+  pageSize?: number;
+  startDate?: string;
+  endDate?: string;
+  siteName?: string;
+  driverName?: string;
+  pumpStatus?: string;
+  type?: string;
+  search?: string;
+}
+
+export interface PaginatedTransactions {
+  data: TransactionRecord[];
+  page: number;
+  pageSize: number;
+  totalCount: number;
+  totalPages: number;
+  totalLiters: number;
+}
+
+/**
+ * FE-802 — sunucu taraflı sayfalama + filtreleme. Eskiden bu fonksiyon tüm
+ * geçmişi sabit bir LIMIT 200 ile döndürüyordu (bkz. git geçmişi); artık
+ * WHERE koşulları ve LIMIT/OFFSET ile hem toplam kayıt sayısını hem de
+ * istenen tek sayfayı getiriyor. Tüm filtre değerleri parametreli sorgu
+ * ($n) ile geçiliyor — hiçbir kullanıcı girdisi SQL string'ine doğrudan
+ * enjekte edilmiyor. Tenant izolasyonu (RLS) burada da app_user rolü +
+ * app.current_tenant_id ile sağlanıyor; WHERE'e ayrıca tenant_id eklemeye
+ * gerek yok.
+ */
+export async function getTenantTransactionsPaginated(
+  filters: TransactionFilters = {}
+): Promise<PaginatedTransactions> {
   const tenantId = getTenantId();
   if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
+
+  const page = filters.page && filters.page > 0 ? Math.floor(filters.page) : 1;
+  const pageSize = filters.pageSize && filters.pageSize > 0
+    ? Math.min(Math.floor(filters.pageSize), 100)
+    : 10;
+  const offset = (page - 1) * pageSize;
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (filters.startDate) {
+    params.push(filters.startDate);
+    conditions.push(`created_at >= $${params.length}::date`);
+  }
+  if (filters.endDate) {
+    params.push(filters.endDate);
+    conditions.push(`created_at < ($${params.length}::date + INTERVAL '1 day')`);
+  }
+  if (filters.siteName) {
+    params.push(filters.siteName);
+    conditions.push(`site_name = $${params.length}`);
+  }
+  if (filters.driverName) {
+    params.push(filters.driverName);
+    conditions.push(`driver_name = $${params.length}`);
+  }
+  if (filters.pumpStatus) {
+    params.push(filters.pumpStatus);
+    conditions.push(`pump_status = $${params.length}`);
+  }
+  if (filters.type) {
+    params.push(filters.type);
+    conditions.push(`type = $${params.length}`);
+  }
+  if (filters.search) {
+    params.push(`%${filters.search}%`);
+    const idx = params.length;
+    conditions.push(`(vehicle_plate ILIKE $${idx} OR driver_name ILIKE $${idx} OR tank_name ILIKE $${idx})`);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     await client.query('SET LOCAL ROLE app_user;');
     await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
-    // FE-802 (server-side pagination) henüz yok — burada makul bir üst sınır
-    // uygulanıyor. Toplu/ tam geçmiş dışa aktarımı için REP-701 stream export
-    // ayrı bir uç noktadır.
-    const result = await client.query('SELECT * FROM transactions ORDER BY created_at DESC LIMIT 200');
+
+    // Sayaç ve toplam litre, filtreye uyan TÜM kayıtlar üzerinden (yalnızca
+    // görüntülenen sayfa değil) tek bir aggregate sorguda hesaplanıyor — arayüz
+    // "filtrelenen toplam hacim" rakamını buradan alıyor.
+    const aggregateResult = await client.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(amount_liters), 0)::numeric AS total_liters
+       FROM transactions ${whereClause}`,
+      params
+    );
+    const totalCount: number = aggregateResult.rows[0]?.count ?? 0;
+    const totalLiters: number = Number(aggregateResult.rows[0]?.total_liters ?? 0);
+
+    const dataParams = [...params, pageSize, offset];
+    const dataResult = await client.query(
+      `SELECT * FROM transactions ${whereClause} ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      dataParams
+    );
+
     await client.query('COMMIT');
-    return result.rows;
+    return {
+      data: dataResult.rows,
+      page,
+      pageSize,
+      totalCount,
+      totalPages: Math.max(1, Math.ceil(totalCount / pageSize)),
+      totalLiters
+    };
   } catch (err) {
     await client.query('ROLLBACK');
     throw err;
