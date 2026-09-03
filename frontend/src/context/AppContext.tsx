@@ -55,6 +55,7 @@ interface AppContextType {
   tanks: Tank[];
   transactions: FuelTransaction[];
   crossSitePermissions: CrossSitePermission[];
+  fetchCrossSitePermissions: () => Promise<void>;
   hardwareDevices: HardwareDevice[];
   hardwareLogs: HardwareLog[];
 
@@ -97,8 +98,8 @@ interface AppContextType {
   addFuelTransaction: (tx: Omit<FuelTransaction, 'id' | 'timestamp'>) => Promise<void>;
   addHardwareLog: (log: Omit<HardwareLog, 'id' | 'timestamp'>) => void;
   clearHardwareLogs: () => void;
-  toggleCrossSiteStatus: (id: string) => void;
-  addCrossSitePermission: (perm: Omit<CrossSitePermission, 'id' | 'usedLiters' | 'status'>) => void;
+  toggleCrossSiteStatus: (id: string) => Promise<void>;
+  addCrossSitePermission: (perm: Omit<CrossSitePermission, 'id' | 'usedLiters' | 'status'>) => Promise<void>;
   addCompany: (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules'>) => Promise<void>;
   updateCompanyStatus: (companyId: string, status: 'AKTİF' | 'ASKIDA' | 'DENEME') => Promise<void>;
 
@@ -560,6 +561,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       fetchDrivers();
       fetchTanks();
       fetchTransactions();
+      fetchCrossSitePermissions();
       // Yalnızca SUPER_ADMIN — /companies tüm tenant'ları döndürür, diğer
       // roller zaten 403 alır.
       if (currentUser?.role === 'SUPER_ADMIN') {
@@ -899,26 +901,59 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     showToast('IoT log ekranı temizlendi', 'info');
   };
 
-  const toggleCrossSiteStatus = (id: string) => {
-    setCrossSitePermissions(prev => prev.map(p => {
-      if (p.id === id) {
-        const nextStatus = p.status === 'AKTİF' ? 'SÜRESİ_DOLDU' : 'AKTİF';
-        showToast(`Yetki durumu değişti: ${p.vehiclePlate} (${nextStatus})`);
-        return { ...p, status: nextStatus };
+  // Önceden bu iki fonksiyon yalnızca local state'i güncelliyordu; kota
+  // takibi de client tarafında sahteydi. Artık gerçek backend'e yazıyor —
+  // POST /dispense artık bu tabloyu kontrol edip used_liters'ı atomik
+  // olarak günceliyor (bkz. tenantDb.createTransaction, FUEL-402).
+  const fetchCrossSitePermissions = async () => {
+    try {
+      const response = await apiFetch('/cross-site-permissions');
+      if (response.success && response.data) {
+        const mapped: CrossSitePermission[] = response.data.map((p: any) => ({
+          id: p.id,
+          vehiclePlate: p.vehicle_plate,
+          driverName: p.driver_name || '',
+          homeSite: p.home_site,
+          targetSite: p.target_site,
+          allowedLiters: Number(p.allowed_liters),
+          usedLiters: Number(p.used_liters),
+          expiryDate: p.expiry_date,
+          status: p.status
+        }));
+        setCrossSitePermissions(mapped);
       }
-      return p;
-    }));
+    } catch (err: any) {
+      showToast(`Çapraz şantiye yetkileri getirilirken hata: ${err.message}`, 'error');
+    }
   };
 
-  const addCrossSitePermission = (perm: Omit<CrossSitePermission, 'id' | 'usedLiters' | 'status'>) => {
-    const newPerm: CrossSitePermission = {
-      ...perm,
-      id: 'csp-' + Date.now(),
-      usedLiters: 0,
-      status: 'AKTİF'
-    };
-    setCrossSitePermissions(prev => [newPerm, ...prev]);
-    showToast(`Çapraz şantiye yetkisi eklendi: ${perm.vehiclePlate} → ${perm.targetSite}`);
+  const toggleCrossSiteStatus = async (id: string) => {
+    const target = crossSitePermissions.find(p => p.id === id);
+    if (!target) return;
+    const nextStatus = target.status === 'AKTİF' ? 'SÜRESİ_DOLDU' : 'AKTİF';
+    try {
+      await apiFetch(`/cross-site-permissions/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: nextStatus })
+      });
+      await fetchCrossSitePermissions();
+      showToast(`Yetki durumu değişti: ${target.vehiclePlate} (${nextStatus})`);
+    } catch (err: any) {
+      showToast(`Yetki durumu güncellenirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  const addCrossSitePermission = async (perm: Omit<CrossSitePermission, 'id' | 'usedLiters' | 'status'>) => {
+    try {
+      await apiFetch('/cross-site-permissions', {
+        method: 'POST',
+        body: JSON.stringify(perm)
+      });
+      await fetchCrossSitePermissions();
+      showToast(`Çapraz şantiye yetkisi eklendi: ${perm.vehiclePlate} → ${perm.targetSite}`);
+    } catch (err: any) {
+      showToast(`Çapraz şantiye yetkisi eklenirken hata: ${err.message}`, 'error');
+    }
   };
 
   // Süper Admin panelinden yeni tenant firma oluşturur — backend companies +
@@ -991,6 +1026,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         tanks,
         transactions,
         crossSitePermissions,
+        fetchCrossSitePermissions,
         hardwareDevices,
         hardwareLogs,
         tankRefreshKey,

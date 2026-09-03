@@ -94,6 +94,27 @@ CREATE TABLE IF NOT EXISTS transactions (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 3c. Cross-Site Fuel Permissions (Çapraz Şantiye İkmal Yetkileri — FUEL-402)
+-- Bir aracın KENDİ şantiyesi dışında (target_site) yakıt alabilmesi için
+-- tanımlanan geçici kota. createTransaction bu tabloyu kontrol eder: araç
+-- home_site'i dışında bir site'de ikmal alıyorsa, AKTİF + süresi dolmamış +
+-- kalan kotası yeterli bir izin yoksa ikmal reddedilir (QUOTA_EXHAUSTED /
+-- NO_CROSS_SITE_PERMISSION); varsa used_liters aynı DB transaction'ında
+-- atomik olarak artırılır (bkz. tenantDb.ts createTransaction).
+CREATE TABLE IF NOT EXISTS cross_site_permissions (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    vehicle_plate VARCHAR(32) NOT NULL,
+    driver_name VARCHAR(128),
+    home_site VARCHAR(128) NOT NULL,
+    target_site VARCHAR(128) NOT NULL,
+    allowed_liters NUMERIC(10, 2) NOT NULL,
+    used_liters NUMERIC(10, 2) NOT NULL DEFAULT 0,
+    expiry_date DATE NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'AKTİF',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ==============================================================================
 -- [AUTH-201] Users Table & Refresh Tokens Rotation Store
 -- ==============================================================================
@@ -129,6 +150,7 @@ ALTER TABLE tanks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE drivers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cross_site_permissions ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -162,6 +184,7 @@ ALTER TABLE users FORCE ROW LEVEL SECURITY;
 ALTER TABLE drivers FORCE ROW LEVEL SECURITY;
 ALTER TABLE sites FORCE ROW LEVEL SECURITY;
 ALTER TABLE transactions FORCE ROW LEVEL SECURITY;
+ALTER TABLE cross_site_permissions FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -170,6 +193,7 @@ DROP POLICY IF EXISTS users_tenant_isolation_policy ON users;
 DROP POLICY IF EXISTS drivers_tenant_isolation_policy ON drivers;
 DROP POLICY IF EXISTS sites_tenant_isolation_policy ON sites;
 DROP POLICY IF EXISTS transactions_tenant_isolation_policy ON transactions;
+DROP POLICY IF EXISTS cross_site_permissions_tenant_isolation_policy ON cross_site_permissions;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -203,6 +227,12 @@ CREATE POLICY sites_tenant_isolation_policy ON sites
 
 -- Create Tenant Isolation Policy for transactions
 CREATE POLICY transactions_tenant_isolation_policy ON transactions
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- Create Tenant Isolation Policy for cross_site_permissions
+CREATE POLICY cross_site_permissions_tenant_isolation_policy ON cross_site_permissions
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

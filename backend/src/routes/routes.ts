@@ -1,12 +1,13 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createTenantSite, deleteTenantSite, getTenantCompanyProfile, getTenantTransactions, createTransaction } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createTenantSite, deleteTenantSite, getTenantCompanyProfile, getTenantTransactions, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus } from '../db/tenantDb';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
 import { createTankSchema, updateTankSchema } from '../schemas/tankSchema';
 import { dispenseRequestSchema } from '../schemas/transactionSchema';
+import { createCrossSitePermissionSchema, updateCrossSitePermissionStatusSchema } from '../schemas/crossSiteSchema';
 import { createCompanySchema, updateCompanySchema } from '../schemas/companySchema';
 import { loginSchema } from '../schemas/authSchema';
 import { verifyPassword } from '../utils/password';
@@ -967,6 +968,97 @@ router.get('/transactions', authenticateJWT, async (req: AuthenticatedRequest, r
     next(error);
   }
 });
+
+/**
+ * @swagger
+ * /cross-site-permissions:
+ *   get:
+ *     summary: Çapraz Şantiye İkmal Yetkileri (FUEL-402)
+ *     description: Firmaya ait tüm çapraz şantiye ikmal yetkilerini listeler.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Yetki listesi başarıyla getirildi.
+ */
+router.get('/cross-site-permissions', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const permissions = await getTenantCrossSitePermissions();
+    res.json({ success: true, totalCount: permissions.length, data: permissions });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /cross-site-permissions:
+ *   post:
+ *     summary: Çapraz Şantiye İkmal Yetkisi Oluştur (FUEL-402)
+ *     description: >
+ *       Bir aracın kendi şantiyesi dışında geçici olarak yakıt alabilmesi
+ *       için kota tanımlar. POST /dispense bu kaydı kontrol edip
+ *       kullanılan miktarı atomik olarak günceller.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Yetki oluşturuldu.
+ */
+router.post(
+  '/cross-site-permissions',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ body: createCrossSitePermissionSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const b = req.body;
+      const newPermission = await createCrossSitePermission({
+        vehicle_plate: b.vehiclePlate,
+        driver_name: b.driverName ?? null,
+        home_site: b.homeSite,
+        target_site: b.targetSite,
+        allowed_liters: b.allowedLiters,
+        expiry_date: b.expiryDate
+      });
+      res.json({ success: true, message: 'Çapraz şantiye yetkisi oluşturuldu.', data: newPermission });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /cross-site-permissions/{id}:
+ *   patch:
+ *     summary: Çapraz Şantiye Yetki Durumunu Güncelle
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Durum güncellendi.
+ */
+router.patch(
+  '/cross-site-permissions/:id',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ body: updateCrossSitePermissionStatusSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const updated = await updateCrossSitePermissionStatus(req.params.id, req.body.status);
+      res.json({ success: true, message: 'Yetki durumu güncellendi.', data: updated });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
 
 /**
  * POST /api/v1/telemetry/hardware-data

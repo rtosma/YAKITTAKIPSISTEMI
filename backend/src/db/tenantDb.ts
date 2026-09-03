@@ -1,5 +1,6 @@
 import { pool } from './postgresPool';
 import { getTenantId } from '../context/tenantContext';
+import { ForbiddenError, ConflictError } from '../utils/errors';
 
 export interface VehicleRecord {
   id: string;
@@ -684,6 +685,46 @@ export async function createTransaction(
     await client.query('SET LOCAL ROLE app_user;');
     await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
 
+    // FUEL-402: Araç kendi şantiyesi (site_name) DIŞINDA bir yerde ikmal
+    // alıyorsa, bu "çapraz şantiye" ikmalidir ve AKTİF + süresi dolmamış +
+    // yeterli kotalı bir cross_site_permissions kaydı gerektirir. Araç kaydı
+    // yoksa (serbest metin plaka) kontrol atlanır — diğer tolerans desenleriyle
+    // tutarlı.
+    const vehicleRes = await client.query(
+      'SELECT site_name FROM vehicles WHERE plate = $1',
+      [data.vehicle_plate]
+    );
+    if (vehicleRes.rows.length > 0 && vehicleRes.rows[0].site_name !== data.site_name) {
+      const permRes = await client.query(
+        `SELECT id, allowed_liters, used_liters FROM cross_site_permissions
+         WHERE vehicle_plate = $1 AND target_site = $2 AND status = 'AKTİF' AND expiry_date >= CURRENT_DATE
+         FOR UPDATE`,
+        [data.vehicle_plate, data.site_name]
+      );
+
+      if (permRes.rows.length === 0) {
+        throw new ForbiddenError(
+          `'${data.vehicle_plate}' plakalı aracın '${data.site_name}' şantiyesinde geçerli bir çapraz şantiye ikmal yetkisi yok.`
+        );
+      }
+
+      const perm = permRes.rows[0];
+      const remaining = Number(perm.allowed_liters) - Number(perm.used_liters);
+      if (remaining < Number(data.amount_liters)) {
+        throw new ConflictError(
+          `Çapraz şantiye kotası yetersiz: kalan ${remaining.toFixed(2)} L, istenen ${Number(data.amount_liters).toFixed(2)} L.`,
+          { error: 'QUOTA_EXHAUSTED' }
+        );
+      }
+
+      const newUsed = Number(perm.used_liters) + Number(data.amount_liters);
+      const newPermStatus = newUsed >= Number(perm.allowed_liters) ? 'KULLANILDI' : 'AKTİF';
+      await client.query(
+        'UPDATE cross_site_permissions SET used_liters = $1, status = $2 WHERE id = $3',
+        [newUsed, newPermStatus, perm.id]
+      );
+    }
+
     // İlgili tankı bul ve satırı kilitle (varsa) — isim eşleşmesi olmayabilir
     // (örn. serbest metin girilmiş tankName), bu durumda seviye düşümü
     // sessizce atlanır ama ikmal kaydı yine de oluşturulur.
@@ -716,6 +757,92 @@ export async function createTransaction(
       ]
     );
     await client.query('COMMIT');
+    return result.rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// ============================================================================
+// CROSS-SITE FUEL PERMISSIONS CRUD (FUEL-402)
+// ============================================================================
+
+export interface CrossSitePermissionRecord {
+  id: string;
+  tenant_id: string;
+  vehicle_plate: string;
+  driver_name: string | null;
+  home_site: string;
+  target_site: string;
+  allowed_liters: number;
+  used_liters: number;
+  expiry_date: string;
+  status: string;
+  created_at: string;
+}
+
+export async function getTenantCrossSitePermissions(): Promise<CrossSitePermissionRecord[]> {
+  const tenantId = getTenantId();
+  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SET LOCAL ROLE app_user;');
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+    const result = await client.query('SELECT * FROM cross_site_permissions ORDER BY created_at DESC');
+    await client.query('COMMIT');
+    return result.rows;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function createCrossSitePermission(
+  data: Omit<CrossSitePermissionRecord, 'id' | 'tenant_id' | 'used_liters' | 'status' | 'created_at'>
+): Promise<CrossSitePermissionRecord> {
+  const tenantId = getTenantId();
+  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
+  const id = 'csp-' + Date.now();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SET LOCAL ROLE app_user;');
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+    const result = await client.query(
+      `INSERT INTO cross_site_permissions (id, tenant_id, vehicle_plate, driver_name, home_site, target_site, allowed_liters, expiry_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [id, tenantId, data.vehicle_plate, data.driver_name ?? null, data.home_site, data.target_site, data.allowed_liters, data.expiry_date]
+    );
+    await client.query('COMMIT');
+    return result.rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function updateCrossSitePermissionStatus(id: string, status: string): Promise<CrossSitePermissionRecord> {
+  const tenantId = getTenantId();
+  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SET LOCAL ROLE app_user;');
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+    const result = await client.query(
+      'UPDATE cross_site_permissions SET status = $1 WHERE id = $2 RETURNING *',
+      [status, id]
+    );
+    await client.query('COMMIT');
+    if (result.rows.length === 0) throw new Error('Çapraz şantiye yetkisi bulunamadı veya yetkiniz yok.');
     return result.rows[0];
   } catch (err) {
     await client.query('ROLLBACK');
