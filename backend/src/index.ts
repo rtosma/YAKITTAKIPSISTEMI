@@ -1,6 +1,8 @@
 import express from 'express';
 import cors from 'cors';
+import http from 'http';
 
+import { initSocketServer } from './socket/socketServer';
 import { traceMiddleware, httpLoggerMiddleware } from './middleware/loggerMiddleware';
 import { globalErrorHandler, notFoundHandler, registerProcessExceptionHandlers } from './middleware/errorHandler';
 import { setupGracefulShutdown, isServerShuttingDown } from './utils/shutdown';
@@ -96,11 +98,17 @@ app.use('/api/v1', notFoundHandler);
 // Global Exception Filter & Error Handler (Must be attached last)
 app.use(globalErrorHandler);
 
-const server = app.listen(PORT, () => {
+// FE-801: Socket.io, Express ile AYNI HTTP sunucusuna (tek port, tek TLS
+// sertifikası) bağlanır — bu yüzden app.listen() yerine http.createServer(app)
+// kullanılıp Socket.io ona attach edilir, sonra o sunucu dinlemeye başlar.
+const httpServer = http.createServer(app);
+initSocketServer(httpServer);
+
+const server = httpServer.listen(PORT, () => {
   logger.info({
     port: PORT,
     environment: process.env.NODE_ENV || 'development',
-    features: ['AsyncLocalStorage RLS', 'HMAC Auth', 'Pino Logger', 'Global Exception Filter', 'Graceful Shutdown', 'MQTT & LWT'],
+    features: ['AsyncLocalStorage RLS', 'HMAC Auth', 'Pino Logger', 'Global Exception Filter', 'Graceful Shutdown', 'MQTT & LWT', 'Socket.io'],
   }, `🚀 [OPS-1101] Yakıttakip Backend Sunucusu Başlatıldı!`);
 
   // Start MQTT Listener

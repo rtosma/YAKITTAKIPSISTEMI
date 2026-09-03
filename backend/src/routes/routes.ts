@@ -24,6 +24,8 @@ import {
 import { authenticateJWT, authorizeRoles, AuthenticatedRequest } from '../middleware/authMiddleware';
 import { hardwareAuthMiddleware, REGISTERED_HARDWARE_DEVICES } from '../middleware/hardwareAuthMiddleware';
 import { redisPool } from '../db/redisPool';
+import { broadcastToTenant } from '../socket/socketServer';
+import { logger } from '../utils/logger';
 import { loginRateLimiter } from '../middleware/rateLimitMiddleware';
 
 const router = Router();
@@ -932,6 +934,21 @@ router.post(
         type: b.type || 'Manuel',
         rfid_auth: b.rfidAuth ?? true
       });
+
+      // FE-801: ikmal tamamlanır tamamlanmaz aynı kiracının diğer açık
+      // panellerine (örn. Tank Durumu ekranı, başka bir kullanıcının
+      // tarayıcısında) sayfa yenilenmeden anında yansısın diye canlı yayın.
+      const tenantId = req.user?.tenantId;
+      if (tenantId) {
+        try {
+          const freshTanks = await getTenantTanks();
+          broadcastToTenant(tenantId, 'dispense:completed', { transaction: newTransaction, tanks: freshTanks });
+        } catch (broadcastErr) {
+          // Canlı yayın başarısız olsa bile ikmal kaydı zaten kalıcıdır —
+          // bu bir best-effort bildirimdir, isteği başarısız kılmamalı.
+          logger.warn({ err: broadcastErr }, '⚠️ [Socket.io] dispense:completed yayını başarısız oldu.');
+        }
+      }
 
       res.json({
         success: true,

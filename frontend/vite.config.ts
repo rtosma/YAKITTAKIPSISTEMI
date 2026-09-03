@@ -20,6 +20,13 @@ export default defineConfig(() => {
           target: 'http://localhost:5000',
           changeOrigin: true,
         },
+        // FE-801: Socket.io — needs ws: true for the WebSocket upgrade to be
+        // proxied (plain HTTP proxying alone silently breaks the connection).
+        '/socket.io': {
+          target: 'http://localhost:5000',
+          changeOrigin: true,
+          ws: true,
+        },
       },
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.

@@ -1,7 +1,8 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 import { apiFetch, UNAUTHORIZED_EVENT } from '../utils/api';
+import { socket, connectSocket, disconnectSocket } from '../utils/socket';
 import { 
   Company, 
   Site,
@@ -387,6 +388,97 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     window.addEventListener(UNAUTHORIZED_EVENT, handleUnauthorized);
     return () => window.removeEventListener(UNAUTHORIZED_EVENT, handleUnauthorized);
   }, []);
+
+  // FE-801: Socket.io canlı bağlantı. Bir ikmal tamamlandığında (başka bir
+  // sekmede/kullanıcıda dahi olsa) tank seviyeleri ve işlem geçmişi sayfa
+  // yenilenmeden anında güncellenir.
+  const wasConnectedRef = useRef(false);
+  useEffect(() => {
+    if (!isAuthenticated) {
+      disconnectSocket();
+      return;
+    }
+
+    const handleDispenseCompleted = (payload: { transaction: any; tanks: any[] }) => {
+      const mappedTanks: Tank[] = payload.tanks.map((t: any) => ({
+        id: t.id,
+        name: t.name,
+        siteName: t.site_name || 'Gebze Ana Şantiye',
+        capacityLiters: Number(t.capacity_liters),
+        currentLevelLiters: Number(t.current_level_liters),
+        fuelType: t.fuel_type,
+        temperatureC: 22.5,
+        lastRefillDate: 'Bilinmiyor',
+        sensorId: 'SEN-' + t.id.substring(4, 10),
+        status: t.status
+      }));
+      setTanks(mappedTanks);
+
+      const tx = payload.transaction;
+      const newTx: FuelTransaction = {
+        id: tx.id,
+        timestamp: new Date(tx.created_at).toLocaleString('tr-TR').replace(',', ''),
+        siteName: tx.site_name,
+        vehiclePlate: tx.vehicle_plate,
+        driverName: tx.driver_name || '',
+        tankName: tx.tank_name || '',
+        amountLiters: Number(tx.amount_liters),
+        flowRateLpm: tx.flow_rate_lpm != null ? Number(tx.flow_rate_lpm) : 0,
+        pumpStatus: tx.pump_status,
+        type: tx.type,
+        rfidAuth: tx.rfid_auth
+      };
+      // Aynı işlem zaten local olarak eklenmiş olabilir (ikmali BEN
+      // başlattıysam addFuelTransaction kendi fetchTransactions'ını zaten
+      // çağırdı) — id'ye göre tekilleştir.
+      setTransactions(prev => prev.some(p => p.id === newTx.id) ? prev : [newTx, ...prev]);
+    };
+
+    // FE-801 AC: bağlantı koptuğunda "Bağlantı Yenileniyor..." uyarısı +
+    // exponential backoff ile yeniden bağlanma (socket.io-client'ın
+    // reconnectionDelay/reconnectionDelayMax ayarı bunu zaten yapar — bkz.
+    // utils/socket.ts). Kasıtlı (logout / sekme gizlenme) kopmalarda toast
+    // gösterilmez — yalnızca gerçek bağlantı sorunlarında.
+    const handleConnect = () => {
+      if (wasConnectedRef.current) {
+        showToast('Canlı bağlantı yeniden sağlandı.', 'success');
+      }
+      wasConnectedRef.current = true;
+    };
+    const handleDisconnect = (reason: string) => {
+      if (reason !== 'io client disconnect') {
+        showToast('Bağlantı Yenileniyor...', 'warning');
+      }
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('dispense:completed', handleDispenseCompleted);
+
+    connectSocket();
+
+    // FE-801 AC: sekme arka plana alındığında bağlantıyı kapatıp gereksiz
+    // render/bellek sızıntısını önle; tekrar görünür olunca sessizce (toast
+    // göstermeden) yeniden bağlan.
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        socket.disconnect();
+      } else {
+        wasConnectedRef.current = false;
+        connectSocket();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('dispense:completed', handleDispenseCompleted);
+      disconnectSocket();
+      wasConnectedRef.current = false;
+    };
+  }, [isAuthenticated]);
 
   const triggerTankRefresh = async () => {
     // Önceden bu fonksiyon backend'e hiç sormadan sadece animasyon anahtarını
