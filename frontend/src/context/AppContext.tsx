@@ -68,7 +68,8 @@ interface AppContextType {
   setIsLogStreamActive: (active: boolean) => void;
 
   // Actions
-  toggleCompanyModule: (companyId: string, moduleKey: keyof CompanyModule) => void;
+  fetchCompanies: () => Promise<void>;
+  toggleCompanyModule: (companyId: string, moduleKey: keyof CompanyModule) => Promise<void>;
   
   // Tank CRUD
   addTank: (tank: Omit<Tank, 'id'>) => void;
@@ -97,8 +98,8 @@ interface AppContextType {
   clearHardwareLogs: () => void;
   toggleCrossSiteStatus: (id: string) => void;
   addCrossSitePermission: (perm: Omit<CrossSitePermission, 'id' | 'usedLiters' | 'status'>) => void;
-  addCompany: (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules'>) => void;
-  updateCompanyStatus: (companyId: string, status: 'AKTİF' | 'ASKIDA' | 'DENEME') => void;
+  addCompany: (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules'>) => Promise<void>;
+  updateCompanyStatus: (companyId: string, status: 'AKTİF' | 'ASKIDA' | 'DENEME') => Promise<void>;
 
   // Toast
   toast: ToastState | null;
@@ -417,39 +418,44 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Gerçek telemetri için ileride bir /telemetry veya /hardware-logs endpoint'i eklenmeli.
 
   // Actions
-  const toggleCompanyModule = (companyId: string, moduleKey: keyof CompanyModule) => {
-    setCompanies(prev => prev.map(c => {
-      if (c.id === companyId) {
-        const updatedVal = !c.modules[moduleKey];
-        const updated = {
-          ...c,
-          modules: {
-            ...c.modules,
-            [moduleKey]: updatedVal
-          }
-        };
-        if (selectedTenantForDetail?.id === companyId) {
-          setSelectedTenantForDetail(updated);
-        }
-        showToast(`Modül durumu güncellendi: ${moduleKey} → ${updatedVal ? 'AKTİF' : 'PASİF'}`);
-        return updated;
+  // Önceden bu iki fonksiyon yalnızca local state'i güncelliyordu (sayfa
+  // yenilenince kayboluyordu). Artık PATCH /companies/:id (SUPER_ADMIN)
+  // çağırıp gerçek listeyi yeniden çekiyor.
+  const toggleCompanyModule = async (companyId: string, moduleKey: keyof CompanyModule) => {
+    const target = companies.find(c => c.id === companyId);
+    if (!target) return;
+    const updatedVal = !target.modules[moduleKey];
+    try {
+      await apiFetch(`/companies/${companyId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ modules: { [moduleKey]: updatedVal } })
+      });
+      await fetchCompanies();
+      if (selectedTenantForDetail?.id === companyId) {
+        setSelectedTenantForDetail({ ...target, modules: { ...target.modules, [moduleKey]: updatedVal } });
       }
-      return c;
-    }));
+      showToast(`Modül durumu güncellendi: ${moduleKey} → ${updatedVal ? 'AKTİF' : 'PASİF'}`);
+    } catch (err: any) {
+      showToast(`Modül güncellenirken hata: ${err.message}`, 'error');
+    }
   };
 
-  const updateCompanyStatus = (companyId: string, status: 'AKTİF' | 'ASKIDA' | 'DENEME') => {
-    setCompanies(prev => prev.map(c => {
-      if (c.id === companyId) {
-        const updated = { ...c, licenseStatus: status };
-        if (selectedTenantForDetail?.id === companyId) {
-          setSelectedTenantForDetail(updated);
-        }
-        showToast(`${c.name} lisans durumu güncellendi: ${status}`);
-        return updated;
+  const updateCompanyStatus = async (companyId: string, status: 'AKTİF' | 'ASKIDA' | 'DENEME') => {
+    const target = companies.find(c => c.id === companyId);
+    if (!target) return;
+    try {
+      await apiFetch(`/companies/${companyId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ licenseStatus: status })
+      });
+      await fetchCompanies();
+      if (selectedTenantForDetail?.id === companyId) {
+        setSelectedTenantForDetail({ ...target, licenseStatus: status });
       }
-      return c;
-    }));
+      showToast(`${target.name} lisans durumu güncellendi: ${status}`);
+    } catch (err: any) {
+      showToast(`Lisans durumu güncellenirken hata: ${err.message}`, 'error');
+    }
   };
 
   // Firma profili — yalnızca oturum açan tenant'ın firması DB'den (/companies/me).
@@ -553,6 +559,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       fetchDrivers();
       fetchTanks();
       fetchTransactions();
+      // Yalnızca SUPER_ADMIN — /companies tüm tenant'ları döndürür, diğer
+      // roller zaten 403 alır.
+      if (currentUser?.role === 'SUPER_ADMIN') {
+        fetchCompanies();
+      }
     }
   }, [isAuthenticated]);
 
@@ -908,33 +919,31 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     showToast(`Çapraz şantiye yetkisi eklendi: ${perm.vehiclePlate} → ${perm.targetSite}`);
   };
 
-  const addCompany = (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules'>) => {
-    const code = 'COMP-' + (companies.length + 1).toString().padStart(2, '0');
-    const compUsername = comp.name.toLowerCase().replace(/[^a-z0-9]/g, '') || 'firma';
-    const newComp: Company = {
-      ...comp,
-      id: 'comp-' + Date.now(),
-      code,
-      username: compUsername,
-      password: '123456',
-      sites: [
-        { id: 'site-' + Date.now(), name: `${comp.name} Ana Şantiye`, username: `${compUsername}-santiye`, password: '123456', location: comp.city, activeVehiclesCount: 2, activeTanksCount: 1 }
-      ],
-      totalFuelThisMonth: 0,
-      activeVehiclesCount: 2,
-      licenseExpiry: '2027-12-31',
-      licenseStatus: 'AKTİF',
-      modules: {
-        eInvoice: true,
-        aiAnomaly: true,
-        smartWarehouse: false,
-        maintenanceTrack: true,
-        driverScore: true,
-        crossSiteAuth: true
+  // Süper Admin panelinden yeni tenant firma oluşturur — backend companies +
+  // ilk şantiye + COMPANY_OWNER giriş hesabını tek DB transaction'ında yazar
+  // (bkz. adminDb.createCompanyWithOwner). Önceden bu tamamen local state'ti.
+  const fetchCompanies = async () => {
+    try {
+      const response = await apiFetch('/companies');
+      if (response.success && response.data) {
+        setCompanies(response.data);
       }
-    };
-    setCompanies(prev => [...prev, newComp]);
-    showToast(`Yeni firma sisteme tanımlandı: ${newComp.name}`);
+    } catch (err: any) {
+      showToast(`Firmalar getirilirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  const addCompany = async (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules'>) => {
+    try {
+      await apiFetch('/companies', {
+        method: 'POST',
+        body: JSON.stringify({ name: comp.name, city: comp.city, taxNumber: comp.taxNumber })
+      });
+      await fetchCompanies();
+      showToast(`Yeni firma sisteme tanımlandı: ${comp.name}`);
+    } catch (err: any) {
+      showToast(`Firma eklenirken hata: ${err.message}`, 'error');
+    }
   };
 
   return (
@@ -951,6 +960,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         selectedSiteFilter,
         setSelectedSiteFilter,
         companies,
+        fetchCompanies,
         vehicles,
         drivers,
         tanks,

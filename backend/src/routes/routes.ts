@@ -1,11 +1,13 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
 import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createTenantSite, deleteTenantSite, getTenantCompanyProfile, getTenantTransactions, createTransaction } from '../db/tenantDb';
+import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
 import { createTankSchema, updateTankSchema } from '../schemas/tankSchema';
 import { dispenseRequestSchema } from '../schemas/transactionSchema';
+import { createCompanySchema, updateCompanySchema } from '../schemas/companySchema';
 import { loginSchema } from '../schemas/authSchema';
 import { verifyPassword } from '../utils/password';
 import { NotFoundError } from '../utils/errors';
@@ -249,6 +251,90 @@ router.get('/companies/me', authenticateJWT, async (req: AuthenticatedRequest, r
     next(error);
   }
 });
+
+/**
+ * @swagger
+ * /companies:
+ *   get:
+ *     summary: Tüm Kiracı Firmalar (Süper Admin)
+ *     description: >
+ *       Platformdaki tüm firmaları (tenant'ları) tenant sınırı olmadan
+ *       listeler. Yalnızca SUPER_ADMIN erişebilir — Geliştirici (Süper
+ *       Admin) panelindeki "Tüm Firmalar" sayfası içindir.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Firma listesi başarıyla getirildi.
+ */
+router.get('/companies', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const companies = await getAllCompanies();
+    res.json({ success: true, totalCount: companies.length, data: companies });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /companies:
+ *   post:
+ *     summary: Yeni Kiracı Firma Oluştur (Süper Admin)
+ *     description: Yeni bir firma + ilk şantiyesi + COMPANY_OWNER giriş hesabını oluşturur.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Firma oluşturuldu.
+ */
+router.post(
+  '/companies',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  validateRequest({ body: createCompanySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const newCompany = await createCompanyWithOwner(req.body);
+      res.json({ success: true, message: 'Firma başarıyla oluşturuldu.', data: newCompany });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /companies/{id}:
+ *   patch:
+ *     summary: Firma Lisans/Modül Güncelle (Süper Admin)
+ *     description: Bir firmanın lisans durumunu ve/veya modül izinlerini günceller.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Firma güncellendi.
+ */
+router.patch(
+  '/companies/:id',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  validateRequest({ body: updateCompanySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const updated = await updateCompanyAdmin(req.params.id, req.body);
+      res.json({ success: true, message: 'Firma güncellendi.', data: updated });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
 
 /**
  * @swagger
