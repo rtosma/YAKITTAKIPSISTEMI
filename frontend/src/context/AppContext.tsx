@@ -26,6 +26,11 @@ interface ToastState {
   type: 'success' | 'info' | 'warning' | 'error';
 }
 
+// Backend'in JWT payload'ında döndürdüğü GERÇEK yetki rolü (bkz.
+// backend/src/services/tokenService.ts UserRole). FE-803: rota koruması ve
+// UI element gizleme bu değere göre yapılır — asla görüntü metnine göre değil.
+export type UserRole = 'SUPER_ADMIN' | 'COMPANY_OWNER' | 'SITE_MANAGER' | 'PUMP_OPERATOR' | 'DRIVER';
+
 
 
 interface AppContextType {
@@ -33,7 +38,7 @@ interface AppContextType {
   isAuthenticated: boolean;
   isManagerMode: boolean;
   setIsManagerMode: (val: boolean) => void;
-  currentUser: { username: string; companyName: string; role: string; siteName?: string } | null;
+  currentUser: { username: string; companyName: string; role: UserRole; siteName?: string } | null;
   loginCompany: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   loginSiteOperator: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logoutCompany: () => void;
@@ -138,7 +143,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return saved !== null ? saved === 'true' : true;
   });
 
-  const [currentUser, setCurrentUser] = useState<{ username: string; companyName: string; role: string; siteName?: string } | null>(() => {
+  const [currentUser, setCurrentUser] = useState<{ username: string; companyName: string; role: UserRole; siteName?: string } | null>(() => {
     const saved = localStorage.getItem('YAKIT_CURRENT_USER');
     if (!saved) return null;
     try {
@@ -281,7 +286,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setCurrentUser({
         username: data.user?.username || username.trim(),
         companyName,
-        role: 'Firma Yöneticisi'
+        // Backend'in JWT'de imzaladığı GERÇEK rol (SUPER_ADMIN/COMPANY_OWNER/...) —
+        // önceden burada sabit "Firma Yöneticisi" metni tutuluyordu ve hiçbir rol
+        // kontrolü mümkün değildi (FE-803 ihlali). Fallback yalnızca beklenmeyen
+        // bir API yanıtına karşı son çare.
+        role: (data.user?.role as UserRole) || 'COMPANY_OWNER'
       });
 
       showToast(`PostgreSQL Giriş Başarılı: ${companyName} Yönetici paneline yönlendiriliyorsunuz`, 'success');
@@ -333,7 +342,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         username: data.user?.username || username.trim(),
         companyName,
         siteName: activeSiteName,
-        role: 'Şantiye Saha Operatörü'
+        // bkz. loginCompany yorumu — backend'in gerçek rolü kullanılır.
+        role: (data.user?.role as UserRole) || 'SITE_MANAGER'
       });
 
       showToast(`PostgreSQL Şantiye Girişi Başarılı: ${activeSiteName || companyName} modunda panele yönlendiriliyorsunuz`, 'success');

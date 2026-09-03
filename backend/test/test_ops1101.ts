@@ -63,13 +63,24 @@ async function runOps1101Tests() {
   // 4. Test Graceful Shutdown Signal (SIGTERM)
   console.log('\n  ⚙️ Sunucu prosesi SIGTERM sinyali testi başlatılıyor (Port 5088)...');
   
-  const indexPath = fs.existsSync(path.join(rootDir, 'src', 'index.ts'))
-    ? 'src/index.ts'
-    : 'backend/src/index.ts';
+  // bootstrap.ts is the real process entry point (see package.json dev/build) —
+  // it loads .env BEFORE index.ts's own imports evaluate. Spawning index.ts
+  // directly would skip that and hit tokenService's JWT_SECRET fail-fast guard.
+  const bootstrapPath = fs.existsSync(path.join(rootDir, 'src', 'bootstrap.ts'))
+    ? 'src/bootstrap.ts'
+    : 'backend/src/bootstrap.ts';
 
-  const serverProcess = spawn('npx', ['tsx', indexPath], {
+  const serverProcess = spawn('npx', ['tsx', bootstrapPath], {
     cwd: rootDir,
-    env: { ...process.env, PORT: '5088', LOG_LEVEL: 'info' },
+    env: {
+      ...process.env,
+      PORT: '5088',
+      LOG_LEVEL: 'info',
+      // CI has no .env file; these must be present for the server to boot at
+      // all now that tokenService refuses to start with a hardcoded fallback.
+      JWT_SECRET: process.env.JWT_SECRET || 'test_only_ops1101_access_secret_do_not_reuse',
+      JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || 'test_only_ops1101_refresh_secret_do_not_reuse',
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import { redisPool } from '../db/redisPool';
 
 /**
  * SECURITY: no hardcoded fallback. A default secret baked into source control
@@ -36,18 +37,37 @@ export interface RefreshTokenRecord {
   id: string;
   userId: string;
   tenantId: string;
-  token: string;
   used: boolean;
   isRevoked: boolean;
-  createdAt: Date;
-  expiresAt: Date;
+  createdAt: string;
+  expiresAt: string;
 }
 
 /**
- * Token Rotation & Reuse Detection Store
- * In production this persists to PostgreSQL refresh_tokens or Redis
+ * Token Rotation & Reuse Detection Store — Redis-backed (survives restarts,
+ * shared across all backend instances behind a load balancer).
+ *
+ * Previously this was a process-local `Map`, which meant every restart
+ * silently logged everyone out, and — worse — with more than one backend
+ * instance running (the "zero-downtime rolling update" the roadmap calls
+ * for), a token rotated on instance A would not exist on instance B, so a
+ * legitimate refresh could be misdiagnosed as token theft.
+ *
+ * `refresh_token:{jti}` → JSON RefreshTokenRecord, TTL = REFRESH_TOKEN_TTL_SECONDS
+ *   (Redis expires it automatically — no manual cleanup job needed).
+ * `refresh_tokens_by_user:{userId}` → Set of jti's issued to that user, used
+ *   only to support "revoke every session" on reuse detection / logout-all.
  */
-const refreshTokenStore = new Map<string, RefreshTokenRecord>();
+const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days — matches the JWT's own expiresIn
+const USER_INDEX_TTL_SECONDS = 30 * 24 * 60 * 60; // sliding window, comfortably outlives any single token
+
+function refreshTokenKey(jti: string): string {
+  return `refresh_token:${jti}`;
+}
+
+function userTokenIndexKey(userId: string): string {
+  return `refresh_tokens_by_user:${userId}`;
+}
 
 /**
  * Generate a 15-minute JWT Access Token
@@ -67,9 +87,9 @@ export function generateAccessToken(user: JwtUserPayload): string {
 }
 
 /**
- * Generate a 7-day single-use JWT Refresh Token and register in rotation store
+ * Generate a 7-day single-use JWT Refresh Token and register it in Redis
  */
-export function generateRefreshToken(userId: string, tenantId: string): string {
+export async function generateRefreshToken(userId: string, tenantId: string): Promise<string> {
   const tokenId = crypto.randomUUID();
   const token = jwt.sign(
     { jti: tokenId, userId, tenantId },
@@ -77,19 +97,24 @@ export function generateRefreshToken(userId: string, tenantId: string): string {
     { expiresIn: '7d' }
   );
 
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + 7);
+  const createdAt = new Date();
+  const expiresAt = new Date(createdAt.getTime() + REFRESH_TOKEN_TTL_SECONDS * 1000);
 
-  refreshTokenStore.set(tokenId, {
+  const record: RefreshTokenRecord = {
     id: tokenId,
     userId,
     tenantId,
-    token,
     used: false,
     isRevoked: false,
-    createdAt: new Date(),
-    expiresAt
-  });
+    createdAt: createdAt.toISOString(),
+    expiresAt: expiresAt.toISOString()
+  };
+
+  const multi = redisPool.client.multi();
+  multi.set(refreshTokenKey(tokenId), JSON.stringify(record), 'EX', REFRESH_TOKEN_TTL_SECONDS);
+  multi.sadd(userTokenIndexKey(userId), tokenId);
+  multi.expire(userTokenIndexKey(userId), USER_INDEX_TTL_SECONDS);
+  await multi.exec();
 
   return token;
 }
@@ -114,18 +139,21 @@ export async function rotateRefreshToken(
   }
 
   const tokenId = decoded.jti;
-  const tokenRecord = refreshTokenStore.get(tokenId);
+  const raw = await redisPool.client.get(refreshTokenKey(tokenId));
+  const tokenRecord: RefreshTokenRecord | null = raw ? JSON.parse(raw) : null;
 
-  // Theft Detection: Token is not in store OR token has ALREADY been used/revoked
+  // Theft Detection: Token is not in store (expired/never existed) OR already used/revoked
   if (!tokenRecord || tokenRecord.used || tokenRecord.isRevoked) {
     // Revoke ALL active sessions for this user immediately!
-    revokeAllUserTokens(decoded.userId);
+    await revokeAllUserTokens(decoded.userId);
     throw new Error('TOKEN_REUSE_DETECTED: Şüpheli çoklu token kullanımı tespit edildi! Tüm aktif oturumlarınız güvenlik nedeniyle kapatıldı.');
   }
 
-  // Mark current token as used and revoked (single-use constraint)
+  // Mark current token as used and revoked (single-use constraint).
+  // KEEPTTL preserves the key's remaining expiry instead of resetting it.
   tokenRecord.used = true;
   tokenRecord.isRevoked = true;
+  await redisPool.client.set(refreshTokenKey(tokenId), JSON.stringify(tokenRecord), 'KEEPTTL');
 
   // Re-resolve the REAL, current identity from the database using the token
   // record's own userId/tenantId — never trust a caller-supplied payload.
@@ -136,7 +164,7 @@ export async function rotateRefreshToken(
 
   // Issue new Access Token (15 min) and new Refresh Token (7 days)
   const newAccessToken = generateAccessToken(userPayload);
-  const newRefreshToken = generateRefreshToken(userPayload.userId, userPayload.tenantId);
+  const newRefreshToken = await generateRefreshToken(userPayload.userId, userPayload.tenantId);
 
   return {
     accessToken: newAccessToken,
@@ -165,37 +193,66 @@ export function verifyAccessToken(token: string): JwtUserPayload {
 /**
  * Revoke a single refresh token (Logout)
  */
-export function revokeRefreshToken(token: string): void {
+export async function revokeRefreshToken(token: string): Promise<void> {
   try {
     const decoded = jwt.verify(token, JWT_REFRESH_SECRET) as any;
-    const tokenRecord = refreshTokenStore.get(decoded.jti);
-    if (tokenRecord) {
-      tokenRecord.isRevoked = true;
+    const key = refreshTokenKey(decoded.jti);
+    const raw = await redisPool.client.get(key);
+    if (raw) {
+      const record: RefreshTokenRecord = JSON.parse(raw);
+      record.isRevoked = true;
+      await redisPool.client.set(key, JSON.stringify(record), 'KEEPTTL');
     }
   } catch (err) {
-    // Token already expired or invalid
+    // Token already expired or invalid — nothing to revoke
   }
 }
 
 /**
  * Revoke all tokens for a user (Used in Token Reuse Detection / Account Lock)
  */
-export function revokeAllUserTokens(userId: string): void {
-  for (const record of refreshTokenStore.values()) {
-    if (record.userId === userId) {
-      record.isRevoked = true;
-      record.used = true;
-    }
-  }
+export async function revokeAllUserTokens(userId: string): Promise<void> {
+  const indexKey = userTokenIndexKey(userId);
+  const tokenIds = await redisPool.client.smembers(indexKey);
+  if (tokenIds.length === 0) return;
+
+  const keys = tokenIds.map(refreshTokenKey);
+  const rawRecords = await redisPool.client.mget(...keys);
+
+  const multi = redisPool.client.multi();
+  rawRecords.forEach((raw, idx) => {
+    if (!raw) return; // already expired naturally — nothing to revoke
+    const record: RefreshTokenRecord = JSON.parse(raw);
+    record.isRevoked = true;
+    record.used = true;
+    multi.set(keys[idx], JSON.stringify(record), 'KEEPTTL');
+  });
+  await multi.exec();
 }
 
 /**
- * Get active tokens count (For debug/tests)
+ * Get active (not used/revoked) refresh token count (For debug/tests only).
+ * Uses SCAN rather than KEYS to avoid blocking Redis on large datasets.
  */
-export function getActiveTokensCount(): number {
+export async function getActiveTokensCount(): Promise<number> {
+  let cursor = '0';
   let count = 0;
-  for (const record of refreshTokenStore.values()) {
-    if (!record.isRevoked && !record.used) count++;
-  }
+
+  do {
+    const [nextCursor, keys]: [string, string[]] = await redisPool.client.scan(
+      cursor, 'MATCH', 'refresh_token:*', 'COUNT', 100
+    );
+    cursor = nextCursor;
+
+    if (keys.length > 0) {
+      const rawRecords = await redisPool.client.mget(...keys);
+      for (const raw of rawRecords) {
+        if (!raw) continue;
+        const record: RefreshTokenRecord = JSON.parse(raw);
+        if (!record.isRevoked && !record.used) count++;
+      }
+    }
+  } while (cursor !== '0');
+
   return count;
 }

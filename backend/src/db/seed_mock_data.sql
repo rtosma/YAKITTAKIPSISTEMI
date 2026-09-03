@@ -66,5 +66,13 @@ INSERT INTO users (id, tenant_id, username, password_hash, role, site_name) VALU
 ('usr-maltepe-mgr',   'comp-kusak',   'maltepe-santiye',  '$argon2id$v=19$m=65536,p=1,t=3$08Vstd8iW8mXbMgeAz8jbA$zca8rRtma2jMjEfCh9tonOGuV3lnBq3DMN6bUHCw+BU', 'SITE_MANAGER',  'Maltepe Santral'),
 ('usr-pendik-mgr',    'comp-kusak',   'pendik-santiye',   '$argon2id$v=19$m=65536,p=1,t=3$08Vstd8iW8mXbMgeAz8jbA$zca8rRtma2jMjEfCh9tonOGuV3lnBq3DMN6bUHCw+BU', 'SITE_MANAGER',  'Pendik Taş Ocağı'),
 ('usr-avrasya-owner', 'comp-avrasya', 'avrasya',          '$argon2id$v=19$m=65536,p=1,t=3$08Vstd8iW8mXbMgeAz8jbA$zca8rRtma2jMjEfCh9tonOGuV3lnBq3DMN6bUHCw+BU', 'COMPANY_OWNER', NULL),
-('usr-inegol-mgr',    'comp-avrasya', 'inegol-santiye',   '$argon2id$v=19$m=65536,p=1,t=3$08Vstd8iW8mXbMgeAz8jbA$zca8rRtma2jMjEfCh9tonOGuV3lnBq3DMN6bUHCw+BU', 'SITE_MANAGER',  'İnegöl Mermer Ocağı')
+('usr-inegol-mgr',    'comp-avrasya', 'inegol-santiye',   '$argon2id$v=19$m=65536,p=1,t=3$08Vstd8iW8mXbMgeAz8jbA$zca8rRtma2jMjEfCh9tonOGuV3lnBq3DMN6bUHCw+BU', 'SITE_MANAGER',  'İnegöl Mermer Ocağı'),
+-- SUPER_ADMIN: /admin (Geliştirici Süper Admin Paneli) rol korumasından sonra
+-- panelin test edilebilir kalması için eklendi (frontend FE-803 düzeltmesi).
+-- Şema tenant_id'yi NOT NULL zorunlu kıldığından bir firmaya bağlanmak zorunda
+-- kalıyor (comp-camsa); rolün kendisi tüm firmalara erişimi mümkün kılıyor.
+('usr-super-admin',   'comp-camsa',   'admin',            '$argon2id$v=19$m=65536,p=1,t=3$08Vstd8iW8mXbMgeAz8jbA$zca8rRtma2jMjEfCh9tonOGuV3lnBq3DMN6bUHCw+BU', 'SUPER_ADMIN',   NULL),
+-- PUMP_OPERATOR: mock veride bulunmayan bir rol örneği; RBAC testleri
+-- (test/test_auth201.ts adım 7) ve saha operatörü senaryoları için eklendi.
+('usr-pompa-op-01',   'comp-camsa',   'pompa-op-01',      '$argon2id$v=19$m=65536,p=1,t=3$yx+KYl770/yDt8DIEOBPxA$ONHL7VRXfdUCzQwMBYrQtW4+vm5ohCs5W+61LtN701Q', 'PUMP_OPERATOR', 'Gebze Ana Şantiye')
 ON CONFLICT (id) DO NOTHING;

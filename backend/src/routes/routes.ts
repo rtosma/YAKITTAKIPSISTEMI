@@ -1,12 +1,14 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
 import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createTenantSite, deleteTenantSite, getTenantCompanyProfile } from '../db/tenantDb';
 import { validateRequest } from '../middleware/validateMiddleware';
-import { createVehicleSchema } from '../schemas/vehicleSchema';
+import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
+import { createTankSchema, updateTankSchema } from '../schemas/tankSchema';
 import { dispenseRequestSchema } from '../schemas/transactionSchema';
 import { loginSchema } from '../schemas/authSchema';
 import { verifyPassword } from '../utils/password';
+import { NotFoundError } from '../utils/errors';
 import { pool } from '../db/postgresPool';
 import {
   generateAccessToken,
@@ -18,6 +20,7 @@ import {
 } from '../services/tokenService';
 import { authenticateJWT, authorizeRoles, AuthenticatedRequest } from '../middleware/authMiddleware';
 import { hardwareAuthMiddleware } from '../middleware/hardwareAuthMiddleware';
+import { loginRateLimiter } from '../middleware/rateLimitMiddleware';
 
 const router = Router();
 
@@ -58,6 +61,7 @@ router.get('/tenant-info', (_req: Request, res: Response) => {
  */
 router.post(
   '/auth/login',
+  loginRateLimiter,
   validateRequest({ body: loginSchema }),
   async (req: Request, res: Response) => {
     const { username, password } = req.body;
@@ -99,7 +103,7 @@ router.post(
       };
 
       const accessToken = generateAccessToken(payload);
-      const refreshToken = generateRefreshToken(dbUser.id, dbUser.tenant_id);
+      const refreshToken = await generateRefreshToken(dbUser.id, dbUser.tenant_id);
 
       res.json({
         success: true,
@@ -186,16 +190,20 @@ router.post('/auth/refresh', async (req: Request, res: Response) => {
  * POST /api/v1/auth/logout
  * Revokes current refresh token
  */
-router.post('/auth/logout', (req: Request, res: Response) => {
-  const { refreshToken } = req.body;
-  if (refreshToken) {
-    revokeRefreshToken(refreshToken);
-  }
+router.post('/auth/logout', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { refreshToken } = req.body;
+    if (refreshToken) {
+      await revokeRefreshToken(refreshToken);
+    }
 
-  res.json({
-    success: true,
-    message: 'Oturum kapatıldı ve yenileme tokenı iptal edildi.'
-  });
+    res.json({
+      success: true,
+      message: 'Oturum kapatıldı ve yenileme tokenı iptal edildi.'
+    });
+  } catch (error: any) {
+    next(error);
+  }
 });
 
 /**
@@ -227,7 +235,7 @@ router.get('/auth/me', authenticateJWT, (req: AuthenticatedRequest, res: Respons
  *       404:
  *         description: Tenant'a karşılık gelen firma bulunamadı.
  */
-router.get('/companies/me', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/companies/me', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const profile = await getTenantCompanyProfile({
       role: req.user?.role,
@@ -235,12 +243,10 @@ router.get('/companies/me', authenticateJWT, async (req: AuthenticatedRequest, r
     });
     res.json({ success: true, data: profile });
   } catch (error: any) {
-    const notFound = error.message === 'COMPANY_NOT_FOUND';
-    res.status(notFound ? 404 : 500).json({
-      success: false,
-      error: notFound ? 'NOT_FOUND' : 'DB_ERROR',
-      message: error.message
-    });
+    if (error.message === 'COMPANY_NOT_FOUND') {
+      return next(new NotFoundError('Oturum açan kullanıcının firma kaydı bulunamadı.'));
+    }
+    next(error);
   }
 });
 
@@ -256,7 +262,7 @@ router.get('/companies/me', authenticateJWT, async (req: AuthenticatedRequest, r
  *       200:
  *         description: Şantiye listesi başarıyla getirildi.
  */
-router.get('/sites', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/sites', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const sites = await getTenantSites();
     res.json({
@@ -264,11 +270,7 @@ router.get('/sites', authenticateJWT, async (req: AuthenticatedRequest, res: Res
       data: sites
     });
   } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: 'DB_ERROR',
-      message: error.message
-    });
+    next(error);
   }
 });
 
@@ -280,7 +282,7 @@ router.post(
   '/sites',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const { siteName, location } = req.body;
       if (!siteName || typeof siteName !== 'string' || !siteName.trim()) {
@@ -300,11 +302,7 @@ router.post(
         data: newSite
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -317,7 +315,7 @@ router.delete(
   '/sites/:siteName',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const { siteName } = req.params;
       if (!siteName) {
@@ -336,11 +334,7 @@ router.delete(
         message: `'${decodedSiteName}' şantiyesi veritabanından başarıyla silindi.`
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -357,7 +351,7 @@ router.delete(
  *       200:
  *         description: Araç listesi başarıyla getirildi.
  */
-router.get('/vehicles', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/vehicles', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const vehicles = await getTenantVehicles();
     const store = getTenantStore();
@@ -369,11 +363,7 @@ router.get('/vehicles', authenticateJWT, async (req: AuthenticatedRequest, res: 
       data: vehicles
     });
   } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: 'DB_ERROR',
-      message: error.message
-    });
+    next(error);
   }
 });
 
@@ -386,7 +376,7 @@ router.post(
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
   validateRequest({ body: createVehicleSchema }),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const sanitizedBody = req.body;
       const vehicleData = {
@@ -406,11 +396,7 @@ router.post(
         data: newVehicle
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -423,7 +409,8 @@ router.put(
   '/vehicles/:id',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  validateRequest({ body: updateVehicleSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const id = req.params.id;
       const { plate, brandModel, type, rfidTag, siteName, status } = req.body;
@@ -444,11 +431,7 @@ router.put(
         data: updatedVehicle
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -461,7 +444,7 @@ router.delete(
   '/vehicles/:id',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       await deleteVehicle(req.params.id);
       res.json({
@@ -469,11 +452,7 @@ router.delete(
         message: 'Araç kaydı başarıyla silindi.'
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -490,7 +469,7 @@ router.delete(
  *       200:
  *         description: Şoför listesi başarıyla getirildi.
  */
-router.get('/drivers', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/drivers', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const drivers = await getTenantDrivers();
     const store = getTenantStore();
@@ -502,11 +481,7 @@ router.get('/drivers', authenticateJWT, async (req: AuthenticatedRequest, res: R
       data: drivers
     });
   } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: 'DB_ERROR',
-      message: error.message
-    });
+    next(error);
   }
 });
 
@@ -527,7 +502,7 @@ router.post(
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
   validateRequest({ body: createDriverSchema }),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const { name, tcNo, phone, licenseType, rfidCardId, siteName, status } = req.body;
       const driverData = {
@@ -548,11 +523,7 @@ router.post(
         data: newDriver
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -580,7 +551,7 @@ router.put(
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
   validateRequest({ body: updateDriverSchema }),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const id = req.params.id;
       const { name, tcNo, phone, licenseType, rfidCardId, siteName, status } = req.body;
@@ -602,11 +573,7 @@ router.put(
         data: updatedDriver
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -633,7 +600,7 @@ router.delete(
   '/drivers/:id',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       await deleteDriver(req.params.id);
       res.json({
@@ -641,11 +608,7 @@ router.delete(
         message: 'Şoför kaydı başarıyla silindi.'
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -662,7 +625,7 @@ router.delete(
  *       200:
  *         description: Tank listesi başarıyla getirildi.
  */
-router.get('/tanks', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/tanks', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const tanks = await getTenantTanks();
     const store = getTenantStore();
@@ -674,11 +637,7 @@ router.get('/tanks', authenticateJWT, async (req: AuthenticatedRequest, res: Res
       data: tanks
     });
   } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: 'DB_ERROR',
-      message: error.message
-    });
+    next(error);
   }
 });
 
@@ -698,7 +657,8 @@ router.post(
   '/tanks',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  validateRequest({ body: createTankSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const { name, capacityLiters, currentLevelLiters, fuelType, siteName, status } = req.body;
       const tankData = {
@@ -718,11 +678,7 @@ router.post(
         data: newTank
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -749,7 +705,8 @@ router.put(
   '/tanks/:id',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  validateRequest({ body: updateTankSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const id = req.params.id;
       const { name, capacityLiters, currentLevelLiters, fuelType, siteName, status } = req.body;
@@ -770,11 +727,7 @@ router.put(
         data: updatedTank
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -801,7 +754,7 @@ router.delete(
   '/tanks/:id',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       await deleteTank(req.params.id);
       res.json({
@@ -809,11 +762,7 @@ router.delete(
         message: 'Tank kaydı başarıyla silindi.'
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -827,7 +776,7 @@ router.post(
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER', 'PUMP_OPERATOR'),
   validateRequest({ body: dispenseRequestSchema }),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     const sanitizedBody = req.body;
     const store = getTenantStore();
 

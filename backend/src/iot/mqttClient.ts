@@ -18,6 +18,12 @@ class MQTTService {
       clean: false, // Kalıcı oturum (QoS 1 mesajlarını kaybetmemek için)
       reconnectPeriod: 5000,
       protocolVersion: 5,
+      // EMQX artık anonim bağlantı kabul etmiyor (bkz. docker-compose.yml /
+      // docker/emqx/entrypoint.sh) — kimlik doğrulaması olmadan herkes sahte
+      // pompa/tank telemetrisi yayınlayabilir ya da tüm kiracıların canlı
+      // verisine abone olabilirdi.
+      username: process.env.MQTT_USERNAME,
+      password: process.env.MQTT_PASSWORD,
     });
 
     this.client.on('connect', () => {

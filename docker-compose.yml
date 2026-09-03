@@ -51,7 +51,8 @@ services:
   # EMQX - High Performance MQTT v5 Broker
   # --------------------------------------------------------------------------
   emqx:
-    image: emqx:5.8.0
+    build:
+      context: ./docker/emqx
     container_name: yakittakip_emqx
     restart: unless-stopped
     ports:
@@ -61,7 +62,20 @@ services:
     environment:
       EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USER:-admin}
       EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASS:-public}
-      EMQX_ALLOW_ANONYMOUS: "true" # For dev environments, allow anonymous MQTT clients
+      # Anonymous MQTT access is intentionally NOT allowed: without it, anyone
+      # on the network could publish fake pump/tank telemetry or subscribe to
+      # every tenant's live data with zero credentials. Instead, a single
+      # username/password is seeded from .env by docker/emqx/entrypoint.sh —
+      # see that file for why. The backend connects with these same values
+      # (MQTT_USERNAME/MQTT_PASSWORD, wired into mqttClient.ts).
+      MQTT_USERNAME: ${MQTT_USERNAME:?MQTT_USERNAME .env dosyasında tanımlanmalıdır}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?MQTT_PASSWORD .env dosyasında tanımlanmalıdır}
+      EMQX_AUTHENTICATION__1__MECHANISM: password_based
+      EMQX_AUTHENTICATION__1__BACKEND: built_in_database
+      EMQX_AUTHENTICATION__1__USER_ID_TYPE: username
+      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__NAME: plain
+      EMQX_AUTHENTICATION__1__BOOTSTRAP_FILE: /opt/emqx/data/authn_bootstrap.csv
+      EMQX_AUTHENTICATION__1__BOOTSTRAP_TYPE: plain
     healthcheck:
       test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
       interval: 10s
@@ -97,6 +111,8 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       MQTT_URL: mqtt://emqx:1883
+      MQTT_USERNAME: ${MQTT_USERNAME:?MQTT_USERNAME .env dosyasında tanımlanmalıdır}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?MQTT_PASSWORD .env dosyasında tanımlanmalıdır}
     ports:
       - "5000:5000"
     depends_on:

@@ -5,10 +5,18 @@ import { useApp } from '../context/AppContext';
 export const DeveloperLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { simulatedLatencyMs, setSimulatedLatencyMs, isLogStreamActive, setIsLogStreamActive, hardwareDevices, isAuthenticated } = useApp();
+  const { simulatedLatencyMs, setSimulatedLatencyMs, isLogStreamActive, setIsLogStreamActive, hardwareDevices, isAuthenticated, currentUser } = useApp();
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
+  }
+
+  // FE-803: Süper Admin paneli yalnızca gerçekten SUPER_ADMIN rolüne sahip
+  // kullanıcılara açık olmalıdır. Önceden burada hiçbir rol kontrolü yoktu —
+  // oturum açmış HERHANGİ bir kullanıcı (COMPANY_OWNER, SITE_MANAGER, hatta
+  // DRIVER) doğrudan /admin URL'sini yazarak tüm firmaların verisine erişebilirdi.
+  if (currentUser?.role !== 'SUPER_ADMIN') {
+    return <Navigate to="/403" replace />;
   }
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);

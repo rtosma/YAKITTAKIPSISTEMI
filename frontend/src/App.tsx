@@ -8,6 +8,7 @@ import { LoginPage } from './pages/LoginPage';
 import { SiteLoginPage } from './pages/SiteLoginPage';
 import { WelcomeScreen } from './pages/WelcomeScreen';
 import { NotFoundPage } from './pages/NotFoundPage';
+import { ForbiddenPage } from './pages/ForbiddenPage';
 import { CustomerLayout } from './layouts/CustomerLayout';
 import { DeveloperLayout } from './layouts/DeveloperLayout';
 
@@ -44,6 +45,7 @@ export function App() {
           <Route path="/santiye-login" element={<SiteLoginPage />} />
           <Route path="/santiye-panel" element={<Navigate to="/panel" replace />} />
           <Route path="/welcome" element={<WelcomeScreen />} />
+          <Route path="/403" element={<ForbiddenPage />} />
 
           {/* Customer Panel Routes (/panel/*) */}
           <Route path="/panel" element={<CustomerLayout />}>

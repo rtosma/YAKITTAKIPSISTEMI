@@ -16,4 +16,7 @@ export const createVehicleSchema = z.object({
   siteName: z.string().optional()
 });
 
+export const updateVehicleSchema = createVehicleSchema.partial();
+
 export type CreateVehicleDTO = z.infer<typeof createVehicleSchema>;
+export type UpdateVehicleDTO = z.infer<typeof updateVehicleSchema>;
