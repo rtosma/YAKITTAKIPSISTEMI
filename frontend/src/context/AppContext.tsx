@@ -90,7 +90,9 @@ interface AppContextType {
   // Tank CRUD
   fetchTanks: () => Promise<void>;
 
-  addFuelTransaction: (tx: Omit<FuelTransaction, 'id' | 'timestamp'>) => void;
+  // Transaction (İkmal) history
+  fetchTransactions: () => Promise<void>;
+  addFuelTransaction: (tx: Omit<FuelTransaction, 'id' | 'timestamp'>) => Promise<void>;
   addHardwareLog: (log: Omit<HardwareLog, 'id' | 'timestamp'>) => void;
   clearHardwareLogs: () => void;
   toggleCrossSiteStatus: (id: string) => void;
@@ -540,7 +542,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  // Automatically fetch DB company profile, sites, vehicles, drivers & tanks when user is authenticated
+  // Automatically fetch DB company profile, sites, vehicles, drivers, tanks &
+  // transactions when user is authenticated
   // (F5 sonrası token localStorage'da kaldığından bu effect firma bilgisini yeniden kurar)
   useEffect(() => {
     if (isAuthenticated) {
@@ -549,6 +552,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       fetchVehicles();
       fetchDrivers();
       fetchTanks();
+      fetchTransactions();
     }
   }, [isAuthenticated]);
 
@@ -800,31 +804,58 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const addFuelTransaction = (newTx: Omit<FuelTransaction, 'id' | 'timestamp'>) => {
-    const now = new Date();
-    const dateStr = now.toISOString().replace('T', ' ').substring(0, 19);
-    const tx: FuelTransaction = {
-      ...newTx,
-      id: 'tx-' + Date.now(),
-      timestamp: dateStr
-    };
-    setTransactions(prev => [tx, ...prev]);
-
-    // Update tank current level
-    setTanks(prev => prev.map(t => {
-      if (t.name === newTx.tankName || t.siteName === newTx.siteName) {
-        const updatedLevel = Math.max(0, t.currentLevelLiters - newTx.amountLiters);
-        const percentage = (updatedLevel / t.capacityLiters) * 100;
-        let status: 'GÜVENLİ' | 'UYARI' | 'KRİTİK' = 'GÜVENLİ';
-        if (percentage < 20) status = 'KRİTİK';
-        else if (percentage < 40) status = 'UYARI';
-
-        return { ...t, currentLevelLiters: updatedLevel, status };
+  const fetchTransactions = async () => {
+    try {
+      const response = await apiFetch('/transactions');
+      if (response.success && response.data) {
+        const mappedTransactions: FuelTransaction[] = response.data.map((t: any) => ({
+          id: t.id,
+          timestamp: new Date(t.created_at).toLocaleString('tr-TR').replace(',', ''),
+          siteName: t.site_name,
+          vehiclePlate: t.vehicle_plate,
+          driverName: t.driver_name || '',
+          tankName: t.tank_name || '',
+          amountLiters: Number(t.amount_liters),
+          flowRateLpm: t.flow_rate_lpm != null ? Number(t.flow_rate_lpm) : 0,
+          pumpStatus: t.pump_status,
+          type: t.type,
+          rfidAuth: t.rfid_auth
+        }));
+        setTransactions(mappedTransactions);
       }
-      return t;
-    }));
+    } catch (err: any) {
+      showToast(`İkmal geçmişi getirilirken hata: ${err.message}`, 'error');
+    }
+  };
 
-    showToast(`İkmal kaydedildi: ${newTx.vehiclePlate} — ${newTx.amountLiters} Litre`);
+  // Önceden bu fonksiyon backend'e hiç yazmadan yalnızca local React state'i
+  // güncelliyordu (bir sonraki fetchTanks()/sayfa yenilemesinde kayıp
+  // gidiyordu) ve tank seviyesini de yalnızca client tarafında düşürüyordu.
+  // Artık gerçek POST /dispense çağrısı yapıyor; tank seviyesi sunucuda
+  // atomik olarak düşürülüyor, ardından transactions ve tanks yeniden çekiliyor.
+  const addFuelTransaction = async (newTx: Omit<FuelTransaction, 'id' | 'timestamp'>) => {
+    try {
+      await apiFetch('/dispense', {
+        method: 'POST',
+        body: JSON.stringify({
+          siteName: newTx.siteName,
+          vehiclePlate: newTx.vehiclePlate,
+          driverName: newTx.driverName,
+          tankName: newTx.tankName,
+          amountLiters: newTx.amountLiters,
+          flowRateLpm: newTx.flowRateLpm,
+          pumpStatus: newTx.pumpStatus,
+          type: newTx.type,
+          rfidAuth: newTx.rfidAuth
+        })
+      });
+
+      await Promise.all([fetchTransactions(), fetchTanks()]);
+      showToast(`İkmal kaydedildi: ${newTx.vehiclePlate} — ${newTx.amountLiters} Litre`);
+    } catch (err: any) {
+      showToast(`İkmal kaydedilirken hata: ${err.message}`, 'error');
+      throw err;
+    }
   };
 
   const addHardwareLog = (log: Omit<HardwareLog, 'id' | 'timestamp'>) => {
@@ -939,6 +970,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         fetchSites,
         addSite,
         deleteSite,
+        fetchTransactions,
         addFuelTransaction,
         addHardwareLog,
         clearHardwareLogs,

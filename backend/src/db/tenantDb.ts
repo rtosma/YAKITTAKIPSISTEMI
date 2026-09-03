@@ -556,3 +556,98 @@ export async function deleteTank(id: string): Promise<void> {
     client.release();
   }
 }
+
+export interface TransactionRecord {
+  id: string;
+  tenant_id: string;
+  site_name: string;
+  vehicle_plate: string;
+  driver_name: string | null;
+  tank_name: string | null;
+  amount_liters: number;
+  flow_rate_lpm: number | null;
+  pump_status: string;
+  type: string;
+  rfid_auth: boolean;
+  created_at: string;
+}
+
+export async function getTenantTransactions(): Promise<TransactionRecord[]> {
+  const tenantId = getTenantId();
+  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SET LOCAL ROLE app_user;');
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+    // FE-802 (server-side pagination) henüz yok — burada makul bir üst sınır
+    // uygulanıyor. Toplu/ tam geçmiş dışa aktarımı için REP-701 stream export
+    // ayrı bir uç noktadır.
+    const result = await client.query('SELECT * FROM transactions ORDER BY created_at DESC LIMIT 200');
+    await client.query('COMMIT');
+    return result.rows;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Bir ikmal kaydı oluşturur VE ilgili tankın seviyesini aynı DB transaction'ı
+ * içinde atomik olarak düşürür (FOR UPDATE kilidiyle) — böylece aynı anda
+ * gelen iki ikmal isteği tank seviyesini birbirinin üzerine yazamaz.
+ */
+export async function createTransaction(
+  data: Omit<TransactionRecord, 'id' | 'tenant_id' | 'created_at'>
+): Promise<TransactionRecord> {
+  const tenantId = getTenantId();
+  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
+  const id = 'tx-' + Date.now();
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SET LOCAL ROLE app_user;');
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+
+    // İlgili tankı bul ve satırı kilitle (varsa) — isim eşleşmesi olmayabilir
+    // (örn. serbest metin girilmiş tankName), bu durumda seviye düşümü
+    // sessizce atlanır ama ikmal kaydı yine de oluşturulur.
+    if (data.tank_name) {
+      const tankResult = await client.query(
+        'SELECT id, capacity_liters, current_level_liters FROM tanks WHERE name = $1 FOR UPDATE',
+        [data.tank_name]
+      );
+
+      if (tankResult.rows.length > 0) {
+        const tank = tankResult.rows[0];
+        const newLevel = Math.max(0, Number(tank.current_level_liters) - Number(data.amount_liters));
+        const percentage = (newLevel / Number(tank.capacity_liters)) * 100;
+        const newStatus = percentage < 20 ? 'KRİTİK' : percentage < 40 ? 'UYARI' : 'GÜVENLİ';
+
+        await client.query(
+          'UPDATE tanks SET current_level_liters = $1, status = $2 WHERE id = $3',
+          [newLevel, newStatus, tank.id]
+        );
+      }
+    }
+
+    const result = await client.query(
+      `INSERT INTO transactions (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [
+        id, tenantId, data.site_name, data.vehicle_plate, data.driver_name ?? null, data.tank_name ?? null,
+        data.amount_liters, data.flow_rate_lpm ?? null, data.pump_status || 'TAMAMLANTI', data.type || 'Manuel',
+        data.rfid_auth ?? true
+      ]
+    );
+    await client.query('COMMIT');
+    return result.rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}

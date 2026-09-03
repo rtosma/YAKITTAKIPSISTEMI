@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createTenantSite, deleteTenantSite, getTenantCompanyProfile } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createTenantSite, deleteTenantSite, getTenantCompanyProfile, getTenantTransactions, createTransaction } from '../db/tenantDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
@@ -770,8 +770,19 @@ router.delete(
 );
 
 /**
- * POST /api/v1/dispense
- * Protected endpoint requiring PUMP_OPERATOR, SITE_MANAGER or COMPANY_OWNER role
+ * @swagger
+ * /dispense:
+ *   post:
+ *     summary: İkmal Kaydı Oluştur
+ *     description: >
+ *       Bir yakıt ikmalini kalıcı olarak kaydeder ve ilgili tankın seviyesini
+ *       atomik olarak düşürür. Önceden bu endpoint DB'ye hiçbir şey yazmayan
+ *       bir stub'dı (yalnızca success:true dönerdi).
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: İkmal kaydedildi.
  */
 router.post(
   '/dispense',
@@ -779,18 +790,55 @@ router.post(
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER', 'PUMP_OPERATOR'),
   validateRequest({ body: dispenseRequestSchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    const sanitizedBody = req.body;
-    const store = getTenantStore();
+    try {
+      const b = req.body;
+      const newTransaction = await createTransaction({
+        site_name: b.siteName,
+        vehicle_plate: b.vehiclePlate,
+        driver_name: b.driverName ?? null,
+        tank_name: b.tankName ?? null,
+        amount_liters: b.amountLiters,
+        flow_rate_lpm: b.flowRateLpm ?? null,
+        pump_status: b.pumpStatus || 'TAMAMLANTI',
+        type: b.type || 'Manuel',
+        rfid_auth: b.rfidAuth ?? true
+      });
 
-    res.json({
-      success: true,
-      message: 'İkmal yetkilendirme isteği doğrulandı.',
-      tenantId: store?.tenantId || req.user?.tenantId,
-      operator: req.user?.username,
-      dispenseDetails: sanitizedBody
-    });
+      res.json({
+        success: true,
+        message: 'İkmal başarıyla kaydedildi.',
+        data: newTransaction
+      });
+    } catch (error: any) {
+      next(error);
+    }
   }
 );
+
+/**
+ * @swagger
+ * /transactions:
+ *   get:
+ *     summary: İkmal Geçmişi
+ *     description: RLS kurallarına göre oturum açmış firmanın son 200 ikmal kaydını getirir.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: İkmal geçmişi başarıyla getirildi.
+ */
+router.get('/transactions', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const transactions = await getTenantTransactions();
+    res.json({
+      success: true,
+      totalCount: transactions.length,
+      data: transactions
+    });
+  } catch (error: any) {
+    next(error);
+  }
+});
 
 /**
  * POST /api/v1/telemetry/hardware-data

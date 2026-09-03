@@ -37,7 +37,7 @@ export const SiteOperatorPanel: React.FC = () => {
   const [amountLiters, setAmountLiters] = useState<number>(150);
   const [isPumpActive, setIsPumpActive] = useState<boolean>(false);
 
-  const handleStartRefuel = (e: React.FormEvent) => {
+  const handleStartRefuel = async (e: React.FormEvent) => {
     e.preventDefault();
     const vehicle = vehicles.find(v => v.id === selectedVehicleId) || siteVehicles[0];
     const driver = drivers.find(d => d.id === selectedDriverId) || siteDrivers[0];
@@ -49,8 +49,13 @@ export const SiteOperatorPanel: React.FC = () => {
 
     const netCalibratedLiters = calculateCalibratedLiters(amountLiters);
 
-    setTimeout(() => {
-      addFuelTransaction({
+    // Önceden bu kayıt sadece client-side setTimeout ile "tamamlandı" gibi
+    // gösteriliyordu ve hiçbir zaman backend'e yazılmıyordu. addFuelTransaction
+    // artık gerçek POST /dispense çağrısı yapıyor; hata durumunda kendi
+    // toast'ını gösterip fırlatıyor, burada sadece pompa animasyonunu kapatmak
+    // için yakalıyoruz.
+    try {
+      await addFuelTransaction({
         siteName: activeSiteName,
         vehiclePlate: vehicle.plate,
         driverName: driver.name,
@@ -61,8 +66,11 @@ export const SiteOperatorPanel: React.FC = () => {
         type: 'Otomatik',
         rfidAuth: true
       });
+    } catch {
+      // addFuelTransaction zaten hata toast'ını gösterdi.
+    } finally {
       setIsPumpActive(false);
-    }, 1200);
+    }
   };
 
   return (

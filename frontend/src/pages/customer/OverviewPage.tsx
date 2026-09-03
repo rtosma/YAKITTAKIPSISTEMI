@@ -60,23 +60,27 @@ export const OverviewPage: React.FC = () => {
     ? vehicles.length
     : vehicles.filter(v => v.siteName === selectedSiteFilter).length;
 
-  const handleCreateRefuel = (e: React.FormEvent) => {
+  const handleCreateRefuel = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!refuelLiters || refuelLiters <= 0) return;
 
-    addFuelTransaction({
-      siteName: refuelSite,
-      vehiclePlate: refuelPlate,
-      driverName: refuelDriver,
-      tankName: refuelTank,
-      amountLiters: Number(refuelLiters),
-      flowRateLpm: 52.0,
-      pumpStatus: 'TAMAMLANTI',
-      type: 'Otomatik',
-      rfidAuth: true
-    });
-
-    setIsRefuelModalOpen(false);
+    try {
+      await addFuelTransaction({
+        siteName: refuelSite,
+        vehiclePlate: refuelPlate,
+        driverName: refuelDriver,
+        tankName: refuelTank,
+        amountLiters: Number(refuelLiters),
+        flowRateLpm: 52.0,
+        pumpStatus: 'TAMAMLANTI',
+        type: 'Otomatik',
+        rfidAuth: true
+      });
+      setIsRefuelModalOpen(false);
+    } catch {
+      // addFuelTransaction zaten hata toast'ını gösterdi — kullanıcı tekrar
+      // deneyebilsin diye modal açık kalır.
+    }
   };
 
   return (
