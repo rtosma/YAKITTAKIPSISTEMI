@@ -69,6 +69,7 @@ interface AppContextType {
 
   // Actions
   fetchCompanies: () => Promise<void>;
+  fetchHardwareDevices: () => Promise<void>;
   toggleCompanyModule: (companyId: string, moduleKey: keyof CompanyModule) => Promise<void>;
   
   // Tank CRUD
@@ -563,6 +564,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // roller zaten 403 alır.
       if (currentUser?.role === 'SUPER_ADMIN') {
         fetchCompanies();
+        fetchHardwareDevices();
       }
     }
   }, [isAuthenticated]);
@@ -933,6 +935,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  // Kayıtlı ESP32/debimetre cihazlarını Redis'teki gerçek son bağlantı
+  // durumuyla birlikte getirir (bkz. GET /devices). Önceden hardwareDevices
+  // her zaman boş diziydi — hiçbir fetch bağlı değildi.
+  const fetchHardwareDevices = async () => {
+    try {
+      const response = await apiFetch('/devices');
+      if (response.success && response.data) {
+        const mapped: HardwareDevice[] = response.data.map((d: any) => ({
+          id: d.deviceCode,
+          deviceCode: d.deviceCode,
+          name: d.name,
+          type: d.deviceCode.includes('TANK') ? 'Ultrasonik Tank Sensörü' : 'Debimetre & Solenoid',
+          siteName: d.siteName,
+          status: d.status
+        }));
+        setHardwareDevices(mapped);
+      }
+    } catch (err: any) {
+      showToast(`Cihazlar getirilirken hata: ${err.message}`, 'error');
+    }
+  };
+
   const addCompany = async (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules'>) => {
     try {
       await apiFetch('/companies', {
@@ -961,6 +985,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setSelectedSiteFilter,
         companies,
         fetchCompanies,
+        fetchHardwareDevices,
         vehicles,
         drivers,
         tanks,

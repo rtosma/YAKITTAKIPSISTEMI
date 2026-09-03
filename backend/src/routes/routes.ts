@@ -21,7 +21,8 @@ import {
   UserRole
 } from '../services/tokenService';
 import { authenticateJWT, authorizeRoles, AuthenticatedRequest } from '../middleware/authMiddleware';
-import { hardwareAuthMiddleware } from '../middleware/hardwareAuthMiddleware';
+import { hardwareAuthMiddleware, REGISTERED_HARDWARE_DEVICES } from '../middleware/hardwareAuthMiddleware';
+import { redisPool } from '../db/redisPool';
 import { loginRateLimiter } from '../middleware/rateLimitMiddleware';
 
 const router = Router();
@@ -335,6 +336,43 @@ router.patch(
     }
   }
 );
+
+/**
+ * @swagger
+ * /devices:
+ *   get:
+ *     summary: Kayıtlı IoT Donanımları (Süper Admin)
+ *     description: >
+ *       HMAC-SHA256 ile kayıtlı ESP32/debimetre cihazlarını, Redis'teki
+ *       gerçek son bilinen bağlantı durumuyla (MQTT LWT/veri akışından)
+ *       birlikte listeler. Hiç bağlanmamış bir cihaz OFFLINE görünür —
+ *       bu, önceki mock veriden farklı olarak sistemin gerçek durumudur.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cihaz listesi başarıyla getirildi.
+ */
+router.get('/devices', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const deviceIds = Object.keys(REGISTERED_HARDWARE_DEVICES);
+    const devices = await Promise.all(
+      deviceIds.map(async (deviceCode) => {
+        const config = REGISTERED_HARDWARE_DEVICES[deviceCode];
+        const status = await redisPool.getDeviceState(deviceCode);
+        return {
+          deviceCode,
+          name: config.name,
+          siteName: config.siteName,
+          status
+        };
+      })
+    );
+    res.json({ success: true, totalCount: devices.length, data: devices });
+  } catch (error: any) {
+    next(error);
+  }
+});
 
 /**
  * @swagger

@@ -54,25 +54,25 @@ export const DevicesPage: React.FC = () => {
 
               <div>
                 <h3 className="text-base font-extrabold text-[#e5e2e1]">{dev.name}</h3>
-                <p className="text-xs text-[#d5c4ab]">{dev.companyName} — ({dev.siteName})</p>
+                <p className="text-xs text-[#d5c4ab]">{dev.companyName ? `${dev.companyName} — ` : ''}({dev.siteName})</p>
               </div>
 
               <div className="bg-[#20201f] border border-[#353535] p-3 rounded-xl font-mono text-xs space-y-1">
                 <div className="flex justify-between">
                   <span className="text-[#d5c4ab]">IP Adresi:</span>
-                  <span className="text-[#e5e2e1] font-bold">{dev.ipAddress}</span>
+                  <span className="text-[#e5e2e1] font-bold">{dev.ipAddress || 'Bilinmiyor'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-[#d5c4ab]">Sinyal (RSSI):</span>
-                  <span className="text-[#a1e8a2] font-bold">{dev.signalRssi} dBm</span>
+                  <span className="text-[#a1e8a2] font-bold">{dev.signalRssi != null ? `${dev.signalRssi} dBm` : 'Veri yok'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-[#d5c4ab]">Firmware:</span>
-                  <span className="text-[#ffdca1] font-bold">v{dev.firmwareVersion}</span>
+                  <span className="text-[#ffdca1] font-bold">{dev.firmwareVersion ? `v${dev.firmwareVersion}` : 'Bilinmiyor'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-[#d5c4ab]">Son Sinyal:</span>
-                  <span className="text-[#d5c4ab]">{dev.lastPing}</span>
+                  <span className="text-[#d5c4ab]">{dev.lastPing || 'Hiç bağlanmadı'}</span>
                 </div>
               </div>
             </div>

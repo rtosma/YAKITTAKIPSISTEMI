@@ -106,13 +106,16 @@ export interface HardwareDevice {
   deviceCode: string;
   name: string;
   type: 'Debimetre & Solenoid' | 'Ultrasonik Tank Sensörü' | 'RFID Okuyucu' | 'Master Gateway';
-  companyName: string;
   siteName: string;
-  firmwareVersion: string;
-  ipAddress: string;
-  signalRssi: number;
   status: 'ONLINE' | 'OFFLINE' | 'SİNYAL_ZAYIF';
-  lastPing: string;
+  // Bu alanlar yalnızca cihaz gerçekten MQTT üzerinden veri gönderdiğinde
+  // dolar (IOT-302 binary payload'ından); hiç bağlanmamış bir cihaz için
+  // bilinmez — sahte değer üretmek yerine undefined bırakılır.
+  companyName?: string;
+  firmwareVersion?: string;
+  ipAddress?: string;
+  signalRssi?: number;
+  lastPing?: string;
 }
 
 export interface HardwareLog {

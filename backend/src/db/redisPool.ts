@@ -36,6 +36,22 @@ class RedisManager {
   }
 
   /**
+   * Cihazın son bilinen durumunu okur. Cihaz hiç MQTT verisi/LWT mesajı
+   * göndermemişse (örn. henüz hiç bağlanmamış donanım) anahtar hiç yoktur —
+   * bu durumda OFFLINE varsayılır (gerçek durumu yansıtır, "hayali ONLINE"
+   * göstermek yerine).
+   */
+  public async getDeviceState(deviceId: string): Promise<'ONLINE' | 'OFFLINE'> {
+    try {
+      const state = await this.client.get(`device:${deviceId}:state`);
+      return state === 'ONLINE' ? 'ONLINE' : 'OFFLINE';
+    } catch (err) {
+      logger.error({ err, deviceId }, '🚨 [IoT] Cihaz durumu Redis\'ten okunamadı.');
+      return 'OFFLINE';
+    }
+  }
+
+  /**
    * Bağlantıyı güvenli bir şekilde kapatır
    */
   public async close(): Promise<void> {
