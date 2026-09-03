@@ -8,7 +8,7 @@ export const SiteLoginPage: React.FC = () => {
   const { loginSiteOperator, isAuthenticated } = useApp();
 
   if (isAuthenticated) {
-    return <Navigate to="/panel" replace />;
+    return <Navigate to="/santiye-panel" replace />;
   }
 
   const [username, setUsername] = useState<string>('gebze-santiye');
@@ -38,7 +38,7 @@ export const SiteLoginPage: React.FC = () => {
       setIsLoading(false);
 
       if (result.success) {
-        navigate('/panel');
+        navigate('/santiye-panel');
       } else {
         setErrorMessage(result.error || 'Şantiye girişi yapılırken bir hata oluştu.');
       }

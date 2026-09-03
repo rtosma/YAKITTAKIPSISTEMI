@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { AppProvider } from './context/AppContext';
 import { Toast } from './components/Toast';
 
@@ -11,6 +11,7 @@ import { NotFoundPage } from './pages/NotFoundPage';
 import { ForbiddenPage } from './pages/ForbiddenPage';
 import { CustomerLayout } from './layouts/CustomerLayout';
 import { DeveloperLayout } from './layouts/DeveloperLayout';
+import { SiteOperatorPanel } from './pages/santiye/SiteOperatorPanel';
 
 // Customer Pages
 import { OverviewPage } from './pages/customer/OverviewPage';
@@ -43,7 +44,7 @@ export function App() {
           <Route path="/" element={<LoginPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/santiye-login" element={<SiteLoginPage />} />
-          <Route path="/santiye-panel" element={<Navigate to="/panel" replace />} />
+          <Route path="/santiye-panel" element={<SiteOperatorPanel />} />
           <Route path="/welcome" element={<WelcomeScreen />} />
           <Route path="/403" element={<ForbiddenPage />} />
 

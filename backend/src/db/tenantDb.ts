@@ -10,6 +10,7 @@ export interface VehicleRecord {
   rfid_tag: string;
   site_name: string;
   status: string;
+  fuel_capacity_liters: number | null;
 }
 
 export interface HardwareLogRecord {
@@ -250,7 +251,8 @@ export async function getTenantVehicles(): Promise<VehicleRecord[]> {
       vehicle_type: row.vehicle_type,
       rfid_tag: row.rfid_tag,
       site_name: row.site_name,
-      status: row.status
+      status: row.status,
+      fuel_capacity_liters: row.fuel_capacity_liters !== null ? Number(row.fuel_capacity_liters) : null
     }));
   } catch (err) {
     await client.query('ROLLBACK');
@@ -270,9 +272,9 @@ export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'
     await client.query('SET LOCAL ROLE app_user;');
     await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
     const result = await client.query(
-      `INSERT INTO vehicles (id, tenant_id, plate, brand_model, vehicle_type, rfid_tag, site_name, status) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [id, tenantId, data.plate, data.brand_model, data.vehicle_type, data.rfid_tag, data.site_name, data.status]
+      `INSERT INTO vehicles (id, tenant_id, plate, brand_model, vehicle_type, rfid_tag, site_name, status, fuel_capacity_liters)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [id, tenantId, data.plate, data.brand_model, data.vehicle_type, data.rfid_tag, data.site_name, data.status, data.fuel_capacity_liters ?? null]
     );
     await client.query('COMMIT');
     return result.rows[0];
@@ -297,7 +299,7 @@ export async function updateVehicle(id: string, data: Partial<VehicleRecord>): P
     let queryIdx = 1;
 
     for (const [key, value] of Object.entries(data)) {
-      if (['plate', 'brand_model', 'vehicle_type', 'rfid_tag', 'site_name', 'status'].includes(key) && value !== undefined) {
+      if (['plate', 'brand_model', 'vehicle_type', 'rfid_tag', 'site_name', 'status', 'fuel_capacity_liters'].includes(key) && value !== undefined) {
         fields.push(`${key} = $${queryIdx}`);
         values.push(value);
         queryIdx++;

@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
-import { apiFetch } from '../utils/api';
+import { apiFetch, UNAUTHORIZED_EVENT } from '../utils/api';
 import { 
   Company, 
   Site,
@@ -60,7 +60,7 @@ interface AppContextType {
 
   // Refresh trigger for animations
   tankRefreshKey: number;
-  triggerTankRefresh: () => void;
+  triggerTankRefresh: () => Promise<void>;
 
   // Latency & Terminal Stream
   simulatedLatencyMs: number;
@@ -368,7 +368,27 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     showToast('Oturum kapatıldı. Giriş sayfasına dönüldü.', 'info');
   };
 
-  const triggerTankRefresh = () => {
+  // 401 (token süresi dolmuş/geçersiz) durumunda önceden sadece console.warn
+  // basılıyordu; kullanıcı oturumu düşmeden sonsuza kadar başarısız istek
+  // toast'ları görmeye devam ediyordu. apiFetch artık bu durumda bir olay
+  // yayınlıyor (bkz. utils/api.ts), burada onu dinleyip otomatik logout
+  // yapıyoruz — mevcut layout guard'ları (isAuthenticated kontrolü) kullanıcıyı
+  // otomatik olarak giriş ekranına yönlendirir.
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      logoutCompany();
+      showToast('Oturum süreniz doldu. Lütfen tekrar giriş yapın.', 'warning');
+    };
+    window.addEventListener(UNAUTHORIZED_EVENT, handleUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, handleUnauthorized);
+  }, []);
+
+  const triggerTankRefresh = async () => {
+    // Önceden bu fonksiyon backend'e hiç sormadan sadece animasyon anahtarını
+    // artırıp "yenilendi" toast'ı gösteriyordu — kullanıcı gerçekte bayat veri
+    // görmeye devam ediyordu. Artık gerçekten fetchTanks() ile DB'den taze
+    // veri çekip öyle güncelliyor.
+    await fetchTanks();
     setTankRefreshKey(prev => prev + 1);
     showToast('Tank verileri ve göstergeleri yenilendi', 'info');
   };
@@ -546,7 +566,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           siteName: v.site_name || 'Gebze Ana Şantiye',
           assignedDriver: 'Atanmadı', // TODO: Fetch from relations
           rfidTag: v.rfid_tag,
-          fuelCapacityLiters: 500, // TODO: Mock or new DB column
+          fuelCapacityLiters: v.fuel_capacity_liters != null ? Number(v.fuel_capacity_liters) : 0,
           lastRefuelDate: 'Henüz yok', // TODO: Calculate from transactions
           lastRefuelLiters: 0,
           totalRefuelsCount: 0,

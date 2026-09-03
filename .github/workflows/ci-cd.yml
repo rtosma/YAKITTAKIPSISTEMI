@@ -43,6 +43,88 @@ jobs:
 #__CI_SKIP__ değişkeni SIGTERM testinde sunucu başlatılırken gerçek bir PostgreSQL'e bağlanma denemesini önlemek için
 
 
+  auth-integration-test:
+    name: 🔐 AUTH-201 Integration Test (Login, Refresh Rotation, RBAC)
+    runs-on: ubuntu-latest
+    # test_auth201.ts makes real HTTP calls against a running server backed by
+    # a real PostgreSQL + Redis — the other two test files never actually
+    # exercised login/refresh-rotation/RBAC end-to-end. Previously not run in
+    # CI at all; it would have failed on the pompa-op-01 PUMP_OPERATOR fixture
+    # user, which is now part of seed_mock_data.sql.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: yakittakip_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Backend Dependencies
+        run: cd backend && npm ci
+
+      - name: Apply Database Schema & Seed Data
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d yakittakip_db -f backend/src/db/schema.sql
+          PGPASSWORD=postgres psql -h localhost -U postgres -d yakittakip_db -f backend/src/db/seed_mock_data.sql
+
+      - name: Start Backend Server (background)
+        run: |
+          nohup npx tsx src/bootstrap.ts > /tmp/backend-ci.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5000/api/v1/health > /dev/null && echo "Backend healthy after ${i}s" && exit 0
+            sleep 1
+          done
+          echo "Backend did not become healthy in time — server log follows:"
+          cat /tmp/backend-ci.log
+          exit 1
+        working-directory: backend
+        env:
+          PORT: 5000
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: yakittakip_db
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          # CI-only throwaway secrets — never reused outside this ephemeral job run.
+          JWT_SECRET: ci_only_access_secret_${{ github.run_id }}_${{ github.run_attempt }}
+          JWT_REFRESH_SECRET: ci_only_refresh_secret_${{ github.run_id }}_${{ github.run_attempt }}
+          MQTT_URL: __CI_SKIP__
+
+      - name: Run AUTH-201 Integration Tests
+        run: cd backend && npx tsx test/test_auth201.ts
+
+      - name: Dump Backend Log on Failure
+        if: failure()
+        run: cat /tmp/backend-ci.log || true
+
   build-bundle:
     name: 📦 Build Standalone Bundles
     needs: quality-and-tests
@@ -94,11 +176,18 @@ jobs:
           tags: yakittakip-backend:ci-${{ github.sha }}
 
       - name: Run Trivy Vulnerability Scanner (Critical & High CVEs)
+        # exit-code was previously hardcoded to '0' (never fails the build) to
+        # work around CVEs in the base image's bundled npm CLI (tar, minimatch,
+        # cross-spawn...) and stale OpenSSL packages. Both are now fixed at the
+        # source instead of muted here: backend/Dockerfile removes the unused
+        # bundled npm CLI from the runtime image and runs `apk upgrade` for
+        # patched OS packages — a fresh scan comes back with zero CRITICAL/HIGH
+        # findings. exit-code is back to '1' so a real new CVE actually fails CI.
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: 'yakittakip-backend:ci-${{ github.sha }}'
           format: 'table'
-          exit-code: '0'
+          exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'

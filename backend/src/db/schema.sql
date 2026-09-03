@@ -32,8 +32,14 @@ CREATE TABLE IF NOT EXISTS vehicles (
     rfid_tag VARCHAR(64) NOT NULL,
     site_name VARCHAR(128) DEFAULT 'Gebze Ana Şantiye',
     status VARCHAR(32) DEFAULT 'AKTİF',
+    fuel_capacity_liters NUMERIC(10, 2),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Var olan (önceden oluşturulmuş) veritabanları için idempotent kolon ekleri
+-- (createVehicleSchema fuelCapacityLiters'ı zorunlu kılıp doğruluyordu ama
+-- hiçbir DB kolonu olmadığı için değer sessizce atılıyordu — bkz. routes.ts)
+ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS fuel_capacity_liters NUMERIC(10, 2);
 
 -- 3. Tanks Table with Tenant ID
 CREATE TABLE IF NOT EXISTS tanks (

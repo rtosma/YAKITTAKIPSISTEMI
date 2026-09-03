@@ -1,22 +1,27 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Navigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useApp } from '../../context/AppContext';
 
 export const SiteOperatorPanel: React.FC = () => {
   const navigate = useNavigate();
-  const { 
-    currentUser, 
-    logoutCompany, 
-    selectedSiteFilter, 
-    tanks, 
-    vehicles, 
-    drivers, 
-    transactions, 
+  const {
+    currentUser,
+    logoutCompany,
+    selectedSiteFilter,
+    tanks,
+    vehicles,
+    drivers,
+    transactions,
     addFuelTransaction,
     calibrationMultiplier,
-    calculateCalibratedLiters
+    calculateCalibratedLiters,
+    isAuthenticated
   } = useApp();
+
+  if (!isAuthenticated) {
+    return <Navigate to="/santiye-login" replace />;
+  }
 
   const activeSiteName = currentUser?.siteName || (selectedSiteFilter !== 'TÜMÜ' ? selectedSiteFilter : 'Gebze Ana Şantiye');
 

@@ -385,7 +385,8 @@ router.post(
         vehicle_type: sanitizedBody.type,
         rfid_tag: sanitizedBody.rfidTag,
         site_name: sanitizedBody.siteName || sanitizedBody.site_name || 'Gebze Ana Şantiye',
-        status: sanitizedBody.status || 'AKTİF'
+        status: sanitizedBody.status || 'AKTİF',
+        fuel_capacity_liters: sanitizedBody.fuelCapacityLiters ?? null
       };
 
       const newVehicle = await createVehicle(vehicleData);
@@ -413,14 +414,15 @@ router.put(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const id = req.params.id;
-      const { plate, brandModel, type, rfidTag, siteName, status } = req.body;
+      const { plate, brandModel, type, rfidTag, siteName, status, fuelCapacityLiters } = req.body;
       const updateData = {
         ...(plate && { plate }),
         ...(brandModel && { brand_model: brandModel }),
         ...(type && { vehicle_type: type }),
         ...(rfidTag && { rfid_tag: rfidTag }),
         ...(siteName && { site_name: siteName }),
-        ...(status && { status })
+        ...(status && { status }),
+        ...(fuelCapacityLiters !== undefined && { fuel_capacity_liters: fuelCapacityLiters })
       };
 
       const updatedVehicle = await updateVehicle(id, updateData);
