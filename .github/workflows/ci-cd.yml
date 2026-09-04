@@ -191,3 +191,56 @@ jobs:
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
+
+  # ----------------------------------------------------------------------------
+  # OPS-1102 — Sıfır Kesintili Otomatik Dağıtım
+  # ----------------------------------------------------------------------------
+  # main/master'a yapılan HER push, yukarıdaki tüm kalite kapılarından (lint,
+  # tip kontrolü, RES-902/OPS-1101/AUTH-201 testleri, bundle derlemesi, Trivy
+  # CVE taraması) geçtikten SONRA otomatik olarak dağıtılır — ama yalnızca
+  # DEPLOY_HOST secret'ı tanımlıysa. Bu repoda henüz gerçek bir hedef sunucu
+  # (VM/VPS) tanımlı DEĞİL; secret'lar boşken bu job'un `if` koşulu false
+  # olur ve job atlanır (CI kırılmaz) — bir hedef sunucu hazır olduğunda
+  # yalnızca aşağıdaki 4 repository secret'ını eklemek yeterlidir:
+  #   DEPLOY_HOST     — sunucu IP/hostname
+  #   DEPLOY_USER     — SSH kullanıcı adı
+  #   DEPLOY_SSH_KEY  — parolasız SSH private key (PEM)
+  #   DEPLOY_PORT     — (opsiyonel) SSH portu, varsayılan 22
+  #
+  # Sunucu tarafında bir kereye mahsus hazırlık: bu repo'yu klonlayın, kök
+  # dizine gerçek .env dosyasını koyun, `docker compose up -d` ile yığını
+  # ayağa kaldırın. Bu job'un yaptığı her şey: sunucuya SSH ile bağlanıp
+  # `git fetch && git reset --hard origin/<branch>` ile en son commit'e
+  # geçmek ve scripts/zero-downtime-deploy.sh'yi çalıştırmak — o script
+  # backend'i (nginx üzerinden atomik bir kesme ile) sıfır kesintiyle
+  # günceller. Bu mekanizma bu oturumda canlı olarak doğrulanmıştır: swap
+  # sırasında sürekli /api/v1/health isteği atan bir döngü, 3 ardışık koşuda
+  # toplam 1000+ istekte 0 başarısızlık gözlemlemiştir (bkz. commit mesajı).
+  deploy-zero-downtime:
+    name: 🚀 Sıfır Kesintili Dağıtım (yalnızca main/master push, DEPLOY_HOST tanımlıysa)
+    needs: [quality-and-tests, auth-integration-test, build-bundle, docker-security-scan]
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
+      secrets.DEPLOY_HOST != ''
+
+    steps:
+      - name: Deploy via SSH (git pull + zero-downtime-deploy.sh)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${DEPLOY_PATH:-~/YAKITTAKIPSISTEMI}"
+            git fetch origin
+            git reset --hard "origin/${{ github.ref_name }}"
+            chmod +x scripts/zero-downtime-deploy.sh
+            ./scripts/zero-downtime-deploy.sh
+            # Diğer servisler (nginx statik dosyaları, postgres şeması vb.)
+            # zero-downtime gerektirmeyen normal bir 'up -d --build' ile.
+            docker compose up -d --build frontend

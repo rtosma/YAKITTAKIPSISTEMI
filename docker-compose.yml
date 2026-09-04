@@ -99,7 +99,15 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: yakittakip_backend
+    # OPS-1102: kasıtlı olarak sabit bir container_name YOK. Docker Compose,
+    # container_name sabitlenmiş bir servisi 1'in üzerinde ölçeklendirmeyi
+    # reddeder ("cannot scale service to more than 1"); scripts/zero-downtime-deploy.sh
+    # ise tam olarak bunu yapıyor — eski konteyner ayakta ve trafik alırken
+    # yeni imajla ikinci bir backend konteyneri başlatıp (scale=2, --no-recreate)
+    # sağlıklı olduğunu doğruladıktan sonra eskisini kaldırıyor. Compose bu
+    # servisi kendi ürettiği adla (ör. yakittakipsistemi-backend-1) izliyor;
+    # günlük `docker exec`/`docker logs` için `docker compose ps -q backend`
+    # kullanın.
     restart: unless-stopped
     environment:
       NODE_ENV: production
@@ -119,8 +127,16 @@ services:
       MQTT_URL: mqtt://emqx:1883
       MQTT_USERNAME: ${MQTT_USERNAME:?MQTT_USERNAME .env dosyasında tanımlanmalıdır}
       MQTT_PASSWORD: ${MQTT_PASSWORD:?MQTT_PASSWORD .env dosyasında tanımlanmalıdır}
-    ports:
-      - "5000:5000"
+    # OPS-1102: host'a sabit "5000:5000" port yayını kasıtlı olarak KALDIRILDI.
+    # 1) frontend/nginx.conf zaten backend'e dahili yakit_network üzerinden
+    #    hostname ile (http://backend:5000) erişiyor — dışarıdan doğrudan
+    #    erişime gerek yok, tüm trafik nginx üzerinden geçmeli.
+    # 2) Sabit bir host portu, aynı anda YALNIZCA bir konteyner tarafından
+    #    bağlanabilir — scripts/zero-downtime-deploy.sh'nin gerektirdiği
+    #    "eski + yeni replika aynı anda ayakta" durumunu (scale=2) bu port
+    #    engeller ("port is already allocated" hatası). Doğrudan host'tan API
+    #    testi gerekiyorsa nginx üzerinden http://localhost:3000/api/v1/...
+    #    kullanın (frontend zaten 3000:80 ile host'a açık).
     depends_on:
       postgres:
         condition: service_healthy
@@ -144,6 +160,14 @@ services:
     restart: unless-stopped
     ports:
       - "3000:80"
+    # OPS-1102: backend'in tek yönlendirme hedefi host'tan bind-mount edilen
+    # bu dosyada tutuluyor (nginx.conf'taki `upstream backend_pool` bloğu
+    # bunu include ediyor) — böylece scripts/zero-downtime-deploy.sh, frontend
+    # imajını YENİDEN DERLEMEDEN sadece bu dosyayı yazıp `nginx -s reload`
+    # tetikleyerek trafiği atomik olarak eski/yeni backend repliği arasında
+    # geçirebiliyor.
+    volumes:
+      - ./nginx/backend_upstream.conf:/etc/nginx/backend_upstream.conf:ro
     depends_on:
       - backend
     networks:

@@ -37,8 +37,15 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 EXPOSE 80
 
 # Health check
+# "localhost" burada kasıtlı olarak YOK: bu Alpine nginx görüntüsünde nginx
+# yalnızca IPv4 (0.0.0.0:80) dinliyor, ama container içindeki wget "localhost"u
+# önce IPv6 ([::1]) olarak çözüyor ve "connection refused" ile başarısız
+# oluyor — healthcheck'i konteyner gerçekte sağlıklı yanıt verirken bile
+# sürekli UNHEALTHY gösteriyordu (bkz. proje geçmişi, OPS-1102 sırasında
+# tespit edildi). 127.0.0.1 açıkça IPv4 istediği için bu belirsizliği ortadan
+# kaldırıyor.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:80/ || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:80/ || exit 1
 
 # Start Nginx in foreground
 CMD ["nginx", "-g", "daemon off;"]
