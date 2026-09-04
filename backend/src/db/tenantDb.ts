@@ -1,3 +1,5 @@
+import crypto from 'crypto';
+import { config } from '../config/env';
 import { ForbiddenError, ConflictError, UnauthorizedError, NotFoundError } from '../utils/errors';
 import { generateId } from '../utils/id';
 import { hashPassword, verifyPassword } from '../utils/password';
@@ -542,6 +544,9 @@ export interface TransactionRecord {
   type: string;
   rfid_auth: boolean;
   created_at: string;
+  idempotency_key: string | null;
+  hash_signature: string | null;
+  verification_status: string;
 }
 
 export interface TransactionFilters {
@@ -663,7 +668,12 @@ export async function getTenantTransactionsPaginated(
  * gelen iki ikmal isteği tank seviyesini birbirinin üzerine yazamaz.
  */
 export async function createTransaction(
-  data: Omit<TransactionRecord, 'id' | 'tenant_id' | 'created_at'>
+  // idempotency_key/hash_signature/verification_status yalnızca FUEL-401.4'ün
+  // finalizeDispenseSession()'ından geçen, cihaz-tetiklemeli otomatik
+  // ikmallere özgü (bkz. yukarıdaki alan yorumları) — bu fonksiyon (manuel/
+  // operatör tetiklemeli tek seferlik ikmal) bunları hiç set etmez, DB
+  // varsayılanları (NULL / 'DOĞRULANDI') geçerli olur.
+  data: Omit<TransactionRecord, 'id' | 'tenant_id' | 'created_at' | 'idempotency_key' | 'hash_signature' | 'verification_status'>
 ): Promise<TransactionRecord> {
   return withTenant(async (client, tenantId) => {
     const id = generateId('tx');
@@ -740,6 +750,239 @@ export async function createTransaction(
       ]
     );
     return result.rows[0];
+  });
+}
+
+// ============================================================================
+// FUEL-401: RFID-TETİKLEMELİ İKMAL OTURUMU — YETKİLENDİRME ZİNCİRİ + FİNALİZE
+// ============================================================================
+
+// Aracın kendi fuel_capacity_liters'ı tanımlı değilse (NULL) kullanılan
+// güvenli üst sınır — tipik bir kamyon/iş makinesi yakıt deposu kapasitesi.
+// Ticket'ta sabit bir "kota" mekanizması tanımlanmıyor; aynı şantiyede kota
+// kontrolü zaten aracın KENDİ depo kapasitesiyle doğal olarak sınırlı (çapraz
+// şantiye durumu ayrıca cross_site_permissions.allowed_liters ile sınırlanır
+// — bkz. aşağıdaki çapraz şantiye bloğu, createTransaction'daki FUEL-402
+// deseniyle birebir aynı).
+const DEFAULT_MAX_DISPENSE_LITERS = 300;
+
+export interface DispenseAuthResult {
+  vehiclePlate: string;
+  driverName: string;
+  siteName: string;
+  tankName: string;
+  maxAllowedLiters: number;
+}
+
+/**
+ * FUEL-401.1 — "request-auth" ucunun yetkilendirme zinciri: kart aktif mi →
+ * araç aktif mi → şantiye yetkisi → kota → tank seviyesi. Her ret, ticket'ın
+ * istediği makine-okunur bir `error` koduyla (details.error) fırlatılır —
+ * cihaz firmware'i buna göre farklı bir LED/ekran mesajı gösterebilir.
+ *
+ * Cihazın kendisinin (MQTT presence) ONLINE olup olmadığı BİLEREK ayrı bir
+ * adım olarak kontrol EDİLMİYOR: bu isteğin kendisi zaten hardwareAuthMiddleware
+ * üzerinden geçerli bir HMAC imzasıyla geldi — cihaz bu ANDA HTTP üzerinden
+ * kanıtlanmış şekilde canlı. MQTT presence farklı bir kanaldır (telemetri) ve
+ * o kanalın gecikmeli/susmuş olması bu HTTP isteğinin geçerliliğini etkilemez;
+ * ayrı bir kontrol eklemek gereksiz bir yanlış-red kaynağı olurdu.
+ */
+export async function authorizeDispenseRequest(input: {
+  rfidCardId: string;
+  tankName: string;
+  deviceSiteName: string;
+}): Promise<DispenseAuthResult> {
+  return withTenant(async (client) => {
+    // 1. Kart tanınıyor mu, sürücü aktif mi?
+    const driverRes = await client.query(
+      'SELECT name, status FROM drivers WHERE rfid_card_id = $1',
+      [input.rfidCardId]
+    );
+    if (driverRes.rows.length === 0) {
+      throw new ForbiddenError(`'${input.rfidCardId}' kartı sisteme kayıtlı değil.`, { error: 'CARD_UNKNOWN' });
+    }
+    const driver = driverRes.rows[0];
+    // Sürücü durumu 'AKTİF'|'SAHADA'|'İZİNLİ'|'PASİF' olabilir (bkz.
+    // frontend/src/types/index.ts) — 'SAHADA' (o an sahada/görevde) da
+    // çalışan bir durumdur, yalnızca 'İZİNLİ' ve 'PASİF' ikmal almamalı.
+    if (driver.status !== 'AKTİF' && driver.status !== 'SAHADA') {
+      throw new ForbiddenError(`'${driver.name}' sürücüsü aktif değil (durum: ${driver.status}).`, { error: 'DRIVER_INACTIVE' });
+    }
+
+    // 2. Sürücüye atanmış aktif bir araç var mı?
+    const vehicleRes = await client.query(
+      'SELECT plate, status, site_name, fuel_capacity_liters FROM vehicles WHERE assigned_driver_name = $1',
+      [driver.name]
+    );
+    if (vehicleRes.rows.length === 0) {
+      throw new ForbiddenError(`'${driver.name}' sürücüsüne atanmış bir araç bulunamadı.`, { error: 'NO_VEHICLE_ASSIGNED' });
+    }
+    const vehicle = vehicleRes.rows[0];
+    if (vehicle.status !== 'AKTİF') {
+      throw new ForbiddenError(`'${vehicle.plate}' plakalı araç aktif değil (durum: ${vehicle.status}).`, { error: 'VEHICLE_BLOCKED' });
+    }
+
+    // 3. Şantiye yetkisi + kota — createTransaction'daki FUEL-402 deseniyle
+    // birebir aynı (çapraz şantiyede cross_site_permissions.allowed_liters
+    // üst sınırı belirler; aynı şantiyede aracın kendi depo kapasitesi).
+    let maxAllowedLiters = vehicle.fuel_capacity_liters ? Number(vehicle.fuel_capacity_liters) : DEFAULT_MAX_DISPENSE_LITERS;
+    if (vehicle.site_name !== input.deviceSiteName) {
+      const permRes = await client.query(
+        `SELECT allowed_liters, used_liters FROM cross_site_permissions
+         WHERE vehicle_plate = $1 AND target_site = $2 AND status = 'AKTİF' AND expiry_date >= CURRENT_DATE`,
+        [vehicle.plate, input.deviceSiteName]
+      );
+      if (permRes.rows.length === 0) {
+        throw new ForbiddenError(
+          `'${vehicle.plate}' plakalı aracın '${input.deviceSiteName}' şantiyesinde geçerli bir çapraz şantiye ikmal yetkisi yok.`,
+          { error: 'NO_SITE_PERMISSION' }
+        );
+      }
+      const perm = permRes.rows[0];
+      const remaining = Number(perm.allowed_liters) - Number(perm.used_liters);
+      if (remaining <= 0) {
+        throw new ConflictError(`Çapraz şantiye kotası tükenmiş.`, { error: 'QUOTA_EXHAUSTED' });
+      }
+      maxAllowedLiters = Math.min(maxAllowedLiters, remaining);
+    }
+
+    // 4. Tank bu şantiyede var mı, seviyesi yeterli mi?
+    const tankRes = await client.query(
+      'SELECT current_level_liters FROM tanks WHERE name = $1 AND site_name = $2',
+      [input.tankName, input.deviceSiteName]
+    );
+    if (tankRes.rows.length === 0) {
+      throw new NotFoundError(`'${input.tankName}' tankı '${input.deviceSiteName}' şantiyesinde bulunamadı.`, { error: 'TANK_NOT_FOUND' });
+    }
+    const tankLevel = Number(tankRes.rows[0].current_level_liters);
+    if (tankLevel <= 0) {
+      throw new ConflictError(`'${input.tankName}' tankında yakıt kalmamış.`, { error: 'TANK_LOW' });
+    }
+    maxAllowedLiters = Math.min(maxAllowedLiters, tankLevel);
+
+    return {
+      vehiclePlate: vehicle.plate,
+      driverName: driver.name,
+      siteName: vehicle.site_name,
+      tankName: input.tankName,
+      maxAllowedLiters
+    };
+  });
+}
+
+// FUEL-401.4 AC: totalizatör farkı ile cihazın kendi bildirdiği miktar
+// arasındaki sapma bu oranı aşarsa kayıt otomatik "doğrulandı" sayılmaz.
+const DISCREPANCY_THRESHOLD_RATIO = 0.01; // %1
+
+export interface FinalizeDispenseInput {
+  siteName: string;
+  vehiclePlate: string;
+  driverName: string | null;
+  tankName: string;
+  startTotalizerLiters: number;
+  endTotalizerLiters: number;
+  reportedLiters: number;
+  flowRateLpm: number | null;
+  idempotencyKey: string;
+  forceManualVerification: boolean;
+}
+
+/**
+ * FUEL-401.4 — "finalize" ucu. createTransaction'ın (manuel/operatör ikmali)
+ * tank-düşümü + çapraz-şantiye-kota deseniyle BİREBİR aynı mantığı, cihaz
+ * kaynaklı otomatik ikmaller için idempotency + hash_signature + sapma
+ * doğrulamasıyla genişletir. createTransaction'ın YERİNE geçmiyor — o
+ * endpoint (manuel/operatör tetiklemeli tek seferlik ikmal) olduğu gibi
+ * duruyor, bu tamamen ayrı, RFID/state-machine tetiklemeli bir akış.
+ */
+/**
+ * FUEL-401.4 — finalize akışının, oturum state machine'ine dokunmadan ÖNCE
+ * çağırdığı idempotency ön kontrolü. Neden ayrı bir fonksiyon: bir cihaz
+ * finalize isteğini başarıyla işletip sunucu yanıtı GERİ DÖNMEDEN (ağ
+ * kesintisi) aynı isteği tekrar gönderirse, o sıradaki oturum artık
+ * COMPLETED'dır — routes.ts önce bunu kontrol etmezse dispenseSessionService
+ * beginFinalize() COMPLETED→FINALIZING geçişini reddeder ve idempotent
+ * yanıt yerine 409 döner (bkz. test_fuel401_dispense_session.ts Test 10).
+ */
+export async function findTransactionByIdempotencyKey(idempotencyKey: string): Promise<TransactionRecord | null> {
+  return withTenant(async (client) => {
+    const result = await client.query('SELECT * FROM transactions WHERE idempotency_key = $1', [idempotencyKey]);
+    return result.rows[0] ?? null;
+  });
+}
+
+export async function finalizeDispenseSession(
+  data: FinalizeDispenseInput
+): Promise<TransactionRecord & { alreadyExisted: boolean }> {
+  return withTenant(async (client, tenantId) => {
+    // İdempotency: cihaz ağ kesintisi sonrası AYNI finalize isteğini tekrar
+    // gönderebilir — ikinci bir kayıt yaratmak yerine var olanı döndür.
+    const existing = await client.query('SELECT * FROM transactions WHERE idempotency_key = $1', [data.idempotencyKey]);
+    if (existing.rows.length > 0) {
+      return { ...(existing.rows[0] as TransactionRecord), alreadyExisted: true };
+    }
+
+    // Totalizatör farkı asıl doğruluk kaynağı — cihazın kendi bildirdiği
+    // `reportedLiters`e KÖRÜ KÖRÜNE güvenilmez (ticket notu).
+    const totalizerLiters = Math.max(0, data.endTotalizerLiters - data.startTotalizerLiters);
+    const discrepancyRatio = data.reportedLiters > 0
+      ? Math.abs(totalizerLiters - data.reportedLiters) / data.reportedLiters
+      : 0;
+    const needsVerification = data.forceManualVerification || discrepancyRatio > DISCREPANCY_THRESHOLD_RATIO;
+
+    // Tank seviyesi düşümü — createTransaction'daki AYNI kilitli-satır deseni.
+    if (data.tankName) {
+      const tankResult = await client.query(
+        'SELECT id, capacity_liters, current_level_liters FROM tanks WHERE name = $1 AND site_name = $2 FOR UPDATE',
+        [data.tankName, data.siteName]
+      );
+      if (tankResult.rows.length > 0) {
+        const tank = tankResult.rows[0];
+        const newLevel = Math.max(0, Number(tank.current_level_liters) - totalizerLiters);
+        const percentage = (newLevel / Number(tank.capacity_liters)) * 100;
+        const newStatus = percentage < 20 ? 'KRİTİK' : percentage < 40 ? 'UYARI' : 'GÜVENLİ';
+        await client.query('UPDATE tanks SET current_level_liters = $1, status = $2 WHERE id = $3', [newLevel, newStatus, tank.id]);
+      }
+    }
+
+    // Çapraz şantiye kota kullanımı — createTransaction'daki AYNI desen.
+    const vehicleRes = await client.query('SELECT site_name FROM vehicles WHERE plate = $1', [data.vehiclePlate]);
+    if (vehicleRes.rows.length > 0 && vehicleRes.rows[0].site_name !== data.siteName) {
+      const permRes = await client.query(
+        `SELECT id, allowed_liters, used_liters FROM cross_site_permissions
+         WHERE vehicle_plate = $1 AND target_site = $2 AND status = 'AKTİF' AND expiry_date >= CURRENT_DATE
+         FOR UPDATE`,
+        [data.vehiclePlate, data.siteName]
+      );
+      if (permRes.rows.length > 0) {
+        const perm = permRes.rows[0];
+        const newUsed = Number(perm.used_liters) + totalizerLiters;
+        const newPermStatus = newUsed >= Number(perm.allowed_liters) ? 'KULLANILDI' : 'AKTİF';
+        await client.query('UPDATE cross_site_permissions SET used_liters = $1, status = $2 WHERE id = $3', [newUsed, newPermStatus, perm.id]);
+      }
+    }
+
+    const id = generateId('tx');
+    // Değişmezlik mührü: sonradan doğrudan DB üzerinden (bu sunucu sırrını
+    // bilmeden) fark ettirilmeden değiştirilemeyecek bir HMAC. Kaydın kendisi
+    // hash'i taşır ama onu OTOMATİK yeniden hesaplayıp karşılaştıran bir
+    // denetim job'ı henüz yok (kapsam dışı — audit tooling ayrı bir ticket).
+    const hashSignature = crypto
+      .createHmac('sha256', config.TRANSACTION_HASH_SECRET)
+      .update(`${id}|${tenantId}|${data.vehiclePlate}|${totalizerLiters}|${data.idempotencyKey}`)
+      .digest('hex');
+
+    const result = await client.query(
+      `INSERT INTO transactions
+         (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, idempotency_key, hash_signature, verification_status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+      [
+        id, tenantId, data.siteName, data.vehiclePlate, data.driverName, data.tankName,
+        totalizerLiters, data.flowRateLpm, 'TAMAMLANTI', 'Otomatik', true,
+        data.idempotencyKey, hashSignature, needsVerification ? 'DOĞRULAMA_BEKLIYOR' : 'DOĞRULANDI'
+      ]
+    );
+    return { ...(result.rows[0] as TransactionRecord), alreadyExisted: false };
   });
 }
 

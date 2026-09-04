@@ -162,6 +162,28 @@ class MQTTService {
     }, delayMs);
   }
 
+  /**
+   * FUEL-401.3: sunucudan cihaza komut yayını (örn. FORCE_CUTOFF). Bu servis
+   * şimdiye kadar yalnızca ABONE oluyordu (telemetri/status akışı) — bu ilk
+   * gerçek YAYIN çağrısı. `command/v1/{deviceId}` topic'i, telemetri
+   * topic'inin (`telemetry/v1/...`) tam tersi yönü temsil eder; ESP32
+   * firmware'i bu topic'i dinleyip pompayı fiziksel olarak keser (donanım
+   * tarafı bu ticket'ın kapsamı dışında, yalnızca sunucu tarafı komut
+   * gönderimi burada).
+   */
+  public publishCommand(deviceId: string, command: string, payload: Record<string, unknown> = {}): void {
+    if (!this.client || !this.client.connected) {
+      logger.error({ deviceId, command }, '🚨 [MQTT] Broker bağlı değilken komut yayınlanamadı!');
+      return;
+    }
+    const topic = `command/v1/${deviceId}`;
+    const message = JSON.stringify({ command, ...payload, issuedAt: new Date().toISOString() });
+    this.client.publish(topic, message, { qos: 1 }, (err) => {
+      if (err) logger.error({ err, deviceId, command }, '🚨 [MQTT] Komut yayınlanamadı!');
+      else logger.warn({ deviceId, command }, `📤 [MQTT] Komut yayınlandı: ${command} → ${deviceId}`);
+    });
+  }
+
   public async disconnect(): Promise<void> {
     this.manuallyDisconnected = true;
     if (this.reconnectTimer) {

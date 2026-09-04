@@ -131,6 +131,8 @@ services:
       HW_SECRET_ESP32_PUMP_01: ${HW_SECRET_ESP32_PUMP_01:?HW_SECRET_ESP32_PUMP_01 .env dosyasında tanımlanmalıdır}
       HW_SECRET_ESP32_TANK_01: ${HW_SECRET_ESP32_TANK_01:?HW_SECRET_ESP32_TANK_01 .env dosyasında tanımlanmalıdır}
       HW_SECRET_ESP32_FLOW_ISR: ${HW_SECRET_ESP32_FLOW_ISR:?HW_SECRET_ESP32_FLOW_ISR .env dosyasında tanımlanmalıdır}
+      # FUEL-401.4: finalize edilen ikmal kayıtlarının değişmezlik mührü sırrı.
+      TRANSACTION_HASH_SECRET: ${TRANSACTION_HASH_SECRET:?TRANSACTION_HASH_SECRET .env dosyasında tanımlanmalıdır}
     # OPS-1102: host'a sabit "5000:5000" port yayını kasıtlı olarak KALDIRILDI.
     # 1) frontend/nginx.conf zaten backend'e dahili yakit_network üzerinden
     #    hostname ile (http://backend:5000) erişiyor — dışarıdan doğrudan

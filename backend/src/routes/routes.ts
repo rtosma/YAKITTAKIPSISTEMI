@@ -1,12 +1,13 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey } from '../db/tenantDb';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
 import { createTankSchema, updateTankSchema } from '../schemas/tankSchema';
 import { dispenseRequestSchema, transactionQuerySchema } from '../schemas/transactionSchema';
+import { dispenseRequestAuthSchema, dispenseHeartbeatSchema, dispenseFinalizeSchema } from '../schemas/dispenseSessionSchema';
 import { createCrossSitePermissionSchema, updateCrossSitePermissionStatusSchema } from '../schemas/crossSiteSchema';
 import { createCompanySchema, updateCompanySchema } from '../schemas/companySchema';
 import { loginSchema, changePasswordSchema } from '../schemas/authSchema';
@@ -29,6 +30,9 @@ import { broadcastToTenant } from '../socket/socketServer';
 import { logger } from '../utils/logger';
 import { loginRateLimiter, refreshRateLimiter, hardwareRateLimiter } from '../middleware/rateLimitMiddleware';
 import { checkLockout, recordFailedLogin, clearFailedLogins } from '../services/accountLockoutService';
+import { runWithTenant } from '../context/tenantContext';
+import { mqttService } from '../iot/mqttClient';
+import * as dispenseSessionService from '../services/dispenseSessionService';
 
 const router = Router();
 
@@ -1247,6 +1251,212 @@ router.post(
       receivedData: req.body,
       timestamp: new Date().toISOString()
     });
+  }
+);
+
+/**
+ * FUEL-401 — RFID-Tetiklemeli Otomatik İkmal Oturumu (Dispense Session
+ * State Machine). Ticket'ın "Teknik Yığın" alanı NestJS + Drizzle + BullMQ
+ * + ARCH-102 outbox öneriyor — bu kod tabanında hiçbiri kurulu değil.
+ * Bunun yerine: Express route + raw-pg (tenantDb.ts) + Redis (TTL'li oturum,
+ * bkz. services/dispenseSessionService.ts) + mevcut manuel setInterval
+ * süpürücü (bkz. index.ts) deseni kullanıldı — kod tabanının geri kalanıyla
+ * tutarlı, yeni bir bağımlılık eklemeden.
+ *
+ * Üçü de hardwareAuthMiddleware'den (HMAC-SHA256, AUTH-202) geçer — bu
+ * yüzden JWT değil, cihazın kendi kimliği kullanılır. tenantDb.ts
+ * fonksiyonları AsyncLocalStorage tenant context'i beklediğinden
+ * (withTenant), her route kendi context'ini authenticatedHardware.tenantId
+ * ile (bkz. hardwareAuthMiddleware.ts'teki REGISTERED_HARDWARE_DEVICES notu)
+ * runWithTenant() ile açıkça kurar — mqttClient.ts'in MQTT topic'inden
+ * tenantId çıkarıp aynısını yapmasının HTTP kanalındaki karşılığı.
+ */
+
+/**
+ * @swagger
+ * /dispense/request-auth:
+ *   post:
+ *     summary: FUEL-401.1 — RFID kartı okutulduğunda yetkilendirme zinciri
+ *     description: >
+ *       Kart aktif mi → sürücüye atanmış araç aktif mi → şantiye yetkisi/kota
+ *       → tank seviyesi zincirini kontrol eder; başarılıysa AUTHORIZED
+ *       durumunda yeni bir ikmal oturumu (Redis, TTL'li) açar. Reddedilirse
+ *       details.error alanında makine-okunur bir kod döner (CARD_UNKNOWN,
+ *       DRIVER_INACTIVE, NO_VEHICLE_ASSIGNED, VEHICLE_BLOCKED,
+ *       NO_SITE_PERMISSION, QUOTA_EXHAUSTED, TANK_NOT_FOUND, TANK_LOW).
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Oturum yetkilendirildi (AUTHORIZED).
+ */
+router.post(
+  '/dispense/request-auth',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  validateRequest({ body: dispenseRequestAuthSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; siteName: string; tenantId: string };
+    try {
+      const auth = await runWithTenant({ tenantId: hw.tenantId }, () =>
+        authorizeDispenseRequest({
+          rfidCardId: req.body.rfidCardId,
+          tankName: req.body.tankName,
+          deviceSiteName: hw.siteName
+        })
+      );
+
+      const session = await dispenseSessionService.createSession({
+        tenantId: hw.tenantId,
+        siteName: auth.siteName,
+        deviceId: hw.deviceId,
+        vehiclePlate: auth.vehiclePlate,
+        driverName: auth.driverName,
+        tankName: auth.tankName,
+        maxAllowedLiters: auth.maxAllowedLiters
+      });
+
+      broadcastToTenant(hw.tenantId, 'dispense:session', session);
+
+      res.json({
+        success: true,
+        message: 'İkmal oturumu yetkilendirildi.',
+        data: {
+          sessionId: session.sessionId,
+          state: session.state,
+          vehiclePlate: session.vehiclePlate,
+          driverName: session.driverName,
+          maxAllowedLiters: session.maxAllowedLiters
+        }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /dispense/heartbeat:
+ *   post:
+ *     summary: FUEL-401.2/401.3 — Pompalama sırasında periyodik (5sn) durum bildirimi
+ *     description: >
+ *       İlk çağrıda oturumu AUTHORIZED'dan PUMPING'e geçirir. Sunucu, maksimum
+ *       litre/süre aşımını burada da kontrol eder (cihazın kendi limitine
+ *       KÖRÜ KÖRÜNE güvenmeyen ikinci savunma hattı) — aşım varsa cihaza
+ *       FORCE_CUTOFF komutu döner VE aynı komutu MQTT üzerinden de yayınlar.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Heartbeat işlendi; command alanı CONTINUE veya FORCE_CUTOFF olabilir.
+ */
+router.post(
+  '/dispense/heartbeat',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  validateRequest({ body: dispenseHeartbeatSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; tenantId: string };
+    try {
+      const session = await dispenseSessionService.recordHeartbeat(
+        hw.deviceId, req.body.sessionId, req.body.totalizerLiters, req.body.flowRateLpm
+      );
+
+      const limitCheck = await dispenseSessionService.checkLimits(session);
+      if (limitCheck.exceeded) {
+        await dispenseSessionService.forceAbort(hw.deviceId, 'TIMED_OUT');
+        mqttService.publishCommand(hw.deviceId, 'FORCE_CUTOFF', { reason: limitCheck.reason, sessionId: session.sessionId });
+        broadcastToTenant(hw.tenantId, 'dispense:session', { ...session, state: 'TIMED_OUT' });
+        res.json({ success: true, command: 'FORCE_CUTOFF', reason: limitCheck.reason });
+        return;
+      }
+
+      broadcastToTenant(hw.tenantId, 'dispense:session', session);
+      res.json({ success: true, command: 'CONTINUE', state: session.state });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /dispense/finalize:
+ *   post:
+ *     summary: FUEL-401.4 — Oturumu sonlandırıp kalıcı ikmal kaydı oluşturur
+ *     description: >
+ *       Start/end totalizatör farkı asıl doğruluk kaynağıdır — cihazın kendi
+ *       bildirdiği reportedLiters yalnızca %1'lik bir sapma toleransı için
+ *       karşılaştırılır, doğrudan güvenilmez. idempotencyKey ile aynı
+ *       isteğin tekrarı yeni bir kayıt YARATMAZ. TIMED_OUT bir oturumdan
+ *       gelen finalize (kurtarma yolu) her zaman verification_status'u
+ *       DOĞRULAMA_BEKLIYOR olarak işaretler.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: İkmal kaydı oluşturuldu (veya idempotency nedeniyle var olan döndürüldü).
+ */
+router.post(
+  '/dispense/finalize',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  validateRequest({ body: dispenseFinalizeSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; tenantId: string };
+    try {
+      // Oturum state machine'ine dokunmadan ÖNCE idempotency kontrolü —
+      // aksi halde bu isteğin ÖNCEKİ bir denemesi zaten başarıyla
+      // tamamlanmışsa (oturum artık COMPLETED, cihaz yalnızca yanıtı
+      // alamadığı için tekrar gönderiyor) beginFinalize COMPLETED→FINALIZING
+      // geçişini reddedip idempotent yanıt yerine 409 dönerdi (bkz.
+      // test_fuel401_dispense_session.ts Test 10).
+      const alreadyFinalized = await runWithTenant({ tenantId: hw.tenantId }, () =>
+        findTransactionByIdempotencyKey(req.body.idempotencyKey)
+      );
+      if (alreadyFinalized) {
+        res.json({
+          success: true,
+          message: 'Bu idempotencyKey için ikmal kaydı zaten mevcuttu, tekrar oluşturulmadı.',
+          data: { ...alreadyFinalized, alreadyExisted: true }
+        });
+        return;
+      }
+
+      const { session, wasTimedOut } = await dispenseSessionService.beginFinalize(hw.deviceId, req.body.sessionId);
+
+      const transaction = await runWithTenant({ tenantId: hw.tenantId }, () =>
+        finalizeDispenseSession({
+          siteName: session.siteName,
+          vehiclePlate: session.vehiclePlate,
+          driverName: session.driverName,
+          tankName: session.tankName,
+          startTotalizerLiters: session.startTotalizerLiters ?? 0,
+          endTotalizerLiters: req.body.endTotalizerLiters,
+          reportedLiters: req.body.reportedLiters,
+          flowRateLpm: session.currentFlowRateLpm,
+          idempotencyKey: req.body.idempotencyKey,
+          forceManualVerification: wasTimedOut
+        })
+      );
+
+      await dispenseSessionService.completeSession(hw.deviceId, req.body.sessionId);
+
+      try {
+        const freshTanks = await runWithTenant({ tenantId: hw.tenantId }, () => getTenantTanks());
+        broadcastToTenant(hw.tenantId, 'dispense:completed', { transaction, tanks: freshTanks });
+      } catch (broadcastErr) {
+        logger.warn({ err: broadcastErr }, '⚠️ [Socket.io] dispense:completed yayını başarısız oldu (FUEL-401).');
+      }
+
+      res.json({
+        success: true,
+        message: transaction.alreadyExisted
+          ? 'Bu idempotencyKey için ikmal kaydı zaten mevcuttu, tekrar oluşturulmadı.'
+          : 'İkmal oturumu sonlandırıldı ve kayda geçirildi.',
+        data: transaction
+      });
+    } catch (error: any) {
+      next(error);
+    }
   }
 );
 

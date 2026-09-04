@@ -12,6 +12,9 @@ import { pool } from './db/postgresPool';
 import { redisPool } from './db/redisPool';
 import { mqttService } from './iot/mqttClient';
 import routes from './routes/routes';
+import { REGISTERED_HARDWARE_DEVICES } from './middleware/hardwareAuthMiddleware';
+import { sweepTimedOutSessions } from './services/dispenseSessionService';
+import { broadcastToTenant } from './socket/socketServer';
 
 // NOTE: environment variables are loaded by ./bootstrap.ts (the real process
 // entry point — see package.json `dev`/`build`), BEFORE this module or any of
@@ -129,11 +132,32 @@ const server = httpServer.listen(PORT, () => {
   }
 });
 
+// FUEL-401.3 AC: "15 saniye heartbeat gelmezse oturum düşürülmelidir." Bu
+// kontrol REQUEST-DRIVEN olamaz — cihaz tamamen çökmüşse (heartbeat isteği
+// hiç gelmiyor) hiçbir route tetiklenmez, bu yüzden sunucu periyodik olarak
+// KENDİSİ tüm kayıtlı cihazların oturumlarını süpürür. Ticket'ın önerdiği
+// BullMQ delayed job yerine (bu kod tabanında BullMQ yok) mevcut
+// mqttClient.ts'in manuel-backoff deseniyle tutarlı düz bir setInterval.
+const DISPENSE_TIMEOUT_SWEEP_MS = 5000;
+const dispenseTimeoutSweepInterval = setInterval(async () => {
+  try {
+    const timedOutSessions = await sweepTimedOutSessions(Object.keys(REGISTERED_HARDWARE_DEVICES));
+    for (const session of timedOutSessions) {
+      mqttService.publishCommand(session.deviceId, 'FORCE_CUTOFF', { reason: 'HEARTBEAT_TIMEOUT', sessionId: session.sessionId });
+      broadcastToTenant(session.tenantId, 'dispense:session', session);
+    }
+  } catch (err) {
+    logger.error({ err }, '🚨 [FUEL-401] Heartbeat zaman aşımı süpürmesi başarısız.');
+  }
+}, DISPENSE_TIMEOUT_SWEEP_MS);
+
 // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
 setupGracefulShutdown(server, {
   timeoutMs: 30000,
   onShutdown: async () => {
     logger.info(`🔌 [Shutdown] Eknak kaynak temizliği çalıştırılıyor...`);
+
+    clearInterval(dispenseTimeoutSweepInterval);
 
     // MQTT, Redis ve Postgres birbirinden bağımsız kaynaklar — sırayla değil
     // birlikte kapatılır, toplam kapanış süresi üçünün toplamı değil en

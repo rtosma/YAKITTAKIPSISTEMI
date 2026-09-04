@@ -94,6 +94,29 @@ CREATE TABLE IF NOT EXISTS transactions (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- FUEL-401.4: cihaz-tetiklemeli (RFID + otomatik dispense state machine)
+-- ikmallerin sonlandırma (finalize) adımı için idempotency + bütünlük mührü.
+-- Var olan (önceden oluşturulmuş) veritabanları için idempotent kolon ekleri.
+-- idempotency_key NULL olabilir (mevcut manuel/santiye-operatörü ikmalleri bu
+-- akıştan geçmiyor) ama DOLU olduğunda BENZERSİZ olmalı — cihazın ağ kesintisi
+-- sonrası aynı finalize isteğini tekrar göndermesi durumunda ikinci bir kayıt
+-- YARATILMAMALI (bkz. tenantDb.ts finalizeDispenseSession).
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(128);
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS hash_signature VARCHAR(64);
+-- 'DOĞRULANDI': totalizatör farkı ile cihazın kendi bildirdiği miktar arasında
+-- %1'i aşan bir sapma yok. 'DOĞRULAMA_BEKLIYOR': sapma %1'i aştı VEYA kayıt
+-- bir TIMED_OUT (zorla kesilmiş) oturumun kurtarma akışından geldi — bir
+-- operatörün manuel onayı bekleniyor.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS verification_status VARCHAR(32) DEFAULT 'DOĞRULANDI';
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'transactions_idempotency_key_unique'
+    ) THEN
+        ALTER TABLE transactions ADD CONSTRAINT transactions_idempotency_key_unique UNIQUE (idempotency_key);
+    END IF;
+END $$;
+
 -- 3c. Cross-Site Fuel Permissions (Çapraz Şantiye İkmal Yetkileri — FUEL-402)
 -- Bir aracın KENDİ şantiyesi dışında (target_site) yakıt alabilmesi için
 -- tanımlanan geçici kota. createTransaction bu tabloyu kontrol eder: araç

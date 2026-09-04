@@ -64,7 +64,15 @@ const envSchema = z.object({
   // sırlar, ama en azından artık KAYNAK KODUNDA DEĞİLLER.
   HW_SECRET_ESP32_PUMP_01: z.string({ message: 'HW_SECRET_ESP32_PUMP_01 tanımlı değil.' }).min(1),
   HW_SECRET_ESP32_TANK_01: z.string({ message: 'HW_SECRET_ESP32_TANK_01 tanımlı değil.' }).min(1),
-  HW_SECRET_ESP32_FLOW_ISR: z.string({ message: 'HW_SECRET_ESP32_FLOW_ISR tanımlı değil.' }).min(1)
+  HW_SECRET_ESP32_FLOW_ISR: z.string({ message: 'HW_SECRET_ESP32_FLOW_ISR tanımlı değil.' }).min(1),
+
+  // FUEL-401.4: finalize edilen her ikmal kaydına, sonradan doğrudan DB
+  // üzerinden (bu HMAC anahtarını bilmeden) fark ettirilmeden değiştirilemeyecek
+  // bir "değişmezlik mührü" (hash_signature) eklemek için kullanılan sunucu
+  // sırrı. JWT_SECRET'ın yeniden kullanılması BİLİNÇLİ OLARAK tercih
+  // edilmedi — token imzalama ile kayıt bütünlüğü farklı tehdit modelleri
+  // (biri sızarsa diğerini de tehlikeye atmamalı).
+  TRANSACTION_HASH_SECRET: z.string({ message: 'TRANSACTION_HASH_SECRET tanımlı değil.' }).min(1)
 });
 
 type EnvShape = z.infer<typeof envSchema>;
@@ -112,7 +120,8 @@ function loadConfig(): AppConfig {
     // isimlerin dizi görünümüne yanlışlıkla takılıyordu).
     const stillPlaceholder = ([
       'JWT_SECRET', 'JWT_REFRESH_SECRET', 'MQTT_PASSWORD',
-      'HW_SECRET_ESP32_PUMP_01', 'HW_SECRET_ESP32_TANK_01', 'HW_SECRET_ESP32_FLOW_ISR' // gitleaks:allow
+      'HW_SECRET_ESP32_PUMP_01', 'HW_SECRET_ESP32_TANK_01', 'HW_SECRET_ESP32_FLOW_ISR', // gitleaks:allow
+      'TRANSACTION_HASH_SECRET'
     ] as const).filter((key) => KNOWN_PLACEHOLDER_VALUES.has(data[key]));
 
     if (stillPlaceholder.length > 0) {

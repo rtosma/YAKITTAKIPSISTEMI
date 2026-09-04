@@ -12,21 +12,32 @@ import { logger } from '../utils/logger';
 // yapılmadığından bunlar hâlâ statik/sabit sırlar — bu değişiklik yalnızca
 // "kaynak kodunda düz metin secret" sorununu çözüyor, tam yaşam döngüsü
 // yönetimini değil.
-export const REGISTERED_HARDWARE_DEVICES: Record<string, { secret: string; name: string; siteName: string }> = {
+// FUEL-401: withTenant()/tenantDb.ts fonksiyonları RLS'in devreye girmesi
+// için AsyncLocalStorage'da bir tenantId bekler (bkz. context/tenantContext.ts)
+// — ama donanım kimlik doğrulaması JWT değil HMAC olduğundan bu context'i
+// dolduracak bir token yok. AUTH-202.3 (gerçek çoklu-kiracı cihaz
+// provisioning'i) henüz yapılmadığından, hangi cihazın hangi kiracıya ait
+// olduğu burada REGISTERED_HARDWARE_DEVICES'a statik olarak eklendi — bu,
+// mqttClient.ts'in tenantId'yi MQTT topic'inden ayrıştırmasının HTTP
+// kanalındaki karşılığı (orada topic'ten geliyor, burada cihaz kaydından).
+export const REGISTERED_HARDWARE_DEVICES: Record<string, { secret: string; name: string; siteName: string; tenantId: string }> = {
   'ESP32-PUMP-01': {
     secret: config.HW_SECRET_ESP32_PUMP_01,
     name: 'Gebze Pompa Otomasyonu #1',
-    siteName: 'Gebze Ana Şantiye'
+    siteName: 'Gebze Ana Şantiye',
+    tenantId: 'comp-camsa'
   },
   'ESP32-TANK-01': {
     secret: config.HW_SECRET_ESP32_TANK_01,
     name: 'Gebze Ultrasonik Tank Probu #1',
-    siteName: 'Gebze Ana Şantiye'
+    siteName: 'Gebze Ana Şantiye',
+    tenantId: 'comp-camsa'
   },
   'ESP32-FLOW-ISR': {
     secret: config.HW_SECRET_ESP32_FLOW_ISR,
     name: 'Debimetre Kesme Sensörü',
-    siteName: 'Sistem Kalibrasyonu'
+    siteName: 'Sistem Kalibrasyonu',
+    tenantId: 'comp-camsa'
   }
 };
 
@@ -178,6 +189,7 @@ export const hardwareAuthMiddleware = async (req: Request, res: Response, next: 
       deviceId,
       name: deviceConfig.name,
       siteName: deviceConfig.siteName,
+      tenantId: deviceConfig.tenantId,
       timestampMs
     };
 
