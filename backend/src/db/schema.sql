@@ -130,6 +130,11 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- AUTH-204: şantiye oluşturulurken otomatik üretilen geçici parolanın
+-- zorunlu değiştirilmesi akışı için.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_password_expires_at TIMESTAMP WITH TIME ZONE;
+
 -- 5. Refresh Tokens — KASITLI OLARAK YOK.
 -- Refresh token rotasyonu + reuse-detection tamamen Redis'te tutuluyor
 -- (bkz. backend/src/services/tokenService.ts): `refresh_token:{jti}` ve

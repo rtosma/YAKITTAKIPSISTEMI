@@ -23,6 +23,11 @@ export interface JwtUserPayload {
   username: string;
   role: UserRole;
   siteName?: string;
+  // AUTH-204: true iken authenticateJWT, /auth/change-password dışındaki
+  // TÜM istekleri 403 PASSWORD_CHANGE_REQUIRED ile reddeder (bkz.
+  // middleware/authMiddleware.ts). Parola değiştirilince yeniden login/
+  // token rotasyonuyla false olarak yeniden basılır.
+  mustChangePassword?: boolean;
 }
 
 export interface RefreshTokenRecord {
@@ -71,7 +76,8 @@ export function generateAccessToken(user: JwtUserPayload): string {
       tenantId: user.tenantId,
       username: user.username,
       role: user.role,
-      siteName: user.siteName
+      siteName: user.siteName,
+      mustChangePassword: user.mustChangePassword ?? false
     },
     JWT_SECRET,
     { expiresIn: '15m' }
@@ -175,7 +181,8 @@ export function verifyAccessToken(token: string): JwtUserPayload {
       tenantId: decoded.tenantId,
       username: decoded.username,
       role: decoded.role,
-      siteName: decoded.siteName
+      siteName: decoded.siteName,
+      mustChangePassword: decoded.mustChangePassword ?? false
     };
   } catch (err) {
     throw new Error('UNAUTHORIZED: Geçersiz veya süresi dolmuş access token.');

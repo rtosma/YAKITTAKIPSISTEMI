@@ -17,7 +17,11 @@ regexes = [
   # sahte/tanımlayıcı isimli sırlar (gerçek bir sisteme asla bağlanmazlar).
   '''ci_only_[A-Za-z0-9_]*''',
   '''test_only_ops1101_(access|refresh)_secret_do_not_reuse''',
-  '''local_test_(access|refresh)'''
+  '''local_test_(access|refresh)''',
+  # test_auth204.ts: yalnızca o test sürecinde oluşturulup test bitince
+  # anlamsızlaşan (kullanıcının kendisi ephemeral bir test fixture'ı) sabit
+  # bir test parolası — gerçek bir hesaba asla karşılık gelmez.
+  '''YeniGucluParola123'''
 ]
 paths = [
   # Derleme çıktıları — gitignored, git tarafından hiç takip edilmiyor;

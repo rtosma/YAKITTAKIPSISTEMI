@@ -1,5 +1,7 @@
-import { ForbiddenError, ConflictError } from '../utils/errors';
+import { ForbiddenError, ConflictError, UnauthorizedError } from '../utils/errors';
 import { generateId } from '../utils/id';
+import { hashPassword, verifyPassword } from '../utils/password';
+import { generateReadableUsername, generateTempPassword } from '../utils/tempCredentials';
 import { withTenant } from './withTenant';
 
 /**
@@ -168,18 +170,71 @@ export async function getTenantSites(): Promise<string[]> {
   });
 }
 
-export async function createTenantSite(siteName: string, location: string = 'Türkiye'): Promise<SiteRecord> {
+export interface ProvisionedSite {
+  site: SiteRecord;
+  username: string;
+  temporaryPassword: string;
+  passwordExpiresAt: string;
+}
+
+const TEMP_PASSWORD_TTL_HOURS = 72;
+
+/**
+ * AUTH-204 — "Yeni şantiye ekle" TEK işlemde hem şantiyeyi HEM de o
+ * şantiyenin SITE_MANAGER kullanıcısını (okunabilir kullanıcı adı + rastgele
+ * geçici parola) oluşturur, aynı transaction'da (biri başarısızsa ikisi de
+ * geri alınır). Geçici parola yalnızca burada, TEK SEFERLİK olarak düz metin
+ * döner — veritabanında yalnızca hash'i tutulur, sonradan görüntüleme ucu
+ * kasıtlı olarak YOK.
+ *
+ * Denetim kaydı (AUTH-203 "audit_logs" — SITE_CREATED + USER_PROVISIONED)
+ * bu fonksiyonda BİLİNÇLİ OLARAK YOK: AUTH-203 (append-only audit trail
+ * servisi) henüz bu kod tabanında uygulanmadı. Bu, AUTH-204'ün AC'sinden
+ * karşılanmayan tek madde.
+ */
+export async function createSiteWithManager(siteName: string, location: string = 'Türkiye'): Promise<ProvisionedSite> {
   return withTenant(async (client, tenantId) => {
-    const id = generateId('site');
-    const result = await client.query(
-      `INSERT INTO sites (id, tenant_id, name, location)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (tenant_id, name) DO UPDATE SET location = EXCLUDED.location
-       RETURNING *`,
-      [id, tenantId, siteName, location]
+    const existingSite = await client.query('SELECT id FROM sites WHERE tenant_id = $1 AND name = $2', [tenantId, siteName]);
+    if (existingSite.rows.length > 0) {
+      throw new ConflictError(`'${siteName}' adında bir şantiye zaten mevcut.`);
+    }
+
+    const siteId = generateId('site');
+    const siteResult = await client.query(
+      `INSERT INTO sites (id, tenant_id, name, location) VALUES ($1, $2, $3, $4) RETURNING *`,
+      [siteId, tenantId, siteName, location]
     );
 
-    return result.rows[0];
+    // `users.username` tüm tenant'lar genelinde UNIQUE — çakışırsa artan
+    // sayısal sonek eklenir (bkz. adminDb.ts'teki createCompanyWithOwner'da
+    // kurulan aynı desen).
+    const usernameBase = generateReadableUsername(siteName);
+    let username = usernameBase;
+    let suffix = 1;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const existing = await client.query('SELECT 1 FROM users WHERE username = $1', [username]);
+      if (existing.rows.length === 0) break;
+      username = `${usernameBase}${suffix++}`;
+    }
+
+    const temporaryPassword = generateTempPassword();
+    const passwordHash = await hashPassword(temporaryPassword);
+    const passwordExpiresAt = new Date(Date.now() + TEMP_PASSWORD_TTL_HOURS * 60 * 60 * 1000);
+    const userId = generateId('usr');
+
+    await client.query(
+      `INSERT INTO users (id, tenant_id, username, password_hash, role, site_name, must_change_password, temp_password_expires_at)
+       VALUES ($1, $2, $3, $4, 'SITE_MANAGER', $5, TRUE, $6)`,
+      [userId, tenantId, username, passwordHash, siteName, passwordExpiresAt.toISOString()]
+    );
+
+    return {
+      site: siteResult.rows[0],
+      username,
+      temporaryPassword,
+      passwordExpiresAt: passwordExpiresAt.toISOString()
+    };
   });
 }
 
@@ -688,5 +743,32 @@ export async function updateCrossSitePermissionStatus(id: string, status: string
     );
     if (result.rows.length === 0) throw new Error('Çapraz şantiye yetkisi bulunamadı veya yetkiniz yok.');
     return result.rows[0];
+  });
+}
+
+// ============================================================================
+// AUTH-204: ZORUNLU PAROLA DEĞİŞTİRME
+// ============================================================================
+
+/**
+ * Mevcut parolayı doğrulayıp yenisiyle değiştirir; must_change_password ve
+ * temp_password_expires_at'ı temizler (artık geçici bir parola değil).
+ * Mevcut parola yanlışsa UnauthorizedError fırlatır — bu, birinin çalınmış
+ * bir access token ile parolayı ele geçirmek için kaba kuvvet denemesini
+ * (mevcut parolayı bilmeden) engeller.
+ */
+export async function changeOwnPassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
+  return withTenant(async (client) => {
+    const result = await client.query('SELECT password_hash FROM users WHERE id = $1', [userId]);
+    if (result.rows.length === 0) throw new UnauthorizedError('Kullanıcı bulunamadı.');
+
+    const isValid = await verifyPassword(result.rows[0].password_hash, currentPassword);
+    if (!isValid) throw new UnauthorizedError('Mevcut parola hatalı.');
+
+    const newHash = await hashPassword(newPassword);
+    await client.query(
+      'UPDATE users SET password_hash = $1, must_change_password = FALSE, temp_password_expires_at = NULL WHERE id = $2',
+      [newHash, userId]
+    );
   });
 }

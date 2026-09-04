@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createTenantSite, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword } from '../db/tenantDb';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
@@ -9,7 +9,8 @@ import { createTankSchema, updateTankSchema } from '../schemas/tankSchema';
 import { dispenseRequestSchema, transactionQuerySchema } from '../schemas/transactionSchema';
 import { createCrossSitePermissionSchema, updateCrossSitePermissionStatusSchema } from '../schemas/crossSiteSchema';
 import { createCompanySchema, updateCompanySchema } from '../schemas/companySchema';
-import { loginSchema } from '../schemas/authSchema';
+import { loginSchema, changePasswordSchema } from '../schemas/authSchema';
+import { createSiteSchema } from '../schemas/siteSchema';
 import { verifyPassword } from '../utils/password';
 import { NotFoundError } from '../utils/errors';
 import { pool } from '../db/postgresPool';
@@ -98,7 +99,7 @@ router.post(
 
       // Query PostgreSQL Database users table
       const dbRes = await pool.query(
-        'SELECT id, tenant_id, username, password_hash, role, site_name FROM users WHERE LOWER(username) = $1',
+        'SELECT id, tenant_id, username, password_hash, role, site_name, must_change_password, temp_password_expires_at FROM users WHERE LOWER(username) = $1',
         [lowerUser]
       );
 
@@ -132,12 +133,26 @@ router.post(
 
       await clearFailedLogins(lowerUser);
 
+      // AUTH-204: geçici parola 72 saat sonra geçersiz olur (bkz.
+      // db/tenantDb.ts createSiteWithManager) — parola doğru olsa bile süresi
+      // dolmuş bir geçici parolayla giriş reddedilir; kullanıcı şirket
+      // yöneticisinden yeni bir şantiye/hesap oluşturulmasını istemelidir
+      // (henüz kendi kendine "yeni geçici parola iste" ucu yok).
+      if (dbUser.must_change_password && dbUser.temp_password_expires_at && new Date(dbUser.temp_password_expires_at) < new Date()) {
+        return res.status(401).json({
+          success: false,
+          error: 'TEMP_PASSWORD_EXPIRED',
+          message: 'Geçici parolanızın süresi doldu. Yeni bir geçici parola için firma yöneticinizle iletişime geçin.'
+        });
+      }
+
       const payload: JwtUserPayload = {
         userId: dbUser.id,
         tenantId: dbUser.tenant_id,
         username: dbUser.username,
         role: dbUser.role as UserRole,
-        siteName: dbUser.site_name || undefined
+        siteName: dbUser.site_name || undefined,
+        mustChangePassword: dbUser.must_change_password === true
       };
 
       const accessToken = generateAccessToken(payload);
@@ -155,7 +170,8 @@ router.post(
           tenantId: dbUser.tenant_id,
           username: dbUser.username,
           role: dbUser.role,
-          siteName: dbUser.site_name || undefined
+          siteName: dbUser.site_name || undefined,
+          mustChangePassword: dbUser.must_change_password === true
         }
       });
     } catch (err: any) {
@@ -190,7 +206,7 @@ router.post('/auth/refresh', refreshRateLimiter, async (req: Request, res: Respo
     // so the caller can never dictate whose identity the new tokens carry.
     const newTokens = await rotateRefreshToken(refreshToken, async (userId, tenantId) => {
       const dbRes = await pool.query(
-        'SELECT id, tenant_id, username, role, site_name FROM users WHERE id = $1 AND tenant_id = $2',
+        'SELECT id, tenant_id, username, role, site_name, must_change_password FROM users WHERE id = $1 AND tenant_id = $2',
         [userId, tenantId]
       );
       if (dbRes.rows.length === 0) return null;
@@ -201,7 +217,11 @@ router.post('/auth/refresh', refreshRateLimiter, async (req: Request, res: Respo
         tenantId: dbUser.tenant_id,
         username: dbUser.username,
         role: dbUser.role as UserRole,
-        siteName: dbUser.site_name || undefined
+        siteName: dbUser.site_name || undefined,
+        // AUTH-204: yeniden okunuyor (eski token'daki değere güvenilmiyor) —
+        // parola değiştirildikten sonra rotasyonla basılan yeni token'ın
+        // hâlâ eski mustChangePassword:true taşımaması için.
+        mustChangePassword: dbUser.must_change_password === true
       };
       return payload;
     });
@@ -435,30 +455,66 @@ router.get('/sites', authenticateJWT, async (req: AuthenticatedRequest, res: Res
 
 /**
  * POST /api/v1/sites
- * Create/register a new site for the tenant in DB
+ * AUTH-204: Yeni şantiyeyi ve o şantiyenin SITE_MANAGER kullanıcısını
+ * (okunabilir kullanıcı adı + tek seferlik gösterilen geçici parola) TEK
+ * işlemde oluşturur.
  */
 router.post(
   '/sites',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  validateRequest({ body: createSiteSchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const { siteName, location } = req.body;
-      if (!siteName || typeof siteName !== 'string' || !siteName.trim()) {
-        return res.status(400).json({
-          success: false,
-          error: 'VALIDATION_ERROR',
-          message: 'Geçerli bir şantiye adı giriniz.'
-        });
-      }
-
-      const trimmedSiteName = siteName.trim();
-      const newSite = await createTenantSite(trimmedSiteName, location || 'Türkiye');
+      const provisioned = await createSiteWithManager(siteName, location || 'Türkiye');
 
       res.json({
         success: true,
-        message: `'${trimmedSiteName}' şantiyesi veritabanına başarıyla eklendi.`,
-        data: newSite
+        message: `'${siteName}' şantiyesi ve şantiye yöneticisi hesabı başarıyla oluşturuldu. Geçici parola yalnızca bu yanıtta gösterilir — kaydedin.`,
+        data: {
+          site: provisioned.site,
+          manager: {
+            username: provisioned.username,
+            temporaryPassword: provisioned.temporaryPassword,
+            passwordExpiresAt: provisioned.passwordExpiresAt
+          }
+        }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/v1/auth/change-password
+ * AUTH-204: hem ilk girişte zorunlu değiştirme hem kullanıcının kendi
+ * isteğiyle değiştirmesi için — authenticateJWT'nin
+ * PASSWORD_CHANGE_GATE_ALLOWLIST'i bu ucu mustChangePassword=true iken de
+ * geçirir. Başarılı değişiklikten sonra mustChangePassword:false taşıyan
+ * taze bir token çifti döner — istemcinin yeniden login olmasına gerek yok.
+ */
+router.post(
+  '/auth/change-password',
+  authenticateJWT,
+  validateRequest({ body: changePasswordSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { currentPassword, newPassword } = req.body;
+      await changeOwnPassword(req.user!.userId, currentPassword, newPassword);
+
+      const payload: JwtUserPayload = { ...req.user!, mustChangePassword: false };
+      const accessToken = generateAccessToken(payload);
+      const refreshToken = await generateRefreshToken(payload.userId, payload.tenantId);
+
+      res.json({
+        success: true,
+        message: 'Parolanız başarıyla güncellendi.',
+        accessToken,
+        refreshToken,
+        tokenType: 'Bearer',
+        expiresInSeconds: 900
       });
     } catch (error: any) {
       next(error);

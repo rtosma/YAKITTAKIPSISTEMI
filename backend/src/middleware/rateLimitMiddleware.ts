@@ -1,4 +1,4 @@
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import { Request, Response } from 'express';
 import { redisPool } from '../db/redisPool';
@@ -72,7 +72,11 @@ export const hardwareRateLimiter = rateLimit({
   limit: 300,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: Request) => (req.headers['x-device-id'] as string) || req.ip || 'unknown-device',
+  // req.ip fallback'i IPv6 için ipKeyGenerator() helper'ından GEÇMELİ —
+  // aksi halde bir IPv6 adresinin /64 bloğundaki farklı istemciler
+  // (aynı kullanıcının farklı IPv6 adresleri) ayrı ayrı limit kazanıp
+  // limiti fiilen bypass edebilir (bkz. ERR_ERL_KEY_GEN_IPV6).
+  keyGenerator: (req: Request) => (req.headers['x-device-id'] as string) || ipKeyGenerator(req.ip || 'unknown-device'),
   store: new RedisStore({
     prefix: 'rl:hardware:',
     sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
