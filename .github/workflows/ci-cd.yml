@@ -171,6 +171,9 @@ jobs:
       - name: Run AUTH-204 Site Provisioning + Forced Password Change Tests
         run: cd backend && npx tsx test/test_auth204.ts
 
+      - name: Run AUTH-203 Append-Only Audit Trail Tests
+        run: cd backend && npx tsx test/test_auth203.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs } from '../db/tenantDb';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
@@ -1236,6 +1236,27 @@ router.post(
       receivedData: req.body,
       timestamp: new Date().toISOString()
     });
+  }
+);
+
+/**
+ * GET /api/v1/audit-logs
+ * AUTH-203 — append-only denetim izi. Yalnızca SUPER_ADMIN/COMPANY_OWNER
+ * görebilir; kayıtlar yalnızca INSERT edilir (bkz. schema.sql'deki
+ * REVOKE UPDATE, DELETE ON audit_logs FROM app_user).
+ */
+router.get(
+  '/audit-logs',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const limit = req.query.limit ? Number(req.query.limit) : 100;
+      const logs = await getAuditLogs(limit);
+      res.json({ success: true, data: logs });
+    } catch (error: any) {
+      next(error);
+    }
   }
 );
 

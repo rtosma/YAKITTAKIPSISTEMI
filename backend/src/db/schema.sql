@@ -179,8 +179,36 @@ CREATE TABLE IF NOT EXISTS sites (
 -- sites_tenant_isolation_policy hiç uygulanmaz ve her tenant tüm şantiyeleri görür)
 ALTER TABLE sites ENABLE ROW LEVEL SECURITY;
 
+-- AUTH-203: append-only denetim izi. before_value/after_value'da parola,
+-- secret ve token ALANLARI asla ham saklanmaz — writeAuditLog() (bkz.
+-- utils/auditLog.ts) bunları yazmadan önce maskeler.
+CREATE TABLE IF NOT EXISTS audit_logs (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    user_id VARCHAR(64),
+    trace_id VARCHAR(64),
+    ip_address VARCHAR(64),
+    action VARCHAR(64) NOT NULL,
+    target_type VARCHAR(64),
+    target_id VARCHAR(64),
+    before_value JSONB,
+    after_value JSONB,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO app_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO app_user;
+
+-- AUTH-203 AC: "audit_logs üzerinde UPDATE/DELETE veritabanı düzeyinde
+-- reddedilmelidir." Yukarıdaki GRANT ALL bunu da kapsadığı için burada,
+-- SONRASINDA açıkça geri alınıyor — app_user yalnızca INSERT + SELECT
+-- yapabilir, tablo gerçekten append-only olur (uygulama kodundaki bir hata
+-- ya da ele geçirilmiş bir bağlantı bile kaydı değiştiremez/silemez).
+-- TRUNCATE de dahil: DELETE'in tek tek satır silmesinden farklı bir
+-- komuttur ama sonucu aynıdır (tüm denetim izinin yok olması), o yüzden o
+-- da geri alınıyor.
+REVOKE UPDATE, DELETE, TRUNCATE ON audit_logs FROM app_user;
 
 -- Force RLS even for table owners
 ALTER TABLE vehicles FORCE ROW LEVEL SECURITY;
@@ -190,6 +218,7 @@ ALTER TABLE drivers FORCE ROW LEVEL SECURITY;
 ALTER TABLE sites FORCE ROW LEVEL SECURITY;
 ALTER TABLE transactions FORCE ROW LEVEL SECURITY;
 ALTER TABLE cross_site_permissions FORCE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -199,6 +228,7 @@ DROP POLICY IF EXISTS drivers_tenant_isolation_policy ON drivers;
 DROP POLICY IF EXISTS sites_tenant_isolation_policy ON sites;
 DROP POLICY IF EXISTS transactions_tenant_isolation_policy ON transactions;
 DROP POLICY IF EXISTS cross_site_permissions_tenant_isolation_policy ON cross_site_permissions;
+DROP POLICY IF EXISTS audit_logs_tenant_isolation_policy ON audit_logs;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -238,6 +268,15 @@ CREATE POLICY transactions_tenant_isolation_policy ON transactions
 
 -- Create Tenant Isolation Policy for cross_site_permissions
 CREATE POLICY cross_site_permissions_tenant_isolation_policy ON cross_site_permissions
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- Create Tenant Isolation Policy for audit_logs — REVOKE UPDATE/DELETE zaten
+-- bunları app_user için SQL seviyesinde imkansız kılıyor; bu politika yalnızca
+-- SELECT/INSERT'i tenant'a kısıtlıyor (FOR ALL zararsız, çünkü UPDATE/DELETE
+-- yetkisi hiç yok).
+CREATE POLICY audit_logs_tenant_isolation_policy ON audit_logs
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

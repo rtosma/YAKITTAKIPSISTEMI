@@ -44,7 +44,9 @@ export function authenticateJWT(req: AuthenticatedRequest, res: Response, next: 
 
     const store: TenantStore = {
       tenantId: userPayload.tenantId,
-      userId: userPayload.userId
+      userId: userPayload.userId,
+      traceId: req.traceId,
+      ipAddress: req.ip
     };
 
     // Run within request-scoped tenant context for RLS isolation

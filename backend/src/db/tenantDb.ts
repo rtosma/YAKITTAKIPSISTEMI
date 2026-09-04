@@ -2,6 +2,7 @@ import { ForbiddenError, ConflictError, UnauthorizedError } from '../utils/error
 import { generateId } from '../utils/id';
 import { hashPassword, verifyPassword } from '../utils/password';
 import { generateReadableUsername, generateTempPassword } from '../utils/tempCredentials';
+import { writeAuditLog } from '../utils/auditLog';
 import { withTenant } from './withTenant';
 
 /**
@@ -187,10 +188,9 @@ const TEMP_PASSWORD_TTL_HOURS = 72;
  * döner — veritabanında yalnızca hash'i tutulur, sonradan görüntüleme ucu
  * kasıtlı olarak YOK.
  *
- * Denetim kaydı (AUTH-203 "audit_logs" — SITE_CREATED + USER_PROVISIONED)
- * bu fonksiyonda BİLİNÇLİ OLARAK YOK: AUTH-203 (append-only audit trail
- * servisi) henüz bu kod tabanında uygulanmadı. Bu, AUTH-204'ün AC'sinden
- * karşılanmayan tek madde.
+ * AUTH-203: SITE_CREATED + USER_PROVISIONED denetim kayıtları aynı
+ * transaction'da yazılır — audit_logs INSERT'i başarısız olursa (örn. DB
+ * kısıtlaması) TÜM işlem (şantiye + kullanıcı dahil) rollback olur.
  */
 export async function createSiteWithManager(siteName: string, location: string = 'Türkiye'): Promise<ProvisionedSite> {
   return withTenant(async (client, tenantId) => {
@@ -228,6 +228,19 @@ export async function createSiteWithManager(siteName: string, location: string =
        VALUES ($1, $2, $3, $4, 'SITE_MANAGER', $5, TRUE, $6)`,
       [userId, tenantId, username, passwordHash, siteName, passwordExpiresAt.toISOString()]
     );
+
+    await writeAuditLog(client, {
+      action: 'SITE_CREATED',
+      targetType: 'site',
+      targetId: siteId,
+      afterValue: { name: siteName, location }
+    });
+    await writeAuditLog(client, {
+      action: 'USER_PROVISIONED',
+      targetType: 'user',
+      targetId: userId,
+      afterValue: { username, role: 'SITE_MANAGER', siteName, mustChangePassword: true }
+    });
 
     return {
       site: siteResult.rows[0],
@@ -731,17 +744,44 @@ export async function createCrossSitePermission(
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
       [id, tenantId, data.vehicle_plate, data.driver_name ?? null, data.home_site, data.target_site, data.allowed_liters, data.expiry_date]
     );
+
+    // AUTH-203: "yetki verme" — bu ticket'ın kendi örneği olan kritik
+    // operasyonlardan biri.
+    await writeAuditLog(client, {
+      action: 'PERMISSION_GRANTED',
+      targetType: 'cross_site_permission',
+      targetId: id,
+      afterValue: {
+        vehiclePlate: data.vehicle_plate,
+        homeSite: data.home_site,
+        targetSite: data.target_site,
+        allowedLiters: data.allowed_liters,
+        expiryDate: data.expiry_date
+      }
+    });
+
     return result.rows[0];
   });
 }
 
 export async function updateCrossSitePermissionStatus(id: string, status: string): Promise<CrossSitePermissionRecord> {
   return withTenant(async (client) => {
+    const before = await client.query('SELECT status FROM cross_site_permissions WHERE id = $1', [id]);
+
     const result = await client.query(
       'UPDATE cross_site_permissions SET status = $1 WHERE id = $2 RETURNING *',
       [status, id]
     );
     if (result.rows.length === 0) throw new Error('Çapraz şantiye yetkisi bulunamadı veya yetkiniz yok.');
+
+    await writeAuditLog(client, {
+      action: 'PERMISSION_STATUS_CHANGED',
+      targetType: 'cross_site_permission',
+      targetId: id,
+      beforeValue: { status: before.rows[0]?.status ?? null },
+      afterValue: { status }
+    });
+
     return result.rows[0];
   });
 }
@@ -770,5 +810,42 @@ export async function changeOwnPassword(userId: string, currentPassword: string,
       'UPDATE users SET password_hash = $1, must_change_password = FALSE, temp_password_expires_at = NULL WHERE id = $2',
       [newHash, userId]
     );
+
+    // AUTH-203: parolanın KENDİSİ (ne eskisi ne yenisi) hiçbir zaman yazılmaz
+    // — beforeValue/afterValue burada hiç geçilmiyor, yalnızca "değişti"
+    // olayının kendisi kaydediliyor.
+    await writeAuditLog(client, {
+      action: 'PASSWORD_CHANGED',
+      targetType: 'user',
+      targetId: userId
+    });
+  });
+}
+
+// ============================================================================
+// AUTH-203: DENETİM İZİ (yalnızca okuma — kayıt writeAuditLog ile yazılır)
+// ============================================================================
+
+export interface AuditLogRecord {
+  id: string;
+  tenant_id: string;
+  user_id: string | null;
+  trace_id: string | null;
+  ip_address: string | null;
+  action: string;
+  target_type: string | null;
+  target_id: string | null;
+  before_value: Record<string, unknown> | null;
+  after_value: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export async function getAuditLogs(limit = 100): Promise<AuditLogRecord[]> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      'SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT $1',
+      [Math.min(Math.max(limit, 1), 500)]
+    );
+    return result.rows;
   });
 }
