@@ -26,7 +26,8 @@ import { hardwareAuthMiddleware, REGISTERED_HARDWARE_DEVICES } from '../middlewa
 import { redisPool } from '../db/redisPool';
 import { broadcastToTenant } from '../socket/socketServer';
 import { logger } from '../utils/logger';
-import { loginRateLimiter } from '../middleware/rateLimitMiddleware';
+import { loginRateLimiter, refreshRateLimiter, hardwareRateLimiter } from '../middleware/rateLimitMiddleware';
+import { checkLockout, recordFailedLogin, clearFailedLogins } from '../services/accountLockoutService';
 
 const router = Router();
 
@@ -61,6 +62,15 @@ router.get('/tenant-info', (_req: Request, res: Response) => {
   });
 });
 
+/** AUTH-209: checkLockout/recordFailedLogin'in 3 çağrı noktasında da aynı 423 yanıtı üretmesi için. */
+function respondAccountLocked(res: Response, remainingSeconds: number | undefined): void {
+  res.status(423).json({
+    success: false,
+    error: 'ACCOUNT_LOCKED',
+    message: `Çok fazla hatalı giriş denemesi nedeniyle hesap geçici olarak kilitlendi. Yaklaşık ${Math.ceil((remainingSeconds || 0) / 60)} dakika sonra tekrar deneyin.`
+  });
+}
+
 /**
  * POST /api/v1/auth/login
  * User login querying PostgreSQL database, Argon2id verification, and JWT Token issuance
@@ -74,6 +84,18 @@ router.post(
     const lowerUser = username.trim().toLowerCase();
 
     try {
+      // AUTH-209: hesap kilitliyse Argon2id'nin ~ms mertebesindeki CPU
+      // maliyetine hiç girmeden erken çık — kilitli bir hesaba karşı hızlı
+      // art arda istek atmak login ucunu bir DoS vektörüne çevirmesin.
+      // Var olmayan bir kullanıcı adı da aynı yolu izler (aşağıdaki
+      // recordFailedLogin çağrıları) — "kilitli" ile "yanlış şifre" yanıtları
+      // arasındaki fark hangi kullanıcı adlarının gerçekten var olduğunu
+      // sızdırmamalı.
+      const lockStatus = await checkLockout(lowerUser);
+      if (lockStatus.locked) {
+        return respondAccountLocked(res, lockStatus.remainingSeconds);
+      }
+
       // Query PostgreSQL Database users table
       const dbRes = await pool.query(
         'SELECT id, tenant_id, username, password_hash, role, site_name FROM users WHERE LOWER(username) = $1',
@@ -81,6 +103,10 @@ router.post(
       );
 
       if (dbRes.rows.length === 0) {
+        const afterFailure = await recordFailedLogin(lowerUser);
+        if (afterFailure.locked) {
+          return respondAccountLocked(res, afterFailure.remainingSeconds);
+        }
         return res.status(401).json({
           success: false,
           error: 'INVALID_CREDENTIALS',
@@ -93,12 +119,18 @@ router.post(
       // Verify Argon2id password hash against stored DB hash
       const isValidPassword = await verifyPassword(dbUser.password_hash, password);
       if (!isValidPassword) {
+        const afterFailure = await recordFailedLogin(lowerUser);
+        if (afterFailure.locked) {
+          return respondAccountLocked(res, afterFailure.remainingSeconds);
+        }
         return res.status(401).json({
           success: false,
           error: 'INVALID_CREDENTIALS',
           message: 'Girilen kullanıcı adı veya şifre hatalı.'
         });
       }
+
+      await clearFailedLogins(lowerUser);
 
       const payload: JwtUserPayload = {
         userId: dbUser.id,
@@ -141,7 +173,7 @@ router.post(
  * POST /api/v1/auth/refresh
  * Single-use JWT Refresh Token Rotation with Token Reuse Detection
  */
-router.post('/auth/refresh', async (req: Request, res: Response) => {
+router.post('/auth/refresh', refreshRateLimiter, async (req: Request, res: Response) => {
   const { refreshToken } = req.body;
 
   if (!refreshToken) {
@@ -1137,6 +1169,7 @@ router.patch(
  */
 router.post(
   '/telemetry/hardware-data',
+  hardwareRateLimiter,
   hardwareAuthMiddleware,
   (req: Request, res: Response) => {
     const hardwareInfo = (req as any).authenticatedHardware;

@@ -31,3 +31,57 @@ export const loginRateLimiter = rateLimit({
     });
   }
 });
+
+/**
+ * AUTH-209 — `/auth/refresh` login ile aynı IP-bazlı istismar riskini taşır
+ * (rate limitsiz bir uç, brute-force veya kaynak tüketim saldırısı için
+ * açık kapı) ama login'den daha sık meşru kullanım görür (her erişim
+ * token'ı süresi dolduğunda tetiklenir) — bu yüzden limiti daha gevşek.
+ */
+export const refreshRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  store: new RedisStore({
+    prefix: 'rl:auth-refresh:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      error: 'TOO_MANY_REQUESTS',
+      message: 'Çok fazla token yenileme denemesi. Lütfen bir süre sonra tekrar deneyin.'
+    });
+  }
+});
+
+/**
+ * AUTH-209 — "Cihaz uçları için ayrı, daha yüksek limitler (telemetri
+ * saniyede yüzlerce istek üretir)". Login'deki gibi IP bazlı DEĞİL, cihaz
+ * kimliği bazlı: sahadaki cihazlar genelde tek bir 4G IP'si arkasında
+ * kümelenir (bkz. loginRateLimiter'ın aynı sorunu), IP bazlı bir limit tüm
+ * şantiyenin telemetrisini birbirine karıştırıp tek limite tıkardı. Cihaz
+ * kimliği henüz hardwareAuthMiddleware tarafından doğrulanmamış olabilir —
+ * buradaki amaç kimlik doğrulaması değil, iddia edilen kimlik başına adil
+ * bir üst sınır koymak (hardwareAuthMiddleware zaten ayrıca HMAC + nonce ile
+ * gerçek doğrulamayı yapıyor).
+ */
+export const hardwareRateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 dakika
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => (req.headers['x-device-id'] as string) || req.ip || 'unknown-device',
+  store: new RedisStore({
+    prefix: 'rl:hardware:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      error: 'TOO_MANY_REQUESTS',
+      message: 'Cihaz için istek limiti aşıldı. Lütfen bir süre sonra tekrar deneyin.'
+    });
+  }
+});

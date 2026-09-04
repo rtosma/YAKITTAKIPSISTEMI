@@ -130,6 +130,9 @@ jobs:
       - name: Run AUTH-202.2 Hardware HMAC + Replay/Nonce Tests
         run: cd backend && npx tsx test/testHardwareAuth.ts
 
+      - name: Run AUTH-209 Account Lockout Tests
+        run: cd backend && npx tsx test/test_auth209.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true
