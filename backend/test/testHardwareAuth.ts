@@ -4,8 +4,14 @@ const API_URL = 'http://localhost:5000/api/v1/telemetry/hardware-data';
 const DEVICE_ID = 'ESP32-PUMP-01';
 const DEVICE_SECRET = 'secret_gebze_pump_8849';
 
-function generateHmacSignature(timestamp: string, rawBody: string, secret: string): string {
-  const payloadToSign = `${timestamp}.${rawBody}`;
+function generateNonce(): string {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+// AUTH-202.2: nonce artık imzalanan payload'un bir parçası (bkz.
+// hardwareAuthMiddleware.ts) — nonce'u imzasız değiştirmek imzayı bozar.
+function generateHmacSignature(timestamp: string, nonce: string, rawBody: string, secret: string): string {
+  const payloadToSign = `${timestamp}.${nonce}.${rawBody}`;
   return crypto.createHmac('sha256', secret).update(payloadToSign).digest('hex');
 }
 
@@ -22,6 +28,7 @@ async function runHardwareAuthTests() {
     testName: string,
     payload: object,
     timestamp: string,
+    nonce: string | null,
     signature: string | null,
     deviceId: string | null,
     expectedStatus: number,
@@ -35,6 +42,7 @@ async function runHardwareAuthTests() {
 
     if (deviceId) headers['X-Device-ID'] = deviceId;
     if (timestamp) headers['X-Timestamp'] = timestamp;
+    if (nonce) headers['X-Nonce'] = nonce;
     if (signature) headers['X-Hardware-Signature'] = signature;
 
     try {
@@ -63,58 +71,67 @@ async function runHardwareAuthTests() {
     }
   }
 
+  const payload = { pumpId: 'PUMP-01', litersDispensed: 45.2, flowRate: 12.8, vehicleTag: 'TAG-882910' };
+  const rawBody = JSON.stringify(payload);
+
   // TEST 1: Geçerli HMAC-SHA256 İmzası (Doğru ESP32 İmzası)
-  const validPayload = { pumpId: 'PUMP-01', litersDispensed: 45.2, flowRate: 12.8, vehicleTag: 'TAG-882910' };
-  const validRawBody = JSON.stringify(validPayload);
   const nowTs = Date.now().toString();
-  const validSig = generateHmacSignature(nowTs, validRawBody, DEVICE_SECRET);
+  const nonce1 = generateNonce();
+  const validSig = generateHmacSignature(nowTs, nonce1, rawBody, DEVICE_SECRET);
 
   await testCase(
     'Test 1: Geçerli ESP32 HMAC-SHA256 İmzalı Telemetri İsteği',
-    validPayload,
-    nowTs,
-    validSig,
-    DEVICE_ID,
-    200,
-    null
+    payload, nowTs, nonce1, validSig, DEVICE_ID,
+    200, null
   );
 
-  // TEST 2: Replay Attack Saldırısı (45 Saniye Eski Zaman Damgası)
+  // TEST 2: Aynı Nonce'un İkinci Kez Kullanımı (AUTH-202.2 AC: "Aynı nonce
+  // ikinci kez kabul edilmemelidir") — Test 1'deki paketin BİREBİR aynısı
+  // (geçerli imza dahil) tekrar gönderiliyor; bu klasik bir replay senaryosu.
+  await testCase(
+    'Test 2: Aynı Nonce İkinci Kez Reddi (Replay Attack)',
+    payload, nowTs, nonce1, validSig, DEVICE_ID,
+    401, 'NONCE_REUSED'
+  );
+
+  // TEST 3: Replay Attack Saldırısı (45 Saniye Eski Zaman Damgası → Clock Drift)
   const oldTs = (Date.now() - 45000).toString(); // 45 seconds ago
-  const oldSig = generateHmacSignature(oldTs, validRawBody, DEVICE_SECRET);
+  const nonce2 = generateNonce();
+  const oldSig = generateHmacSignature(oldTs, nonce2, rawBody, DEVICE_SECRET);
 
   await testCase(
-    'Test 2: Replay Attack Engelleme (45 Saniyelik Eski Zaman Damgası)',
-    validPayload,
-    oldTs,
-    oldSig,
-    DEVICE_ID,
-    401,
-    'REPLAY_ATTACK_DETECTED'
+    'Test 3: Zaman Damgası Penceresi Dışı Reddi (Clock Drift / Replay)',
+    payload, oldTs, nonce2, oldSig, DEVICE_ID,
+    401, 'REPLAY_ATTACK_DETECTED'
   );
 
-  // TEST 3: Veri Manipülasyonu / Yanlış İmza Saldırısı (Data Tampering)
+  // TEST 4: Test 3'te reddedilen cihaz KARA LİSTEYE ALINMAMALI — aynı cihazdan
+  // taze bir timestamp + yeni bir nonce ile gelen sıradaki paket kabul edilmeli.
+  const freshTs = Date.now().toString();
+  const nonce3 = generateNonce();
+  const freshSig = generateHmacSignature(freshTs, nonce3, rawBody, DEVICE_SECRET);
+
+  await testCase(
+    'Test 4: Clock Drift Sonrası Cihaz Kara Listeye Alınmamış (Taze İstek Kabul Edilir)',
+    payload, freshTs, nonce3, freshSig, DEVICE_ID,
+    200, null
+  );
+
+  // TEST 5: Veri Manipülasyonu / Yanlış İmza Saldırısı (Data Tampering)
+  const nonce4 = generateNonce();
   const fakeSig = 'a1b2c3d4e5f60011223344556677889900aabbccddeeff001122334455667788';
 
   await testCase(
-    'Test 3: Manipüle Edilmiş Veri / Yanlış Kriptografik İmza Reddi',
-    validPayload,
-    nowTs,
-    fakeSig,
-    DEVICE_ID,
-    401,
-    'INVALID_HARDWARE_SIGNATURE'
+    'Test 5: Manipüle Edilmiş Veri / Yanlış Kriptografik İmza Reddi',
+    payload, Date.now().toString(), nonce4, fakeSig, DEVICE_ID,
+    401, 'INVALID_HARDWARE_SIGNATURE'
   );
 
-  // TEST 4: Eksik Donanım Başlıkları (Header Bulunmama)
+  // TEST 6: Eksik Donanım Başlıkları (X-Nonce Bulunmama)
   await testCase(
-    'Test 4: Eksik Donanım Başlıkları Reddi',
-    validPayload,
-    nowTs,
-    null, // Missing signature header
-    DEVICE_ID,
-    401,
-    'MISSING_HARDWARE_HEADERS'
+    'Test 6: Eksik X-Nonce Başlığı Reddi',
+    payload, Date.now().toString(), null, 'irrelevant', DEVICE_ID,
+    401, 'MISSING_HARDWARE_HEADERS'
   );
 
   console.log('===========================================================');

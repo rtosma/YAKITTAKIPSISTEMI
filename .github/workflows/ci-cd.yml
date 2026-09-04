@@ -127,6 +127,9 @@ jobs:
       - name: Run AUTH-201 Integration Tests
         run: cd backend && npx tsx test/test_auth201.ts
 
+      - name: Run AUTH-202.2 Hardware HMAC + Replay/Nonce Tests
+        run: cd backend && npx tsx test/testHardwareAuth.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true
