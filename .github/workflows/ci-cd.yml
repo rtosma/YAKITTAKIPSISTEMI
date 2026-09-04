@@ -22,6 +22,9 @@ jobs:
       JWT_REFRESH_SECRET: ci_only_quality_job_refresh_secret_${{ github.run_id }}
       MQTT_USERNAME: ci_only_unused
       MQTT_PASSWORD: ci_only_unused
+      HW_SECRET_ESP32_PUMP_01: ci_only_unused
+      HW_SECRET_ESP32_TANK_01: ci_only_unused
+      HW_SECRET_ESP32_FLOW_ISR: ci_only_unused
 
     steps:
       - name: Checkout Repository
@@ -75,6 +78,13 @@ jobs:
     # exercised login/refresh-rotation/RBAC end-to-end. Previously not run in
     # CI at all; it would have failed on the pompa-op-01 PUMP_OPERATOR fixture
     # user, which is now part of seed_mock_data.sql.
+    # Job seviyesinde (adım seviyesinde değil): testHardwareAuth.ts (ayrı bir
+    # adımda çalışır) sunucuyla AYNI HW_SECRET_ESP32_PUMP_01 değerini
+    # görmeli, aksi halde hesapladığı HMAC imzası sunucununkiyle eşleşmez.
+    env:
+      HW_SECRET_ESP32_PUMP_01: ci_only_hw_secret_pump_${{ github.run_id }}
+      HW_SECRET_ESP32_TANK_01: ci_only_hw_secret_tank_${{ github.run_id }}
+      HW_SECRET_ESP32_FLOW_ISR: ci_only_hw_secret_flow_${{ github.run_id }}
     services:
       postgres:
         image: postgres:16-alpine
@@ -161,6 +171,31 @@ jobs:
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true
+
+  secret-scan:
+    name: 🔑 OPS-1105: Gitleaks Secret Taraması
+    runs-on: ubuntu-latest
+    # Diğer job'lardan bağımsız — build/test beklemeden hemen çalışabilir.
+    # AC: "Repoda hiçbir gerçek secret bulunmamalı ve tarama CI'da çalışmalıdır."
+    # Şu an checkout edilen ağaç taranır (git geçmişi değil) — .gitleaks.toml'a
+    # bakın: bu, bu commit'te kaynak kodundan env değişkenlerine taşınan
+    # (bkz. hardwareAuthMiddleware.ts) donanım cihaz sırlarını YAKALADIĞI için
+    # eklendi. Geçmiş commit'lerdeki eski değerler git log'da hâlâ görülebilir
+    # — tam geçmiş temizliği (BFG/filter-repo + force-push + rotasyon) ayrı,
+    # kasıtlı bir onay gerektiren bir iş.
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install gitleaks
+        run: |
+          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Scan checked-out tree for secrets
+        run: gitleaks detect --source . --no-git --config .gitleaks.toml --verbose
 
   build-bundle:
     name: 📦 Build Standalone Bundles

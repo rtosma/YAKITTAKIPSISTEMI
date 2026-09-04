@@ -118,7 +118,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-yakittakip_db}
       # No insecure default here on purpose: the backend now fails fast at
-      # startup if these are missing (see backend/src/services/tokenService.ts).
+      # startup if these are missing (ARCH-110 — see backend/src/config/env.ts).
       # Set real, random values in your .env — copy .env.example and edit it.
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET .env dosyasında tanımlanmalıdır}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET .env dosyasında tanımlanmalıdır}
@@ -127,6 +127,10 @@ services:
       MQTT_URL: mqtt://emqx:1883
       MQTT_USERNAME: ${MQTT_USERNAME:?MQTT_USERNAME .env dosyasında tanımlanmalıdır}
       MQTT_PASSWORD: ${MQTT_PASSWORD:?MQTT_PASSWORD .env dosyasında tanımlanmalıdır}
+      # OPS-1105: önceden hardwareAuthMiddleware.ts'te düz metin sabit kodluydu.
+      HW_SECRET_ESP32_PUMP_01: ${HW_SECRET_ESP32_PUMP_01:?HW_SECRET_ESP32_PUMP_01 .env dosyasında tanımlanmalıdır}
+      HW_SECRET_ESP32_TANK_01: ${HW_SECRET_ESP32_TANK_01:?HW_SECRET_ESP32_TANK_01 .env dosyasında tanımlanmalıdır}
+      HW_SECRET_ESP32_FLOW_ISR: ${HW_SECRET_ESP32_FLOW_ISR:?HW_SECRET_ESP32_FLOW_ISR .env dosyasında tanımlanmalıdır}
     # OPS-1102: host'a sabit "5000:5000" port yayını kasıtlı olarak KALDIRILDI.
     # 1) frontend/nginx.conf zaten backend'e dahili yakit_network üzerinden
     #    hostname ile (http://backend:5000) erişiyor — dışarıdan doğrudan

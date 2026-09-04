@@ -2,7 +2,10 @@ import crypto from 'crypto';
 
 const API_URL = 'http://localhost:5000/api/v1/telemetry/hardware-data';
 const DEVICE_ID = 'ESP32-PUMP-01';
-const DEVICE_SECRET = 'secret_gebze_pump_8849';
+// OPS-1105: sunucunun kendisi de artık bu sırrı kaynak kodundan değil
+// HW_SECRET_ESP32_PUMP_01'den okuyor (bkz. hardwareAuthMiddleware.ts) —
+// imzaların eşleşmesi için test de AYNI ortam değişkenini okumalı.
+const DEVICE_SECRET = process.env.HW_SECRET_ESP32_PUMP_01 || 'secret_gebze_pump_8849';
 
 function generateNonce(): string {
   return crypto.randomBytes(16).toString('hex');

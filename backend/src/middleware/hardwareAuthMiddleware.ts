@@ -1,22 +1,30 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
+import { config } from '../config/env';
 import { redisPool } from '../db/redisPool';
 import { logger } from '../utils/logger';
 
-// Registered Hardware Secrets (In production, stored encrypted in database)
+// OPS-1105: cihaz sırları önceden burada düz metin olarak duruyordu — repo
+// geneli bir gitleaks taraması bunu gerçek bir sızıntı olarak işaretledi.
+// Artık config/env.ts (Zod ile doğrulanmış ortam değişkenleri) üzerinden
+// okunuyor; yalnızca cihaz ADI/ŞANTİYESİ gibi sır OLMAYAN metadata burada.
+// AUTH-202.3 (cihaz secret üretimi/saklanması/rotasyonu) henüz
+// yapılmadığından bunlar hâlâ statik/sabit sırlar — bu değişiklik yalnızca
+// "kaynak kodunda düz metin secret" sorununu çözüyor, tam yaşam döngüsü
+// yönetimini değil.
 export const REGISTERED_HARDWARE_DEVICES: Record<string, { secret: string; name: string; siteName: string }> = {
   'ESP32-PUMP-01': {
-    secret: 'secret_gebze_pump_8849',
+    secret: config.HW_SECRET_ESP32_PUMP_01,
     name: 'Gebze Pompa Otomasyonu #1',
     siteName: 'Gebze Ana Şantiye'
   },
   'ESP32-TANK-01': {
-    secret: 'secret_gebze_tank_3910',
+    secret: config.HW_SECRET_ESP32_TANK_01,
     name: 'Gebze Ultrasonik Tank Probu #1',
     siteName: 'Gebze Ana Şantiye'
   },
   'ESP32-FLOW-ISR': {
-    secret: 'secret_flow_isr_7721',
+    secret: config.HW_SECRET_ESP32_FLOW_ISR,
     name: 'Debimetre Kesme Sensörü',
     siteName: 'Sistem Kalibrasyonu'
   }

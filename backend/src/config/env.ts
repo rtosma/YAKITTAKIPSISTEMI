@@ -54,7 +54,17 @@ const envSchema = z.object({
   // EMQX artık anonim bağlantı kabul etmiyor (bkz. docker/emqx/entrypoint.sh)
   // — bu ikisi de her ortamda zorunlu.
   MQTT_USERNAME: z.string({ message: 'MQTT_USERNAME tanımlı değil.' }).min(1, 'MQTT_USERNAME boş olamaz.'),
-  MQTT_PASSWORD: z.string({ message: 'MQTT_PASSWORD tanımlı değil.' }).min(1, 'MQTT_PASSWORD boş olamaz.')
+  MQTT_PASSWORD: z.string({ message: 'MQTT_PASSWORD tanımlı değil.' }).min(1, 'MQTT_PASSWORD boş olamaz.'),
+
+  // OPS-1105: bu 3 donanım cihaz sırrı önceden hardwareAuthMiddleware.ts'te
+  // düz metin olarak kaynak kodundaydı (`git log` diffiyle görülebilir) —
+  // gitleaks taraması bunu gerçek bir sızıntı olarak işaretledi (bkz.
+  // scripts/gitleaks.toml). AUTH-202.3 (cihaz secret yaşam döngüsü — üretim,
+  // provisioning, rotasyon) henüz yapılmadığından bunlar hâlâ sabit/statik
+  // sırlar, ama en azından artık KAYNAK KODUNDA DEĞİLLER.
+  HW_SECRET_ESP32_PUMP_01: z.string({ message: 'HW_SECRET_ESP32_PUMP_01 tanımlı değil.' }).min(1),
+  HW_SECRET_ESP32_TANK_01: z.string({ message: 'HW_SECRET_ESP32_TANK_01 tanımlı değil.' }).min(1),
+  HW_SECRET_ESP32_FLOW_ISR: z.string({ message: 'HW_SECRET_ESP32_FLOW_ISR tanımlı değil.' }).min(1)
 });
 
 type EnvShape = z.infer<typeof envSchema>;
@@ -97,8 +107,13 @@ function loadConfig(): AppConfig {
     // parolayı yalnızca ilk init'te, boş bir data dizininden okur) ve backend
     // kimlik doğrulamasını kırar. JWT/MQTT ise gerçek yetkilendirme/kimlik
     // sınırları olduğundan (oturum sahteciliği, sahte cihaz) bu kontrolde kalıyor.
-    const stillPlaceholder = (['JWT_SECRET', 'JWT_REFRESH_SECRET', 'MQTT_PASSWORD'] as const)
-      .filter((key) => KNOWN_PLACEHOLDER_VALUES.has(data[key]));
+    // Bunlar DEĞİŞKEN ADLARI, bir sır listesi değil — gitleaks:allow (bkz.
+    // .gitleaks.toml: generic-api-key kuralı yalnızca ard arda gelen bu
+    // isimlerin dizi görünümüne yanlışlıkla takılıyordu).
+    const stillPlaceholder = ([
+      'JWT_SECRET', 'JWT_REFRESH_SECRET', 'MQTT_PASSWORD',
+      'HW_SECRET_ESP32_PUMP_01', 'HW_SECRET_ESP32_TANK_01', 'HW_SECRET_ESP32_FLOW_ISR' // gitleaks:allow
+    ] as const).filter((key) => KNOWN_PLACEHOLDER_VALUES.has(data[key]));
 
     if (stillPlaceholder.length > 0) {
       failFast(

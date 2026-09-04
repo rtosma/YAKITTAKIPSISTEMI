@@ -1,0 +1,32 @@
+# OPS-1105 — gitleaks yapılandırması.
+#
+# gitleaks'in yerleşik kural setini (config/gitleaks.toml varsayılanı) kullan,
+# yalnızca bilinen, gerçek OLMAYAN false-positive'ler için bir allowlist ekle.
+# Yeni bir kural EKLEMİYORUZ — amaç gerçek sızıntıları YAKALAMAK, bu dosya
+# yalnızca zaten incelenmiş, zararsız eşleşmeleri susturuyor.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Bilinen, gerçek secret OLMAYAN eşleşmeler"
+regexes = [
+  # backend/.env.example ve .env.example — placeholder metinler, gerçek
+  # sırlar değil (bkz. "asla bu placeholder'ları kullanmayın" yorumu).
+  '''__CHANGE_ME_RUN_openssl_rand_-hex_(32|64)__''',
+  # Test dosyalarındaki, yalnızca o test sürecinde kullanılan, kasıtlı olarak
+  # sahte/tanımlayıcı isimli sırlar (gerçek bir sisteme asla bağlanmazlar).
+  '''ci_only_[A-Za-z0-9_]*''',
+  '''test_only_ops1101_(access|refresh)_secret_do_not_reuse''',
+  '''local_test_(access|refresh)'''
+]
+paths = [
+  # Derleme çıktıları — gitignored, git tarafından hiç takip edilmiyor;
+  # yine de bir güvenlik ağı olarak burada da hariç tutuluyor.
+  '''dist/.*''',
+  '''backend/dist/.*''',
+  # .env dosyaları da gitignored (bkz. .gitignore) — CI bunları hiç checkout
+  # etmiyor, yalnızca yerel `gitleaks detect --no-git` çalıştıran bir
+  # geliştiricinin KENDİ gerçek .env'ini "sızıntı" sanıp kafası karışmasın
+  # diye burada da hariç tutuluyor.
+  '''(^|/)\.env$'''
+]
