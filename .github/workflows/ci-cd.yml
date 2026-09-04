@@ -177,6 +177,9 @@ jobs:
       - name: Run AUTH-201.4 RBAC Matrix + Site-Scoping Tests
         run: cd backend && npx tsx test/test_auth201_4_rbac_matrix.ts
 
+      - name: Run TEST-1003 Tenant Isolation Leak Tests
+        run: cd backend && npx tsx test/test_195_tenant_isolation.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

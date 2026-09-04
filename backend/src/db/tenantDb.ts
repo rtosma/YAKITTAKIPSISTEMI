@@ -1,4 +1,4 @@
-import { ForbiddenError, ConflictError, UnauthorizedError } from '../utils/errors';
+import { ForbiddenError, ConflictError, UnauthorizedError, NotFoundError } from '../utils/errors';
 import { generateId } from '../utils/id';
 import { hashPassword, verifyPassword } from '../utils/password';
 import { generateReadableUsername, generateTempPassword } from '../utils/tempCredentials';
@@ -253,8 +253,12 @@ export async function createSiteWithManager(siteName: string, location: string =
 
 export async function deleteTenantSite(siteName: string): Promise<boolean> {
   return withTenant(async (client) => {
-    // Delete from sites table
-    await client.query('DELETE FROM sites WHERE name = $1', [siteName]);
+    // TEST-1003'te deleteVehicle/deleteDriver/deleteTank'ta yakalanan aynı
+    // desen: silinen satır sayısı kontrol edilmezse var olmayan (ya da RLS'in
+    // gizlediği başka bir tenant'a ait) bir şantiye adı için bile yanıltıcı
+    // bir "başarılı" dönülür.
+    const result = await client.query('DELETE FROM sites WHERE name = $1', [siteName]);
+    if (result.rowCount === 0) throw new NotFoundError('Şantiye bulunamadı veya yetkiniz yok.');
 
     // Disassociate site_name from vehicles, drivers, tanks, users
     await client.query("UPDATE vehicles SET site_name = 'Atanmadı' WHERE site_name = $1", [siteName]);
@@ -360,7 +364,13 @@ export async function updateVehicle(id: string, data: Partial<VehicleRecord>): P
 
 export async function deleteVehicle(id: string): Promise<void> {
   return withTenant(async (client) => {
-    await client.query('DELETE FROM vehicles WHERE id = $1', [id]);
+    // TEST-1003'te yakalandı: silinen satır sayısı kontrol edilmediğinden
+    // ID başka bir tenant'a ait olsa bile (RLS 0 satır etkiler ama sorgu
+    // BAŞARIYLA döner) uç, hiçbir şey silinmediği halde 200 "başarılı"
+    // dönüyordu — yalnızca bir UX/doğruluk hatası (RLS'in kendisi hâlâ
+    // satırı korumuş oluyordu), ama yanıltıcıydı.
+    const result = await client.query('DELETE FROM vehicles WHERE id = $1', [id]);
+    if (result.rowCount === 0) throw new NotFoundError('Araç bulunamadı veya yetkiniz yok.');
   });
 }
 
@@ -467,7 +477,8 @@ export async function updateDriver(id: string, data: Partial<DriverRecord>): Pro
 
 export async function deleteDriver(id: string): Promise<void> {
   return withTenant(async (client) => {
-    await client.query('DELETE FROM drivers WHERE id = $1', [id]);
+    const result = await client.query('DELETE FROM drivers WHERE id = $1', [id]);
+    if (result.rowCount === 0) throw new NotFoundError('Şoför bulunamadı veya yetkiniz yok.');
   });
 }
 
@@ -513,7 +524,8 @@ export async function updateTank(id: string, data: Partial<TankRecord>): Promise
 
 export async function deleteTank(id: string): Promise<void> {
   return withTenant(async (client) => {
-    await client.query('DELETE FROM tanks WHERE id = $1', [id]);
+    const result = await client.query('DELETE FROM tanks WHERE id = $1', [id]);
+    if (result.rowCount === 0) throw new NotFoundError('Tank bulunamadı veya yetkiniz yok.');
   });
 }
 
