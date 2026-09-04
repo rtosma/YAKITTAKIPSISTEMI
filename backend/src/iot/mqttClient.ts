@@ -1,4 +1,5 @@
 import mqtt, { MqttClient } from 'mqtt';
+import { config } from '../config/env';
 import { logger } from '../utils/logger';
 import { redisPool } from '../db/redisPool';
 import { EventEmitter } from 'events';
@@ -9,7 +10,7 @@ export const ioTEventBus = new EventEmitter();
 
 class MQTTService {
   private client: MqttClient | null = null;
-  private readonly brokerUrl = process.env.MQTT_URL || 'mqtt://localhost:1883';
+  private readonly brokerUrl = config.MQTT_URL;
 
   public connect(): void {
     logger.info(`🔌 [MQTT] Broker'a bağlanılıyor: ${this.brokerUrl}`);
@@ -23,8 +24,8 @@ class MQTTService {
       // docker/emqx/entrypoint.sh) — kimlik doğrulaması olmadan herkes sahte
       // pompa/tank telemetrisi yayınlayabilir ya da tüm kiracıların canlı
       // verisine abone olabilirdi.
-      username: process.env.MQTT_USERNAME,
-      password: process.env.MQTT_PASSWORD,
+      username: config.MQTT_USERNAME,
+      password: config.MQTT_PASSWORD,
     });
 
     this.client.on('connect', () => {

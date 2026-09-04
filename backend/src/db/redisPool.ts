@@ -1,4 +1,5 @@
 import Redis from 'ioredis';
+import { config } from '../config/env';
 import { logger } from '../utils/logger';
 
 class RedisManager {
@@ -6,8 +7,8 @@ class RedisManager {
 
   constructor() {
     this.client = new Redis({
-      host: process.env.REDIS_HOST || 'localhost',
-      port: parseInt(process.env.REDIS_PORT || '6379', 10),
+      host: config.REDIS_HOST,
+      port: config.REDIS_PORT,
       retryStrategy: (times) => {
         const delay = Math.min(times * 50, 2000);
         return delay;

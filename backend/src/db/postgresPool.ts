@@ -1,12 +1,13 @@
 import { Pool } from 'pg';
+import { config } from '../config/env';
 import { logger } from '../utils/logger';
 
 export const pool = new Pool({
-  host: process.env.POSTGRES_HOST || 'localhost',
-  port: parseInt(process.env.POSTGRES_PORT || '5432', 10),
-  user: process.env.POSTGRES_USER || 'postgres',
-  password: process.env.POSTGRES_PASSWORD || 'postgres',
-  database: process.env.POSTGRES_DB || 'yakittakip_db',
+  host: config.POSTGRES_HOST,
+  port: config.POSTGRES_PORT,
+  user: config.POSTGRES_USER,
+  password: config.POSTGRES_PASSWORD,
+  database: config.POSTGRES_DB,
   max: 10,
   idleTimeoutMillis: 30000
 });

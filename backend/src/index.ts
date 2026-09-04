@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import http from 'http';
 
+import { config } from './config/env';
 import { initSocketServer } from './socket/socketServer';
 import { traceMiddleware, httpLoggerMiddleware } from './middleware/loggerMiddleware';
 import { globalErrorHandler, notFoundHandler, registerProcessExceptionHandlers } from './middleware/errorHandler';
@@ -23,7 +24,7 @@ import routes from './routes/routes';
 registerProcessExceptionHandlers();
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = config.PORT;
 
 app.use(cors());
 
@@ -118,12 +119,12 @@ initSocketServer(httpServer);
 const server = httpServer.listen(PORT, () => {
   logger.info({
     port: PORT,
-    environment: process.env.NODE_ENV || 'development',
+    environment: config.NODE_ENV,
     features: ['AsyncLocalStorage RLS', 'HMAC Auth', 'Pino Logger', 'Global Exception Filter', 'Graceful Shutdown', 'MQTT & LWT', 'Socket.io'],
   }, `🚀 [OPS-1101] Yakıttakip Backend Sunucusu Başlatıldı!`);
 
   // Start MQTT Listener
-  if (process.env.MQTT_URL !== '__CI_SKIP__') {
+  if (config.MQTT_URL !== '__CI_SKIP__') {
     mqttService.connect();
   }
 });

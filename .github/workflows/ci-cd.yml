@@ -10,6 +10,18 @@ jobs:
   quality-and-tests:
     name: 🧪 Quality Check & Integration Tests
     runs-on: ubuntu-latest
+    # ARCH-110: backend/src/config/env.ts artık JWT_SECRET/JWT_REFRESH_SECRET/
+    # MQTT_USERNAME/MQTT_PASSWORD'ü HER modül import zincirinde (test_res902.ts
+    # ve test_ops1101.ts dahil — logger.ts üzerinden transitif olarak) zorunlu
+    # kılıyor. Bu job gerçek bir Postgres/Redis/EMQX'e hiç bağlanmıyor — bu
+    # yüzden bu 4 değişken yalnızca config doğrulamasını geçmek için var,
+    # gerçek bir kimlik bilgisi değil (auth-integration-test job'ındaki
+    # ci_only_* desenle aynı).
+    env:
+      JWT_SECRET: ci_only_quality_job_access_secret_${{ github.run_id }}
+      JWT_REFRESH_SECRET: ci_only_quality_job_refresh_secret_${{ github.run_id }}
+      MQTT_USERNAME: ci_only_unused
+      MQTT_PASSWORD: ci_only_unused
 
     steps:
       - name: Checkout Repository
@@ -38,6 +50,12 @@ jobs:
 
       - name: "ARCH-101.2: Ham pool.query Kullanımı Denetimi (RLS Bypass Koruması)"
         run: node scripts/check-no-raw-pool-query.mjs
+
+      - name: "ARCH-110: Ham process.env Kullanımı Denetimi (Tipli Config Zorunluluğu)"
+        run: node scripts/check-no-direct-process-env.mjs
+
+      - name: "ARCH-110: .env.example ↔ Config Şeması Senkron Kontrolü"
+        run: node scripts/check-env-example-sync.mjs
 
       - name: Run RES-902 Exception Filter & Logging Tests
         run: cd backend && npx tsx test/test_res902.ts
@@ -123,6 +141,13 @@ jobs:
           JWT_SECRET: ci_only_access_secret_${{ github.run_id }}_${{ github.run_attempt }}
           JWT_REFRESH_SECRET: ci_only_refresh_secret_${{ github.run_id }}_${{ github.run_attempt }}
           MQTT_URL: __CI_SKIP__
+          # ARCH-110: MQTT_URL=__CI_SKIP__ yalnızca mqttService.connect()'in
+          # ÇAĞRILMASINI atlar (bkz. index.ts) — config/env.ts şeması
+          # MQTT_USERNAME/MQTT_PASSWORD'ü bundan bağımsız, her zaman zorunlu
+          # kılıyor; bu job gerçek bir EMQX'e hiç bağlanmadığından bunlar da
+          # yalnızca doğrulamayı geçmek için birer placeholder.
+          MQTT_USERNAME: ci_only_unused
+          MQTT_PASSWORD: ci_only_unused
 
       - name: Run AUTH-201 Integration Tests
         run: cd backend && npx tsx test/test_auth201.ts

@@ -1,27 +1,19 @@
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import { config } from '../config/env';
 import { redisPool } from '../db/redisPool';
 
 /**
  * SECURITY: no hardcoded fallback. A default secret baked into source control
  * means anyone who reads the repo can forge valid access/refresh tokens for
- * any tenant/role. Fail fast at startup instead of silently running insecure.
- * (Requires `./bootstrap.ts` to be the process entry point so `.env` is
- * loaded before this module evaluates — see bootstrap.ts for why.)
+ * any tenant/role. ARCH-110'dan önce bu dosya kendi requireSecret() fail-fast
+ * kontrolünü yapıyordu; artık bu doğrulama tek bir yerde, config/env.ts'te
+ * (Zod şeması) — burası yalnızca doğrulanmış değeri okuyor. (Yine de
+ * `./bootstrap.ts`'in process entry point olması gerekir ki `.env`,
+ * config/env.ts değerlendirilmeden önce yüklensin — bkz. bootstrap.ts.)
  */
-function requireSecret(envVar: string): string {
-  const value = process.env[envVar];
-  if (!value || value.trim().length === 0) {
-    throw new Error(
-      `FATAL: ${envVar} ortam değişkeni tanımlı değil. JWT imzalama için zorunludur. ` +
-      `.env dosyanızı .env.example üzerinden oluşturup güçlü, rastgele bir değer atayın.`
-    );
-  }
-  return value;
-}
-
-const JWT_SECRET = requireSecret('JWT_SECRET');
-const JWT_REFRESH_SECRET = requireSecret('JWT_REFRESH_SECRET');
+const JWT_SECRET = config.JWT_SECRET;
+const JWT_REFRESH_SECRET = config.JWT_REFRESH_SECRET;
 
 export type UserRole = 'SUPER_ADMIN' | 'COMPANY_OWNER' | 'SITE_MANAGER' | 'PUMP_OPERATOR' | 'DRIVER';
 
