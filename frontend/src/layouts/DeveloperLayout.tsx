@@ -10,6 +10,9 @@ export const DeveloperLayout: React.FC = () => {
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
   }
+  if (currentUser?.mustChangePassword) {
+    return <Navigate to="/parola-degistir" replace />;
+  }
 
   // FE-803: Süper Admin paneli yalnızca gerçekten SUPER_ADMIN rolüne sahip
   // kullanıcılara açık olmalıdır. Önceden burada hiçbir rol kontrolü yoktu —

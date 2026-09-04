@@ -22,6 +22,9 @@ export const SiteOperatorPanel: React.FC = () => {
   if (!isAuthenticated) {
     return <Navigate to="/santiye-login" replace />;
   }
+  if (currentUser?.mustChangePassword) {
+    return <Navigate to="/parola-degistir" replace />;
+  }
 
   const activeSiteName = currentUser?.siteName || (selectedSiteFilter !== 'TÜMÜ' ? selectedSiteFilter : 'Gebze Ana Şantiye');
 

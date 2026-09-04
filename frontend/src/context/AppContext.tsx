@@ -40,10 +40,15 @@ interface AppContextType {
   isAuthenticated: boolean;
   isManagerMode: boolean;
   setIsManagerMode: (val: boolean) => void;
-  currentUser: { username: string; companyName: string; role: UserRole; siteName?: string } | null;
+  currentUser: { username: string; companyName: string; role: UserRole; siteName?: string; mustChangePassword?: boolean } | null;
   loginCompany: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   loginSiteOperator: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logoutCompany: () => void;
+  // AUTH-204/FE-804: geçici parolayla giriş yapan kullanıcı parolasını
+  // değiştirdiğinde çağrılır — /auth/change-password taze bir token çifti
+  // (mustChangePassword: false) döner, bu fonksiyon onları saklayıp
+  // currentUser'ı günceller ki route guard'ları paneli açsın.
+  completePasswordChange: (accessToken: string, refreshToken: string) => void;
 
   // Current Customer Firm State (Default: ÇamSA Pelet)
   currentCompany: Company;
@@ -154,7 +159,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return saved !== null ? saved === 'true' : true;
   });
 
-  const [currentUser, setCurrentUser] = useState<{ username: string; companyName: string; role: UserRole; siteName?: string } | null>(() => {
+  const [currentUser, setCurrentUser] = useState<{ username: string; companyName: string; role: UserRole; siteName?: string; mustChangePassword?: boolean } | null>(() => {
     const saved = localStorage.getItem('YAKIT_CURRENT_USER');
     if (!saved) return null;
     try {
@@ -301,7 +306,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         // önceden burada sabit "Firma Yöneticisi" metni tutuluyordu ve hiçbir rol
         // kontrolü mümkün değildi (FE-803 ihlali). Fallback yalnızca beklenmeyen
         // bir API yanıtına karşı son çare.
-        role: (data.user?.role as UserRole) || 'COMPANY_OWNER'
+        role: (data.user?.role as UserRole) || 'COMPANY_OWNER',
+        // AUTH-204: true ise (geçici parolayla giriş) route guard'ları
+        // kullanıcıyı doğrudan panele değil parola değiştirme ekranına
+        // yönlendirir — bkz. CustomerLayout/DeveloperLayout.
+        mustChangePassword: data.user?.mustChangePassword === true
       });
 
       showToast(`PostgreSQL Giriş Başarılı: ${companyName} Yönetici paneline yönlendiriliyorsunuz`, 'success');
@@ -354,7 +363,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         companyName,
         siteName: activeSiteName,
         // bkz. loginCompany yorumu — backend'in gerçek rolü kullanılır.
-        role: (data.user?.role as UserRole) || 'SITE_MANAGER'
+        role: (data.user?.role as UserRole) || 'SITE_MANAGER',
+        // AUTH-204: şantiye yöneticisi hesapları hep geçici parolayla
+        // provizyonlanır (bkz. backend createSiteWithManager) — bu akış
+        // gerçekte en sık BURADA tetiklenir.
+        mustChangePassword: data.user?.mustChangePassword === true
       });
 
       showToast(`PostgreSQL Şantiye Girişi Başarılı: ${activeSiteName || companyName} modunda panele yönlendiriliyorsunuz`, 'success');
@@ -363,6 +376,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       console.error('Backend API Hatası:', err);
       return { success: false, error: 'Sunucuya bağlanılamadı veya şifre doğrulaması başarısız oldu.' };
     }
+  };
+
+  const completePasswordChange = (accessToken: string, refreshToken: string) => {
+    localStorage.setItem('YAKIT_ACCESS_TOKEN', accessToken);
+    localStorage.setItem('YAKIT_REFRESH_TOKEN', refreshToken);
+    setCurrentUser(prev => (prev ? { ...prev, mustChangePassword: false } : prev));
+    showToast('Parolanız güncellendi. Panele yönlendiriliyorsunuz.', 'success');
   };
 
   const logoutCompany = () => {
@@ -1123,6 +1143,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         loginCompany,
         loginSiteOperator,
         logoutCompany,
+        completePasswordChange,
         currentCompany,
         selectedSiteFilter,
         setSelectedSiteFilter,

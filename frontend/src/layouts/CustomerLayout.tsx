@@ -19,6 +19,9 @@ export const CustomerLayout: React.FC = () => {
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
   }
+  if (currentUser?.mustChangePassword) {
+    return <Navigate to="/parola-degistir" replace />;
+  }
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 

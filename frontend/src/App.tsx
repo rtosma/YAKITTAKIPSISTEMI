@@ -23,6 +23,7 @@ const queryClient = new QueryClient({
 // Pages & Layouts
 import { LoginPage } from './pages/LoginPage';
 import { SiteLoginPage } from './pages/SiteLoginPage';
+import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
 import { WelcomeScreen } from './pages/WelcomeScreen';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { ForbiddenPage } from './pages/ForbiddenPage';
@@ -63,6 +64,7 @@ export function App() {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/santiye-login" element={<SiteLoginPage />} />
           <Route path="/santiye-panel" element={<SiteOperatorPanel />} />
+          <Route path="/parola-degistir" element={<ForcedPasswordChangePage />} />
           <Route path="/welcome" element={<WelcomeScreen />} />
           <Route path="/403" element={<ForbiddenPage />} />
 
