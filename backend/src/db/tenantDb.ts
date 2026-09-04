@@ -1,6 +1,5 @@
-import { pool } from './postgresPool';
-import { getTenantId } from '../context/tenantContext';
 import { ForbiddenError, ConflictError } from '../utils/errors';
+import { withTenant } from './withTenant';
 
 export interface VehicleRecord {
   id: string;
@@ -65,69 +64,68 @@ export interface CompanyProfile {
  * - SITE_MANAGER: yalnızca kendi şantiyesini (token'daki site_name) görür.
  * `companies` tablosu tenant kaydının kendisidir; RLS yerine doğrudan
  * id = tenantId ile filtrelenir, diğer tablolar tenant_id ile kısıtlanır.
+ *
+ * ARCH-101.2 düzeltmesi: bu fonksiyon önceden `withTenant()` DIŞINDA, çıplak
+ * `pool.query` ile çalışıyordu — pool'un bağlandığı `postgres` kullanıcısı
+ * superuser olduğundan bu üç sorgu RLS'i tamamen bypass edip yalnızca elle
+ * yazılmış tenant_id/id eşleşmesine güveniyordu (bkz. git geçmişi). Artık
+ * diğer tüm fonksiyonlarla aynı desende: app_user rolüne düşüp
+ * app.current_tenant_id ayarlanmış bir transaction içinde çalışıyor.
  */
 export async function getTenantCompanyProfile(opts?: { role?: string; siteName?: string }): Promise<CompanyProfile> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
+  return withTenant(async (client, tenantId) => {
+    const companyRes = await client.query(
+      `SELECT id, name, tax_number, code, city, license_status, license_expiry, modules
+       FROM companies WHERE id = $1`,
+      [tenantId]
+    );
+    if (companyRes.rows.length === 0) throw new Error('COMPANY_NOT_FOUND');
+    const c = companyRes.rows[0];
 
-  const companyRes = await pool.query(
-    `SELECT id, name, tax_number, code, city, license_status, license_expiry, modules
-     FROM companies WHERE id = $1`,
-    [tenantId]
-  );
-  if (companyRes.rows.length === 0) throw new Error('COMPANY_NOT_FOUND');
-  const c = companyRes.rows[0];
+    const restrictSite = opts?.role === 'SITE_MANAGER' && opts?.siteName ? opts.siteName : null;
 
-  const restrictSite = opts?.role === 'SITE_MANAGER' && opts?.siteName ? opts.siteName : null;
+    const sitesRes = await client.query(
+      `SELECT s.id, s.name, s.location,
+         (SELECT COUNT(*)::int FROM tanks t   WHERE t.tenant_id = $1 AND t.site_name = s.name)   AS active_tanks_count,
+         (SELECT COUNT(*)::int FROM vehicles v WHERE v.tenant_id = $1 AND v.site_name = s.name) AS active_vehicles_count
+       FROM sites s
+       WHERE s.tenant_id = $1 AND ($2::text IS NULL OR s.name = $2)
+       ORDER BY s.name ASC`,
+      [tenantId, restrictSite]
+    );
 
-  const sitesRes = await pool.query(
-    `SELECT s.id, s.name, s.location,
-       (SELECT COUNT(*)::int FROM tanks t   WHERE t.tenant_id = $1 AND t.site_name = s.name)   AS active_tanks_count,
-       (SELECT COUNT(*)::int FROM vehicles v WHERE v.tenant_id = $1 AND v.site_name = s.name) AS active_vehicles_count
-     FROM sites s
-     WHERE s.tenant_id = $1 AND ($2::text IS NULL OR s.name = $2)
-     ORDER BY s.name ASC`,
-    [tenantId, restrictSite]
-  );
+    const vehRes = await client.query(
+      `SELECT COUNT(*)::int AS cnt FROM vehicles
+       WHERE tenant_id = $1 AND ($2::text IS NULL OR site_name = $2)`,
+      [tenantId, restrictSite]
+    );
 
-  const vehRes = await pool.query(
-    `SELECT COUNT(*)::int AS cnt FROM vehicles
-     WHERE tenant_id = $1 AND ($2::text IS NULL OR site_name = $2)`,
-    [tenantId, restrictSite]
-  );
-
-  return {
-    id: c.id,
-    name: c.name,
-    code: c.code,
-    taxNumber: c.tax_number,
-    city: c.city,
-    licenseStatus: c.license_status || 'AKTİF',
-    licenseExpiry: c.license_expiry
-      ? new Date(c.license_expiry).toISOString().slice(0, 10)
-      : null,
-    modules: c.modules || {},
-    sites: sitesRes.rows.map((s) => ({
-      id: s.id,
-      name: s.name,
-      location: s.location,
-      activeTanksCount: s.active_tanks_count,
-      activeVehiclesCount: s.active_vehicles_count
-    })),
-    activeVehiclesCount: vehRes.rows[0].cnt,
-    totalFuelThisMonth: 0
-  };
+    return {
+      id: c.id,
+      name: c.name,
+      code: c.code,
+      taxNumber: c.tax_number,
+      city: c.city,
+      licenseStatus: c.license_status || 'AKTİF',
+      licenseExpiry: c.license_expiry
+        ? new Date(c.license_expiry).toISOString().slice(0, 10)
+        : null,
+      modules: c.modules || {},
+      sites: sitesRes.rows.map((s) => ({
+        id: s.id,
+        name: s.name,
+        location: s.location,
+        activeTanksCount: s.active_tanks_count,
+        activeVehiclesCount: s.active_vehicles_count
+      })),
+      activeVehiclesCount: vehRes.rows[0].cnt,
+      totalFuelThisMonth: 0
+    };
+  });
 }
 
 export async function getTenantSites(): Promise<string[]> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
-    
+  return withTenant(async (client) => {
     // RLS will ensure we only see the current tenant's data in these queries
     const result = await client.query(`
       SELECT DISTINCT site_name FROM (
@@ -143,26 +141,13 @@ export async function getTenantSites(): Promise<string[]> {
       ) AS all_sites
       ORDER BY site_name ASC
     `);
-    
-    await client.query('COMMIT');
+
     return result.rows.map(row => row.site_name);
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function createTenantSite(siteName: string, location: string = 'Türkiye'): Promise<SiteRecord> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
-
+  return withTenant(async (client, tenantId) => {
     const id = `site-${Date.now()}`;
     const result = await client.query(
       `INSERT INTO sites (id, tenant_id, name, location)
@@ -172,25 +157,12 @@ export async function createTenantSite(siteName: string, location: string = 'Tü
       [id, tenantId, siteName, location]
     );
 
-    await client.query('COMMIT');
     return result.rows[0];
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function deleteTenantSite(siteName: string): Promise<boolean> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
-
+  return withTenant(async (client) => {
     // Delete from sites table
     await client.query('DELETE FROM sites WHERE name = $1', [siteName]);
 
@@ -200,14 +172,8 @@ export async function deleteTenantSite(siteName: string): Promise<boolean> {
     await client.query("UPDATE tanks SET site_name = 'Atanmadı' WHERE site_name = $1", [siteName]);
     await client.query("UPDATE users SET site_name = NULL WHERE site_name = $1", [siteName]);
 
-    await client.query('COMMIT');
     return true;
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export interface DriverRecord {
@@ -240,18 +206,8 @@ export interface TankRecord {
  * Helper to fetch vehicles enforcing RLS (Row-Level Security)
  */
 export async function getTenantVehicles(): Promise<VehicleRecord[]> {
-  const tenantId = getTenantId();
-  if (!tenantId) {
-    throw new Error('TENANT_CONTEXT_MISSING: DB işlemi için aktif tenantId bulunamadı.');
-  }
-
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client) => {
     const result = await client.query('SELECT * FROM vehicles ORDER BY created_at DESC');
-    await client.query('COMMIT');
     return result.rows.map(row => ({
       id: row.id,
       tenant_id: row.tenant_id,
@@ -264,23 +220,12 @@ export async function getTenantVehicles(): Promise<VehicleRecord[]> {
       fuel_capacity_liters: row.fuel_capacity_liters !== null ? Number(row.fuel_capacity_liters) : null,
       assigned_driver_name: row.assigned_driver_name
     }));
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'>): Promise<VehicleRecord> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const id = 'veh-' + Date.now(); // In production, use UUID or better ID generation
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client, tenantId) => {
+    const id = 'veh-' + Date.now(); // In production, use UUID or better ID generation
     const assignedDriverName = data.assigned_driver_name && !UNASSIGNED_SENTINELS.has(data.assigned_driver_name)
       ? data.assigned_driver_name
       : null;
@@ -289,24 +234,12 @@ export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [id, tenantId, data.plate, data.brand_model, data.vehicle_type, data.rfid_tag, data.site_name, data.status, data.fuel_capacity_liters ?? null, assignedDriverName]
     );
-    await client.query('COMMIT');
     return result.rows[0];
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function updateVehicle(id: string, data: Partial<VehicleRecord>): Promise<VehicleRecord> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client) => {
     const fields = [];
     const values = [];
     let queryIdx = 1;
@@ -325,7 +258,6 @@ export async function updateVehicle(id: string, data: Partial<VehicleRecord>): P
     }
 
     if (fields.length === 0) {
-      await client.query('ROLLBACK');
       throw new Error('Güncellenecek alan bulunamadı.');
     }
 
@@ -334,33 +266,15 @@ export async function updateVehicle(id: string, data: Partial<VehicleRecord>): P
       `UPDATE vehicles SET ${fields.join(', ')} WHERE id = $${queryIdx} RETURNING *`,
       values
     );
-    await client.query('COMMIT');
     if (result.rows.length === 0) throw new Error('Araç bulunamadı veya yetkiniz yok.');
     return result.rows[0];
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function deleteVehicle(id: string): Promise<void> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client) => {
     await client.query('DELETE FROM vehicles WHERE id = $1', [id]);
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 // ============================================================================
@@ -368,13 +282,7 @@ export async function deleteVehicle(id: string): Promise<void> {
 // ============================================================================
 
 export async function getTenantDrivers(): Promise<DriverRecord[]> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client) => {
     // assigned_vehicle_plate gerçek bir kolon değil — vehicles.assigned_driver_name
     // eşleşmesinden korele bir alt sorguyla türetiliyor (LIMIT 1: bir şoföre
     // birden fazla araç atanmışsa — normal akışta olmamalı — çift satır yerine
@@ -385,14 +293,8 @@ export async function getTenantDrivers(): Promise<DriverRecord[]> {
       FROM drivers d
       ORDER BY d.created_at DESC
     `);
-    await client.query('COMMIT');
     return result.rows;
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 /**
@@ -425,14 +327,8 @@ async function syncDriverVehicleAssignment(
 }
 
 export async function createDriver(data: Omit<DriverRecord, 'id' | 'tenant_id'>): Promise<DriverRecord> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const id = 'drv-' + Date.now();
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client, tenantId) => {
+    const id = 'drv-' + Date.now();
     const result = await client.query(
       `INSERT INTO drivers (id, tenant_id, name, tc_no, phone, license_type, rfid_card_id, site_name, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
@@ -443,24 +339,12 @@ export async function createDriver(data: Omit<DriverRecord, 'id' | 'tenant_id'>)
       await syncDriverVehicleAssignment(client, tenantId, data.name, data.assigned_vehicle_plate);
     }
 
-    await client.query('COMMIT');
     return { ...result.rows[0], assigned_vehicle_plate: data.assigned_vehicle_plate ?? null };
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function updateDriver(id: string, data: Partial<DriverRecord>): Promise<DriverRecord> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client, tenantId) => {
     const fields = [];
     const values = [];
     let queryIdx = 1;
@@ -474,7 +358,6 @@ export async function updateDriver(id: string, data: Partial<DriverRecord>): Pro
     }
 
     if (fields.length === 0 && data.assigned_vehicle_plate === undefined) {
-      await client.query('ROLLBACK');
       throw new Error('Güncellenecek alan bulunamadı.');
     }
 
@@ -497,32 +380,14 @@ export async function updateDriver(id: string, data: Partial<DriverRecord>): Pro
       await syncDriverVehicleAssignment(client, tenantId, updatedDriver.name, data.assigned_vehicle_plate);
     }
 
-    await client.query('COMMIT');
     return { ...updatedDriver, assigned_vehicle_plate: data.assigned_vehicle_plate ?? null };
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function deleteDriver(id: string): Promise<void> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client) => {
     await client.query('DELETE FROM drivers WHERE id = $1', [id]);
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 // ============================================================================
@@ -530,56 +395,26 @@ export async function deleteDriver(id: string): Promise<void> {
 // ============================================================================
 
 export async function getTenantTanks(): Promise<TankRecord[]> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client) => {
     const result = await client.query('SELECT * FROM tanks ORDER BY created_at DESC');
-    await client.query('COMMIT');
     return result.rows;
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function createTank(data: Omit<TankRecord, 'id' | 'tenant_id'>): Promise<TankRecord> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const id = 'tnk-' + Date.now();
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client, tenantId) => {
+    const id = 'tnk-' + Date.now();
     const result = await client.query(
-      `INSERT INTO tanks (id, tenant_id, name, capacity_liters, current_level_liters, fuel_type, site_name, status) 
+      `INSERT INTO tanks (id, tenant_id, name, capacity_liters, current_level_liters, fuel_type, site_name, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
       [id, tenantId, data.name, data.capacity_liters, data.current_level_liters, data.fuel_type, data.site_name, data.status]
     );
-    await client.query('COMMIT');
     return result.rows[0];
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function updateTank(id: string, data: Partial<TankRecord>): Promise<TankRecord> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client) => {
     const fields = [];
     const values = [];
     let queryIdx = 1;
@@ -593,7 +428,6 @@ export async function updateTank(id: string, data: Partial<TankRecord>): Promise
     }
 
     if (fields.length === 0) {
-      await client.query('ROLLBACK');
       throw new Error('Güncellenecek alan bulunamadı.');
     }
 
@@ -602,33 +436,15 @@ export async function updateTank(id: string, data: Partial<TankRecord>): Promise
       `UPDATE tanks SET ${fields.join(', ')} WHERE id = $${queryIdx} RETURNING *`,
       values
     );
-    await client.query('COMMIT');
     if (result.rows.length === 0) throw new Error('Tank bulunamadı veya yetkiniz yok.');
     return result.rows[0];
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function deleteTank(id: string): Promise<void> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client) => {
     await client.query('DELETE FROM tanks WHERE id = $1', [id]);
-    await client.query('COMMIT');
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export interface TransactionRecord {
@@ -680,9 +496,6 @@ export interface PaginatedTransactions {
 export async function getTenantTransactionsPaginated(
   filters: TransactionFilters = {}
 ): Promise<PaginatedTransactions> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-
   const page = filters.page && filters.page > 0 ? Math.floor(filters.page) : 1;
   const pageSize = filters.pageSize && filters.pageSize > 0
     ? Math.min(Math.floor(filters.pageSize), 100)
@@ -724,12 +537,7 @@ export async function getTenantTransactionsPaginated(
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
-
+  return withTenant(async (client) => {
     // Sayaç ve toplam litre, filtreye uyan TÜM kayıtlar üzerinden (yalnızca
     // görüntülenen sayfa değil) tek bir aggregate sorguda hesaplanıyor — arayüz
     // "filtrelenen toplam hacim" rakamını buradan alıyor.
@@ -747,7 +555,6 @@ export async function getTenantTransactionsPaginated(
       dataParams
     );
 
-    await client.query('COMMIT');
     return {
       data: dataResult.rows,
       page,
@@ -756,12 +563,7 @@ export async function getTenantTransactionsPaginated(
       totalPages: Math.max(1, Math.ceil(totalCount / pageSize)),
       totalLiters
     };
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 /**
@@ -772,14 +574,8 @@ export async function getTenantTransactionsPaginated(
 export async function createTransaction(
   data: Omit<TransactionRecord, 'id' | 'tenant_id' | 'created_at'>
 ): Promise<TransactionRecord> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const id = 'tx-' + Date.now();
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client, tenantId) => {
+    const id = 'tx-' + Date.now();
 
     // FUEL-402: Araç kendi şantiyesi (site_name) DIŞINDA bir yerde ikmal
     // alıyorsa, bu "çapraz şantiye" ikmalidir ve AKTİF + süresi dolmamış +
@@ -852,14 +648,8 @@ export async function createTransaction(
         data.rfid_auth ?? true
       ]
     );
-    await client.query('COMMIT');
     return result.rows[0];
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 // ============================================================================
@@ -881,69 +671,33 @@ export interface CrossSitePermissionRecord {
 }
 
 export async function getTenantCrossSitePermissions(): Promise<CrossSitePermissionRecord[]> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client) => {
     const result = await client.query('SELECT * FROM cross_site_permissions ORDER BY created_at DESC');
-    await client.query('COMMIT');
     return result.rows;
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function createCrossSitePermission(
   data: Omit<CrossSitePermissionRecord, 'id' | 'tenant_id' | 'used_liters' | 'status' | 'created_at'>
 ): Promise<CrossSitePermissionRecord> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const id = 'csp-' + Date.now();
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client, tenantId) => {
+    const id = 'csp-' + Date.now();
     const result = await client.query(
       `INSERT INTO cross_site_permissions (id, tenant_id, vehicle_plate, driver_name, home_site, target_site, allowed_liters, expiry_date)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
       [id, tenantId, data.vehicle_plate, data.driver_name ?? null, data.home_site, data.target_site, data.allowed_liters, data.expiry_date]
     );
-    await client.query('COMMIT');
     return result.rows[0];
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 export async function updateCrossSitePermissionStatus(id: string, status: string): Promise<CrossSitePermissionRecord> {
-  const tenantId = getTenantId();
-  if (!tenantId) throw new Error('TENANT_CONTEXT_MISSING');
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL ROLE app_user;');
-    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [tenantId]);
+  return withTenant(async (client) => {
     const result = await client.query(
       'UPDATE cross_site_permissions SET status = $1 WHERE id = $2 RETURNING *',
       [status, id]
     );
-    await client.query('COMMIT');
     if (result.rows.length === 0) throw new Error('Çapraz şantiye yetkisi bulunamadı veya yetkiniz yok.');
     return result.rows[0];
-  } catch (err) {
-    await client.query('ROLLBACK');
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }

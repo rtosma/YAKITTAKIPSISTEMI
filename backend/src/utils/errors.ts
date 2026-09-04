@@ -54,3 +54,17 @@ export class InternalServerError extends AppError {
     super(message, 500, false, details);
   }
 }
+
+/**
+ * ARCH-101.1 AC — "Context olmadan repository çağrısı yapılırsa
+ * MissingTenantContextException fırlatılmalıdır". withTenant() (bkz.
+ * db/withTenant.ts) dışında hiç fırlatılmamalıdır; bu her zaman bir
+ * programlama hatasını gösterir (örn. authenticateJWT'den geçmeyen bir
+ * route'tan tenant'a özel bir repository fonksiyonunun çağrılması) — bu
+ * yüzden isOperational: false ve 500 (kullanıcı hatası değil, bir bug).
+ */
+export class MissingTenantContextException extends AppError {
+  constructor(message: string = 'DB işlemi için aktif tenant context bulunamadı.', details?: any) {
+    super(message, 500, false, details);
+  }
+}

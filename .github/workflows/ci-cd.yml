@@ -33,6 +33,12 @@ jobs:
       - name: Type Check (TypeScript)
         run: npm run lint
 
+      - name: "ARCH-101.3: Tenant Tablolarında RLS Kapsama Kontrolü"
+        run: node scripts/check-rls-coverage.mjs
+
+      - name: "ARCH-101.2: Ham pool.query Kullanımı Denetimi (RLS Bypass Koruması)"
+        run: node scripts/check-no-raw-pool-query.mjs
+
       - name: Run RES-902 Exception Filter & Logging Tests
         run: cd backend && npx tsx test/test_res902.ts
 

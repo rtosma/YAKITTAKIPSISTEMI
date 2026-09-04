@@ -2,6 +2,7 @@ import mqtt, { MqttClient } from 'mqtt';
 import { logger } from '../utils/logger';
 import { redisPool } from '../db/redisPool';
 import { EventEmitter } from 'events';
+import { runWithTenant } from '../context/tenantContext';
 
 // Local Event Bus for decoupling (Prep for ARCH-102: BullMQ)
 export const ioTEventBus = new EventEmitter();
@@ -58,29 +59,39 @@ class MQTTService {
 
         const messageStr = payload.toString();
 
-        if (messageType === 'status') {
-          // LWT veya manuel statüs bildirimi
-          const status = messageStr.toUpperCase() === 'OFFLINE' ? 'OFFLINE' : 'ONLINE';
-          await redisPool.setDeviceState(deviceId, status);
-        } else if (messageType === 'data') {
-          const parsedData = JSON.parse(messageStr);
-          
-          // Gelen veriyi logla
-          logger.debug({ deviceId, parsedData }, '📩 [MQTT] Telemetri verisi alındı.');
+        // ARCH-101.4: MQTT bir HTTP isteği değil, authenticateJWT middleware'i
+        // hiç çalışmaz — bu yüzden AsyncLocalStorage tenant context'i burada,
+        // topic'ten ayrıştırılan tenantId ile açıkça kuruluyor. Bu sayede bu
+        // handler içinden (veya senkron olarak emit edilen 'telemetryData'
+        // event'ini dinleyen socketServer.ts gibi abonelerden) çağrılabilecek
+        // withTenant()/getTenantId() tabanlı repository fonksiyonları doğru
+        // kiracıyı görür — context olmadan çağrılırlarsa sessizce yanlış
+        // veri döndürmek yerine MissingTenantContextException fırlatırlar.
+        await runWithTenant({ tenantId }, async () => {
+          if (messageType === 'status') {
+            // LWT veya manuel statüs bildirimi
+            const status = messageStr.toUpperCase() === 'OFFLINE' ? 'OFFLINE' : 'ONLINE';
+            await redisPool.setDeviceState(deviceId, status);
+          } else if (messageType === 'data') {
+            const parsedData = JSON.parse(messageStr);
 
-          // Event fırlat (İleride BullMQ'ya aktarmak üzere ARCH-102)
-          ioTEventBus.emit('telemetryData', {
-            tenantId,
-            siteId,
-            deviceType,
-            deviceId,
-            data: parsedData,
-            timestamp: new Date().toISOString()
-          });
+            // Gelen veriyi logla
+            logger.debug({ deviceId, parsedData }, '📩 [MQTT] Telemetri verisi alındı.');
 
-          // Cihaz veri gönderiyorsa kesinlikle ONLINE'dır.
-          await redisPool.setDeviceState(deviceId, 'ONLINE');
-        }
+            // Event fırlat (İleride BullMQ'ya aktarmak üzere ARCH-102)
+            ioTEventBus.emit('telemetryData', {
+              tenantId,
+              siteId,
+              deviceType,
+              deviceId,
+              data: parsedData,
+              timestamp: new Date().toISOString()
+            });
+
+            // Cihaz veri gönderiyorsa kesinlikle ONLINE'dır.
+            await redisPool.setDeviceState(deviceId, 'ONLINE');
+          }
+        });
       } catch (err) {
         logger.error({ err, topic, payload: payload.toString() }, '🚨 [MQTT] Mesaj işleme hatası!');
       }
