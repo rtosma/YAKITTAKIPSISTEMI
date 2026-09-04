@@ -295,9 +295,19 @@ export interface TankRecord {
 /**
  * Helper to fetch vehicles enforcing RLS (Row-Level Security)
  */
-export async function getTenantVehicles(): Promise<VehicleRecord[]> {
+/**
+ * AUTH-201.4 AC: "SITE_MANAGER başka şantiyenin verisini sorgulayamamalıdır."
+ * RLS yalnızca TENANT izolasyonunu sağlar — aynı tenant içindeki farklı
+ * şantiyeler arasında hiçbir ayrım yapmaz. `siteRestriction` verilirse
+ * (route handler'da SITE_MANAGER rolü için doldurulur) yalnızca o şantiyenin
+ * kayıtları döner; SUPER_ADMIN/COMPANY_OWNER için undefined kalır (tüm
+ * şantiyeleri görürler).
+ */
+export async function getTenantVehicles(siteRestriction?: string): Promise<VehicleRecord[]> {
   return withTenant(async (client) => {
-    const result = await client.query('SELECT * FROM vehicles ORDER BY created_at DESC');
+    const result = siteRestriction
+      ? await client.query('SELECT * FROM vehicles WHERE site_name = $1 ORDER BY created_at DESC', [siteRestriction])
+      : await client.query('SELECT * FROM vehicles ORDER BY created_at DESC');
     return result.rows.map(row => ({
       id: row.id,
       tenant_id: row.tenant_id,
@@ -358,7 +368,7 @@ export async function deleteVehicle(id: string): Promise<void> {
 // DRIVERS CRUD
 // ============================================================================
 
-export async function getTenantDrivers(): Promise<DriverRecord[]> {
+export async function getTenantDrivers(siteRestriction?: string): Promise<DriverRecord[]> {
   return withTenant(async (client) => {
     // assigned_vehicle_plate gerçek bir kolon değil — vehicles.assigned_driver_name
     // eşleşmesinden korele bir alt sorguyla türetiliyor (LIMIT 1: bir şoföre
@@ -368,8 +378,9 @@ export async function getTenantDrivers(): Promise<DriverRecord[]> {
       SELECT d.*,
         (SELECT v.plate FROM vehicles v WHERE v.assigned_driver_name = d.name AND v.tenant_id = d.tenant_id LIMIT 1) AS assigned_vehicle_plate
       FROM drivers d
+      WHERE $1::text IS NULL OR d.site_name = $1
       ORDER BY d.created_at DESC
-    `);
+    `, [siteRestriction ?? null]);
     return result.rows;
   });
 }
@@ -464,9 +475,11 @@ export async function deleteDriver(id: string): Promise<void> {
 // TANKS CRUD
 // ============================================================================
 
-export async function getTenantTanks(): Promise<TankRecord[]> {
+export async function getTenantTanks(siteRestriction?: string): Promise<TankRecord[]> {
   return withTenant(async (client) => {
-    const result = await client.query('SELECT * FROM tanks ORDER BY created_at DESC');
+    const result = siteRestriction
+      ? await client.query('SELECT * FROM tanks WHERE site_name = $1 ORDER BY created_at DESC', [siteRestriction])
+      : await client.query('SELECT * FROM tanks ORDER BY created_at DESC');
     return result.rows;
   });
 }
@@ -550,9 +563,18 @@ export interface PaginatedTransactions {
  * app.current_tenant_id ile sağlanıyor; WHERE'e ayrıca tenant_id eklemeye
  * gerek yok.
  */
+/**
+ * AUTH-201.4 AC: `siteRestriction` — SITE_MANAGER için route handler'da
+ * doldurulur ve `filters.siteName`'İ EZER. filters.siteName istemciden
+ * (query string) gelir ve SITE_MANAGER onu boş bırakıp tüm tenant'ın ikmal
+ * geçmişini görmeye çalışabilirdi — sunucu tarafı kısıtlama istemci
+ * girdisine güvenmez.
+ */
 export async function getTenantTransactionsPaginated(
-  filters: TransactionFilters = {}
+  filters: TransactionFilters = {},
+  siteRestriction?: string
 ): Promise<PaginatedTransactions> {
+  const effectiveSiteName = siteRestriction ?? filters.siteName;
   const page = filters.page && filters.page > 0 ? Math.floor(filters.page) : 1;
   const pageSize = filters.pageSize && filters.pageSize > 0
     ? Math.min(Math.floor(filters.pageSize), 100)
@@ -570,8 +592,8 @@ export async function getTenantTransactionsPaginated(
     params.push(filters.endDate);
     conditions.push(`created_at < ($${params.length}::date + INTERVAL '1 day')`);
   }
-  if (filters.siteName) {
-    params.push(filters.siteName);
+  if (effectiveSiteName) {
+    params.push(effectiveSiteName);
     conditions.push(`site_name = $${params.length}`);
   }
   if (filters.driverName) {

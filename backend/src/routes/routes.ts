@@ -33,6 +33,17 @@ import { checkLockout, recordFailedLogin, clearFailedLogins } from '../services/
 const router = Router();
 
 /**
+ * AUTH-201.4 AC: "SITE_MANAGER başka şantiyenin verisini sorgulayamamalıdır."
+ * SUPER_ADMIN/COMPANY_OWNER için undefined döner (tüm şantiyeleri görürler);
+ * SITE_MANAGER için kendi şantiyesine kısıtlar — istemcinin query/body'de
+ * gönderdiği herhangi bir siteName'e değil, JWT'deki (giriş sırasında DB'den
+ * okunan, sahtesi üretilemeyen) siteName'e göre.
+ */
+function siteScopeFor(user: JwtUserPayload): string | undefined {
+  return user.role === 'SITE_MANAGER' ? user.siteName : undefined;
+}
+
+/**
  * @swagger
  * /health:
  *   get:
@@ -568,7 +579,7 @@ router.delete(
  */
 router.get('/vehicles', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const vehicles = await getTenantVehicles();
+    const vehicles = await getTenantVehicles(siteScopeFor(req.user!));
 
     res.json({
       success: true,
@@ -693,7 +704,7 @@ router.delete(
  */
 router.get('/drivers', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const drivers = await getTenantDrivers();
+    const drivers = await getTenantDrivers(siteScopeFor(req.user!));
 
     res.json({
       success: true,
@@ -850,7 +861,7 @@ router.delete(
  */
 router.get('/tanks', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const tanks = await getTenantTanks();
+    const tanks = await getTenantTanks(siteScopeFor(req.user!));
 
     res.json({
       success: true,
@@ -1108,7 +1119,7 @@ router.get(
         search?: string;
       };
 
-      const result = await getTenantTransactionsPaginated(q);
+      const result = await getTenantTransactionsPaginated(q, siteScopeFor(req.user!));
 
       res.json({
         success: true,
