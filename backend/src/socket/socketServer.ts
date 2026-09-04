@@ -77,6 +77,15 @@ export function initSocketServer(httpServer: HttpServer): SocketIOServer {
     io?.to(`tenant:${payload.tenantId}`).emit('telemetry:data', payload);
   });
 
+  // IOT-301.2 AC: "Cihaz durumu değişimi canlı olarak arayüze yansımalıdır."
+  // mqttClient.ts yalnızca GERÇEK bir ONLINE/OFFLINE geçişinde bu olayı
+  // fırlatır (bkz. redisPool.setDeviceState'in `changed` dönüşü) — her
+  // telemetri paketinde değil, bu yüzden burada ek bir debounce/filtreleme
+  // gerekmiyor.
+  ioTEventBus.on('deviceStatusChanged', (payload: { tenantId: string;[key: string]: any }) => {
+    io?.to(`tenant:${payload.tenantId}`).emit('device:status', payload);
+  });
+
   logger.info('🔌 [Socket.io] Sunucu başlatıldı (path: /socket.io).');
   return io;
 }

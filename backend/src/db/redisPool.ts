@@ -2,6 +2,14 @@ import Redis from 'ioredis';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
 
+// IOT-301.2 AC: "Cihaz bağlantısı koptuğunda 10 saniye içinde OFFLINE olarak
+// işaretlenmelidir." LWT/status mesajı normalde bunu neredeyse anında yapar,
+// ama broker keepalive'ı gecikirse ya da bir mesaj kaybolursa diye bu TTL bir
+// GÜVENCE ağıdır: ONLINE durumu yalnızca bu süre kadar "kanıtsız" kalabilir,
+// sonra anahtar kendiliğinden düşer ve getDeviceState zaten var olan
+// "anahtar yok → OFFLINE" varsayılanına geri döner.
+const DEVICE_PRESENCE_TTL_SECONDS = 10;
+
 class RedisManager {
   public client: Redis;
 
@@ -25,14 +33,34 @@ class RedisManager {
   }
 
   /**
-   * Cihazın durumunu Redis'e kaydeder
+   * Cihazın durumunu Redis'e kaydeder. ONLINE bir TTL ile (her yeni veri/status
+   * mesajında yenilenir) yazılır — cihaz susarsa anahtar kendiliğinden düşer.
+   * OFFLINE için ayrıca bir değer saklamaya gerek yok: anahtarın YOKLUĞU zaten
+   * "OFFLINE" anlamına geliyor (bkz. getDeviceState) — bu yüzden LWT/status
+   * OFFLINE mesajı geldiğinde anahtar silinir.
+   *
+   * Dönüş değeri: bu çağrı GERÇEK bir durum GEÇİŞİ mi (önceki ≠ yeni) —
+   * mqttClient.ts yalnızca gerçek geçişlerde canlı bir Socket.io olayı
+   * yayınlar, her tek telemetri paketinde değil (IOT-301.2 AC: "Cihaz durumu
+   * DEĞİŞİMİ canlı olarak arayüze yansımalıdır").
    */
-  public async setDeviceState(deviceId: string, state: 'ONLINE' | 'OFFLINE'): Promise<void> {
+  public async setDeviceState(deviceId: string, state: 'ONLINE' | 'OFFLINE'): Promise<boolean> {
+    const key = `device:${deviceId}:state`;
     try {
-      await this.client.set(`device:${deviceId}:state`, state);
-      logger.info({ deviceId, state }, `🔌 [IoT] Cihaz durumu güncellendi: ${state}`);
+      const previous = await this.getDeviceState(deviceId);
+      if (state === 'ONLINE') {
+        await this.client.set(key, 'ONLINE', 'EX', DEVICE_PRESENCE_TTL_SECONDS);
+      } else {
+        await this.client.del(key);
+      }
+      const changed = previous !== state;
+      if (changed) {
+        logger.info({ deviceId, previous, state }, `🔌 [IoT] Cihaz durum GEÇİŞİ: ${previous} → ${state}`);
+      }
+      return changed;
     } catch (err) {
       logger.error({ err, deviceId }, '🚨 [IoT] Cihaz durumu Redis\'e yazılamadı.');
+      return false;
     }
   }
 

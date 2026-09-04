@@ -8,17 +8,38 @@ import { runWithTenant } from '../context/tenantContext';
 // Local Event Bus for decoupling (Prep for ARCH-102: BullMQ)
 export const ioTEventBus = new EventEmitter();
 
+// IOT-301.1: "İki backend örneği çalışırken her mesaj yalnızca bir kez
+// işlenmelidir." Bu ÖZELLİKLE OPS-1102'nin zero-downtime deploy script'i
+// için gerçek bir senaryo: dağıtım sırasında birkaç saniyeliğine eski VE
+// yeni backend replikası AYNI ANDA ayakta ve MQTT'ye bağlı olur. Paylaşımlı
+// abonelik olmadan EMQX aynı mesajı HER İKİ replikaya da teslim eder — bu da
+// telemetri olaylarının (ve onlara bağlı Socket.io yayınlarının) o pencerede
+// iki kez işlenmesine yol açar. `$share/<group>/<topic>` ile broker mesajı
+// gruptaki yalnızca BİR üyeye dağıtır.
+const MQTT_SHARE_GROUP = 'yakittakip-backend';
+
+// IOT-301.1: mqtt.js'in yerleşik reconnectPeriod'u SABİT bir gecikmedir,
+// üstel değil. reconnectPeriod: 0 ile yerleşik yeniden bağlanma kapatılıp
+// burada üstel backoff (1sn, 2sn, 4sn... 30sn tavan) elle yönetiliyor;
+// başarılı bir 'connect' sayaç sıfırlar.
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
+
 class MQTTService {
   private client: MqttClient | null = null;
   private readonly brokerUrl = config.MQTT_URL;
+  private reconnectAttempts = 0;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private manuallyDisconnected = false;
 
   public connect(): void {
+    this.manuallyDisconnected = false;
     logger.info(`🔌 [MQTT] Broker'a bağlanılıyor: ${this.brokerUrl}`);
 
     this.client = mqtt.connect(this.brokerUrl, {
       clientId: `backend_service_${Math.random().toString(16).slice(3)}`,
       clean: false, // Kalıcı oturum (QoS 1 mesajlarını kaybetmemek için)
-      reconnectPeriod: 5000,
+      reconnectPeriod: 0, // bkz. yukarıdaki not — üstel backoff elle yönetiliyor
       protocolVersion: 5,
       // EMQX artık anonim bağlantı kabul etmiyor (bkz. docker-compose.yml /
       // docker/emqx/entrypoint.sh) — kimlik doğrulaması olmadan herkes sahte
@@ -30,24 +51,28 @@ class MQTTService {
 
     this.client.on('connect', () => {
       logger.info('✅ [MQTT] Broker bağlantısı başarılı.');
-      
+      this.reconnectAttempts = 0; // başarılı bağlantı — backoff sayacı sıfırlanır
+
       // ESP32'lerden gelen standart telemetri verileri
       // Format: telemetry/v1/{tenantId}/{siteId}/{deviceType}/{deviceId}/data
-      this.client?.subscribe('telemetry/v1/+/+/+/+/data', { qos: 1 }, (err) => {
+      this.client?.subscribe(`$share/${MQTT_SHARE_GROUP}/telemetry/v1/+/+/+/+/data`, { qos: 1 }, (err) => {
         if (err) logger.error({ err }, '🚨 [MQTT] /data topic abone olunamadı!');
-        else logger.info('📡 [MQTT] Telemetri veri akışı (data) dinleniyor...');
+        else logger.info('📡 [MQTT] Telemetri veri akışı (data) dinleniyor... (paylaşımlı abonelik)');
       });
 
       // ESP32'lerden gelen LWT (Last Will and Testament) veya durum mesajları
       // Format: telemetry/v1/{tenantId}/{siteId}/{deviceType}/{deviceId}/status
-      this.client?.subscribe('telemetry/v1/+/+/+/+/status', { qos: 1 }, (err) => {
+      this.client?.subscribe(`$share/${MQTT_SHARE_GROUP}/telemetry/v1/+/+/+/+/status`, { qos: 1 }, (err) => {
         if (err) logger.error({ err }, '🚨 [MQTT] /status topic abone olunamadı!');
-        else logger.info('📡 [MQTT] Cihaz durum akışı (status/LWT) dinleniyor...');
+        else logger.info('📡 [MQTT] Cihaz durum akışı (status/LWT) dinleniyor... (paylaşımlı abonelik)');
       });
     });
 
     this.client.on('message', async (topic, payload) => {
       try {
+        // $share/<group>/ öneki yalnızca ABONELİK filtresinde kullanılır —
+        // broker teslim ederken mesajın topic'ini asıl (paylaşımsız) haline
+        // döndürür, bu yüzden parse mantığı DEĞİŞMİYOR.
         const parts = topic.split('/');
         // Örnek: ["telemetry", "v1", "tenant1", "site1", "pump", "device123", "data"]
         if (parts.length < 7) return;
@@ -72,7 +97,12 @@ class MQTTService {
           if (messageType === 'status') {
             // LWT veya manuel statüs bildirimi
             const status = messageStr.toUpperCase() === 'OFFLINE' ? 'OFFLINE' : 'ONLINE';
-            await redisPool.setDeviceState(deviceId, status);
+            const changed = await redisPool.setDeviceState(deviceId, status);
+            if (changed) {
+              // IOT-301.2 AC: "Cihaz durumu değişimi canlı olarak arayüze
+              // yansımalıdır" — yalnızca GERÇEK bir geçişte yayınlanır.
+              ioTEventBus.emit('deviceStatusChanged', { tenantId, siteId, deviceType, deviceId, status });
+            }
           } else if (messageType === 'data') {
             const parsedData = JSON.parse(messageStr);
 
@@ -90,7 +120,10 @@ class MQTTService {
             });
 
             // Cihaz veri gönderiyorsa kesinlikle ONLINE'dır.
-            await redisPool.setDeviceState(deviceId, 'ONLINE');
+            const changed = await redisPool.setDeviceState(deviceId, 'ONLINE');
+            if (changed) {
+              ioTEventBus.emit('deviceStatusChanged', { tenantId, siteId, deviceType, deviceId, status: 'ONLINE' });
+            }
           }
         });
       } catch (err) {
@@ -102,12 +135,39 @@ class MQTTService {
       logger.error({ err }, '🚨 [MQTT] Bağlantı hatası!');
     });
 
-    this.client.on('offline', () => {
-      logger.warn('⚠️ [MQTT] Broker ile bağlantı koptu, yeniden bağlanılmaya çalışılıyor...');
+    this.client.on('close', () => {
+      if (this.manuallyDisconnected) return;
+      this.scheduleReconnect();
     });
   }
 
+  /**
+   * IOT-301.1 AC: "Broker koptuğunda istemci exponential backoff ile
+   * yeniden bağlanmalıdır." 1sn'den başlayıp her denemede ikiye katlanır,
+   * 30sn'de tavanlanır — broker kısa süreliğine yeniden başlatıldığında
+   * hızlı, uzun süreli bir kesintide ise brokera/ağa saldırı gibi görünecek
+   * bir istek fırtınası yaratmadan yeniden dener.
+   */
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return; // zaten planlanmış bir yeniden deneme var
+    const delayMs = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
+    this.reconnectAttempts++;
+    logger.warn(
+      { delayMs, attempt: this.reconnectAttempts },
+      `⚠️ [MQTT] Broker ile bağlantı koptu — ${delayMs}ms sonra yeniden denenecek (deneme #${this.reconnectAttempts}).`
+    );
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.client?.end(true, {}, () => this.connect());
+    }, delayMs);
+  }
+
   public async disconnect(): Promise<void> {
+    this.manuallyDisconnected = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.client) {
       await new Promise<void>((resolve) => {
         this.client!.end(false, {}, () => {
