@@ -229,30 +229,3 @@ export async function revokeAllUserTokens(userId: string): Promise<void> {
   });
   await multi.exec();
 }
-
-/**
- * Get active (not used/revoked) refresh token count (For debug/tests only).
- * Uses SCAN rather than KEYS to avoid blocking Redis on large datasets.
- */
-export async function getActiveTokensCount(): Promise<number> {
-  let cursor = '0';
-  let count = 0;
-
-  do {
-    const [nextCursor, keys]: [string, string[]] = await redisPool.client.scan(
-      cursor, 'MATCH', 'refresh_token:*', 'COUNT', 100
-    );
-    cursor = nextCursor;
-
-    if (keys.length > 0) {
-      const rawRecords = await redisPool.client.mget(...keys);
-      for (const raw of rawRecords) {
-        if (!raw) continue;
-        const record: RefreshTokenRecord = JSON.parse(raw);
-        if (!record.isRevoked && !record.used) count++;
-      }
-    }
-  } while (cursor !== '0');
-
-  return count;
-}

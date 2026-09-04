@@ -19,12 +19,6 @@ export class BadRequestError extends AppError {
   }
 }
 
-export class ValidationError extends AppError {
-  constructor(message: string = 'Girdi doğrulama hatası', details?: any) {
-    super(message, 400, true, details);
-  }
-}
-
 export class UnauthorizedError extends AppError {
   constructor(message: string = 'Kimlik doğrulaması başarısız', details?: any) {
     super(message, 401, true, details);
@@ -49,12 +43,6 @@ export class ConflictError extends AppError {
   }
 }
 
-export class InternalServerError extends AppError {
-  constructor(message: string = 'Sunucu hatası oluştu', details?: any) {
-    super(message, 500, false, details);
-  }
-}
-
 /**
  * ARCH-101.1 AC — "Context olmadan repository çağrısı yapılırsa
  * MissingTenantContextException fırlatılmalıdır". withTenant() (bkz.
@@ -67,4 +55,13 @@ export class MissingTenantContextException extends AppError {
   constructor(message: string = 'DB işlemi için aktif tenant context bulunamadı.', details?: any) {
     super(message, 500, false, details);
   }
+}
+
+/**
+ * Zod'un sürümler arası issue alanı adı değişmiş olabilir (`issues` günceli,
+ * `errors` eski/uyumluluk takma adı) — errorHandler.ts ve validateMiddleware.ts
+ * bu `err.issues || err.errors` düşüşünü birbirinden bağımsız tekrarlıyordu.
+ */
+export function getZodIssues(err: any): any[] {
+  return err?.issues || err?.errors || [];
 }

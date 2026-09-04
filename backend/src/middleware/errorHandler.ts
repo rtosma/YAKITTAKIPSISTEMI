@@ -1,14 +1,14 @@
 import { Request, Response, NextFunction } from 'express';
 import { ZodError } from 'zod';
-import { AppError } from '../utils/errors';
+import { AppError, getZodIssues } from '../utils/errors';
 import { logger } from '../utils/logger';
-import { getTenantStore } from '../context/tenantContext';
+import { getTraceId, getLoggingTenantContext } from '../utils/requestContext';
 
 /**
  * 404 Not Found Middleware for unhandled routes
  */
 export const notFoundHandler = (req: Request, res: Response, next: NextFunction): void => {
-  const traceId = req.traceId || (req.headers['x-trace-id'] as string) || 'N/A';
+  const traceId = getTraceId(req);
   res.status(404).json({
     success: false,
     traceId,
@@ -27,10 +27,8 @@ export const globalErrorHandler = (
   res: Response,
   _next: NextFunction
 ): void => {
-  const traceId = req.traceId || (req.headers['x-trace-id'] as string) || 'N/A';
-  const store = getTenantStore();
-  const tenantId = store?.tenantId || (req.headers['x-tenant-id'] as string) || 'N/A';
-  const userId = store?.userId || (req.headers['x-user-id'] as string) || 'N/A';
+  const traceId = getTraceId(req);
+  const { tenantId, userId } = getLoggingTenantContext(req);
 
   // Handle Operational AppError (4xx or explicit operational 5xx)
   if (err instanceof AppError) {
@@ -66,13 +64,14 @@ export const globalErrorHandler = (
 
   // Handle Zod Validation Error
   if (err instanceof ZodError || err?.name === 'ZodError') {
+    const issues = getZodIssues(err);
     logger.warn({
       traceId,
       tenantId,
       userId,
       path: req.originalUrl,
       method: req.method,
-      issues: err.issues || err.errors,
+      issues,
     }, `[ZodValidationError] Girdi doğrulama başarısız`);
 
     res.status(400).json({
@@ -80,7 +79,7 @@ export const globalErrorHandler = (
       traceId,
       error: 'VALIDATION_ERROR',
       message: 'Girdi doğrulama hatası',
-      details: err.issues || err.errors,
+      details: issues,
     });
     return;
   }

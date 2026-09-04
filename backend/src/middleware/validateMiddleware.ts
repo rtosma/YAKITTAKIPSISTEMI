@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { ZodSchema, ZodError } from 'zod';
+import { getZodIssues } from '../utils/errors';
 
 export interface RequestValidationSchemas {
   body?: ZodSchema<any>;
@@ -15,19 +16,19 @@ export interface RequestValidationSchemas {
 export function validateRequest(schemas: RequestValidationSchemas) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      if (schemas.body) {
-        req.body = await schemas.body.parseAsync(req.body);
-      }
-      if (schemas.query) {
-        req.query = await schemas.query.parseAsync(req.query);
-      }
-      if (schemas.params) {
-        req.params = await schemas.params.parseAsync(req.params);
-      }
+      // body/query/params birbirinden bağımsız doğrulanır — sırayla await
+      // etmek yerine birlikte çalıştırılır (bugün hiçbir route birden fazlasını
+      // aynı anda kullanmıyor, ama desen ileride sessizce seri bir maliyete
+      // dönüşmesin diye baştan paralel).
+      const tasks: Promise<void>[] = [];
+      if (schemas.body) tasks.push(schemas.body.parseAsync(req.body).then((v) => { req.body = v; }));
+      if (schemas.query) tasks.push(schemas.query.parseAsync(req.query).then((v) => { req.query = v; }));
+      if (schemas.params) tasks.push(schemas.params.parseAsync(req.params).then((v) => { req.params = v; }));
+      await Promise.all(tasks);
       next();
     } catch (error: any) {
       if (error instanceof ZodError || error?.name === 'ZodError' || error?.issues) {
-        const issues = error?.issues || error?.errors || [];
+        const issues = getZodIssues(error);
         const formattedErrors = issues.map((err: any) => ({
           field: err.path ? err.path.join('.') : 'general',
           message: err.message

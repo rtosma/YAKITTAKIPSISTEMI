@@ -86,8 +86,19 @@ const swaggerOptions = {
   apis: ['./src/routes/*.ts'], // read JSDoc from routes
 };
 
-const swaggerSpec = swaggerJsdoc(swaggerOptions);
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+// swaggerJsdoc() route dosyalarını glob'layıp JSDoc parse ediyor — yalnızca
+// birisi gerçekten /api-docs'a gittiğinde gereken bir maliyet, her sunucu
+// açılışında değil. İlk istekte hesaplanıp bellekte tutulur (memoize).
+let cachedSwaggerSpec: object | undefined;
+function getSwaggerSpec(): object {
+  if (!cachedSwaggerSpec) {
+    cachedSwaggerSpec = swaggerJsdoc(swaggerOptions);
+  }
+  return cachedSwaggerSpec;
+}
+app.use('/api-docs', swaggerUi.serve, (req: express.Request, res: express.Response, next: express.NextFunction) =>
+  swaggerUi.setup(getSwaggerSpec())(req, res, next)
+);
 
 // Mount Routes
 app.use('/api/v1', routes);
@@ -122,15 +133,15 @@ setupGracefulShutdown(server, {
   timeoutMs: 30000,
   onShutdown: async () => {
     logger.info(`🔌 [Shutdown] Eknak kaynak temizliği çalıştırılıyor...`);
-    
-    // MQTT disconnect
-    await mqttService.disconnect();
-    
-    // Redis disconnect
-    await redisPool.close();
-    
-    logger.info(`🔌 [Shutdown] Veritabanı bağlantı havuzu kapatılıyor...`);
-    await pool.end();
+
+    // MQTT, Redis ve Postgres birbirinden bağımsız kaynaklar — sırayla değil
+    // birlikte kapatılır, toplam kapanış süresi üçünün toplamı değil en
+    // yavaşı kadar sürer.
+    await Promise.all([
+      mqttService.disconnect(),
+      redisPool.close(),
+      pool.end()
+    ]);
   },
 });
 

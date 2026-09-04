@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import pinoHttp from 'pino-http';
 import { randomUUID } from 'crypto';
 import { logger } from '../utils/logger';
-import { getTenantStore } from '../context/tenantContext';
+import { getLoggingTenantContext } from '../utils/requestContext';
 
 declare global {
   namespace Express {
@@ -32,14 +32,10 @@ export const traceMiddleware = (req: Request, res: Response, next: NextFunction)
 export const httpLoggerMiddleware = pinoHttp({
   logger,
   genReqId: (req: Request) => req.traceId || (req.headers['x-trace-id'] as string) || randomUUID(),
-  customProps: (req: Request) => {
-    const store = getTenantStore();
-    return {
-      traceId: req.traceId,
-      tenantId: store?.tenantId || (req.headers['x-tenant-id'] as string) || 'N/A',
-      userId: store?.userId || (req.headers['x-user-id'] as string) || 'N/A',
-    };
-  },
+  customProps: (req: Request) => ({
+    traceId: req.traceId,
+    ...getLoggingTenantContext(req),
+  }),
   customLogLevel: (_req, res, err) => {
     if (res.statusCode >= 500 || err) {
       return 'error';

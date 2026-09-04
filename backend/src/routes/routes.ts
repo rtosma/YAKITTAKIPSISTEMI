@@ -127,7 +127,7 @@ router.post(
         }
       });
     } catch (err: any) {
-      console.error('Login DB Error:', err);
+      logger.error({ err }, 'Login DB Error');
       res.status(500).json({
         success: false,
         error: 'DB_ERROR',
@@ -481,11 +481,14 @@ router.delete(
 router.get('/vehicles', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const vehicles = await getTenantVehicles();
-    const store = getTenantStore();
 
     res.json({
       success: true,
-      tenantId: store?.tenantId || req.user?.tenantId,
+      // authenticateJWT her zaman req.user.tenantId'yi (ve aynı değeri taşıyan
+      // AsyncLocalStorage store'unu) JWT payload'undan set eder — ikisi asla
+      // farklılaşmaz, o yüzden burada ayrıca getTenantStore() çağırıp
+      // fallback yapmaya gerek yok.
+      tenantId: req.user?.tenantId,
       totalCount: vehicles.length,
       data: vehicles
     });
@@ -603,11 +606,10 @@ router.delete(
 router.get('/drivers', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const drivers = await getTenantDrivers();
-    const store = getTenantStore();
 
     res.json({
       success: true,
-      tenantId: store?.tenantId || req.user?.tenantId,
+      tenantId: req.user?.tenantId,
       totalCount: drivers.length,
       data: drivers
     });
@@ -761,11 +763,10 @@ router.delete(
 router.get('/tanks', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const tanks = await getTenantTanks();
-    const store = getTenantStore();
 
     res.json({
       success: true,
-      tenantId: store?.tenantId || req.user?.tenantId,
+      tenantId: req.user?.tenantId,
       totalCount: tanks.length,
       data: tanks
     });

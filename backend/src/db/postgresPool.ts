@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { logger } from '../utils/logger';
 
 export const pool = new Pool({
   host: process.env.POSTGRES_HOST || 'localhost',
@@ -11,5 +12,5 @@ export const pool = new Pool({
 });
 
 pool.on('error', (err) => {
-  console.error('PostgreSQL Pool Unexpected Error:', err);
+  logger.error({ err }, '🚨 [Postgres] Havuz beklenmeyen hata!');
 });

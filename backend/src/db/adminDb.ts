@@ -1,5 +1,6 @@
 import { pool } from './postgresPool';
 import { hashPassword } from '../utils/password';
+import { generateId } from '../utils/id';
 
 /**
  * SUPER_ADMIN'e özel, tek bir tenant'a kısıtlı OLMAYAN sorgular. Diğer
@@ -49,49 +50,55 @@ function slugifyCompanyName(name: string): string {
     .slice(0, 32) || 'firma';
 }
 
-export async function getAllCompanies(): Promise<AdminCompanyProfile[]> {
-  const companiesRes = await pool.query(
-    `SELECT id, name, tax_number, code, city, license_status, license_expiry, modules FROM companies ORDER BY name ASC`
-  );
-
-  const profiles: AdminCompanyProfile[] = [];
-  for (const c of companiesRes.rows) {
-    const sitesRes = await pool.query(
+async function buildAdminCompanyProfile(c: any): Promise<AdminCompanyProfile> {
+  // Bu 3 sorgu birbirinden bağımsız (hepsi yalnızca c.id ile filtreleniyor) —
+  // sırayla await etmek yerine birlikte çalıştırılır. pool.query() her
+  // çağrıda kendi bağlantısını aldığından (tek bir client üzerinde değil) bu
+  // gerçekten paralel çalışır.
+  const [sitesRes, vehRes, fuelRes] = await Promise.all([
+    pool.query(
       `SELECT s.id, s.name, s.location,
          (SELECT COUNT(*)::int FROM tanks t    WHERE t.tenant_id = $1 AND t.site_name = s.name) AS active_tanks_count,
          (SELECT COUNT(*)::int FROM vehicles v WHERE v.tenant_id = $1 AND v.site_name = s.name) AS active_vehicles_count
        FROM sites s WHERE s.tenant_id = $1 ORDER BY s.name ASC`,
       [c.id]
-    );
-    const vehRes = await pool.query('SELECT COUNT(*)::int AS cnt FROM vehicles WHERE tenant_id = $1', [c.id]);
-    const fuelRes = await pool.query(
+    ),
+    pool.query('SELECT COUNT(*)::int AS cnt FROM vehicles WHERE tenant_id = $1', [c.id]),
+    pool.query(
       `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS total FROM transactions
        WHERE tenant_id = $1 AND created_at >= date_trunc('month', CURRENT_TIMESTAMP)`,
       [c.id]
-    );
+    )
+  ]);
 
-    profiles.push({
-      id: c.id,
-      name: c.name,
-      code: c.code,
-      taxNumber: c.tax_number,
-      city: c.city,
-      licenseStatus: c.license_status || 'AKTİF',
-      licenseExpiry: c.license_expiry ? new Date(c.license_expiry).toISOString().slice(0, 10) : null,
-      modules: c.modules || {},
-      sites: sitesRes.rows.map((s) => ({
-        id: s.id,
-        name: s.name,
-        location: s.location,
-        activeTanksCount: s.active_tanks_count,
-        activeVehiclesCount: s.active_vehicles_count
-      })),
-      activeVehiclesCount: vehRes.rows[0].cnt,
-      totalFuelThisMonth: Number(fuelRes.rows[0].total)
-    });
-  }
+  return {
+    id: c.id,
+    name: c.name,
+    code: c.code,
+    taxNumber: c.tax_number,
+    city: c.city,
+    licenseStatus: c.license_status || 'AKTİF',
+    licenseExpiry: c.license_expiry ? new Date(c.license_expiry).toISOString().slice(0, 10) : null,
+    modules: c.modules || {},
+    sites: sitesRes.rows.map((s) => ({
+      id: s.id,
+      name: s.name,
+      location: s.location,
+      activeTanksCount: s.active_tanks_count,
+      activeVehiclesCount: s.active_vehicles_count
+    })),
+    activeVehiclesCount: vehRes.rows[0].cnt,
+    totalFuelThisMonth: Number(fuelRes.rows[0].total)
+  };
+}
 
-  return profiles;
+export async function getAllCompanies(): Promise<AdminCompanyProfile[]> {
+  const companiesRes = await pool.query(
+    `SELECT id, name, tax_number, code, city, license_status, license_expiry, modules FROM companies ORDER BY name ASC`
+  );
+
+  // Şirketler arası da bağımsız — hepsini birlikte kur (sırayla N tur yerine).
+  return Promise.all(companiesRes.rows.map(buildAdminCompanyProfile));
 }
 
 /**
@@ -111,7 +118,7 @@ export async function createCompanyWithOwner(data: {
 
     const countRes = await client.query('SELECT COUNT(*)::int AS cnt FROM companies');
     const code = 'COMP-' + (countRes.rows[0].cnt + 1).toString().padStart(2, '0');
-    const companyId = 'comp-' + Date.now();
+    const companyId = generateId('comp');
     const taxNumber = data.taxNumber?.trim() || '0000000000';
     const city = data.city?.trim() || 'İstanbul';
 
@@ -121,7 +128,7 @@ export async function createCompanyWithOwner(data: {
       [companyId, data.name.trim(), taxNumber, code, city, '2027-12-31', JSON.stringify(DEFAULT_MODULES)]
     );
 
-    const siteId = 'site-' + Date.now();
+    const siteId = generateId('site');
     const siteName = `${data.name.trim()} Ana Şantiye`;
     await client.query(
       `INSERT INTO sites (id, tenant_id, name, location) VALUES ($1, $2, $3, $4)`,
@@ -142,7 +149,7 @@ export async function createCompanyWithOwner(data: {
     await client.query(
       `INSERT INTO users (id, tenant_id, username, password_hash, role, site_name)
        VALUES ($1, $2, $3, $4, 'COMPANY_OWNER', NULL)`,
-      ['usr-' + Date.now(), companyId, username, passwordHash]
+      [generateId('usr'), companyId, username, passwordHash]
     );
 
     await client.query('COMMIT');

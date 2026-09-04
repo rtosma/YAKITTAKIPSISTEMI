@@ -1,5 +1,37 @@
 import { ForbiddenError, ConflictError } from '../utils/errors';
+import { generateId } from '../utils/id';
 import { withTenant } from './withTenant';
+
+/**
+ * updateVehicle/updateTank (ve kısmen updateDriver) aynı deseni tekrarlıyordu:
+ * gelen `data`'dan izin verilen kolonlarla dinamik bir SET listesi kurup
+ * `UPDATE <table> SET ... WHERE id=$n RETURNING *` çalıştırmak, satır yoksa
+ * hata fırlatmak. Hangi alanların güncellenebilir olduğuna ve değerlerin
+ * nasıl normalize edileceğine (örn. vehicles'taki "Atanmadı" sentinel
+ * temizliği) hâlâ çağıran karar verir — burada yalnızca ortak SQL inşası var.
+ */
+async function buildDynamicUpdate(
+  client: import('pg').PoolClient,
+  table: 'vehicles' | 'tanks' | 'drivers',
+  id: string,
+  fields: Array<{ column: string; value: unknown }>,
+  notFoundMessage: string
+): Promise<any> {
+  if (fields.length === 0) {
+    throw new Error('Güncellenecek alan bulunamadı.');
+  }
+
+  const setClauses = fields.map((f, idx) => `${f.column} = $${idx + 1}`);
+  const values: unknown[] = fields.map((f) => f.value);
+  values.push(id);
+
+  const result = await client.query(
+    `UPDATE ${table} SET ${setClauses.join(', ')} WHERE id = $${values.length} RETURNING *`,
+    values
+  );
+  if (result.rows.length === 0) throw new Error(notFoundMessage);
+  return result.rows[0];
+}
 
 export interface VehicleRecord {
   id: string;
@@ -17,16 +49,6 @@ export interface VehicleRecord {
 // Şoför/araç formlarının "atanmadı" durumu için kullandığı sentinel değerler —
 // bunlardan biri gelirse ilişki NULL'a çekilir (bkz. createDriver/updateDriver).
 const UNASSIGNED_SENTINELS = new Set(['Atanmadı', 'Yok', '']);
-
-export interface HardwareLogRecord {
-  id: string;
-  tenant_id: string;
-  device_code: string;
-  tag: string;
-  message: string;
-  site_name: string;
-  created_at: Date;
-}
 
 export interface SiteRecord {
   id: string;
@@ -148,7 +170,7 @@ export async function getTenantSites(): Promise<string[]> {
 
 export async function createTenantSite(siteName: string, location: string = 'Türkiye'): Promise<SiteRecord> {
   return withTenant(async (client, tenantId) => {
-    const id = `site-${Date.now()}`;
+    const id = generateId('site');
     const result = await client.query(
       `INSERT INTO sites (id, tenant_id, name, location)
        VALUES ($1, $2, $3, $4)
@@ -225,7 +247,7 @@ export async function getTenantVehicles(): Promise<VehicleRecord[]> {
 
 export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'>): Promise<VehicleRecord> {
   return withTenant(async (client, tenantId) => {
-    const id = 'veh-' + Date.now(); // In production, use UUID or better ID generation
+    const id = generateId('veh'); // In production, use UUID or better ID generation
     const assignedDriverName = data.assigned_driver_name && !UNASSIGNED_SENTINELS.has(data.assigned_driver_name)
       ? data.assigned_driver_name
       : null;
@@ -240,34 +262,21 @@ export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'
 
 export async function updateVehicle(id: string, data: Partial<VehicleRecord>): Promise<VehicleRecord> {
   return withTenant(async (client) => {
-    const fields = [];
-    const values = [];
-    let queryIdx = 1;
+    const fields: Array<{ column: string; value: unknown }> = [];
 
     for (const [key, value] of Object.entries(data)) {
-      if (['plate', 'brand_model', 'vehicle_type', 'rfid_tag', 'site_name', 'status', 'fuel_capacity_liters'].includes(key) && value !== undefined) {
-        fields.push(`${key} = $${queryIdx}`);
-        values.push(value);
-        queryIdx++;
-      }
-      if (key === 'assigned_driver_name' && value !== undefined) {
-        fields.push(`assigned_driver_name = $${queryIdx}`);
-        values.push(typeof value === 'string' && !UNASSIGNED_SENTINELS.has(value) ? value : null);
-        queryIdx++;
+      if (value === undefined) continue;
+      if (['plate', 'brand_model', 'vehicle_type', 'rfid_tag', 'site_name', 'status', 'fuel_capacity_liters'].includes(key)) {
+        fields.push({ column: key, value });
+      } else if (key === 'assigned_driver_name') {
+        fields.push({
+          column: 'assigned_driver_name',
+          value: typeof value === 'string' && !UNASSIGNED_SENTINELS.has(value) ? value : null
+        });
       }
     }
 
-    if (fields.length === 0) {
-      throw new Error('Güncellenecek alan bulunamadı.');
-    }
-
-    values.push(id);
-    const result = await client.query(
-      `UPDATE vehicles SET ${fields.join(', ')} WHERE id = $${queryIdx} RETURNING *`,
-      values
-    );
-    if (result.rows.length === 0) throw new Error('Araç bulunamadı veya yetkiniz yok.');
-    return result.rows[0];
+    return buildDynamicUpdate(client, 'vehicles', id, fields, 'Araç bulunamadı veya yetkiniz yok.');
   });
 }
 
@@ -328,7 +337,7 @@ async function syncDriverVehicleAssignment(
 
 export async function createDriver(data: Omit<DriverRecord, 'id' | 'tenant_id'>): Promise<DriverRecord> {
   return withTenant(async (client, tenantId) => {
-    const id = 'drv-' + Date.now();
+    const id = generateId('drv');
     const result = await client.query(
       `INSERT INTO drivers (id, tenant_id, name, tc_no, phone, license_type, rfid_card_id, site_name, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
@@ -345,15 +354,11 @@ export async function createDriver(data: Omit<DriverRecord, 'id' | 'tenant_id'>)
 
 export async function updateDriver(id: string, data: Partial<DriverRecord>): Promise<DriverRecord> {
   return withTenant(async (client, tenantId) => {
-    const fields = [];
-    const values = [];
-    let queryIdx = 1;
-
+    const fields: Array<{ column: string; value: unknown }> = [];
     for (const [key, value] of Object.entries(data)) {
-      if (['name', 'tc_no', 'phone', 'license_type', 'rfid_card_id', 'site_name', 'status'].includes(key) && value !== undefined) {
-        fields.push(`${key} = $${queryIdx}`);
-        values.push(value);
-        queryIdx++;
+      if (value === undefined) continue;
+      if (['name', 'tc_no', 'phone', 'license_type', 'rfid_card_id', 'site_name', 'status'].includes(key)) {
+        fields.push({ column: key, value });
       }
     }
 
@@ -361,15 +366,12 @@ export async function updateDriver(id: string, data: Partial<DriverRecord>): Pro
       throw new Error('Güncellenecek alan bulunamadı.');
     }
 
+    // fields boşsa (yalnızca assigned_vehicle_plate güncelleniyorsa) UPDATE
+    // yerine SELECT yeterli — buildDynamicUpdate boş listede hata fırlatır,
+    // o yüzden burada onu değil doğrudan bir SELECT'i kullanıyoruz.
     let updatedDriver: any;
     if (fields.length > 0) {
-      values.push(id);
-      const result = await client.query(
-        `UPDATE drivers SET ${fields.join(', ')} WHERE id = $${queryIdx} RETURNING *`,
-        values
-      );
-      if (result.rows.length === 0) throw new Error('Şoför bulunamadı veya yetkiniz yok.');
-      updatedDriver = result.rows[0];
+      updatedDriver = await buildDynamicUpdate(client, 'drivers', id, fields, 'Şoför bulunamadı veya yetkiniz yok.');
     } else {
       const result = await client.query('SELECT * FROM drivers WHERE id = $1', [id]);
       if (result.rows.length === 0) throw new Error('Şoför bulunamadı veya yetkiniz yok.');
@@ -403,7 +405,7 @@ export async function getTenantTanks(): Promise<TankRecord[]> {
 
 export async function createTank(data: Omit<TankRecord, 'id' | 'tenant_id'>): Promise<TankRecord> {
   return withTenant(async (client, tenantId) => {
-    const id = 'tnk-' + Date.now();
+    const id = generateId('tnk');
     const result = await client.query(
       `INSERT INTO tanks (id, tenant_id, name, capacity_liters, current_level_liters, fuel_type, site_name, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
@@ -415,29 +417,16 @@ export async function createTank(data: Omit<TankRecord, 'id' | 'tenant_id'>): Pr
 
 export async function updateTank(id: string, data: Partial<TankRecord>): Promise<TankRecord> {
   return withTenant(async (client) => {
-    const fields = [];
-    const values = [];
-    let queryIdx = 1;
+    const fields: Array<{ column: string; value: unknown }> = [];
 
     for (const [key, value] of Object.entries(data)) {
-      if (['name', 'capacity_liters', 'current_level_liters', 'fuel_type', 'site_name', 'status'].includes(key) && value !== undefined) {
-        fields.push(`${key} = $${queryIdx}`);
-        values.push(value);
-        queryIdx++;
+      if (value === undefined) continue;
+      if (['name', 'capacity_liters', 'current_level_liters', 'fuel_type', 'site_name', 'status'].includes(key)) {
+        fields.push({ column: key, value });
       }
     }
 
-    if (fields.length === 0) {
-      throw new Error('Güncellenecek alan bulunamadı.');
-    }
-
-    values.push(id);
-    const result = await client.query(
-      `UPDATE tanks SET ${fields.join(', ')} WHERE id = $${queryIdx} RETURNING *`,
-      values
-    );
-    if (result.rows.length === 0) throw new Error('Tank bulunamadı veya yetkiniz yok.');
-    return result.rows[0];
+    return buildDynamicUpdate(client, 'tanks', id, fields, 'Tank bulunamadı veya yetkiniz yok.');
   });
 }
 
@@ -575,7 +564,7 @@ export async function createTransaction(
   data: Omit<TransactionRecord, 'id' | 'tenant_id' | 'created_at'>
 ): Promise<TransactionRecord> {
   return withTenant(async (client, tenantId) => {
-    const id = 'tx-' + Date.now();
+    const id = generateId('tx');
 
     // FUEL-402: Araç kendi şantiyesi (site_name) DIŞINDA bir yerde ikmal
     // alıyorsa, bu "çapraz şantiye" ikmalidir ve AKTİF + süresi dolmamış +
@@ -681,7 +670,7 @@ export async function createCrossSitePermission(
   data: Omit<CrossSitePermissionRecord, 'id' | 'tenant_id' | 'used_liters' | 'status' | 'created_at'>
 ): Promise<CrossSitePermissionRecord> {
   return withTenant(async (client, tenantId) => {
-    const id = 'csp-' + Date.now();
+    const id = generateId('csp');
     const result = await client.query(
       `INSERT INTO cross_site_permissions (id, tenant_id, vehicle_plate, driver_name, home_site, target_site, allowed_liters, expiry_date)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,

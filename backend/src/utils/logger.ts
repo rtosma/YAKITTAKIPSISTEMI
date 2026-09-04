@@ -13,9 +13,4 @@ export const logger = pino({
   },
 });
 
-// Utility to create a logger child with contextual metadata (traceId, tenantId, userId)
-export const createChildLogger = (context: { traceId?: string; tenantId?: string; userId?: string }) => {
-  return logger.child(context);
-};
-
 export default logger;

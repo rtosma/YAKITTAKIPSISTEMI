@@ -2,7 +2,7 @@ import express from 'express';
 import http from 'http';
 import { traceMiddleware, httpLoggerMiddleware } from '../src/middleware/loggerMiddleware';
 import { globalErrorHandler, notFoundHandler } from '../src/middleware/errorHandler';
-import { AppError, BadRequestError, UnauthorizedError, ValidationError } from '../src/utils/errors';
+import { AppError, BadRequestError, UnauthorizedError } from '../src/utils/errors';
 import { z } from 'zod';
 
 const app = express();
