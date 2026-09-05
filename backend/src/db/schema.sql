@@ -176,6 +176,42 @@ CREATE TABLE IF NOT EXISTS hardware_devices (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- IOT-304: cihaz envanteri alanları — yalnızca claim akışından (aşağıda)
+-- geçen cihazlarda dolar; SUPER_ADMIN/COMPANY_OWNER'ın elle provisioning
+-- yaptığı (AUTH-202.3) cihazlarda NULL kalabilir.
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS serial_number VARCHAR(128);
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS mac_address VARCHAR(32);
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS model VARCHAR(128);
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS hardware_revision VARCHAR(64);
+
+-- ==============================================================================
+-- [IOT-304] Cihaz Provisioning ve Eşleştirme (Device Claim) Akışı
+-- ==============================================================================
+-- Sahaya götürülen bir ESP32'nin, henüz HİÇBİR secret'ı yokken (AUTH-202.3'ün
+-- provisioning'i aksine, JWT ile kimliği doğrulanmış bir yöneticinin DEĞİL,
+-- doğrudan cihazın/teknisyenin tetiklediği bir akış) doğru tenant + şantiyeye
+-- bağlanmasını sağlayan tek kullanımlık kod. code GLOBAL olarak UNIQUE olmalı
+-- — redeem işlemi (adminDb.ts redeemDeviceClaimCode) tenant context'i henüz
+-- YOKKEN, kodun kendisinden tenant'ı bulur (login/hardware_devices ile aynı
+-- pre-tenant-context deseni).
+CREATE TABLE IF NOT EXISTS device_claim_codes (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    code VARCHAR(32) NOT NULL UNIQUE,
+    site_name VARCHAR(128) NOT NULL,
+    device_name VARCHAR(128) NOT NULL,
+    -- 'BEKLIYOR' | 'KULLANILDI' — süresi dolmuş ama hâlâ 'BEKLIYOR' görünen
+    -- bir kod redeemDeviceClaimCode'un expires_at kontrolüyle YİNE DE
+    -- reddedilir; ayrı bir 'SÜRESİ_DOLDU' durumuna geçiren bir arka plan
+    -- job'ı YOK (gereksiz) — durum yalnızca gösterim amaçlı `expires_at <
+    -- now()` ile türetilir (bkz. tenantDb.ts getTenantClaimCodes).
+    status VARCHAR(32) NOT NULL DEFAULT 'BEKLIYOR',
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    redeemed_device_id VARCHAR(64),
+    redeemed_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ==============================================================================
 -- [AUTH-201] Users Table & Refresh Tokens Rotation Store
 -- ==============================================================================
@@ -218,6 +254,7 @@ ALTER TABLE drivers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cross_site_permissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE hardware_devices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE device_claim_codes ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -282,6 +319,7 @@ ALTER TABLE transactions FORCE ROW LEVEL SECURITY;
 ALTER TABLE cross_site_permissions FORCE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
 ALTER TABLE hardware_devices FORCE ROW LEVEL SECURITY;
+ALTER TABLE device_claim_codes FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -293,6 +331,7 @@ DROP POLICY IF EXISTS transactions_tenant_isolation_policy ON transactions;
 DROP POLICY IF EXISTS cross_site_permissions_tenant_isolation_policy ON cross_site_permissions;
 DROP POLICY IF EXISTS audit_logs_tenant_isolation_policy ON audit_logs;
 DROP POLICY IF EXISTS hardware_devices_tenant_isolation_policy ON hardware_devices;
+DROP POLICY IF EXISTS device_claim_codes_tenant_isolation_policy ON device_claim_codes;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -351,6 +390,14 @@ CREATE POLICY audit_logs_tenant_isolation_policy ON audit_logs
 --'in device_id'den tenant bulma sorgusu (adminDb.ts) kasıtlı olarak bunun
 -- DIŞINDA, ham pool.query ile çalışır — henüz bir tenant context'i yoktur.
 CREATE POLICY hardware_devices_tenant_isolation_policy ON hardware_devices
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- Create Tenant Isolation Policy for device_claim_codes — redeemDeviceClaimCode
+-- (adminDb.ts) kasıtlı olarak bunun DIŞINDA, ham pool.query ile çalışır
+-- (henüz bir tenant context'i yoktur, hardware_devices ile aynı gerekçe).
+CREATE POLICY device_claim_codes_tenant_isolation_policy ON device_claim_codes
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

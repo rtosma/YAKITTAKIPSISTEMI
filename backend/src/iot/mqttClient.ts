@@ -2,6 +2,7 @@ import mqtt, { MqttClient } from 'mqtt';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
 import { redisPool } from '../db/redisPool';
+import { getHardwareDeviceByDeviceId } from '../db/adminDb';
 import { EventEmitter } from 'events';
 import { runWithTenant } from '../context/tenantContext';
 
@@ -84,6 +85,36 @@ class MQTTService {
         const messageType = parts[6]; // 'data' veya 'status'
 
         const messageStr = payload.toString();
+
+        // IOT-304 AC: "Eşleştirilmemiş cihaz hiçbir veri gönderememeli."
+        // MQTT broker'ı (EMQX) şu an TÜM istemciler için TEK bir paylaşılan
+        // kimlik bilgisi kullandığından (bkz. docker/emqx/entrypoint.sh —
+        // cihaz başına dinamik MQTT kimlik bilgisi/ACL EMQX yönetim API
+        // entegrasyonu gerektirir, IOT-304'ün kapsamı dışında bırakıldı,
+        // bkz. routes.ts'teki not) TRANSPORT seviyesinde bunu engelleyemeyiz
+        // — ama UYGULAMA seviyesinde, claim edilmemiş/bloke edilmiş bir
+        // device_id'nin verisini İŞLEMEYİ reddedebiliriz: sessizce atılır,
+        // ne presence'a yansır ne de bir transactions/telemetry olayı üretir.
+        const registeredDevice = await getHardwareDeviceByDeviceId(deviceId);
+        if (!registeredDevice) {
+          logger.warn({ deviceId, topic }, `🚫 [IOT-304] Kayıtlı olmayan cihazdan MQTT paketi reddedildi: '${deviceId}'.`);
+          return;
+        }
+        if (registeredDevice.status === 'BLOKE') {
+          logger.warn({ deviceId, topic }, `🚫 [IOT-304] Bloke edilmiş cihazdan MQTT paketi reddedildi: '${deviceId}'.`);
+          return;
+        }
+        // Topic'teki tenantId, cihazın GERÇEKTEN kayıtlı olduğu tenant'la
+        // eşleşmeli — paylaşılan MQTT kimlik bilgisiyle bir istemcinin başka
+        // bir tenant'ın topic'ine (tenantId'yi elle değiştirerek) veri
+        // enjekte etmeye çalışmasına karşı ikinci bir savunma hattı.
+        if (registeredDevice.tenant_id !== tenantId) {
+          logger.error(
+            { deviceId, topic, claimedTenantId: tenantId, actualTenantId: registeredDevice.tenant_id },
+            `🚨 [IOT-304] Tenant sahtekarlığı şüphesi: '${deviceId}' cihazı '${registeredDevice.tenant_id}'e kayıtlı ama topic '${tenantId}' iddia ediyor.`
+          );
+          return;
+        }
 
         // ARCH-101.4: MQTT bir HTTP isteği değil, authenticateJWT middleware'i
         // hiç çalışmaz — bu yüzden AsyncLocalStorage tenant context'i burada,

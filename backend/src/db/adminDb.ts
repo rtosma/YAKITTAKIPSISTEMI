@@ -1,7 +1,8 @@
 import { pool } from './postgresPool';
 import { hashPassword } from '../utils/password';
 import { generateId } from '../utils/id';
-import { encryptDeviceSecret } from '../utils/hardwareSecretCrypto';
+import { encryptDeviceSecret, generateDeviceSecret } from '../utils/hardwareSecretCrypto';
+import { ForbiddenError, ConflictError } from '../utils/errors';
 
 /**
  * SUPER_ADMIN'e özel, tek bir tenant'a kısıtlı OLMAYAN sorgular. Diğer
@@ -226,6 +227,10 @@ export interface HardwareDeviceRecord {
   previous_secret_expires_at: string | null;
   secret_rotated_at: string | null;
   status: string;
+  serial_number: string | null;
+  mac_address: string | null;
+  model: string | null;
+  hardware_revision: string | null;
 }
 
 /**
@@ -276,6 +281,77 @@ const LEGACY_DEVICES: Array<{ deviceId: string; name: string; siteName: string; 
   { deviceId: 'ESP32-FLOW-ISR', name: 'Debimetre Kesme Sensörü', siteName: 'Sistem Kalibrasyonu', secretEnvVar: 'HW_SECRET_ESP32_FLOW_ISR' } // gitleaks:allow
 ];
 const LEGACY_DEVICE_TENANT_ID = 'comp-camsa';
+
+// ============================================================================
+// IOT-304 — Cihaz Claim (Eşleştirme) Redemption (Pre-Tenant-Context)
+// ============================================================================
+
+/**
+ * Bir claim kodunu tüketip YENİ bir cihaz kaydı oluşturur. Cihazın/teknisyenin
+ * çağırdığı bu uç HENÜZ hiçbir kimlik doğrulaması (JWT/HMAC) taşımaz — cihazın
+ * henüz bir secret'ı YOK, tam olarak bunu üretmek için var. Bu yüzden
+ * getHardwareDeviceByDeviceId ile aynı gerekçeyle burada, withTenant()
+ * DIŞINDA, ham bir Postgres transaction'ı kullanılır.
+ *
+ * `SELECT ... FOR UPDATE` ile kod satırı kilitlenir: aynı kodla eşzamanlı iki
+ * redemption denemesi (örn. bir teknisyenin isteği zaman aşımına uğrayıp
+ * tekrar denemesi) İKİSİNİN DE "hâlâ BEKLIYOR" görüp iki cihaz yaratmasını
+ * önler — biri kazanır, diğeri CLAIM_CODE_ALREADY_USED alır.
+ */
+export async function redeemDeviceClaimCode(input: {
+  code: string;
+  deviceId: string;
+  serialNumber?: string;
+  macAddress?: string;
+  model?: string;
+  hardwareRevision?: string;
+}): Promise<{ device: HardwareDeviceRecord; secret: string }> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const claimRes = await client.query('SELECT * FROM device_claim_codes WHERE code = $1 FOR UPDATE', [input.code]);
+    if (claimRes.rows.length === 0) {
+      throw new ForbiddenError('Geçersiz claim kodu.', { error: 'CLAIM_CODE_INVALID' });
+    }
+    const claim = claimRes.rows[0];
+    if (claim.status !== 'BEKLIYOR') {
+      throw new ConflictError('Bu claim kodu daha önce kullanılmış.', { error: 'CLAIM_CODE_ALREADY_USED' });
+    }
+    if (new Date(claim.expires_at).getTime() < Date.now()) {
+      throw new ForbiddenError('Claim kodunun süresi dolmuş.', { error: 'CLAIM_CODE_EXPIRED' });
+    }
+
+    const existingDevice = await client.query('SELECT 1 FROM hardware_devices WHERE device_id = $1', [input.deviceId]);
+    if (existingDevice.rows.length > 0) {
+      throw new ConflictError(`'${input.deviceId}' kimlikli bir cihaz zaten kayıtlı.`, { error: 'DEVICE_ID_TAKEN' });
+    }
+
+    const id = generateId('hwdev');
+    const secret = generateDeviceSecret();
+    const deviceResult = await client.query(
+      `INSERT INTO hardware_devices (id, tenant_id, device_id, name, site_name, encrypted_secret, serial_number, mac_address, model, hardware_revision)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [
+        id, claim.tenant_id, input.deviceId, claim.device_name, claim.site_name, encryptDeviceSecret(secret),
+        input.serialNumber ?? null, input.macAddress ?? null, input.model ?? null, input.hardwareRevision ?? null
+      ]
+    );
+
+    await client.query(
+      `UPDATE device_claim_codes SET status = 'KULLANILDI', redeemed_device_id = $1, redeemed_at = CURRENT_TIMESTAMP WHERE id = $2`,
+      [input.deviceId, claim.id]
+    );
+
+    await client.query('COMMIT');
+    return { device: deviceResult.rows[0], secret };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
 
 export async function seedLegacyHardwareDevicesIfMissing(secretsByEnvVar: Record<string, string>): Promise<void> {
   for (const device of LEGACY_DEVICES) {

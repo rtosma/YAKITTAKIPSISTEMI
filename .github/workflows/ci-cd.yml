@@ -193,6 +193,9 @@ jobs:
       - name: Run AUTH-202.3 Hardware Device Secret Lifecycle Tests
         run: cd backend && npx tsx test/test_auth2023_hardware_device_lifecycle.ts
 
+      - name: Run IOT-304 Device Claim/Provisioning Flow Tests
+        run: cd backend && npx tsx test/test_iot304_device_claim_flow.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

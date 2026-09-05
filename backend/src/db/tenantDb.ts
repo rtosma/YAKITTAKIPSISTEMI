@@ -1256,3 +1256,104 @@ export async function blockHardwareDevice(deviceId: string): Promise<TenantHardw
 export async function unblockHardwareDevice(deviceId: string): Promise<TenantHardwareDeviceRecord> {
   return setHardwareDeviceStatus(deviceId, 'AKTİF', 'HARDWARE_DEVICE_UNBLOCKED');
 }
+
+/**
+ * IOT-304 AC: "Cihaz nakledildiğinde geçmiş telemetrisi eski şantiyede
+ * kalmalı, yeni kayıtlar yeni şantiyeye yazılmalıdır." Bu, EK bir işlem
+ * GEREKTİRMİYOR: transactions/audit_logs gibi geçmiş kayıtlar zaten
+ * OLUŞTURULDUKLARI ANDAKİ site_name'i kendi satırlarında taşıyor (canlı bir
+ * FK ile hardware_devices.site_name'e bağlı değiller) — burada yalnızca
+ * cihazın GELECEKTEKİ isteklerinde kullanılacak site_name'i güncelleniyor.
+ */
+export async function relocateHardwareDevice(deviceId: string, newSiteName: string): Promise<TenantHardwareDeviceRecord> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      `UPDATE hardware_devices SET site_name = $1 WHERE device_id = $2 RETURNING ${HARDWARE_DEVICE_PUBLIC_COLUMNS}`,
+      [newSiteName, deviceId]
+    );
+    if (result.rows.length === 0) {
+      throw new NotFoundError(`'${deviceId}' kimlikli bir cihaz bulunamadı.`, { error: 'DEVICE_NOT_FOUND' });
+    }
+
+    await writeAuditLog(client, {
+      action: 'HARDWARE_DEVICE_RELOCATED',
+      targetType: 'hardware_device',
+      targetId: deviceId,
+      afterValue: { newSiteName }
+    });
+
+    return result.rows[0];
+  });
+}
+
+// ============================================================================
+// IOT-304 — Cihaz Claim Kodu Üretimi (Tenant İçi, JWT ile Kimliği Doğrulanmış)
+// ============================================================================
+// Kodun TÜKETİLMESİ (redemption) adminDb.ts'te — henüz tenant context'i
+// olmayan cihazın/teknisyenin kendisi tarafından çağrılır. Burada yalnızca
+// bir COMPANY_OWNER/SUPER_ADMIN'in KENDİ tenant'ı için yeni bir kod ÜRETMESİ var.
+
+export interface DeviceClaimCodeRecord {
+  id: string;
+  code: string;
+  site_name: string;
+  device_name: string;
+  status: string;
+  expires_at: string;
+  redeemed_device_id: string | null;
+  redeemed_at: string | null;
+  created_at: string;
+}
+
+const CLAIM_CODE_TTL_MINUTES_DEFAULT = 15;
+// 0/O ve 1/I gibi karışabilecek karakterler kasıtlı olarak dışarıda —
+// kod bir QR yerine ELLE de girilebilmeli (sahada QR okutma başarısız olabilir).
+const CLAIM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const CLAIM_CODE_LENGTH = 10;
+
+function generateClaimCode(): string {
+  return Array.from({ length: CLAIM_CODE_LENGTH }, () => CLAIM_CODE_ALPHABET[crypto.randomInt(CLAIM_CODE_ALPHABET.length)]).join('');
+}
+
+/**
+ * AC: "Tek kullanımlık claim kodu / QR." Burada yalnızca kodun kendisi
+ * üretiliyor — ticket'ın QR üretimi (görsel encoding) bir imaj kütüphanesi
+ * gerektirir (bu kod tabanında yok, ve bu tek özellik için yeni bir bağımlılık
+ * eklemek gerekçesiz); kodu bir QR'a çevirmek istemci (provisioning
+ * uygulaması/frontend) tarafında, herhangi bir standart QR kütüphanesiyle
+ * yapılabilir — sunucunun tek sorumluluğu KRİPTOGRAFİK OLARAK GÜÇLÜ ve TEK
+ * KULLANIMLIK bir kod üretmek/doğrulamaktır.
+ */
+export async function createDeviceClaimCode(data: {
+  siteName: string;
+  deviceName: string;
+  expiresInMinutes?: number;
+}): Promise<DeviceClaimCodeRecord> {
+  return withTenant(async (client, tenantId) => {
+    const code = generateClaimCode();
+    const expiresAt = new Date(Date.now() + (data.expiresInMinutes ?? CLAIM_CODE_TTL_MINUTES_DEFAULT) * 60_000);
+    const id = generateId('claim');
+
+    const result = await client.query(
+      `INSERT INTO device_claim_codes (id, tenant_id, code, site_name, device_name, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [id, tenantId, code, data.siteName, data.deviceName, expiresAt.toISOString()]
+    );
+
+    await writeAuditLog(client, {
+      action: 'DEVICE_CLAIM_CODE_CREATED',
+      targetType: 'device_claim_code',
+      targetId: code,
+      afterValue: { siteName: data.siteName, deviceName: data.deviceName, expiresAt: expiresAt.toISOString() }
+    });
+
+    return result.rows[0];
+  });
+}
+
+export async function getTenantClaimCodes(): Promise<DeviceClaimCodeRecord[]> {
+  return withTenant(async (client) => {
+    const result = await client.query('SELECT * FROM device_claim_codes ORDER BY created_at DESC');
+    return result.rows;
+  });
+}

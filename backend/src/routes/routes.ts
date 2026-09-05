@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices } from '../db/tenantDb';
-import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices } from '../db/adminDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes } from '../db/tenantDb';
+import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
@@ -12,7 +12,7 @@ import { createCrossSitePermissionSchema, updateCrossSitePermissionStatusSchema 
 import { createCompanySchema, updateCompanySchema } from '../schemas/companySchema';
 import { loginSchema, changePasswordSchema } from '../schemas/authSchema';
 import { createSiteSchema } from '../schemas/siteSchema';
-import { createHardwareDeviceSchema } from '../schemas/hardwareDeviceSchema';
+import { createHardwareDeviceSchema, relocateHardwareDeviceSchema, createDeviceClaimCodeSchema, claimDeviceSchema } from '../schemas/hardwareDeviceSchema';
 import { verifyPassword } from '../utils/password';
 import { NotFoundError } from '../utils/errors';
 import { pool } from '../db/postgresPool';
@@ -586,6 +586,144 @@ router.post(
     try {
       const device = await unblockHardwareDevice(req.params.deviceId);
       res.json({ success: true, message: 'Cihazın bloku kaldırıldı.', data: device });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/{deviceId}/relocate:
+ *   post:
+ *     summary: Cihazı Başka Şantiyeye Nakil Et (IOT-304)
+ *     description: >
+ *       Yalnızca cihazın GELECEKTEKİ site_name'ini günceller — geçmiş
+ *       ikmal/denetim kayıtları kendi satırlarındaki site_name'i taşıdığından
+ *       (canlı bir referans değil) bozulmaz.
+ *     parameters:
+ *       - in: path
+ *         name: deviceId
+ *         required: true
+ *         schema: { type: string }
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cihaz nakledildi.
+ */
+router.post(
+  '/hardware-devices/:deviceId/relocate',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: relocateHardwareDeviceSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const device = await relocateHardwareDevice(req.params.deviceId, req.body.siteName);
+      res.json({ success: true, message: 'Cihaz nakledildi.', data: device });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * IOT-304 — Cihaz Provisioning ve Eşleştirme (Device Claim) Akışı.
+ * Ticket'ın "Teknik Yığın"ı NestJS + Drizzle + EMQX API (kimlik/ACL) + QR
+ * üretimi öneriyor. Drizzle/NestJS yerine (kod tabanı geneliyle tutarlı)
+ * raw-pg kullanıldı. EMQX'in HTTP Yönetim API'si üzerinden CİHAZ BAŞINA MQTT
+ * kimlik bilgisi/ACL üretimi BİLİNÇLİ OLARAK YAPILMADI — bu proje şu anda
+ * TÜM cihazlar (ve backend'in kendisi) için TEK bir paylaşılan MQTT
+ * kullanıcı adı/şifresi kullanıyor (bkz. docker/emqx/entrypoint.sh); bunu
+ * cihaz başına dinamik hale getirmek EMQX yönetim API'sine yeni bir servis
+ * katmanı + docker-compose'a yeni bir admin API anahtarı eklemeyi gerektiren,
+ * bu ticket'ın "Efor: S" etiketinin çok ötesinde ayrı bir altyapı işi —
+ * ayrı bir ticket olarak ele alınmalı. Bunun yerine "eşleştirilmemiş cihaz
+ * veri gönderememeli" AC'si HTTP/HMAC katmanında zaten TAM olarak sağlanıyor:
+ * hardwareAuthMiddleware, hardware_devices'ta kaydı OLMAYAN bir device_id'yi
+ * UNAUTHORIZED_DEVICE ile reddediyor — claim edilmemiş bir cihazın zaten
+ * hiçbir secret'ı yok, bu yüzden geçerli bir HMAC üretemez.
+ * QR üretimi de aynı gerekçeyle atlandı (bkz. tenantDb.ts createDeviceClaimCode
+ * yorumu) — sunucu yalnızca kriptografik olarak güçlü kodu üretir/doğrular.
+ */
+
+/**
+ * @swagger
+ * /devices/claim-codes:
+ *   post:
+ *     summary: Yeni Cihaz Claim Kodu Üret (IOT-304)
+ *     description: Tek kullanımlık, süreli (varsayılan 15dk) bir kod üretir.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Claim kodu oluşturuldu.
+ */
+router.post(
+  '/devices/claim-codes',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: createDeviceClaimCodeSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const claim = await createDeviceClaimCode(req.body);
+      res.json({ success: true, message: 'Claim kodu oluşturuldu.', data: claim });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/devices/claim-codes',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const codes = await getTenantClaimCodes();
+      res.json({ success: true, totalCount: codes.length, data: codes });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /devices/claim:
+ *   post:
+ *     summary: Claim Kodunu Tüketip Cihazı Eşleştir (IOT-304)
+ *     description: >
+ *       Kimlik doğrulaması YOK (JWT/HMAC) — cihazın henüz secret'ı yok, bu
+ *       endpoint'in amacı tam olarak onu üretmek. Yetkilendirme, kodun
+ *       kendisinin (yüksek entropili, tek kullanımlık, süreli) bilinmesiyle
+ *       sağlanır. Secret yalnızca bu yanıtta döner.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Cihaz eşleştirildi, secret tek seferlik döndü.
+ */
+router.post(
+  '/devices/claim',
+  hardwareRateLimiter,
+  validateRequest({ body: claimDeviceSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { device, secret } = await redeemDeviceClaimCode(req.body);
+      res.json({
+        success: true,
+        message: 'Cihaz başarıyla eşleştirildi. Secret yalnızca bu yanıtta gösterilecek, tekrar alınamaz.',
+        data: {
+          deviceId: device.device_id,
+          name: device.name,
+          siteName: device.site_name,
+          serialNumber: device.serial_number,
+          macAddress: device.mac_address,
+          model: device.model,
+          hardwareRevision: device.hardware_revision,
+          secret
+        }
+      });
     } catch (error: any) {
       next(error);
     }

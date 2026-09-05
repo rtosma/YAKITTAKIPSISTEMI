@@ -122,8 +122,13 @@ async function run() {
   // --- Test 4: Paylaşımlı abonelik ($share) — aynı gruba rakip bir
   // "ikinci backend replikası" abone olur; TEK bir mesaj yayınlanır ve
   // YALNIZCA birinin (gerçek backend YA DA rakip istemci, ikisi BİRDEN
-  // değil) aldığı doğrulanır. ---
-  const testDeviceId = `TEST-SHARE-${Date.now()}`;
+  // değil) aldığı doğrulanır. Kayıtlı GERÇEK bir cihaz kullanılıyor
+  // (ESP32-TANK-01) — IOT-304'ten sonra mqttClient.ts artık hardware_devices
+  // tablosunda kayıtlı OLMAYAN device_id'lerin verisini işlemeden atıyor,
+  // uydurma bir "TEST-SHARE-*" kimliği artık backend tarafında hiç
+  // işlenmeyeceğinden backendProcessed'i her zaman false yapıp testi
+  // anlamsız kılardı. ---
+  const testDeviceId = 'ESP32-TANK-01';
   let competitorReceivedCount = 0;
   const competitor = mqtt.connect(MQTT_URL, { username: MQTT_USERNAME, password: MQTT_PASSWORD, protocolVersion: 5 });
   await new Promise<void>((resolve, reject) => {
