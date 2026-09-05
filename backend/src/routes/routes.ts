@@ -1584,6 +1584,18 @@ router.post(
         logger.warn({ err: broadcastErr }, '⚠️ [Socket.io] sync-batch sonrası dispense:completed yayını başarısız oldu.');
       }
 
+      // IOT-303.2 AC: "Negatif stok... mutabakat uyarısı üretilmesi." Veri
+      // katmanı (tenantDb.ts) zaten reddedip audit_logs'a kalıcı bir alarm
+      // yazdı — burada ayrıca canlı panele (varsa) anlık bir uyarı düşer.
+      const negativeStockAlarms = results.filter((r) => r.status === 'ERROR' && r.error === 'NEGATIVE_STOCK_DETECTED');
+      if (negativeStockAlarms.length > 0) {
+        broadcastToTenant(hw.tenantId, 'tank:negative-stock-alarm', {
+          deviceId: hw.deviceId,
+          count: negativeStockAlarms.length,
+          localSequenceIds: negativeStockAlarms.map((r) => r.localSequenceId)
+        });
+      }
+
       res.json({ success: true, message: 'Batch işlendi.', summary, results });
     } catch (error: any) {
       next(error);

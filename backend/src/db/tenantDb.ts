@@ -6,6 +6,7 @@ import { hashPassword, verifyPassword } from '../utils/password';
 import { generateReadableUsername, generateTempPassword } from '../utils/tempCredentials';
 import { writeAuditLog } from '../utils/auditLog';
 import { encryptDeviceSecret, generateDeviceSecret } from '../utils/hardwareSecretCrypto';
+import { logger } from '../utils/logger';
 import { withTenant } from './withTenant';
 
 /**
@@ -1049,7 +1050,29 @@ async function syncSingleOfflineRecord(deviceId: string, record: SyncBatchRecord
         throw new NotFoundError(`'${record.tankName}' tankı '${record.siteName}' şantiyesinde bulunamadı.`, { error: 'TANK_NOT_FOUND' });
       }
       const tank = tankResult.rows[0];
-      const newLevel = Math.max(0, Number(tank.current_level_liters) - record.amountLiters);
+      const newLevel = Number(tank.current_level_liters) - record.amountLiters;
+
+      // IOT-303.2 AC: "Negatif stok oluşursa işlemin durdurulup mutabakat
+      // uyarısı üretilmesi... sessizce sıfırlanmamalı." Geçmişe dönük bir
+      // kaydın, tankın o anda fiziksel olarak sahip olabileceğinden FAZLA
+      // yakıt tükettiğini iddia etmesi bir ölçüm hatası ya da kaçak
+      // göstergesidir — createTransaction/finalizeDispenseSession'daki
+      // Math.max(0, ...) deseni burada BİLEREK KULLANILMIYOR: o desen CANLI
+      // ikmaller için "tank boşaldı, 0'da dur" anlamına gelirken, burada
+      // GEÇMİŞTE ZATEN OLMUŞ bir olayın kayda alınıp alınmayacağı söz
+      // konusu — sessizce 0'a kırpıp kaydı yine de yaratmak, aslında hiç
+      // gerçekleşmemiş olabilecek bir tüketimi mali kayıtlara sokardı.
+      // Alarm KASITLI OLARAK burada değil, aşağıdaki catch bloğunda AYRI bir
+      // transaction'da yazılıyor — bu transaction'ın kendisi reddedilen
+      // işlemle birlikte ROLLBACK olacağından, audit log'u burada yazmak onu
+      // da geri alırdı (alarm hiç kalıcı olmazdı).
+      if (newLevel < 0) {
+        throw new ConflictError(
+          `'${record.tankName}' tankı için geçmişe dönük kayıt reddedildi: mevcut seviye (${tank.current_level_liters}L) istenen miktarı (${record.amountLiters}L) karşılayamıyor. Mutabakat gerekiyor.`,
+          { error: 'NEGATIVE_STOCK_DETECTED', tankId: tank.id, previousLevel: Number(tank.current_level_liters) }
+        );
+      }
+
       const percentage = (newLevel / Number(tank.capacity_liters)) * 100;
       const newStatus = percentage < 20 ? 'KRİTİK' : percentage < 40 ? 'UYARI' : 'GÜVENLİ';
       await client.query('UPDATE tanks SET current_level_liters = $1, status = $2 WHERE id = $3', [newLevel, newStatus, tank.id]);
@@ -1090,6 +1113,33 @@ async function syncSingleOfflineRecord(deviceId: string, record: SyncBatchRecord
       return { localSequenceId: record.localSequenceId, status: 'ACCEPTED', transactionId: insertResult.rows[0].id };
     });
   } catch (err: any) {
+    if (err?.details?.error === 'NEGATIVE_STOCK_DETECTED') {
+      // Reddedilen işlemin transaction'ı (yukarıda) zaten ROLLBACK oldu —
+      // alarmın KALICI olması için tamamen AYRI, bağımsız bir transaction'da
+      // yazılıyor (aksi halde audit log de rollback ile birlikte kaybolurdu).
+      try {
+        await withTenant(async (client) => {
+          await writeAuditLog(client, {
+            action: 'NEGATIVE_STOCK_ALARM',
+            targetType: 'tank',
+            targetId: err.details.tankId,
+            beforeValue: { currentLevelLiters: err.details.previousLevel },
+            afterValue: {
+              rejectedAmountLiters: record.amountLiters,
+              deviceId,
+              localSequenceId: record.localSequenceId,
+              deviceTimestamp: record.deviceTimestamp
+            }
+          });
+        });
+      } catch (auditErr) {
+        logger.error({ err: auditErr }, '🚨 [IOT-303.2] Negatif stok alarmı denetim izine yazılamadı.');
+      }
+      logger.error(
+        { deviceId, localSequenceId: record.localSequenceId, tankName: record.tankName },
+        `🚨 [IOT-303.2] MUTABAKAT ALARMI: geçmişe dönük kayıt '${record.tankName}' tankını negatife düşürüyordu, reddedildi.`
+      );
+    }
     return { localSequenceId: record.localSequenceId, status: 'ERROR', error: err.details?.error || err.message || 'UNKNOWN_ERROR' };
   }
 }
