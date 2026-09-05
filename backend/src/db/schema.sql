@@ -402,3 +402,41 @@ CREATE POLICY device_claim_codes_tenant_isolation_policy ON device_claim_codes
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+-- ==============================================================================
+-- [PERF] tenant_id İndeksleri
+-- ==============================================================================
+-- Bu 10 tabloda da RLS politikası HER sorguda `tenant_id = current_setting(...)`
+-- filtresi uyguluyor (bkz. yukarıdaki politikalar) ama tenant_id üzerinde
+-- hiçbir tabloda indeks YOKTU — yalnızca PRIMARY KEY (id) indeksliydi. Şu anki
+-- veri hacminde (düzinelerce satır) bu görünmüyor (Postgres zaten Seq Scan'i
+-- tercih ediyor), ama transactions/audit_logs gibi sürekli büyüyen tablolar
+-- üretimde on binlerce/yüz binlerce satıra ulaştığında HER istekte (RLS
+-- politikası aracılığıyla, uygulama kodu hiç WHERE tenant_id yazmasa bile)
+-- tam tablo taraması yapılır. CREATE INDEX salt-ekleyici bir işlem olduğundan
+-- (mevcut sorgu davranışını DEĞİŞTİRMEZ, yalnızca hızlandırır) risk yok.
+CREATE INDEX IF NOT EXISTS idx_vehicles_tenant_id ON vehicles(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_tanks_tenant_id ON tanks(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_drivers_tenant_id ON drivers(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_users_tenant_id ON users(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_sites_tenant_id ON sites(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_cross_site_permissions_tenant_id ON cross_site_permissions(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_hardware_devices_tenant_id ON hardware_devices(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_device_claim_codes_tenant_id ON device_claim_codes(tenant_id);
+
+-- transactions: en sık kullanılan sorgu deseni (GET /transactions,
+-- getTenantTransactionsPaginated) `WHERE tenant_id = $1 [AND site_name = $2]
+-- ORDER BY created_at DESC` — composite indeks hem RLS filtresini hem
+-- sıralamayı tek bir indeks taramasıyla karşılar.
+CREATE INDEX IF NOT EXISTS idx_transactions_tenant_created_at ON transactions(tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_transactions_tenant_site ON transactions(tenant_id, site_name);
+
+-- audit_logs: append-only ve yalnızca INSERT+SELECT yapılabilir (bkz.
+-- yukarıdaki REVOKE) — GET /audit-logs de aynı tenant+created_at DESC deseni.
+CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_created_at ON audit_logs(tenant_id, created_at DESC);
+
+-- AUTH-201.4/TEST-1003: site_name filtresi (SITE_MANAGER kapsaması) vehicles/
+-- drivers/tanks'te tenant_id ile HER ZAMAN birlikte kullanılıyor.
+CREATE INDEX IF NOT EXISTS idx_vehicles_tenant_site ON vehicles(tenant_id, site_name);
+CREATE INDEX IF NOT EXISTS idx_drivers_tenant_site ON drivers(tenant_id, site_name);
+CREATE INDEX IF NOT EXISTS idx_tanks_tenant_site ON tanks(tenant_id, site_name);
+

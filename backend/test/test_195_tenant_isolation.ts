@@ -94,19 +94,25 @@ async function run() {
   const camsaVehicles = await call('GET', '/vehicles', { token: camsa.token });
   const targetVehicleId = camsaVehicles.body.data?.[0]?.id;
   if (targetVehicleId) {
+    // NOT: 'HACKED_BY_KUSAK' geçerli bir status enum değeri DEĞİL
+    // (vehicleSchema.ts: 'AKTİF'|'BAKIMDA'|'PASİF') — Zod bunu RLS/tenant
+    // katmanına hiç ulaşmadan 400 ile reddeder. RLS'in kendisini test etmek
+    // için gövde GEÇERLİ bir enum değeri taşımalı; asıl doğrulanan şey
+    // kusak'ın camsa'nın aracını GÖREMEMESİ (404), gönderilen değerin
+    // reddedilmesi değil.
     const crossUpdateAttempt = await call('PUT', `/vehicles/${targetVehicleId}`, {
       token: kusak.token,
-      body: { status: 'HACKED_BY_KUSAK' }
+      body: { status: 'PASİF' }
     });
     check(
       "ID tahmini: kusak, camsa'nın aracını ID ile güncelleyemez",
-      crossUpdateAttempt.status === 404 || crossUpdateAttempt.status === 500,
+      crossUpdateAttempt.status === 404,
       `HTTP ${crossUpdateAttempt.status} (RLS satırı görünmez kıldığı için "bulunamadı" beklenir)`
     );
 
     // Aracın GERÇEKTEN değişmediğini camsa'nın kendi oturumundan doğrula.
     const verifyUnchanged = await call('GET', '/vehicles', { token: camsa.token });
-    const stillIntact = verifyUnchanged.body.data.find((v: any) => v.id === targetVehicleId)?.status !== 'HACKED_BY_KUSAK';
+    const stillIntact = verifyUnchanged.body.data.find((v: any) => v.id === targetVehicleId)?.status !== 'PASİF';
     check(
       "ID tahmini sonrası: camsa'nın aracı GERÇEKTEN değişmemiş",
       stillIntact,
@@ -116,7 +122,7 @@ async function run() {
     const crossDeleteAttempt = await call('DELETE', `/vehicles/${targetVehicleId}`, { token: kusak.token });
     check(
       "ID tahmini: kusak, camsa'nın aracını ID ile silemez",
-      crossDeleteAttempt.status === 404 || crossDeleteAttempt.status === 500,
+      crossDeleteAttempt.status === 404,
       `HTTP ${crossDeleteAttempt.status}`
     );
     const verifyStillExists = await call('GET', '/vehicles', { token: camsa.token });

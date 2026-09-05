@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { config } from '../config/env';
-import { ForbiddenError, ConflictError, UnauthorizedError, NotFoundError } from '../utils/errors';
+import { ForbiddenError, ConflictError, UnauthorizedError, NotFoundError, BadRequestError } from '../utils/errors';
 import { generateId } from '../utils/id';
 import { hashPassword, verifyPassword } from '../utils/password';
 import { generateReadableUsername, generateTempPassword } from '../utils/tempCredentials';
@@ -24,7 +24,7 @@ async function buildDynamicUpdate(
   notFoundMessage: string
 ): Promise<any> {
   if (fields.length === 0) {
-    throw new Error('Güncellenecek alan bulunamadı.');
+    throw new BadRequestError('Güncellenecek alan bulunamadı.');
   }
 
   const setClauses = fields.map((f, idx) => `${f.column} = $${idx + 1}`);
@@ -35,7 +35,13 @@ async function buildDynamicUpdate(
     `UPDATE ${table} SET ${setClauses.join(', ')} WHERE id = $${values.length} RETURNING *`,
     values
   );
-  if (result.rows.length === 0) throw new Error(notFoundMessage);
+  // TEST-1003'ün DELETE'te bulduğu AYNI "sahte başarı/yanlış durum kodu"
+  // sınıfı: satır 0 dönmesi (ID hiç yok YA DA RLS başka bir tenant'ın
+  // satırını gizledi) önceden düz bir Error'a (→ 500 Internal Server Error,
+  // yanlış statü kodu + günlüklerde gerçek bir sunucu çökmesiymiş gibi
+  // "CRITICAL_UNHANDLED_EXCEPTION" gürültüsü) düşüyordu. Doğru durum bu bir
+  // istemci hatası (404), bir sunucu hatası değil.
+  if (result.rows.length === 0) throw new NotFoundError(notFoundMessage);
   return result.rows[0];
 }
 
@@ -455,7 +461,7 @@ export async function updateDriver(id: string, data: Partial<DriverRecord>): Pro
     }
 
     if (fields.length === 0 && data.assigned_vehicle_plate === undefined) {
-      throw new Error('Güncellenecek alan bulunamadı.');
+      throw new BadRequestError('Güncellenecek alan bulunamadı.');
     }
 
     // fields boşsa (yalnızca assigned_vehicle_plate güncelleniyorsa) UPDATE
@@ -466,7 +472,7 @@ export async function updateDriver(id: string, data: Partial<DriverRecord>): Pro
       updatedDriver = await buildDynamicUpdate(client, 'drivers', id, fields, 'Şoför bulunamadı veya yetkiniz yok.');
     } else {
       const result = await client.query('SELECT * FROM drivers WHERE id = $1', [id]);
-      if (result.rows.length === 0) throw new Error('Şoför bulunamadı veya yetkiniz yok.');
+      if (result.rows.length === 0) throw new NotFoundError('Şoför bulunamadı veya yetkiniz yok.');
       updatedDriver = result.rows[0];
     }
 
@@ -1050,7 +1056,7 @@ export async function updateCrossSitePermissionStatus(id: string, status: string
       'UPDATE cross_site_permissions SET status = $1 WHERE id = $2 RETURNING *',
       [status, id]
     );
-    if (result.rows.length === 0) throw new Error('Çapraz şantiye yetkisi bulunamadı veya yetkiniz yok.');
+    if (result.rows.length === 0) throw new NotFoundError('Çapraz şantiye yetkisi bulunamadı veya yetkiniz yok.');
 
     await writeAuditLog(client, {
       action: 'PERMISSION_STATUS_CHANGED',

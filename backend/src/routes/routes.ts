@@ -901,7 +901,7 @@ router.post(
       const vehicleData = {
         plate: sanitizedBody.plate,
         brand_model: sanitizedBody.brandModel,
-        vehicle_type: sanitizedBody.type,
+        vehicle_type: sanitizedBody.type || 'Kamyon',
         rfid_tag: sanitizedBody.rfidTag,
         site_name: sanitizedBody.siteName || sanitizedBody.site_name || 'Gebze Ana Şantiye',
         status: sanitizedBody.status || 'AKTİF',
