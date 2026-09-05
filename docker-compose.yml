@@ -21,6 +21,14 @@ services:
       - pgdata:/var/lib/postgresql/data
       # Auto-initialize schema on first startup
       - ./backend/src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      # OPS-1103 AC: "Migration ve seed otomatik çalışmalıdır" — önceden
+      # yalnızca şema otomatik uygulanıyordu, demo giriş bilgilerini
+      # (kullanıcılar/firmalar/araçlar) içeren seed_mock_data.sql'i yeni bir
+      # geliştirici İLK `docker compose up`'tan sonra ELLE (docker exec ile)
+      # çalıştırmak zorundaydı — bu olmadan sisteme giriş yapacak hiçbir
+      # kullanıcı yoktu. docker-entrypoint-initdb.d dosyaları ADI SIRASINA
+      # göre çalıştırır, bu yüzden 02- öneki şemadan SONRA çalışmasını garanti eder.
+      - ./backend/src/db/seed_mock_data.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-yakittakip_db}"]
       interval: 10s
