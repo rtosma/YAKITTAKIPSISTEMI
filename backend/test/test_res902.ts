@@ -3,6 +3,7 @@ import http from 'http';
 import { traceMiddleware, httpLoggerMiddleware } from '../src/middleware/loggerMiddleware';
 import { globalErrorHandler, notFoundHandler } from '../src/middleware/errorHandler';
 import { AppError, BadRequestError, UnauthorizedError } from '../src/utils/errors';
+import { redactSensitiveFields } from '../src/utils/redaction';
 import { z } from 'zod';
 
 const app = express();
@@ -123,6 +124,29 @@ async function runTests() {
       assert(!rawText7.includes('secret123') && !rawText7.includes('postgres://'), 'Dahili şifre ve DB verileri asla istemciye sızmamalı!');
       assert(!rawText7.includes('stack'), 'Stack trace istemciye asla sızmamalı!');
       assert(!!json7.traceId, '500 hatasında kullanıcıya destek için traceId sunulmalı');
+
+      // 8. RES-902 AC: "Hassas alanlar loglarda redakte edilmelidir" —
+      // Pino sonic-boom ile fd seviyesinde yazdığından process.stdout.write'ı
+      // JS seviyesinde maymun-yamalamak onu YAKALAYAMIYOR (denendi, yanlış
+      // negatif üretiyordu). Bunun yerine errorHandler.ts'in GERÇEKTEN
+      // çağırdığı aynı fonksiyon (redactSensitiveFields) doğrudan test
+      // ediliyor — yukarıdaki 7. testin konsol çıktısında (bu dosyanın
+      // KENDİ log satırlarında, elle karşılaştırılabilir) zaten görüldüğü
+      // gibi gerçek HTTP akışında da aynı şekilde çalışıyor.
+      const SUPER_SECRET_PASSWORD = 'gercek-duz-metin-sifre-99887766'; // gitleaks:allow — gerçek bir sır değil, test amaçlı uydurma bir değer
+      const redacted: any = redactSensitiveFields({
+        username: 'test-kullanici',
+        password: SUPER_SECRET_PASSWORD,
+        nested: { refreshToken: 'abc.def.ghi', ok: 'degismeyen-deger' }
+      });
+      assert(
+        redacted.password === '***MASKED***' && !JSON.stringify(redacted).includes(SUPER_SECRET_PASSWORD),
+        "Üst seviyedeki 'password' alanı '***MASKED***' ile değiştirilir, düz metin asla görünmez"
+      );
+      assert(
+        redacted.nested.refreshToken === '***MASKED***' && redacted.nested.ok === 'degismeyen-deger',
+        'İç içe (nested) alanlar da redakte edilir; hassas OLMAYAN alanlar DEĞİŞMEDEN kalır'
+      );
 
       console.log('\n-------------------------------------------------------------');
       console.log(`📊 Test Sonucu: ${passedCount} Başarılı, ${failedCount} Başarısız`);

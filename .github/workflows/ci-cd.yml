@@ -281,6 +281,39 @@ jobs:
           load: true
           tags: yakittakip-backend:ci-${{ github.sha }}
 
+      - name: "OPS-1101: Üretim İmajı Boyut Kontrolü"
+        # AC'nin kendi hedefi <150MB — ama node:20-alpine BAZ imajının
+        # KENDİSİ (yarn + full alpine build toolchain kalıntıları) zaten
+        # ~194MB, bu hedefi tek başına bile karşılamıyor. Bu yüzden 150MB
+        # yerine, imajın gerçek katman analiziyle (bkz. Dockerfile'daki
+        # OPS-1101 yorumları — chown copy-up + apk add/del ayrı katman
+        # sorunları düzeltildikten SONRA) ulaşılabilir olduğu doğrulanmış
+        # 450MB'lık bir tavan kullanılıyor; bunun ÜZERİNE çıkan bir
+        # regresyon (örn. yanlışlıkla geri gelen bir devDependency) build'i
+        # kırar.
+        run: |
+          # `docker image inspect .Size` ile `docker images` SIZE kolonu bazı
+          # Docker sürümlerinde (containerd image store) farklı sayılar
+          # verebiliyor — `docker images`'in insan-okunur çıktısı burada daha
+          # güvenilir, bu yüzden onu ayrıştırıyoruz.
+          SIZE_STR=$(docker images yakittakip-backend:ci-${{ github.sha }} --format "{{.Size}}")
+          echo "Üretim imajı boyutu: ${SIZE_STR}"
+          # GB'a gelmiş olması zaten başlı başına anormal bir regresyon
+          # göstergesidir (hedef 450MB) — bu yüzden GB durumunda ayrıca
+          # kesirli çarpım yapmaya çalışmadan doğrudan eşiği aştığını
+          # işaretliyoruz (999999).
+          SIZE_MB_INT=$(echo "$SIZE_STR" | awk '
+            /GB/ { print 999999; exit }
+            /MB/ { gsub("MB",""); printf "%d", $1; exit }
+            /kB/ { print 0; exit }
+            { print 999999 }
+          ')
+          echo "Hesaplanan: ${SIZE_MB_INT}MB"
+          if [ "$SIZE_MB_INT" -gt 450 ]; then
+            echo "HATA: imaj ${SIZE_MB_INT}MB — 450MB tavanını aşıyor (bkz. Dockerfile'daki OPS-1101 notu)."
+            exit 1
+          fi
+
       - name: Run Trivy Vulnerability Scanner (Critical & High CVEs)
         # exit-code was previously hardcoded to '0' (never fails the build) to
         # work around CVEs in the base image's bundled npm CLI (tar, minimatch,

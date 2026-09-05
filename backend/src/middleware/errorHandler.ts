@@ -3,6 +3,7 @@ import { ZodError } from 'zod';
 import { AppError, getZodIssues } from '../utils/errors';
 import { logger } from '../utils/logger';
 import { getTraceId, getLoggingTenantContext } from '../utils/requestContext';
+import { redactSensitiveFields } from '../utils/redaction';
 
 /**
  * 404 Not Found Middleware for unhandled routes
@@ -119,7 +120,11 @@ export const globalErrorHandler = (
     userId,
     path: req.originalUrl,
     method: req.method,
-    body: req.body,
+    // RES-902 AC: "Hassas alanlar loglarda redakte edilmelidir" — bir login/
+    // parola-değiştirme isteği sırasında beklenmeyen bir 500 oluşursa, gövde
+    // olduğu gibi loglanırsa parola/secret DÜZ METİN olarak log dosyasına
+    // yazılırdı (KVKK/COMP-606 ihlali riski, ticket'ın kendi notu).
+    body: redactSensitiveFields(req.body),
   }, `💥 [CRITICAL_UNHANDLED_EXCEPTION] ${err.message || 'Bilinmeyen Sunucu Hatası'}`);
 
   // Secure client response: NEVER expose stack traces or internal DB/system details to the client
