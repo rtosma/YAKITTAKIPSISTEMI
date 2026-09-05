@@ -12,7 +12,7 @@ import { pool } from './db/postgresPool';
 import { redisPool } from './db/redisPool';
 import { mqttService } from './iot/mqttClient';
 import routes from './routes/routes';
-import { REGISTERED_HARDWARE_DEVICES } from './middleware/hardwareAuthMiddleware';
+import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing } from './db/adminDb';
 import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
 
@@ -119,55 +119,77 @@ app.use(globalErrorHandler);
 const httpServer = http.createServer(app);
 initSocketServer(httpServer);
 
-const server = httpServer.listen(PORT, () => {
-  logger.info({
-    port: PORT,
-    environment: config.NODE_ENV,
-    features: ['AsyncLocalStorage RLS', 'HMAC Auth', 'Pino Logger', 'Global Exception Filter', 'Graceful Shutdown', 'MQTT & LWT', 'Socket.io'],
-  }, `🚀 [OPS-1101] Yakıttakip Backend Sunucusu Başlatıldı!`);
+/**
+ * AUTH-202.3: eski statik REGISTERED_HARDWARE_DEVICES'ın yerini alan 3 demo
+ * cihazının hardware_devices tablosuna taşınması, sunucu dinlemeye
+ * BAŞLAMADAN ÖNCE tamamlanmalı — aksi halde ilk gelen donanım istekleri
+ * (örn. CI'daki testHardwareAuth.ts, /health yeşil olur olmaz başlar) cihazı
+ * "kayıtlı değil" bulup 401 alabilir (bkz. adminDb.ts
+ * seedLegacyHardwareDevicesIfMissing).
+ */
+async function startServer(): Promise<void> {
+  await seedLegacyHardwareDevicesIfMissing({
+    HW_SECRET_ESP32_PUMP_01: config.HW_SECRET_ESP32_PUMP_01,
+    HW_SECRET_ESP32_TANK_01: config.HW_SECRET_ESP32_TANK_01,
+    HW_SECRET_ESP32_FLOW_ISR: config.HW_SECRET_ESP32_FLOW_ISR
+  });
 
-  // Start MQTT Listener
-  if (config.MQTT_URL !== '__CI_SKIP__') {
-    mqttService.connect();
-  }
-});
+  const server = httpServer.listen(PORT, () => {
+    logger.info({
+      port: PORT,
+      environment: config.NODE_ENV,
+      features: ['AsyncLocalStorage RLS', 'HMAC Auth', 'Pino Logger', 'Global Exception Filter', 'Graceful Shutdown', 'MQTT & LWT', 'Socket.io'],
+    }, `🚀 [OPS-1101] Yakıttakip Backend Sunucusu Başlatıldı!`);
 
-// FUEL-401.3 AC: "15 saniye heartbeat gelmezse oturum düşürülmelidir." Bu
-// kontrol REQUEST-DRIVEN olamaz — cihaz tamamen çökmüşse (heartbeat isteği
-// hiç gelmiyor) hiçbir route tetiklenmez, bu yüzden sunucu periyodik olarak
-// KENDİSİ tüm kayıtlı cihazların oturumlarını süpürür. Ticket'ın önerdiği
-// BullMQ delayed job yerine (bu kod tabanında BullMQ yok) mevcut
-// mqttClient.ts'in manuel-backoff deseniyle tutarlı düz bir setInterval.
-const DISPENSE_TIMEOUT_SWEEP_MS = 5000;
-const dispenseTimeoutSweepInterval = setInterval(async () => {
-  try {
-    const timedOutSessions = await sweepTimedOutSessions(Object.keys(REGISTERED_HARDWARE_DEVICES));
-    for (const session of timedOutSessions) {
-      mqttService.publishCommand(session.deviceId, 'FORCE_CUTOFF', { reason: 'HEARTBEAT_TIMEOUT', sessionId: session.sessionId });
-      broadcastToTenant(session.tenantId, 'dispense:session', session);
+    // Start MQTT Listener
+    if (config.MQTT_URL !== '__CI_SKIP__') {
+      mqttService.connect();
     }
-  } catch (err) {
-    logger.error({ err }, '🚨 [FUEL-401] Heartbeat zaman aşımı süpürmesi başarısız.');
-  }
-}, DISPENSE_TIMEOUT_SWEEP_MS);
+  });
 
-// Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
-setupGracefulShutdown(server, {
-  timeoutMs: 30000,
-  onShutdown: async () => {
-    logger.info(`🔌 [Shutdown] Eknak kaynak temizliği çalıştırılıyor...`);
+  // FUEL-401.3 AC: "15 saniye heartbeat gelmezse oturum düşürülmelidir." Bu
+  // kontrol REQUEST-DRIVEN olamaz — cihaz tamamen çökmüşse (heartbeat isteği
+  // hiç gelmiyor) hiçbir route tetiklenmez, bu yüzden sunucu periyodik olarak
+  // KENDİSİ tüm kayıtlı cihazların oturumlarını süpürür. Ticket'ın önerdiği
+  // BullMQ delayed job yerine (bu kod tabanında BullMQ yok) mevcut
+  // mqttClient.ts'in manuel-backoff deseniyle tutarlı düz bir setInterval.
+  const DISPENSE_TIMEOUT_SWEEP_MS = 5000;
+  const dispenseTimeoutSweepInterval = setInterval(async () => {
+    try {
+      const registeredDevices = await getAllHardwareDevices();
+      const timedOutSessions = await sweepTimedOutSessions(registeredDevices.map((d) => d.device_id));
+      for (const session of timedOutSessions) {
+        mqttService.publishCommand(session.deviceId, 'FORCE_CUTOFF', { reason: 'HEARTBEAT_TIMEOUT', sessionId: session.sessionId });
+        broadcastToTenant(session.tenantId, 'dispense:session', session);
+      }
+    } catch (err) {
+      logger.error({ err }, '🚨 [FUEL-401] Heartbeat zaman aşımı süpürmesi başarısız.');
+    }
+  }, DISPENSE_TIMEOUT_SWEEP_MS);
 
-    clearInterval(dispenseTimeoutSweepInterval);
+  // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
+  setupGracefulShutdown(server, {
+    timeoutMs: 30000,
+    onShutdown: async () => {
+      logger.info(`🔌 [Shutdown] Eknak kaynak temizliği çalıştırılıyor...`);
 
-    // MQTT, Redis ve Postgres birbirinden bağımsız kaynaklar — sırayla değil
-    // birlikte kapatılır, toplam kapanış süresi üçünün toplamı değil en
-    // yavaşı kadar sürer.
-    await Promise.all([
-      mqttService.disconnect(),
-      redisPool.close(),
-      pool.end()
-    ]);
-  },
+      clearInterval(dispenseTimeoutSweepInterval);
+
+      // MQTT, Redis ve Postgres birbirinden bağımsız kaynaklar — sırayla değil
+      // birlikte kapatılır, toplam kapanış süresi üçünün toplamı değil en
+      // yavaşı kadar sürer.
+      await Promise.all([
+        mqttService.disconnect(),
+        redisPool.close(),
+        pool.end()
+      ]);
+    },
+  });
+}
+
+startServer().catch((err) => {
+  logger.fatal({ err }, '🔥 [Bootstrap] Sunucu başlatılamadı.');
+  process.exit(1);
 });
 
 export default app;

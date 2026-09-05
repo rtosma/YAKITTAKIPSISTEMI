@@ -5,6 +5,7 @@ import { generateId } from '../utils/id';
 import { hashPassword, verifyPassword } from '../utils/password';
 import { generateReadableUsername, generateTempPassword } from '../utils/tempCredentials';
 import { writeAuditLog } from '../utils/auditLog';
+import { encryptDeviceSecret, generateDeviceSecret } from '../utils/hardwareSecretCrypto';
 import { withTenant } from './withTenant';
 
 /**
@@ -1125,4 +1126,133 @@ export async function getAuditLogs(limit = 100): Promise<AuditLogRecord[]> {
     );
     return result.rows;
   });
+}
+
+// ============================================================================
+// AUTH-202.3 — Cihaz Provisioning, Rotasyon ve Bloke Etme (Tenant İçi)
+// ============================================================================
+// Kimlik doğrulama sırasındaki device_id→tenant_id aramasının aksine
+// (bkz. adminDb.ts getHardwareDeviceByDeviceId, henüz tenant context'i
+// yokken çalışır), buradaki her fonksiyon JWT ile kimliği doğrulanmış bir
+// SUPER_ADMIN/COMPANY_OWNER'ın KENDİ tenant'ı için çağrılır — withTenant()
+// üzerinden normal RLS akışına tabidir.
+
+export interface TenantHardwareDeviceRecord {
+  id: string;
+  device_id: string;
+  name: string;
+  site_name: string;
+  status: string;
+  secret_rotated_at: string | null;
+  previous_secret_expires_at: string | null;
+  created_at: string;
+}
+
+// Secret sütunları (encrypted_secret*) BİLEREK seçilmiyor — bu liste ucu
+// provisioning/rotasyon dışında hiçbir zaman şifreli de olsa secret
+// döndürmemeli (AC: "tek seferlik gösterim").
+const HARDWARE_DEVICE_PUBLIC_COLUMNS = 'id, device_id, name, site_name, status, secret_rotated_at, previous_secret_expires_at, created_at';
+
+export async function getTenantHardwareDevices(): Promise<TenantHardwareDeviceRecord[]> {
+  return withTenant(async (client) => {
+    const result = await client.query(`SELECT ${HARDWARE_DEVICE_PUBLIC_COLUMNS} FROM hardware_devices ORDER BY created_at DESC`);
+    return result.rows;
+  });
+}
+
+/**
+ * AC: "Provisioning sırasında secret'ın tek seferlik gösterimi." Üretilen
+ * düz metin secret yalnızca bu fonksiyonun DÖNÜŞ DEĞERİNDE bulunur — DB'ye
+ * yalnızca şifrelenmiş hali yazılır, bir daha asla geri okunamaz.
+ */
+export async function createHardwareDevice(data: {
+  deviceId: string;
+  name: string;
+  siteName: string;
+}): Promise<{ device: TenantHardwareDeviceRecord; secret: string }> {
+  return withTenant(async (client, tenantId) => {
+    const existing = await client.query('SELECT 1 FROM hardware_devices WHERE device_id = $1', [data.deviceId]);
+    if (existing.rows.length > 0) {
+      throw new ConflictError(`'${data.deviceId}' kimlikli bir cihaz zaten kayıtlı.`, { error: 'DEVICE_ID_TAKEN' });
+    }
+
+    const id = generateId('hwdev');
+    const secret = generateDeviceSecret();
+    const result = await client.query(
+      `INSERT INTO hardware_devices (id, tenant_id, device_id, name, site_name, encrypted_secret)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING ${HARDWARE_DEVICE_PUBLIC_COLUMNS}`,
+      [id, tenantId, data.deviceId, data.name, data.siteName, encryptDeviceSecret(secret)]
+    );
+
+    await writeAuditLog(client, {
+      action: 'HARDWARE_DEVICE_PROVISIONED',
+      targetType: 'hardware_device',
+      targetId: data.deviceId,
+      afterValue: { name: data.name, siteName: data.siteName }
+    });
+
+    return { device: result.rows[0], secret };
+  });
+}
+
+/**
+ * AC: "Uzaktan secret rotasyonu komutu ve geçiş süresince iki secret'ın da
+ * geçerli olması." Mevcut secret `encrypted_secret_previous`'a taşınır ve
+ * previous_secret_expires_at ile 24 saatlik bir geçiş penceresi açılır —
+ * hardwareAuthMiddleware bu pencere içinde HER İKİ secret'ı da dener.
+ */
+const SECRET_ROTATION_GRACE_PERIOD_MS = 24 * 60 * 60 * 1000;
+
+export async function rotateHardwareDeviceSecret(deviceId: string): Promise<{ device: TenantHardwareDeviceRecord; secret: string }> {
+  return withTenant(async (client) => {
+    const current = await client.query('SELECT encrypted_secret FROM hardware_devices WHERE device_id = $1', [deviceId]);
+    if (current.rows.length === 0) {
+      throw new NotFoundError(`'${deviceId}' kimlikli bir cihaz bulunamadı.`, { error: 'DEVICE_NOT_FOUND' });
+    }
+
+    const newSecret = generateDeviceSecret();
+    const previousExpiresAt = new Date(Date.now() + SECRET_ROTATION_GRACE_PERIOD_MS);
+    const result = await client.query(
+      `UPDATE hardware_devices
+       SET encrypted_secret = $1, encrypted_secret_previous = $2, previous_secret_expires_at = $3, secret_rotated_at = CURRENT_TIMESTAMP
+       WHERE device_id = $4
+       RETURNING ${HARDWARE_DEVICE_PUBLIC_COLUMNS}`,
+      [encryptDeviceSecret(newSecret), current.rows[0].encrypted_secret, previousExpiresAt.toISOString(), deviceId]
+    );
+
+    await writeAuditLog(client, {
+      action: 'HARDWARE_DEVICE_SECRET_ROTATED',
+      targetType: 'hardware_device',
+      targetId: deviceId,
+      afterValue: { previousSecretExpiresAt: previousExpiresAt.toISOString() }
+    });
+
+    return { device: result.rows[0], secret: newSecret };
+  });
+}
+
+async function setHardwareDeviceStatus(deviceId: string, status: 'AKTİF' | 'BLOKE', auditAction: string): Promise<TenantHardwareDeviceRecord> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      `UPDATE hardware_devices SET status = $1 WHERE device_id = $2 RETURNING ${HARDWARE_DEVICE_PUBLIC_COLUMNS}`,
+      [status, deviceId]
+    );
+    if (result.rows.length === 0) {
+      throw new NotFoundError(`'${deviceId}' kimlikli bir cihaz bulunamadı.`, { error: 'DEVICE_NOT_FOUND' });
+    }
+
+    await writeAuditLog(client, { action: auditAction, targetType: 'hardware_device', targetId: deviceId });
+
+    return result.rows[0];
+  });
+}
+
+/** AC: "Sızıntı şüphesinde cihazın anında bloke edilmesi." */
+export async function blockHardwareDevice(deviceId: string): Promise<TenantHardwareDeviceRecord> {
+  return setHardwareDeviceStatus(deviceId, 'BLOKE', 'HARDWARE_DEVICE_BLOCKED');
+}
+
+export async function unblockHardwareDevice(deviceId: string): Promise<TenantHardwareDeviceRecord> {
+  return setHardwareDeviceStatus(deviceId, 'AKTİF', 'HARDWARE_DEVICE_UNBLOCKED');
 }

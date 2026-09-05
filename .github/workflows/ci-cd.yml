@@ -26,6 +26,7 @@ jobs:
       HW_SECRET_ESP32_TANK_01: ci_only_unused
       HW_SECRET_ESP32_FLOW_ISR: ci_only_unused
       TRANSACTION_HASH_SECRET: ci_only_unused
+      HW_SECRET_ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
     steps:
       - name: Checkout Repository
@@ -87,6 +88,10 @@ jobs:
       HW_SECRET_ESP32_TANK_01: ci_only_hw_secret_tank_${{ github.run_id }}
       HW_SECRET_ESP32_FLOW_ISR: ci_only_hw_secret_flow_${{ github.run_id }}
       TRANSACTION_HASH_SECRET: ci_only_tx_hash_secret_${{ github.run_id }}
+      # AUTH-202.3: tam 64 hex karakter olmak ZORUNDA (AES-256-GCM anahtarı,
+      # bkz. config/env.ts'in regex doğrulaması) — diğer ci_only_* değerleri
+      # gibi rastgele bir metin OLAMAZ.
+      HW_SECRET_ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     services:
       postgres:
         image: postgres:16-alpine
@@ -184,6 +189,9 @@ jobs:
 
       - name: Run FUEL-401 RFID Dispense Session State Machine Tests
         run: cd backend && npx tsx test/test_fuel401_dispense_session.ts
+
+      - name: Run AUTH-202.3 Hardware Device Secret Lifecycle Tests
+        run: cd backend && npx tsx test/test_auth2023_hardware_device_lifecycle.ts
 
       - name: Dump Backend Log on Failure
         if: failure()

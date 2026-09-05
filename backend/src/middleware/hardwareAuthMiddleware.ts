@@ -1,45 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
-import { config } from '../config/env';
 import { redisPool } from '../db/redisPool';
+import { getHardwareDeviceByDeviceId } from '../db/adminDb';
+import { decryptDeviceSecret } from '../utils/hardwareSecretCrypto';
 import { logger } from '../utils/logger';
-
-// OPS-1105: cihaz sırları önceden burada düz metin olarak duruyordu — repo
-// geneli bir gitleaks taraması bunu gerçek bir sızıntı olarak işaretledi.
-// Artık config/env.ts (Zod ile doğrulanmış ortam değişkenleri) üzerinden
-// okunuyor; yalnızca cihaz ADI/ŞANTİYESİ gibi sır OLMAYAN metadata burada.
-// AUTH-202.3 (cihaz secret üretimi/saklanması/rotasyonu) henüz
-// yapılmadığından bunlar hâlâ statik/sabit sırlar — bu değişiklik yalnızca
-// "kaynak kodunda düz metin secret" sorununu çözüyor, tam yaşam döngüsü
-// yönetimini değil.
-// FUEL-401: withTenant()/tenantDb.ts fonksiyonları RLS'in devreye girmesi
-// için AsyncLocalStorage'da bir tenantId bekler (bkz. context/tenantContext.ts)
-// — ama donanım kimlik doğrulaması JWT değil HMAC olduğundan bu context'i
-// dolduracak bir token yok. AUTH-202.3 (gerçek çoklu-kiracı cihaz
-// provisioning'i) henüz yapılmadığından, hangi cihazın hangi kiracıya ait
-// olduğu burada REGISTERED_HARDWARE_DEVICES'a statik olarak eklendi — bu,
-// mqttClient.ts'in tenantId'yi MQTT topic'inden ayrıştırmasının HTTP
-// kanalındaki karşılığı (orada topic'ten geliyor, burada cihaz kaydından).
-export const REGISTERED_HARDWARE_DEVICES: Record<string, { secret: string; name: string; siteName: string; tenantId: string }> = {
-  'ESP32-PUMP-01': {
-    secret: config.HW_SECRET_ESP32_PUMP_01,
-    name: 'Gebze Pompa Otomasyonu #1',
-    siteName: 'Gebze Ana Şantiye',
-    tenantId: 'comp-camsa'
-  },
-  'ESP32-TANK-01': {
-    secret: config.HW_SECRET_ESP32_TANK_01,
-    name: 'Gebze Ultrasonik Tank Probu #1',
-    siteName: 'Gebze Ana Şantiye',
-    tenantId: 'comp-camsa'
-  },
-  'ESP32-FLOW-ISR': {
-    secret: config.HW_SECRET_ESP32_FLOW_ISR,
-    name: 'Debimetre Kesme Sensörü',
-    siteName: 'Sistem Kalibrasyonu',
-    tenantId: 'comp-camsa'
-  }
-};
 
 // AUTH-202.2 — 30sn'lik timestamp penceresinden BÜYÜK olmalı (ticket notu):
 // bir nonce, kabul edilebilir en eski paketten bile daha uzun süre Redis'te
@@ -87,11 +51,31 @@ function reject(res: Response, status: number, error: string, message: string): 
 }
 
 /**
+ * Bir secret'ın, alınan imzayla eşleşip eşleşmediğini timing-attack'e
+ * dayanıklı şekilde kontrol eder. AUTH-202.3'ün "rotasyon sırasında iki
+ * secret de geçerli" AC'si için hem güncel hem önceki secret'a karşı
+ * (varsa) çağrılır.
+ */
+function signatureMatches(secret: string, payloadToSign: string, receivedBuf: Buffer): boolean {
+  const expectedBuf = Buffer.from(
+    crypto.createHmac('sha256', secret).update(payloadToSign).digest('hex'),
+    'hex'
+  );
+  return expectedBuf.length === receivedBuf.length && crypto.timingSafeEqual(expectedBuf, receivedBuf);
+}
+
+/**
  * AUTH-202 Hardware Authentication Middleware
  * Validates HMAC-SHA256 signatures from ESP32 & IoT hardware devices.
  * Protects against Data Tampering, Timing Attacks, and Replay Attacks
  * (AUTH-202.2: 30sn timestamp penceresi + Redis'te TTL'li tek-kullanımlık
  * nonce — bkz. issue #32).
+ *
+ * AUTH-202.3: cihaz kaydı artık statik bir sabit (REGISTERED_HARDWARE_DEVICES)
+ * değil, hardware_devices tablosunda — secret'lar AES-256-GCM ile şifreli
+ * saklanır, uzaktan rotasyon ve bloke etme desteklenir (bkz. adminDb.ts
+ * getHardwareDeviceByDeviceId, tenantDb.ts createHardwareDevice/
+ * rotateHardwareDeviceSecret/blockHardwareDevice).
  */
 export const hardwareAuthMiddleware = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
@@ -109,12 +93,20 @@ export const hardwareAuthMiddleware = async (req: Request, res: Response, next: 
       );
     }
 
-    // 2. Device Secret Retrieval (nonce/timestamp reddi de bu cihaza karşı
+    // 2. Device Lookup (nonce/timestamp reddi de bu cihaza karşı
     // sayaçlanacağı için önce cihazın gerçekten kayıtlı olduğunu doğrula)
-    const deviceConfig = REGISTERED_HARDWARE_DEVICES[deviceId];
-    if (!deviceConfig) {
+    const device = await getHardwareDeviceByDeviceId(deviceId);
+    if (!device) {
       await recordRejection(deviceId, 'UNAUTHORIZED_DEVICE');
       return reject(res, 401, 'UNAUTHORIZED_DEVICE', `Cihaz ('${deviceId}') yetkilendirilmemiş veya sisteme kayıtlı değil.`);
+    }
+
+    // AC: "Sızıntı şüphesinde cihazın anında bloke edilmesi" — bloke edilen
+    // cihazın paketleri, imza doğru olsa bile, HİÇBİR kontrole geçmeden
+    // reddedilir.
+    if (device.status === 'BLOKE') {
+      await recordRejection(deviceId, 'DEVICE_BLOCKED');
+      return reject(res, 403, 'DEVICE_BLOCKED', `Cihaz ('${deviceId}') bloke edilmiş.`);
     }
 
     // 3. Replay Attack Protection (30-second sliding time window, ileri/geri sapma)
@@ -151,15 +143,11 @@ export const hardwareAuthMiddleware = async (req: Request, res: Response, next: 
     const rawBodyBuf: Buffer = (req as any).rawBody || Buffer.from(JSON.stringify(req.body || {}));
     const payloadToSign = `${timestampHeader}.${nonceHeader}.${rawBodyBuf.toString('utf8')}`;
 
-    const computedHmacHex = crypto
-      .createHmac('sha256', deviceConfig.secret)
-      .update(payloadToSign)
-      .digest('hex');
-
-    // 5. Timing Attack Prevention (crypto.timingSafeEqual)
-    const expectedBuf = Buffer.from(computedHmacHex, 'hex');
+    // 5. Timing Attack Prevention (crypto.timingSafeEqual) — önce güncel
+    // secret, eşleşmezse (ve rotasyon geçiş penceresi hâlâ açıksa) önceki
+    // secret denenir (AUTH-202.3 AC: "rotasyon sırasında iki secret de
+    // geçerli olmalı").
     let receivedBuf: Buffer;
-
     try {
       receivedBuf = Buffer.from(receivedSignature, 'hex');
     } catch {
@@ -167,9 +155,24 @@ export const hardwareAuthMiddleware = async (req: Request, res: Response, next: 
       return reject(res, 401, 'INVALID_SIGNATURE_FORMAT', 'X-Hardware-Signature geçerli bir hex dizisi olmalıdır.');
     }
 
-    if (expectedBuf.length !== receivedBuf.length || !crypto.timingSafeEqual(expectedBuf, receivedBuf)) {
+    let matched = signatureMatches(decryptDeviceSecret(device.encrypted_secret), payloadToSign, receivedBuf);
+    let usedPreviousSecret = false;
+
+    if (!matched && device.encrypted_secret_previous && device.previous_secret_expires_at &&
+      new Date(device.previous_secret_expires_at).getTime() > Date.now()) {
+      matched = signatureMatches(decryptDeviceSecret(device.encrypted_secret_previous), payloadToSign, receivedBuf);
+      usedPreviousSecret = true;
+    }
+
+    if (!matched) {
       await recordRejection(deviceId, 'INVALID_HARDWARE_SIGNATURE');
       return reject(res, 401, 'INVALID_HARDWARE_SIGNATURE', 'Kriptografik imza doğrulaması başarısız. Veri manipüle edilmiş veya anahtar hatalı.');
+    }
+
+    if (usedPreviousSecret) {
+      // Cihaz rotasyon komutunu henüz almamış — sahada kesinti yaşanmadı
+      // (istek kabul edildi) ama operasyon ekibinin bunu görmesi gerekiyor.
+      logger.warn({ deviceId }, `⚠️ [AUTH-202.3] '${deviceId}' hâlâ ROTASYONDAN ÖNCEKİ secret'ı kullanıyor (geçiş penceresi içinde kabul edildi).`);
     }
 
     // 6. Nonce Reuse Check — yalnızca imza doğrulandıktan SONRA Redis'e
@@ -187,9 +190,9 @@ export const hardwareAuthMiddleware = async (req: Request, res: Response, next: 
     // 7. Attach Authenticated Hardware Info to Request Context
     (req as any).authenticatedHardware = {
       deviceId,
-      name: deviceConfig.name,
-      siteName: deviceConfig.siteName,
-      tenantId: deviceConfig.tenantId,
+      name: device.name,
+      siteName: device.site_name,
+      tenantId: device.tenant_id,
       timestampMs
     };
 

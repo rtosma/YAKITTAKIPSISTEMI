@@ -1,6 +1,7 @@
 import { pool } from './postgresPool';
 import { hashPassword } from '../utils/password';
 import { generateId } from '../utils/id';
+import { encryptDeviceSecret } from '../utils/hardwareSecretCrypto';
 
 /**
  * SUPER_ADMIN'e özel, tek bir tenant'a kısıtlı OLMAYAN sorgular. Diğer
@@ -208,4 +209,83 @@ export async function updateCompanyAdmin(
   const updated = all.find((c) => c.id === id);
   if (!updated) throw new Error('Firma bulunamadı.');
   return updated;
+}
+
+// ============================================================================
+// AUTH-202.3 — Cihaz Kaydı Arama (Pre-Tenant-Context)
+// ============================================================================
+
+export interface HardwareDeviceRecord {
+  id: string;
+  tenant_id: string;
+  device_id: string;
+  name: string;
+  site_name: string;
+  encrypted_secret: string;
+  encrypted_secret_previous: string | null;
+  previous_secret_expires_at: string | null;
+  secret_rotated_at: string | null;
+  status: string;
+}
+
+/**
+ * hardwareAuthMiddleware.ts'in TEK giriş noktası: bir HMAC isteği geldiğinde
+ * hangi tenant'a ait olduğu HENÜZ bilinmiyor (login öncesi kullanıcı aramayla
+ * aynı durum) — bu yüzden burada, withTenant() DIŞINDA, ham pool.query ile
+ * device_id'den tüm kaydı (tenant_id dahil) bulunur. Bundan sonraki HER işlem
+ * (provisioning/rotasyon/bloke etme) tenantDb.ts üzerinden, JWT ile kurulan
+ * gerçek tenant context'iyle RLS'e tabi olarak yapılır.
+ */
+export async function getHardwareDeviceByDeviceId(deviceId: string): Promise<HardwareDeviceRecord | null> {
+  const result = await pool.query('SELECT * FROM hardware_devices WHERE device_id = $1', [deviceId]);
+  return result.rows[0] ?? null;
+}
+
+export interface AdminHardwareDeviceSummary {
+  device_id: string;
+  tenant_id: string;
+  name: string;
+  site_name: string;
+  status: string;
+}
+
+/**
+ * SUPER_ADMIN'e özel, TÜM tenant'lardaki cihazların (secret hariç) listesi
+ * — GET /devices route'unda kullanılır. index.ts'teki FUEL-401.3 heartbeat
+ * zaman aşımı süpürücüsü de kontrol edilecek cihaz listesini buradan alır
+ * (tenant bazlı filtrelemeye gerek yok, sistem geneli bir bakım işi).
+ */
+export async function getAllHardwareDevices(): Promise<AdminHardwareDeviceSummary[]> {
+  const result = await pool.query('SELECT device_id, tenant_id, name, site_name, status FROM hardware_devices ORDER BY created_at DESC');
+  return result.rows;
+}
+
+// AUTH-202.3 öncesi (AUTH-202.1/OPS-1105), 3 demo cihazının sırları
+// hardwareAuthMiddleware.ts'te REGISTERED_HARDWARE_DEVICES adlı statik bir
+// nesnede, HW_SECRET_ESP32_* ortam değişkenlerinden okunuyordu. Bu fonksiyon
+// sunucu ilk açıldığında (bkz. index.ts) o 3 cihazı, AYNI env değişken
+// değerleriyle (geriye dönük uyumluluk — sahadaki cihazlar hâlâ bu sırları
+// kullanıyor) yeni hardware_devices tablosuna BİR KEZ taşır. ON CONFLICT
+// DO NOTHING sayesinde zaten rotasyona uğramış bir cihazın secret'ını
+// asla ÜZERİNE YAZMAZ — yalnızca tablo hiç yoksa (ilk açılış) devreye girer.
+// Değerler değil, ortam değişkeni İSİMLERİ — gitleaks bunları yüksek entropili
+// dizgeler olarak yanlışlıkla işaretliyor (env.ts'teki aynı desenle tutarlı).
+const LEGACY_DEVICES: Array<{ deviceId: string; name: string; siteName: string; secretEnvVar: string }> = [
+  { deviceId: 'ESP32-PUMP-01', name: 'Gebze Pompa Otomasyonu #1', siteName: 'Gebze Ana Şantiye', secretEnvVar: 'HW_SECRET_ESP32_PUMP_01' }, // gitleaks:allow
+  { deviceId: 'ESP32-TANK-01', name: 'Gebze Ultrasonik Tank Probu #1', siteName: 'Gebze Ana Şantiye', secretEnvVar: 'HW_SECRET_ESP32_TANK_01' }, // gitleaks:allow
+  { deviceId: 'ESP32-FLOW-ISR', name: 'Debimetre Kesme Sensörü', siteName: 'Sistem Kalibrasyonu', secretEnvVar: 'HW_SECRET_ESP32_FLOW_ISR' } // gitleaks:allow
+];
+const LEGACY_DEVICE_TENANT_ID = 'comp-camsa';
+
+export async function seedLegacyHardwareDevicesIfMissing(secretsByEnvVar: Record<string, string>): Promise<void> {
+  for (const device of LEGACY_DEVICES) {
+    const secret = secretsByEnvVar[device.secretEnvVar];
+    if (!secret) continue;
+    await pool.query(
+      `INSERT INTO hardware_devices (id, tenant_id, device_id, name, site_name, encrypted_secret)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (device_id) DO NOTHING`,
+      [generateId('hwdev'), LEGACY_DEVICE_TENANT_ID, device.deviceId, device.name, device.siteName, encryptDeviceSecret(secret)]
+    );
+  }
 }

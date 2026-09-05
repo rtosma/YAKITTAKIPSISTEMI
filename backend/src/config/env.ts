@@ -72,7 +72,14 @@ const envSchema = z.object({
   // sırrı. JWT_SECRET'ın yeniden kullanılması BİLİNÇLİ OLARAK tercih
   // edilmedi — token imzalama ile kayıt bütünlüğü farklı tehdit modelleri
   // (biri sızarsa diğerini de tehlikeye atmamalı).
-  TRANSACTION_HASH_SECRET: z.string({ message: 'TRANSACTION_HASH_SECRET tanımlı değil.' }).min(1)
+  TRANSACTION_HASH_SECRET: z.string({ message: 'TRANSACTION_HASH_SECRET tanımlı değil.' }).min(1),
+
+  // AUTH-202.3: hardware_devices.encrypted_secret'ı şifrelemek/çözmek için
+  // kullanılan AES-256-GCM anahtarı (pepper) — tam olarak 32 bayt (64 hex
+  // karakter) olmalı, aksi halde crypto.createCipheriv çalışma zamanında
+  // (ilk cihaz kaydında) patlar; burada fail-fast doğrulanıyor.
+  HW_SECRET_ENCRYPTION_KEY: z.string({ message: 'HW_SECRET_ENCRYPTION_KEY tanımlı değil.' })
+    .regex(/^[0-9a-fA-F]{64}$/, 'HW_SECRET_ENCRYPTION_KEY tam olarak 64 hex karakter (32 bayt) olmalıdır (öneri: openssl rand -hex 32).')
 });
 
 type EnvShape = z.infer<typeof envSchema>;
@@ -121,7 +128,7 @@ function loadConfig(): AppConfig {
     const stillPlaceholder = ([
       'JWT_SECRET', 'JWT_REFRESH_SECRET', 'MQTT_PASSWORD',
       'HW_SECRET_ESP32_PUMP_01', 'HW_SECRET_ESP32_TANK_01', 'HW_SECRET_ESP32_FLOW_ISR', // gitleaks:allow
-      'TRANSACTION_HASH_SECRET'
+      'TRANSACTION_HASH_SECRET', 'HW_SECRET_ENCRYPTION_KEY'
     ] as const).filter((key) => KNOWN_PLACEHOLDER_VALUES.has(data[key]));
 
     if (stillPlaceholder.length > 0) {

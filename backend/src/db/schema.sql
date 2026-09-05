@@ -139,6 +139,44 @@ CREATE TABLE IF NOT EXISTS cross_site_permissions (
 );
 
 -- ==============================================================================
+-- [AUTH-202.3] Cihaz Secret Üretimi, Saklanması ve Rotasyonu
+-- ==============================================================================
+-- Önceden (AUTH-202.1/OPS-1105) cihaz sırları hardwareAuthMiddleware.ts'te
+-- REGISTERED_HARDWARE_DEVICES adlı statik bir sabit nesnedeydi — her cihaz
+-- .env'den okunan SABİT bir sır kullanıyordu, provisioning/rotasyon/bloke
+-- etme yoktu. Bu tablo o statik nesnenin yerini alır.
+--
+-- device_id (ESP32-PUMP-01 gibi insan-okunur kimlik) TENANT'A GÖRE DEĞİL
+-- GLOBAL olarak UNIQUE olmalı: hardwareAuthMiddleware bir isteği doğrularken
+-- HENÜZ hangi tenant'a ait olduğunu bilmiyor (login öncesi kullanıcı arama
+-- ile aynı "pre-tenant-context" durumu, bkz. adminDb.ts
+-- getHardwareDeviceByDeviceId) — device_id'den tenant_id'yi BULMAK için
+-- kullanılan sorgu budur.
+--
+-- Secret DÜZ METİN olarak saklanmaz (AC) ama tek yönlü hash de OLAMAZ —
+-- HMAC doğrulaması için sunucunun sırrı GERİ ÇÖZEBİLMESİ gerekir. Bu yüzden
+-- password_hash gibi Argon2id değil, HW_SECRET_ENCRYPTION_KEY pepper'ıyla
+-- AES-256-GCM simetrik şifreleme kullanılır (bkz. utils/hardwareSecretCrypto.ts).
+CREATE TABLE IF NOT EXISTS hardware_devices (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    device_id VARCHAR(64) NOT NULL UNIQUE,
+    name VARCHAR(128) NOT NULL,
+    site_name VARCHAR(128) NOT NULL,
+    encrypted_secret TEXT NOT NULL,
+    -- Rotasyon sırasında "eski ve yeni secret bir süre birlikte kabul
+    -- edilmeli" (ticket notu) — aksi halde komutu henüz almamış bir cihaz
+    -- sahada kilitlenir. previous_secret_expires_at dolana kadar HER İKİSİ
+    -- de hardwareAuthMiddleware tarafından denenir.
+    encrypted_secret_previous TEXT,
+    previous_secret_expires_at TIMESTAMP WITH TIME ZONE,
+    secret_rotated_at TIMESTAMP WITH TIME ZONE,
+    -- 'AKTİF' | 'BLOKE' — bloke edilen cihazın paketleri anında (403) reddedilir.
+    status VARCHAR(32) NOT NULL DEFAULT 'AKTİF',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ==============================================================================
 -- [AUTH-201] Users Table & Refresh Tokens Rotation Store
 -- ==============================================================================
 
@@ -179,6 +217,7 @@ ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE drivers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cross_site_permissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hardware_devices ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -242,6 +281,7 @@ ALTER TABLE sites FORCE ROW LEVEL SECURITY;
 ALTER TABLE transactions FORCE ROW LEVEL SECURITY;
 ALTER TABLE cross_site_permissions FORCE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
+ALTER TABLE hardware_devices FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -252,6 +292,7 @@ DROP POLICY IF EXISTS sites_tenant_isolation_policy ON sites;
 DROP POLICY IF EXISTS transactions_tenant_isolation_policy ON transactions;
 DROP POLICY IF EXISTS cross_site_permissions_tenant_isolation_policy ON cross_site_permissions;
 DROP POLICY IF EXISTS audit_logs_tenant_isolation_policy ON audit_logs;
+DROP POLICY IF EXISTS hardware_devices_tenant_isolation_policy ON hardware_devices;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -300,6 +341,16 @@ CREATE POLICY cross_site_permissions_tenant_isolation_policy ON cross_site_permi
 -- SELECT/INSERT'i tenant'a kısıtlıyor (FOR ALL zararsız, çünkü UPDATE/DELETE
 -- yetkisi hiç yok).
 CREATE POLICY audit_logs_tenant_isolation_policy ON audit_logs
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- Create Tenant Isolation Policy for hardware_devices — bu politika yalnızca
+-- provisioning/rotasyon/bloke etme gibi TENANT İÇİ (withTenant() üzerinden
+-- geçen, JWT ile kimliği doğrulanmış) işlemlere uygulanır. hardwareAuthMiddleware
+--'in device_id'den tenant bulma sorgusu (adminDb.ts) kasıtlı olarak bunun
+-- DIŞINDA, ham pool.query ile çalışır — henüz bir tenant context'i yoktur.
+CREATE POLICY hardware_devices_tenant_isolation_policy ON hardware_devices
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

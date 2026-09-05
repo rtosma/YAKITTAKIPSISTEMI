@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey } from '../db/tenantDb';
-import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin } from '../db/adminDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices } from '../db/tenantDb';
+import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
@@ -12,6 +12,7 @@ import { createCrossSitePermissionSchema, updateCrossSitePermissionStatusSchema 
 import { createCompanySchema, updateCompanySchema } from '../schemas/companySchema';
 import { loginSchema, changePasswordSchema } from '../schemas/authSchema';
 import { createSiteSchema } from '../schemas/siteSchema';
+import { createHardwareDeviceSchema } from '../schemas/hardwareDeviceSchema';
 import { verifyPassword } from '../utils/password';
 import { NotFoundError } from '../utils/errors';
 import { pool } from '../db/postgresPool';
@@ -24,7 +25,7 @@ import {
   UserRole
 } from '../services/tokenService';
 import { authenticateJWT, authorizeRoles, AuthenticatedRequest } from '../middleware/authMiddleware';
-import { hardwareAuthMiddleware, REGISTERED_HARDWARE_DEVICES } from '../middleware/hardwareAuthMiddleware';
+import { hardwareAuthMiddleware } from '../middleware/hardwareAuthMiddleware';
 import { redisPool } from '../db/redisPool';
 import { broadcastToTenant } from '../socket/socketServer';
 import { logger } from '../utils/logger';
@@ -425,15 +426,16 @@ router.patch(
  */
 router.get('/devices', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const deviceIds = Object.keys(REGISTERED_HARDWARE_DEVICES);
+    const registeredDevices = await getAllHardwareDevices();
     const devices = await Promise.all(
-      deviceIds.map(async (deviceCode) => {
-        const config = REGISTERED_HARDWARE_DEVICES[deviceCode];
-        const status = await redisPool.getDeviceState(deviceCode);
+      registeredDevices.map(async (d) => {
+        const status = await redisPool.getDeviceState(d.device_id);
         return {
-          deviceCode,
-          name: config.name,
-          siteName: config.siteName,
+          deviceCode: d.device_id,
+          name: d.name,
+          siteName: d.site_name,
+          tenantId: d.tenant_id,
+          registrationStatus: d.status,
           status
         };
       })
@@ -443,6 +445,152 @@ router.get('/devices', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (re
     next(error);
   }
 });
+
+/**
+ * AUTH-202.3 — Cihaz Provisioning, Rotasyon ve Bloke Etme (kendi tenant'ı).
+ * SUPER_ADMIN/COMPANY_OWNER dışındaki roller (SITE_MANAGER, PUMP_OPERATOR)
+ * donanım kaydı yönetemez — bu, sahadaki fiziksel cihazların ait olduğu
+ * güvenlik sınırıdır, günlük operasyon değil.
+ */
+const HARDWARE_DEVICE_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /hardware-devices:
+ *   get:
+ *     summary: Kendi Tenant'ının Cihaz Kayıtları (AUTH-202.3)
+ *     description: Secret'lar ASLA döndürülmez — yalnızca provisioning/rotasyon anında, tek seferlik.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cihaz listesi başarıyla getirildi.
+ */
+router.get('/hardware-devices', authenticateJWT, authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const devices = await getTenantHardwareDevices();
+    res.json({ success: true, totalCount: devices.length, data: devices });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /hardware-devices:
+ *   post:
+ *     summary: Yeni Cihaz Provisioning (AUTH-202.3)
+ *     description: >
+ *       256-bit rastgele bir secret üretir, AES-256-GCM ile şifreleyip saklar.
+ *       Üretilen secret yalnızca BU yanıtta düz metin olarak döner — bir daha
+ *       asla geri okunamaz, cihaza güvenli bir kanaldan (QR/tek seferlik) aktarılmalıdır.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cihaz oluşturuldu, secret tek seferlik döndü.
+ */
+router.post(
+  '/hardware-devices',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: createHardwareDeviceSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { device, secret } = await createHardwareDevice(req.body);
+      res.json({
+        success: true,
+        message: 'Cihaz kaydedildi. Secret yalnızca bu yanıtta gösterilecek, tekrar alınamaz.',
+        data: { ...device, secret }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/{deviceId}/rotate-secret:
+ *   post:
+ *     summary: Cihaz Secret Rotasyonu (AUTH-202.3)
+ *     description: >
+ *       Yeni bir secret üretir; eski secret 24 saatlik bir geçiş penceresi
+ *       boyunca da geçerli kalır (henüz komutu almamış cihazlar sahada
+ *       kilitlenmesin diye). Yeni secret yalnızca bu yanıtta döner.
+ *     parameters:
+ *       - in: path
+ *         name: deviceId
+ *         required: true
+ *         schema: { type: string }
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Secret rotasyonu tamamlandı.
+ */
+router.post(
+  '/hardware-devices/:deviceId/rotate-secret',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { device, secret } = await rotateHardwareDeviceSecret(req.params.deviceId);
+      res.json({
+        success: true,
+        message: 'Secret rotasyonu tamamlandı. Yeni secret yalnızca bu yanıtta gösterilecek.',
+        data: { ...device, secret }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/{deviceId}/block:
+ *   post:
+ *     summary: Cihazı Bloke Et (AUTH-202.3)
+ *     description: Sızıntı şüphesinde cihazın paketlerini anında (403) reddetmeye başlar.
+ *     parameters:
+ *       - in: path
+ *         name: deviceId
+ *         required: true
+ *         schema: { type: string }
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cihaz bloke edildi.
+ */
+router.post(
+  '/hardware-devices/:deviceId/block',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const device = await blockHardwareDevice(req.params.deviceId);
+      res.json({ success: true, message: 'Cihaz bloke edildi.', data: device });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/hardware-devices/:deviceId/unblock',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const device = await unblockHardwareDevice(req.params.deviceId);
+      res.json({ success: true, message: 'Cihazın bloku kaldırıldı.', data: device });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
 
 /**
  * @swagger
