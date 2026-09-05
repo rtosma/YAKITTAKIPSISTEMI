@@ -117,6 +117,26 @@ BEGIN
     END IF;
 END $$;
 
+-- IOT-303.1: çevrimdışı (offline) biriken ikmallerin toplu senkronizasyonu
+-- için mükerrer önleme anahtarı. idempotency_key'den (tek bir finalize
+-- isteğinin kendi kendini tekrarı) farklı olarak burada cihazın KENDİ yerel
+-- sayacı kullanılır — cihaz bağlantısı kesikken ürettiği yüzlerce kaydı
+-- (device_id, local_sequence_id) ikilisiyle numaralandırır; sync-batch aynı
+-- kaydı tekrar gönderirse (örn. sunucu yanıtı ağ hatasıyla kaybolduysa)
+-- bu kısıt ikinci bir mali kayıt oluşmasını veritabanı seviyesinde engeller.
+-- device_id NULL olan (manuel/santiye-operatörü) ikmaller bu kısıttan
+-- muaftır — Postgres'te NULL'lar birbirine asla eşit sayılmaz.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS device_id VARCHAR(64);
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS local_sequence_id BIGINT;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'transactions_device_local_seq_unique'
+    ) THEN
+        ALTER TABLE transactions ADD CONSTRAINT transactions_device_local_seq_unique UNIQUE (device_id, local_sequence_id);
+    END IF;
+END $$;
+
 -- 3c. Cross-Site Fuel Permissions (Çapraz Şantiye İkmal Yetkileri — FUEL-402)
 -- Bir aracın KENDİ şantiyesi dışında (target_site) yakıt alabilmesi için
 -- tanımlanan geçici kota. createTransaction bu tabloyu kontrol eder: araç

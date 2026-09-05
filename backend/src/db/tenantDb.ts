@@ -554,6 +554,8 @@ export interface TransactionRecord {
   idempotency_key: string | null;
   hash_signature: string | null;
   verification_status: string;
+  device_id: string | null;
+  local_sequence_id: number | null;
 }
 
 export interface TransactionFilters {
@@ -680,7 +682,7 @@ export async function createTransaction(
   // ikmallere özgü (bkz. yukarıdaki alan yorumları) — bu fonksiyon (manuel/
   // operatör tetiklemeli tek seferlik ikmal) bunları hiç set etmez, DB
   // varsayılanları (NULL / 'DOĞRULANDI') geçerli olur.
-  data: Omit<TransactionRecord, 'id' | 'tenant_id' | 'created_at' | 'idempotency_key' | 'hash_signature' | 'verification_status'>
+  data: Omit<TransactionRecord, 'id' | 'tenant_id' | 'created_at' | 'idempotency_key' | 'hash_signature' | 'verification_status' | 'device_id' | 'local_sequence_id'>
 ): Promise<TransactionRecord> {
   return withTenant(async (client, tenantId) => {
     const id = generateId('tx');
@@ -991,6 +993,132 @@ export async function finalizeDispenseSession(
     );
     return { ...(result.rows[0] as TransactionRecord), alreadyExisted: false };
   });
+}
+
+// ============================================================================
+// IOT-303.1 — Çevrimdışı Toplu Senkronizasyon (Offline Batch Sync)
+// ============================================================================
+// FUEL-410 (cihaz tarafı fail-open yetki önbelleği) henüz yapılmadığından,
+// buradaki kayıtların YETKİLENDİRME kararı (kart aktif mi, kota yeterli mi vb.)
+// bu koda hiç GİRMEZ — o karar, bağlantı kesikken cihazın kendi yerel
+// önbelleğiyle ZATEN verilmiş ve yakıt ZATEN fiziksel olarak dispense
+// edilmiştir. Bu fonksiyonun tek işi: o GEÇMİŞ olayı, mükerrer olmadan,
+// doğru sırada kalıcı hale getirmek. Bu yüzden her kayıt varsayılan olarak
+// 'DOĞRULAMA_BEKLIYOR' işaretlenir — canlı yetkilendirmeden geçmediler.
+
+export interface SyncBatchRecordInput {
+  localSequenceId: number;
+  deviceTimestamp: string;
+  siteName: string;
+  vehiclePlate: string;
+  driverName?: string;
+  tankName: string;
+  amountLiters: number;
+  flowRateLpm?: number;
+}
+
+export type SyncBatchRecordResult =
+  | { localSequenceId: number; status: 'ACCEPTED'; transactionId: string }
+  | { localSequenceId: number; status: 'DUPLICATE_SKIPPED'; transactionId: string }
+  | { localSequenceId: number; status: 'ERROR'; error: string };
+
+// Ticket notu: "Tek transaction yerine parti parti (200'lük) işleme, uzun
+// kilitleri önler." Her KAYIT da kendi withTenant() transaction'ında (aşağıda)
+// — bir kaydın hatası (örn. TANK_NOT_FOUND) diğerlerini rollback ETMEMELİ,
+// AC kayıt-bazlı kabul/atla/hata durumu istiyor.
+const SYNC_BATCH_CHUNK_SIZE = 200;
+
+async function syncSingleOfflineRecord(deviceId: string, record: SyncBatchRecordInput): Promise<SyncBatchRecordResult> {
+  try {
+    return await withTenant(async (client, tenantId) => {
+      const existing = await client.query(
+        'SELECT id FROM transactions WHERE device_id = $1 AND local_sequence_id = $2',
+        [deviceId, record.localSequenceId]
+      );
+      if (existing.rows.length > 0) {
+        return { localSequenceId: record.localSequenceId, status: 'DUPLICATE_SKIPPED', transactionId: existing.rows[0].id };
+      }
+
+      // Tank kilidi + düşümü — createTransaction/finalizeDispenseSession'daki
+      // AYNI FOR UPDATE deseni.
+      const tankResult = await client.query(
+        'SELECT id, capacity_liters, current_level_liters FROM tanks WHERE name = $1 AND site_name = $2 FOR UPDATE',
+        [record.tankName, record.siteName]
+      );
+      if (tankResult.rows.length === 0) {
+        throw new NotFoundError(`'${record.tankName}' tankı '${record.siteName}' şantiyesinde bulunamadı.`, { error: 'TANK_NOT_FOUND' });
+      }
+      const tank = tankResult.rows[0];
+      const newLevel = Math.max(0, Number(tank.current_level_liters) - record.amountLiters);
+      const percentage = (newLevel / Number(tank.capacity_liters)) * 100;
+      const newStatus = percentage < 20 ? 'KRİTİK' : percentage < 40 ? 'UYARI' : 'GÜVENLİ';
+      await client.query('UPDATE tanks SET current_level_liters = $1, status = $2 WHERE id = $3', [newLevel, newStatus, tank.id]);
+
+      const id = generateId('tx');
+      const hashSignature = crypto
+        .createHmac('sha256', config.TRANSACTION_HASH_SECRET)
+        .update(`${id}|${tenantId}|${record.vehiclePlate}|${record.amountLiters}|${deviceId}|${record.localSequenceId}`)
+        .digest('hex');
+
+      let insertResult;
+      try {
+        insertResult = await client.query(
+          `INSERT INTO transactions
+             (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, device_id, local_sequence_id, hash_signature, verification_status, created_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+          [
+            id, tenantId, record.siteName, record.vehiclePlate, record.driverName ?? null, record.tankName,
+            record.amountLiters, record.flowRateLpm ?? null, 'TAMAMLANTI', 'Çevrimdışı Senkron', true,
+            deviceId, record.localSequenceId, hashSignature, 'DOĞRULAMA_BEKLIYOR', record.deviceTimestamp
+          ]
+        );
+      } catch (insertErr: any) {
+        // Yarış durumu: aynı kaydın iki eşzamanlı sync-batch isteği (örn.
+        // cihaz, yanıtı alamadığı için TÜM batch'i tekrar gönderdi) yukarıdaki
+        // SELECT'i İKİSİ DE "yeni" görebilir — asıl güvence burada, veritabanı
+        // seviyesindeki UNIQUE (device_id, local_sequence_id) kısıtı.
+        if (insertErr.code === '23505') {
+          const raceCheck = await client.query(
+            'SELECT id FROM transactions WHERE device_id = $1 AND local_sequence_id = $2',
+            [deviceId, record.localSequenceId]
+          );
+          return { localSequenceId: record.localSequenceId, status: 'DUPLICATE_SKIPPED' as const, transactionId: raceCheck.rows[0]?.id ?? 'unknown' };
+        }
+        throw insertErr;
+      }
+
+      return { localSequenceId: record.localSequenceId, status: 'ACCEPTED', transactionId: insertResult.rows[0].id };
+    });
+  } catch (err: any) {
+    return { localSequenceId: record.localSequenceId, status: 'ERROR', error: err.details?.error || err.message || 'UNKNOWN_ERROR' };
+  }
+}
+
+/**
+ * AC: "İki alt issue da... geçmişe dönük kronolojik stok işleme." Burada
+ * yalnızca BATCH'İN KENDİ İÇİNDE cihaz zaman damgasına göre artan sırada
+ * uygulanır — kayıtlar arasında FOR UPDATE ile atomik, ardışık düşüm yapılır.
+ * Bu, IOT-303.2'nin istediği "batch'in aralarına girmiş CANLI (online)
+ * ikmallerle birlikte TAM yeniden hesaplama" DEĞİLDİR — o, tank bakiyesinin
+ * olay-tabanlı (event-sourced) yeniden türetilmesini gerektiren ayrı ve daha
+ * büyük bir problem (bkz. #107), kasıtlı olarak bu issue'nun kapsamı dışında.
+ */
+export async function syncOfflineDispenseBatch(
+  deviceId: string,
+  records: SyncBatchRecordInput[]
+): Promise<SyncBatchRecordResult[]> {
+  const sorted = [...records].sort(
+    (a, b) => new Date(a.deviceTimestamp).getTime() - new Date(b.deviceTimestamp).getTime()
+  );
+
+  const results: SyncBatchRecordResult[] = [];
+  for (let i = 0; i < sorted.length; i += SYNC_BATCH_CHUNK_SIZE) {
+    const chunk = sorted.slice(i, i + SYNC_BATCH_CHUNK_SIZE);
+    for (const record of chunk) {
+      results.push(await syncSingleOfflineRecord(deviceId, record));
+    }
+  }
+  return results;
 }
 
 // ============================================================================

@@ -196,6 +196,9 @@ jobs:
       - name: Run IOT-304 Device Claim/Provisioning Flow Tests
         run: cd backend && npx tsx test/test_iot304_device_claim_flow.ts
 
+      - name: Run IOT-303.1 Offline Sync Batch Tests
+        run: cd backend && npx tsx test/test_iot303_sync_batch.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

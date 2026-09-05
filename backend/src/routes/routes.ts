@@ -1,12 +1,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch } from '../db/tenantDb';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
 import { createTankSchema, updateTankSchema } from '../schemas/tankSchema';
-import { dispenseRequestSchema, transactionQuerySchema } from '../schemas/transactionSchema';
+import { dispenseRequestSchema, transactionQuerySchema, syncBatchSchema } from '../schemas/transactionSchema';
 import { dispenseRequestAuthSchema, dispenseHeartbeatSchema, dispenseFinalizeSchema } from '../schemas/dispenseSessionSchema';
 import { createCrossSitePermissionSchema, updateCrossSitePermissionStatusSchema } from '../schemas/crossSiteSchema';
 import { createCompanySchema, updateCompanySchema } from '../schemas/companySchema';
@@ -1537,6 +1537,57 @@ router.post(
       receivedData: req.body,
       timestamp: new Date().toISOString()
     });
+  }
+);
+
+/**
+ * @swagger
+ * /telemetry/sync-batch:
+ *   post:
+ *     summary: Çevrimdışı Biriken İkmallerin Toplu Senkronizasyonu (IOT-303.1)
+ *     description: >
+ *       Bağlantısı kesilen bir cihazın biriktirdiği ikmal kayıtlarını tek
+ *       istekte (en fazla 5000 kayıt) kabul eder. (device_id, localSequenceId)
+ *       ikilisi veritabanı seviyesinde benzersizdir — aynı batch'in tekrar
+ *       gönderimi ikinci bir mali kayıt YARATMAZ. Yanıt kayıt bazlıdır:
+ *       her kayıt ACCEPTED / DUPLICATE_SKIPPED / ERROR durumlarından biriyle
+ *       döner, cihaz yalnızca ACCEPTED+DUPLICATE_SKIPPED olanları kendi
+ *       kuyruğundan silmelidir.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Batch işlendi (kısmi başarı da 200 döner — hata payload içindedir).
+ */
+router.post(
+  '/telemetry/sync-batch',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  validateRequest({ body: syncBatchSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; tenantId: string };
+    try {
+      const results = await runWithTenant({ tenantId: hw.tenantId }, () =>
+        syncOfflineDispenseBatch(hw.deviceId, req.body.records)
+      );
+
+      const summary = {
+        totalReceived: results.length,
+        accepted: results.filter((r) => r.status === 'ACCEPTED').length,
+        duplicateSkipped: results.filter((r) => r.status === 'DUPLICATE_SKIPPED').length,
+        failed: results.filter((r) => r.status === 'ERROR').length
+      };
+
+      try {
+        const freshTanks = await runWithTenant({ tenantId: hw.tenantId }, () => getTenantTanks());
+        broadcastToTenant(hw.tenantId, 'dispense:completed', { batchSummary: summary, tanks: freshTanks });
+      } catch (broadcastErr) {
+        logger.warn({ err: broadcastErr }, '⚠️ [Socket.io] sync-batch sonrası dispense:completed yayını başarısız oldu.');
+      }
+
+      res.json({ success: true, message: 'Batch işlendi.', summary, results });
+    } catch (error: any) {
+      next(error);
+    }
   }
 );
 

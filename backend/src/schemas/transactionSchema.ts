@@ -17,6 +17,10 @@ export const dispenseRequestSchema = z.object({
     .gt(0, 'Yakıt miktarı 0\'dan büyük pozitif bir sayı olmalıdır.'),
   flowRateLpm: z.coerce.number().positive().optional(),
   pumpStatus: z.enum(['TAMAMLANTI', 'DURDURULDU', 'ANOMALİ']).optional(),
+  // 'Çevrimdışı Senkron' burada YOK — bu manuel/operatör tetiklemeli
+  // formun kendi type'ı, bir insan operatör "offline sync" iddia edemez;
+  // o değer yalnızca tenantDb.ts syncOfflineDispenseBatch'in kendi INSERT'i
+  // tarafından, bu şemadan hiç geçmeden yazılıyor (bkz. IOT-303.1).
   type: z.enum(['Otomatik', 'Manuel', 'Çapraz Şantiye']).optional(),
   rfidAuth: z.boolean().optional()
 });
@@ -39,8 +43,37 @@ export const transactionQuerySchema = z.object({
   siteName: z.string().min(1).optional(),
   driverName: z.string().min(1).optional(),
   pumpStatus: z.enum(['TAMAMLANTI', 'DURDURULDU', 'ANOMALİ']).optional(),
-  type: z.enum(['Otomatik', 'Manuel', 'Çapraz Şantiye']).optional(),
+  type: z.enum(['Otomatik', 'Manuel', 'Çapraz Şantiye', 'Çevrimdışı Senkron']).optional(),
   search: z.string().min(1).max(128).optional()
 });
 
 export type TransactionQueryDTO = z.infer<typeof transactionQuerySchema>;
+
+/**
+ * IOT-303.1 — POST /telemetry/sync-batch. Cihaz bağlantısı kesikken
+ * biriktirdiği ikmalleri, bağlantı geri geldiğinde tek istekte gönderir.
+ * deviceTimestamp, dispense'in GERÇEKTEN gerçekleştiği an (cihazın RTC'si) —
+ * X-Timestamp HMAC header'ı (bu isteğin KENDİSİNİN ne zaman gönderildiği,
+ * AUTH-202.2'nin 30sn'lik replay penceresiyle) ile KARIŞTIRILMAMALI; ikisi
+ * tamamen farklı zaman kavramları, hardwareAuthMiddleware'de hiçbir
+ * değişiklik/muafiyet gerekmiyor.
+ */
+export const syncBatchRecordSchema = z.object({
+  localSequenceId: z.coerce.number({ message: 'localSequenceId zorunludur.' }).int().positive(),
+  deviceTimestamp: z.string({ message: 'deviceTimestamp zorunludur.' }).datetime({ message: 'deviceTimestamp ISO-8601 formatında olmalıdır.' }),
+  siteName: z.string({ message: 'siteName zorunludur.' }).min(1),
+  vehiclePlate: z.string({ message: 'vehiclePlate zorunludur.' })
+    .regex(TURKISH_PLATE_REGEX, { message: 'Geçersiz Türkiye plaka formatı.' }),
+  driverName: z.string().optional(),
+  tankName: z.string({ message: 'tankName zorunludur.' }).min(1),
+  amountLiters: z.coerce.number({ message: 'amountLiters zorunludur.' }).gt(0, 'amountLiters 0\'dan büyük olmalıdır.'),
+  flowRateLpm: z.coerce.number().nonnegative().optional()
+});
+
+export const syncBatchSchema = z.object({
+  // Ticket'ın stres testi 5.000 kayıt öneriyor — üst sınır bu, tek bir HTTP
+  // isteğinin bellek/işleme süresini sınırlamak için.
+  records: z.array(syncBatchRecordSchema).min(1, 'En az bir kayıt gönderilmelidir.').max(5000, 'Tek istekte en fazla 5000 kayıt gönderilebilir.')
+});
+
+export type SyncBatchDTO = z.infer<typeof syncBatchSchema>;

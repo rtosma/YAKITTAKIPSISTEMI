@@ -84,6 +84,32 @@ export const globalErrorHandler = (
     return;
   }
 
+  // Handle well-formed 4xx errors from Express/body-parser (örn.
+  // PayloadTooLargeError — büyük bir batch senkronizasyon isteği, bkz.
+  // IOT-303.1) — bunlar bir istemci hatasıdır, bir sunucu çökmesi DEĞİL.
+  // `expose: true`, Express'in http-errors kütüphanesinin "bu mesaj
+  // istemciye güvenle gösterilebilir" işaretidir (rastgele bir üçüncü parti
+  // kütüphane hatasını yanlışlıkla 4xx'e düşürmemek için bu işarete
+  // bakılıyor, yalnızca statusCode'a değil).
+  const exposedStatus = typeof err?.status === 'number' ? err.status : typeof err?.statusCode === 'number' ? err.statusCode : undefined;
+  if (err?.expose === true && exposedStatus !== undefined && exposedStatus >= 400 && exposedStatus < 500) {
+    logger.warn({
+      traceId,
+      tenantId,
+      userId,
+      path: req.originalUrl,
+      method: req.method,
+    }, `[ExpressClientError ${exposedStatus}] ${err.message}`);
+
+    res.status(exposedStatus).json({
+      success: false,
+      traceId,
+      error: err.type ? String(err.type).toUpperCase() : 'BAD_REQUEST',
+      message: err.message || 'Geçersiz istek.',
+    });
+    return;
+  }
+
   // Handle Unhandled Unexpected 500 Internal Server Errors
   logger.error({
     err,
