@@ -203,6 +203,10 @@ ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS serial_number VARCHAR(128)
 ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS mac_address VARCHAR(32);
 ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS model VARCHAR(128);
 ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS hardware_revision VARCHAR(64);
+-- FUEL-404: akışmetrenin GÜNCEL, cihazın ACK'lediği (bkz. calibration_commands)
+-- pals/litre katsayısı. NULL = hiç kalibre edilmemiş, cihaz kendi firmware
+-- varsayılanını kullanıyor (backend'in bilgisi/kontrolü dışında bir sabit).
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS k_factor NUMERIC(10, 4);
 
 -- ==============================================================================
 -- [IOT-304] Cihaz Provisioning ve Eşleştirme (Device Claim) Akışı
@@ -229,6 +233,44 @@ CREATE TABLE IF NOT EXISTS device_claim_codes (
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     redeemed_device_id VARCHAR(64),
     redeemed_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ==============================================================================
+-- [FUEL-404.1] K-Factor Uzaktan Kalibrasyon — Komut, Ack, Geri Alma, Geçmiş
+-- ==============================================================================
+-- K-factor doğrudan faturalanan litreyi belirler — yetkisiz/hatalı bir
+-- değişiklik gizli bir hırsızlık aracı ya da ölçüm hatası kaynağı olur
+-- (ticket'ın kendi notu). Bu yüzden append-only bir geçmiş (audit_logs'la
+-- AYNI "asla silinmez" ilkesi) + cihaz onayı (ack) olmadan "uygulanmış"
+-- SAYILMAMA zorunluluğu var: hardware_devices.k_factor yalnızca bir ACK
+-- geldiğinde güncellenir (bkz. tenantDb.ts recordCalibrationAck) — bu
+-- tablodaki bir satır tek başına "yeni katsayı artık aktif" anlamına gelmez.
+CREATE TABLE IF NOT EXISTS calibration_commands (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    device_id VARCHAR(64) NOT NULL,
+    previous_k_factor NUMERIC(10, 4),
+    new_k_factor NUMERIC(10, 4) NOT NULL,
+    reason TEXT NOT NULL,
+    -- FUEL-404.2'nin referans kap ölçümü (hazır olduğunda) buraya serbest
+    -- JSON olarak yazılır — şimdilik yalnızca FUEL-404.1'in elle-girilen
+    -- gerekçe akışı bunu opsiyonel bırakıyor.
+    reference_measurement JSONB,
+    requested_by VARCHAR(64) NOT NULL,
+    -- AC: "±%20'den büyük değişiklikler ikinci onay istemelidir."
+    requires_second_approval BOOLEAN NOT NULL DEFAULT FALSE,
+    approved_by VARCHAR(64),
+    approved_at TIMESTAMP WITH TIME ZONE,
+    -- 'IKINCI_ONAY_BEKLIYOR' | 'BEKLIYOR' (cihaza gönderildi, ack bekleniyor)
+    -- | 'ONAYLANDI' (ack alındı, k_factor GERÇEKTEN uygulandı) |
+    -- 'REDDEDILDI' (cihaz NACK döndü) | 'ZAMAN_ASIMI' (ack hiç gelmedi).
+    status VARCHAR(32) NOT NULL DEFAULT 'BEKLIYOR',
+    sent_at TIMESTAMP WITH TIME ZONE,
+    acked_at TIMESTAMP WITH TIME ZONE,
+    -- Geri alma da YENİ bir komut olarak kaydedilir (geçmiş satırları asla
+    -- silinmez/değiştirilmez) — bu bayrak yalnızca raporlamada ayırt etmek için.
+    is_rollback BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -275,6 +317,7 @@ ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cross_site_permissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE hardware_devices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE device_claim_codes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calibration_commands ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -329,6 +372,15 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO app_user;
 -- da geri alınıyor.
 REVOKE UPDATE, DELETE, TRUNCATE ON audit_logs FROM app_user;
 
+-- FUEL-404.1 AC: "Kalibrasyon geçmişi silinemez olmalıdır." audit_logs'tan
+-- FARKLI OLARAK burada UPDATE geri alınMIYOR — bir komutun status'u
+-- (BEKLIYOR→ONAYLANDI/REDDEDILDI/ZAMAN_ASIMI) MEŞRU bir yaşam döngüsü
+-- geçişidir (bkz. tenantDb.ts recordCalibrationAck/Nack). Yasaklanan yalnızca
+-- bir satırın YOK EDİLMESİ — bir kaydı SİLMEK ile onun status'unu ack ile
+-- GÜNCELLEMEK arasındaki fark, tam olarak "geçmiş asla kaybolmaz" ile
+-- "durum meşru şekilde ilerler" arasındaki farktır.
+REVOKE DELETE, TRUNCATE ON calibration_commands FROM app_user;
+
 -- Force RLS even for table owners
 ALTER TABLE vehicles FORCE ROW LEVEL SECURITY;
 ALTER TABLE tanks FORCE ROW LEVEL SECURITY;
@@ -340,6 +392,7 @@ ALTER TABLE cross_site_permissions FORCE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
 ALTER TABLE hardware_devices FORCE ROW LEVEL SECURITY;
 ALTER TABLE device_claim_codes FORCE ROW LEVEL SECURITY;
+ALTER TABLE calibration_commands FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -352,6 +405,7 @@ DROP POLICY IF EXISTS cross_site_permissions_tenant_isolation_policy ON cross_si
 DROP POLICY IF EXISTS audit_logs_tenant_isolation_policy ON audit_logs;
 DROP POLICY IF EXISTS hardware_devices_tenant_isolation_policy ON hardware_devices;
 DROP POLICY IF EXISTS device_claim_codes_tenant_isolation_policy ON device_claim_codes;
+DROP POLICY IF EXISTS calibration_commands_tenant_isolation_policy ON calibration_commands;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -422,6 +476,15 @@ CREATE POLICY device_claim_codes_tenant_isolation_policy ON device_claim_codes
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+-- FUEL-401'in device_id/hardwareAuthMiddleware.ts ile aynı gerekçe: cihazın
+-- kalibrasyon ack/nack'ı (telemetry/calibration-ack) tenant context'i JWT
+-- yerine hw.tenantId ile kurulur, bu politika o AKIŞ için de geçerli kalır
+-- (withTenant() üzerinden geçen normal tenant içi bir işlemdir).
+CREATE POLICY calibration_commands_tenant_isolation_policy ON calibration_commands
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- ==============================================================================
 -- [PERF] tenant_id İndeksleri
 -- ==============================================================================
@@ -459,4 +522,9 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_created_at ON audit_logs(tenant
 CREATE INDEX IF NOT EXISTS idx_vehicles_tenant_site ON vehicles(tenant_id, site_name);
 CREATE INDEX IF NOT EXISTS idx_drivers_tenant_site ON drivers(tenant_id, site_name);
 CREATE INDEX IF NOT EXISTS idx_tanks_tenant_site ON tanks(tenant_id, site_name);
+
+-- FUEL-404.1: cihaz bazlı geçmiş listesi + ack zaman aşımı süpürücüsünün
+-- ("BEKLIYOR" olan, sent_at'i eski olan komutları bulması) sorgu deseni.
+CREATE INDEX IF NOT EXISTS idx_calibration_commands_device ON calibration_commands(tenant_id, device_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_calibration_commands_status ON calibration_commands(status) WHERE status = 'BEKLIYOR';
 

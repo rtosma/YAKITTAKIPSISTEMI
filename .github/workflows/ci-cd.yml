@@ -202,6 +202,9 @@ jobs:
       - name: Run IOT-303.2 Negative Stock Alarm Tests
         run: cd backend && npx tsx test/test_iot303_2_negative_stock_alarm.ts
 
+      - name: Run FUEL-404.1 K-Factor Remote Calibration Tests
+        run: cd backend && npx tsx test/test_fuel404_1_calibration.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

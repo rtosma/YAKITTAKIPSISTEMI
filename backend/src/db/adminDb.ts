@@ -365,3 +365,21 @@ export async function seedLegacyHardwareDevicesIfMissing(secretsByEnvVar: Record
     );
   }
 }
+
+// ============================================================================
+// FUEL-404.1 — Kalibrasyon Ack Zaman Aşımı Süpürücüsü (Tüm Tenant'lar)
+// ============================================================================
+// FUEL-401.3'ün heartbeat süpürücüsüyle AYNI gerekçe: bu periyodik bakım
+// işi TEK bir tenant'a değil TÜM sistemedir (index.ts'teki interval'dan
+// çağrılır) — bu yüzden withTenant() (RLS'i tek bir tenant'a kısıtlar)
+// DEĞİL, adminDb.ts'in geri kalanıyla tutarlı ham pool.query kullanılıyor.
+const CALIBRATION_ACK_TIMEOUT_MINUTES = 5;
+
+export async function sweepTimedOutCalibrations(): Promise<Array<{ id: string; deviceId: string; tenantId: string }>> {
+  const result = await pool.query(
+    `UPDATE calibration_commands SET status = 'ZAMAN_ASIMI'
+     WHERE status = 'BEKLIYOR' AND sent_at IS NOT NULL AND sent_at < NOW() - INTERVAL '${CALIBRATION_ACK_TIMEOUT_MINUTES} minutes'
+     RETURNING id, device_id, tenant_id`
+  );
+  return result.rows.map((r) => ({ id: r.id, deviceId: r.device_id, tenantId: r.tenant_id }));
+}

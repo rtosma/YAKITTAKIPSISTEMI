@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent } from '../db/tenantDb';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
@@ -13,6 +13,7 @@ import { createCompanySchema, updateCompanySchema } from '../schemas/companySche
 import { loginSchema, changePasswordSchema } from '../schemas/authSchema';
 import { createSiteSchema } from '../schemas/siteSchema';
 import { createHardwareDeviceSchema, relocateHardwareDeviceSchema, createDeviceClaimCodeSchema, claimDeviceSchema } from '../schemas/hardwareDeviceSchema';
+import { requestCalibrationSchema, calibrationAckSchema } from '../schemas/calibrationSchema';
 import { verifyPassword } from '../utils/password';
 import { NotFoundError } from '../utils/errors';
 import { pool } from '../db/postgresPool';
@@ -621,6 +622,130 @@ router.post(
     try {
       const device = await relocateHardwareDevice(req.params.deviceId, req.body.siteName);
       res.json({ success: true, message: 'Cihaz nakledildi.', data: device });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * FUEL-404.1 — K-Factor Uzaktan Kalibrasyon: Komut, Ack, Geri Alma, Geçmiş.
+ * Ticket'ın "Teknik Yığın"ı NestJS + IOT-305 komut kuyruğu + Drizzle
+ * öneriyor — IOT-305 (genel amaçlı bir komut kuyruğu servisi) bu kod
+ * tabanında hiç yok; FUEL-401'de zaten inşa edilen mqttService.publishCommand
+ * (FORCE_CUTOFF için kullanılan aynı mekanizma) yeniden kullanıldı. Cihazın
+ * ack/nack'ı, sync-batch/dispense-finalize ile AYNI desende bir HMAC
+ * korumalı HTTP ucuna (POST /telemetry/calibration-ack) POST edilir — MQTT
+ * üzerinden bir "ack topic'i" dinlemek yerine (mqttClient.ts'e yeni bir
+ * abonelik + tenant/cihaz eşleştirme mantığı eklemeyi gerektirirdi, IOT-301
+ * dayanıklılık testlerini de etkileme riski taşırdı).
+ */
+router.post(
+  '/devices/:deviceId/calibration',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: requestCalibrationSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const command = await requestKFactorCalibration({
+        deviceId: req.params.deviceId,
+        newKFactor: req.body.newKFactor,
+        reason: req.body.reason,
+        referenceMeasurement: req.body.referenceMeasurement,
+        requestedByUserId: req.user!.userId
+      });
+
+      if (command.status === 'BEKLIYOR') {
+        mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
+        await markCalibrationSent(command.id);
+      }
+
+      res.json({
+        success: true,
+        message: command.status === 'IKINCI_ONAY_BEKLIYOR'
+          ? 'Değişiklik %20 eşiğini aştığından ikinci onay bekleniyor — cihaza HENÜZ gönderilmedi.'
+          : 'Kalibrasyon komutu cihaza gönderildi, ack bekleniyor.',
+        data: command
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/devices/:deviceId/calibration/:commandId/approve',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const command = await approveKFactorCalibration(req.params.commandId, req.user!.userId);
+      mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
+      await markCalibrationSent(command.id);
+      res.json({ success: true, message: 'İkinci onay verildi, kalibrasyon komutu cihaza gönderildi.', data: command });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/devices/:deviceId/calibration/rollback',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const command = await rollbackKFactorCalibration(req.params.deviceId, req.user!.userId);
+      mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
+      await markCalibrationSent(command.id);
+      res.json({ success: true, message: 'Bir önceki onaylı kalibrasyona geri alma komutu gönderildi.', data: command });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/devices/:deviceId/calibration-history',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const history = await getCalibrationHistory(req.params.deviceId);
+      res.json({ success: true, totalCount: history.length, data: history });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /telemetry/calibration-ack:
+ *   post:
+ *     summary: Cihazın Kalibrasyon Komutunu Onaylaması/Reddetmesi (FUEL-404.1)
+ *     description: >
+ *       AC: "Cihaz onayı alınmadan değişiklik 'uygulandı' gösterilmemelidir."
+ *       hardware_devices.k_factor yalnızca ACK üzerine güncellenir.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Ack/nack işlendi.
+ */
+router.post(
+  '/telemetry/calibration-ack',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  validateRequest({ body: calibrationAckSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; tenantId: string };
+    try {
+      const command = await runWithTenant({ tenantId: hw.tenantId }, () =>
+        req.body.status === 'ACK'
+          ? recordCalibrationAck(hw.deviceId, req.body.commandId, req.body.appliedKFactor)
+          : recordCalibrationNack(hw.deviceId, req.body.commandId, req.body.reason)
+      );
+      res.json({ success: true, message: 'Kalibrasyon durumu kaydedildi.', data: command });
     } catch (error: any) {
       next(error);
     }

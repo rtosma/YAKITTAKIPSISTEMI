@@ -1541,3 +1541,239 @@ export async function getTenantClaimCodes(): Promise<DeviceClaimCodeRecord[]> {
     return result.rows;
   });
 }
+
+// ============================================================================
+// FUEL-404.1 — K-Factor Uzaktan Kalibrasyon: Komut, Ack, Geri Alma, Geçmiş
+// ============================================================================
+// Route seviyesi (routes.ts) MQTT yayınını (mqttService.publishCommand)
+// yapar — burası yalnızca DB durumunu yönetir. Bu ayrım FUEL-401'in
+// dispenseSessionService.ts ile routes.ts arasındaki AYNI sorumluluk
+// bölünmesini izliyor.
+
+export interface CalibrationCommandRecord {
+  id: string;
+  device_id: string;
+  previous_k_factor: number | null;
+  new_k_factor: number;
+  reason: string;
+  reference_measurement: Record<string, unknown> | null;
+  requested_by: string;
+  requires_second_approval: boolean;
+  approved_by: string | null;
+  approved_at: string | null;
+  status: string;
+  sent_at: string | null;
+  acked_at: string | null;
+  is_rollback: boolean;
+  created_at: string;
+}
+
+// AC: "±%20'den büyük değişiklikler ikinci onay istemelidir."
+const CALIBRATION_SECOND_APPROVAL_THRESHOLD_RATIO = 0.20;
+
+/**
+ * AC: "Yetkisiz kullanıcı kalibrasyon değiştirememelidir" — bu fonksiyon
+ * kasıtlı olarak rol kontrolü YAPMAZ (routes.ts'in authorizeRoles'ü zaten
+ * SUPER_ADMIN/COMPANY_OWNER'a kilitler, tenantDb.ts katmanının sorumluluğu
+ * DEĞİL, established pattern). Burada yalnızca iş kuralı: mevcut k_factor'e
+ * göre %20 eşiği aşılırsa komut CİHAZA HİÇ GÖNDERİLMEDEN 'IKINCI_ONAY_BEKLIYOR'
+ * durumunda oluşturulur — routes.ts bu durumu görüp MQTT yayınını ERTELER.
+ */
+export async function requestKFactorCalibration(data: {
+  deviceId: string;
+  newKFactor: number;
+  reason: string;
+  referenceMeasurement?: Record<string, unknown>;
+  requestedByUserId: string;
+}): Promise<CalibrationCommandRecord> {
+  return withTenant(async (client, tenantId) => {
+    const deviceRes = await client.query('SELECT k_factor FROM hardware_devices WHERE device_id = $1', [data.deviceId]);
+    if (deviceRes.rows.length === 0) {
+      throw new NotFoundError(`'${data.deviceId}' kimlikli bir cihaz bulunamadı.`, { error: 'DEVICE_NOT_FOUND' });
+    }
+    const previousKFactor = deviceRes.rows[0].k_factor !== null ? Number(deviceRes.rows[0].k_factor) : null;
+
+    const changeRatio = previousKFactor && previousKFactor > 0
+      ? Math.abs(data.newKFactor - previousKFactor) / previousKFactor
+      : 0; // İlk kalibrasyon (previousKFactor NULL) — karşılaştıracak bir temel yok, ikinci onay istenmez.
+    const requiresSecondApproval = changeRatio > CALIBRATION_SECOND_APPROVAL_THRESHOLD_RATIO;
+
+    const id = generateId('calib');
+    const result = await client.query(
+      `INSERT INTO calibration_commands
+         (id, tenant_id, device_id, previous_k_factor, new_k_factor, reason, reference_measurement, requested_by, requires_second_approval, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10) RETURNING *`,
+      [
+        id, tenantId, data.deviceId, previousKFactor, data.newKFactor, data.reason,
+        JSON.stringify(data.referenceMeasurement ?? null), data.requestedByUserId, requiresSecondApproval,
+        requiresSecondApproval ? 'IKINCI_ONAY_BEKLIYOR' : 'BEKLIYOR'
+      ]
+    );
+
+    await writeAuditLog(client, {
+      action: 'CALIBRATION_REQUESTED',
+      targetType: 'hardware_device',
+      targetId: data.deviceId,
+      beforeValue: { kFactor: previousKFactor },
+      afterValue: { newKFactor: data.newKFactor, reason: data.reason, requiresSecondApproval, changeRatio }
+    });
+
+    return result.rows[0];
+  });
+}
+
+/**
+ * İkinci onay — %20 eşiğini aşan bir isteği SUPER_ADMIN/COMPANY_OWNER
+ * (aynı kişi de olabilir, ticket iki farklı kişi şartı koşmuyor) onaylar.
+ * Onaydan SONRA route bu satırı MQTT'ye gönderir (status hâlâ 'BEKLIYOR'
+ * olarak dönüyor — cihazın ack'i gelene kadar "uygulandı" sayılmaz).
+ */
+export async function approveKFactorCalibration(commandId: string, approvedByUserId: string): Promise<CalibrationCommandRecord> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      `UPDATE calibration_commands
+       SET status = 'BEKLIYOR', approved_by = $1, approved_at = CURRENT_TIMESTAMP
+       WHERE id = $2 AND status = 'IKINCI_ONAY_BEKLIYOR'
+       RETURNING *`,
+      [approvedByUserId, commandId]
+    );
+    if (result.rows.length === 0) {
+      throw new NotFoundError(
+        `'${commandId}' kimlikli, ikinci onay bekleyen bir kalibrasyon komutu bulunamadı.`,
+        { error: 'CALIBRATION_COMMAND_NOT_FOUND' }
+      );
+    }
+
+    await writeAuditLog(client, {
+      action: 'CALIBRATION_SECOND_APPROVAL_GRANTED',
+      targetType: 'calibration_command',
+      targetId: commandId,
+      afterValue: { approvedBy: approvedByUserId }
+    });
+
+    return result.rows[0];
+  });
+}
+
+/** Route, approve/request sonrası MQTT yayınını yaptıktan SONRA çağırır — sent_at'i işaretler. */
+export async function markCalibrationSent(commandId: string): Promise<void> {
+  return withTenant(async (client) => {
+    await client.query(`UPDATE calibration_commands SET sent_at = CURRENT_TIMESTAMP WHERE id = $1`, [commandId]);
+  });
+}
+
+/**
+ * AC: "Cihaz onayı (ack) alınmadan değişiklik 'uygulandı' gösterilmemelidir."
+ * hardware_devices.k_factor YALNIZCA burada, gerçek bir ack üzerine güncellenir.
+ */
+export async function recordCalibrationAck(deviceId: string, commandId: string, appliedKFactor: number): Promise<CalibrationCommandRecord> {
+  return withTenant(async (client) => {
+    const cmdRes = await client.query(
+      `UPDATE calibration_commands SET status = 'ONAYLANDI', acked_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND device_id = $2 AND status = 'BEKLIYOR' RETURNING *`,
+      [commandId, deviceId]
+    );
+    if (cmdRes.rows.length === 0) {
+      throw new NotFoundError(
+        `'${commandId}' kimlikli, ack bekleyen bir kalibrasyon komutu bulunamadı.`,
+        { error: 'CALIBRATION_COMMAND_NOT_FOUND' }
+      );
+    }
+
+    await client.query('UPDATE hardware_devices SET k_factor = $1 WHERE device_id = $2', [appliedKFactor, deviceId]);
+
+    await writeAuditLog(client, {
+      action: 'CALIBRATION_ACKED',
+      targetType: 'hardware_device',
+      targetId: deviceId,
+      afterValue: { commandId, appliedKFactor }
+    });
+
+    return cmdRes.rows[0];
+  });
+}
+
+export async function recordCalibrationNack(deviceId: string, commandId: string, reason?: string): Promise<CalibrationCommandRecord> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      `UPDATE calibration_commands SET status = 'REDDEDILDI'
+       WHERE id = $1 AND device_id = $2 AND status = 'BEKLIYOR' RETURNING *`,
+      [commandId, deviceId]
+    );
+    if (result.rows.length === 0) {
+      throw new NotFoundError(
+        `'${commandId}' kimlikli, ack bekleyen bir kalibrasyon komutu bulunamadı.`,
+        { error: 'CALIBRATION_COMMAND_NOT_FOUND' }
+      );
+    }
+
+    await writeAuditLog(client, {
+      action: 'CALIBRATION_NACKED',
+      targetType: 'hardware_device',
+      targetId: deviceId,
+      afterValue: { commandId, reason: reason ?? null }
+    });
+
+    return result.rows[0];
+  });
+}
+
+export async function getCalibrationHistory(deviceId: string): Promise<CalibrationCommandRecord[]> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      'SELECT * FROM calibration_commands WHERE device_id = $1 ORDER BY created_at DESC',
+      [deviceId]
+    );
+    return result.rows;
+  });
+}
+
+/**
+ * AC: "Kalibrasyon geçmişi silinemez olmalıdır." Geri alma bir DELETE/UPDATE
+ * değil, önceki başarılı (ONAYLANDI) değere dönen YENİ bir komuttur — normal
+ * kalibrasyon isteğiyle AYNI ack akışından geçer (cihaz onaylamadan
+ * "geri alındı" sayılmaz).
+ */
+export async function rollbackKFactorCalibration(deviceId: string, requestedByUserId: string): Promise<CalibrationCommandRecord> {
+  return withTenant(async (client, tenantId) => {
+    const currentRes = await client.query('SELECT k_factor FROM hardware_devices WHERE device_id = $1', [deviceId]);
+    if (currentRes.rows.length === 0) {
+      throw new NotFoundError(`'${deviceId}' kimlikli bir cihaz bulunamadı.`, { error: 'DEVICE_NOT_FOUND' });
+    }
+    const currentKFactor = currentRes.rows[0].k_factor !== null ? Number(currentRes.rows[0].k_factor) : null;
+
+    // Şu anki değerden ÖNCEKİ son başarılı (ONAYLANDI) kalibrasyonu bul —
+    // bu satırın previous_k_factor'ü, geri dönülecek hedef değerdir.
+    const previousSuccessRes = await client.query(
+      `SELECT previous_k_factor FROM calibration_commands
+       WHERE device_id = $1 AND status = 'ONAYLANDI'
+       ORDER BY acked_at DESC LIMIT 1`,
+      [deviceId]
+    );
+    if (previousSuccessRes.rows.length === 0 || previousSuccessRes.rows[0].previous_k_factor === null) {
+      throw new ConflictError(
+        `'${deviceId}' cihazı için geri dönülecek önceki bir kalibrasyon kaydı yok.`,
+        { error: 'NO_PREVIOUS_CALIBRATION' }
+      );
+    }
+    const rollbackTarget = Number(previousSuccessRes.rows[0].previous_k_factor);
+
+    const id = generateId('calib');
+    const result = await client.query(
+      `INSERT INTO calibration_commands
+         (id, tenant_id, device_id, previous_k_factor, new_k_factor, reason, requested_by, requires_second_approval, status, is_rollback)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'BEKLIYOR',TRUE) RETURNING *`,
+      [id, tenantId, deviceId, currentKFactor, rollbackTarget, 'Bir önceki onaylı kalibrasyona geri alma', requestedByUserId, false]
+    );
+
+    await writeAuditLog(client, {
+      action: 'CALIBRATION_ROLLBACK_REQUESTED',
+      targetType: 'hardware_device',
+      targetId: deviceId,
+      beforeValue: { kFactor: currentKFactor },
+      afterValue: { rollbackTarget }
+    });
+
+    return result.rows[0];
+  });
+}

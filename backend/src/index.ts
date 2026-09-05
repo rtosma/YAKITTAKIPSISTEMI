@@ -12,7 +12,7 @@ import { pool } from './db/postgresPool';
 import { redisPool } from './db/redisPool';
 import { mqttService } from './iot/mqttClient';
 import routes from './routes/routes';
-import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing } from './db/adminDb';
+import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing, sweepTimedOutCalibrations } from './db/adminDb';
 import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
 
@@ -173,6 +173,22 @@ async function startServer(): Promise<void> {
     }
   }, DISPENSE_TIMEOUT_SWEEP_MS);
 
+  // FUEL-404.1: bir kalibrasyon komutu cihaza gönderildikten sonra ack hiç
+  // gelmezse (cihaz kapalı/bağlantısız) "BEKLIYOR" durumunda sonsuza kadar
+  // kalmamalı — heartbeat süpürücüsüyle AYNI gerekçe/desen.
+  const CALIBRATION_TIMEOUT_SWEEP_MS = 30_000;
+  const calibrationTimeoutSweepInterval = setInterval(async () => {
+    try {
+      const timedOut = await sweepTimedOutCalibrations();
+      for (const cmd of timedOut) {
+        broadcastToTenant(cmd.tenantId, 'calibration:timeout', { commandId: cmd.id, deviceId: cmd.deviceId });
+        logger.warn({ commandId: cmd.id, deviceId: cmd.deviceId }, `⏱️ [FUEL-404.1] Kalibrasyon komutu ack zaman aşımına uğradı: '${cmd.deviceId}'.`);
+      }
+    } catch (err) {
+      logger.error({ err }, '🚨 [FUEL-404.1] Kalibrasyon zaman aşımı süpürmesi başarısız.');
+    }
+  }, CALIBRATION_TIMEOUT_SWEEP_MS);
+
   // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
   setupGracefulShutdown(server, {
     timeoutMs: 30000,
@@ -180,6 +196,7 @@ async function startServer(): Promise<void> {
       logger.info(`🔌 [Shutdown] Eknak kaynak temizliği çalıştırılıyor...`);
 
       clearInterval(dispenseTimeoutSweepInterval);
+      clearInterval(calibrationTimeoutSweepInterval);
 
       // MQTT, Redis ve Postgres birbirinden bağımsız kaynaklar — sırayla değil
       // birlikte kapatılır, toplam kapanış süresi üçünün toplamı değil en
