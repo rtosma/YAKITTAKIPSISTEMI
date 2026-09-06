@@ -1,10 +1,15 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
+import { homePathForRole } from '../utils/permissions';
 
 export const ForbiddenPage: React.FC = () => {
   const navigate = useNavigate();
-  const { isAuthenticated } = useApp();
+  const { isAuthenticated, currentUser } = useApp();
+
+  // FE-803: kullanıcıyı kendi rolünün ana paneline geri gönder — yoksa
+  // "/panel'e dön" butonu yetkisiz bir kullanıcıyı tekrar /403'e düşürür (döngü).
+  const backPath = isAuthenticated ? homePathForRole(currentUser?.role) : '/';
 
   return (
     <div className="min-h-screen bg-[#131313] text-[#e5e2e1] flex flex-col items-center justify-center p-6 text-center select-none font-sans antialiased">
@@ -29,7 +34,7 @@ export const ForbiddenPage: React.FC = () => {
 
         {/* Action Button */}
         <button
-          onClick={() => navigate(isAuthenticated ? '/panel' : '/')}
+          onClick={() => navigate(backPath)}
           className="w-full py-3 bg-gradient-to-r from-[#ffdca1] to-[#ffb77f] hover:from-[#ffe8c2] hover:to-[#ffc896] text-[#412d00] font-black rounded-xl text-xs uppercase tracking-wider transition-all shadow-md cursor-pointer flex items-center justify-center space-x-2"
         >
           <span className="material-symbols-outlined text-lg">

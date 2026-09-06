@@ -1,9 +1,17 @@
 import React from 'react';
 import { useApp } from '../context/AppContext';
+import { usePermissions } from '../hooks/usePermissions';
 import { CompanyModule } from '../types';
 
 export const TenantDetailModal: React.FC = () => {
   const { selectedTenantForDetail, setSelectedTenantForDetail, toggleCompanyModule, updateCompanyStatus } = useApp();
+  // FE-803: "Modül Aç/Kapa" ve lisans durumu değişimi yalnızca SUPER_ADMIN'e
+  // açıktır (backend PATCH /companies/:id). Bu modal zaten yalnızca /admin
+  // altında render ediliyor (route guard'lı) — buradaki kontrol defense-in-depth
+  // ve yetkisiz durumda butonlar DOM'a hiç basılmaz, salt-okunur rozet gösterilir.
+  const { can } = usePermissions();
+  const canManageModules = can('TOGGLE_COMPANY_MODULE');
+  const canManageLicense = can('SET_COMPANY_LICENSE');
 
   if (!selectedTenantForDetail) return null;
 
@@ -101,6 +109,18 @@ export const TenantDetailModal: React.FC = () => {
                   if (status === 'ASKIDA') colorClass = 'border-[#ff5f56] bg-[#ff5f56]/20 text-[#ff5f56] font-black';
                   if (status === 'DENEME') colorClass = 'border-[#ffdca1] bg-[#ffdca1]/20 text-[#ffdca1] font-black';
                 }
+                // FE-803: yetkisizse buton yok — yalnızca aktif durum salt-okunur gösterilir.
+                if (!canManageLicense) {
+                  if (!isActive) return null;
+                  return (
+                    <span
+                      key={status}
+                      className={`py-2 px-3 rounded-xl border text-xs font-mono text-center col-span-3 ${colorClass}`}
+                    >
+                      {status}
+                    </span>
+                  );
+                }
                 return (
                   <button
                     key={status}
@@ -144,16 +164,27 @@ export const TenantDetailModal: React.FC = () => {
                       </div>
                     </div>
 
-                    <button
-                      onClick={() => toggleCompanyModule(tenant.id, mod.key)}
-                      className={`px-3.5 py-1.5 rounded-xl text-xs font-mono font-bold transition-all cursor-pointer shrink-0 ${
-                        isEnabled
-                          ? 'bg-[#a1e8a2] text-[#412d00] shadow-sm'
-                          : 'bg-[#131313] text-[#d5c4ab] border border-[#353535] hover:border-[#ffb77f]/50'
-                      }`}
-                    >
-                      {isEnabled ? 'AÇIK' : 'KAPALI'}
-                    </button>
+                    {canManageModules ? (
+                      <button
+                        onClick={() => toggleCompanyModule(tenant.id, mod.key)}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-mono font-bold transition-all cursor-pointer shrink-0 ${
+                          isEnabled
+                            ? 'bg-[#a1e8a2] text-[#412d00] shadow-sm'
+                            : 'bg-[#131313] text-[#d5c4ab] border border-[#353535] hover:border-[#ffb77f]/50'
+                        }`}
+                      >
+                        {isEnabled ? 'AÇIK' : 'KAPALI'}
+                      </button>
+                    ) : (
+                      // FE-803: yetkisizse tıklanabilir buton yerine salt-okunur rozet.
+                      <span
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-mono font-bold shrink-0 select-none ${
+                          isEnabled ? 'bg-[#a1e8a2]/20 text-[#a1e8a2]' : 'bg-[#131313] text-[#d5c4ab] border border-[#353535]'
+                        }`}
+                      >
+                        {isEnabled ? 'AÇIK' : 'KAPALI'}
+                      </span>
+                    )}
                   </div>
                 );
               })}

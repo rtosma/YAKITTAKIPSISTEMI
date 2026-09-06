@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useApp } from '../../context/AppContext';
+import { usePermissions } from '../../hooks/usePermissions';
 
 export const SiteOperatorPanel: React.FC = () => {
   const navigate = useNavigate();
@@ -18,6 +19,13 @@ export const SiteOperatorPanel: React.FC = () => {
     calculateCalibratedLiters,
     isAuthenticated
   } = useApp();
+
+  // FE-803: rota /santiye-panel App.tsx'te <RoleRoute allow={SITE_PANEL}> ile
+  // zaten sarılı; buradaki kontrol defense-in-depth (App.tsx sarmalayıcısı
+  // kaldırılsa bile korunur) ve "Pompayı Başlat & İkmal Et" butonunun
+  // POST /dispense yetkisi olmayan bir role hiç render edilmemesi için.
+  const { can } = usePermissions();
+  const canDispense = can('DISPENSE_FUEL');
 
   if (!isAuthenticated) {
     return <Navigate to="/santiye-login" replace />;
@@ -281,23 +289,31 @@ export const SiteOperatorPanel: React.FC = () => {
                 </div>
               </div>
 
-              <button
-                type="submit"
-                disabled={isPumpActive}
-                className="w-full py-3 px-4 bg-[#a1e8a2] hover:bg-[#bbf4bd] text-[#0d3811] font-extrabold text-xs rounded-xl flex items-center justify-center space-x-2 transition-all cursor-pointer disabled:opacity-50 mt-4 shadow-lg"
-              >
-                {isPumpActive ? (
-                  <>
-                    <span className="w-4 h-4 border-2 border-[#0d3811] border-t-transparent rounded-full animate-spin"></span>
-                    <span>Pompa Akışı Aktif...</span>
-                  </>
-                ) : (
-                  <>
-                    <span className="material-symbols-outlined text-base">play_arrow</span>
-                    <span>Pompayı Başlat & İkmal Et</span>
-                  </>
-                )}
-              </button>
+              {canDispense ? (
+                <button
+                  type="submit"
+                  disabled={isPumpActive}
+                  className="w-full py-3 px-4 bg-[#a1e8a2] hover:bg-[#bbf4bd] text-[#0d3811] font-extrabold text-xs rounded-xl flex items-center justify-center space-x-2 transition-all cursor-pointer disabled:opacity-50 mt-4 shadow-lg"
+                >
+                  {isPumpActive ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-[#0d3811] border-t-transparent rounded-full animate-spin"></span>
+                      <span>Pompa Akışı Aktif...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="material-symbols-outlined text-base">play_arrow</span>
+                      <span>Pompayı Başlat & İkmal Et</span>
+                    </>
+                  )}
+                </button>
+              ) : (
+                // FE-803: ikmal başlatma yetkisi olmayan rol — buton DOM'da yok.
+                <div className="w-full py-3 px-4 bg-[#20201f] border border-[#353535] text-[#d5c4ab] font-bold text-xs rounded-xl flex items-center justify-center space-x-2 mt-4 select-none">
+                  <span className="material-symbols-outlined text-base">lock</span>
+                  <span>İkmal başlatma yetkiniz yok</span>
+                </div>
+              )}
 
             </form>
           </div>

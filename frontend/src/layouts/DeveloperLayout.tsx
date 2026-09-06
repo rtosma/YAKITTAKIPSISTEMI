@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Outlet, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
+import { ROLE_GROUPS, roleAllowed } from '../utils/permissions';
 
 export const DeveloperLayout: React.FC = () => {
   const navigate = useNavigate();
@@ -14,11 +15,11 @@ export const DeveloperLayout: React.FC = () => {
     return <Navigate to="/parola-degistir" replace />;
   }
 
-  // FE-803: Süper Admin paneli yalnızca gerçekten SUPER_ADMIN rolüne sahip
-  // kullanıcılara açık olmalıdır. Önceden burada hiçbir rol kontrolü yoktu —
-  // oturum açmış HERHANGİ bir kullanıcı (COMPANY_OWNER, SITE_MANAGER, hatta
-  // DRIVER) doğrudan /admin URL'sini yazarak tüm firmaların verisine erişebilirdi.
-  if (currentUser?.role !== 'SUPER_ADMIN') {
+  // FE-803: Süper Admin paneli yalnızca SUPER_ADMIN rolüne açıktır. App.tsx'te
+  // rota <RoleRoute allow={ROLE_GROUPS.ADMIN}> ile zaten sarılı; buradaki kontrol
+  // defense-in-depth (App.tsx sarmalayıcısı kaldırılsa bile guard korunur) ve
+  // matris tek yerden (utils/permissions.ts) okunur.
+  if (!roleAllowed(currentUser?.role, ROLE_GROUPS.ADMIN)) {
     return <Navigate to="/403" replace />;
   }
 

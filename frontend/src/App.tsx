@@ -30,6 +30,8 @@ import { ForbiddenPage } from './pages/ForbiddenPage';
 import { CustomerLayout } from './layouts/CustomerLayout';
 import { DeveloperLayout } from './layouts/DeveloperLayout';
 import { SiteOperatorPanel } from './pages/santiye/SiteOperatorPanel';
+import { RoleRoute } from './components/RoleRoute';
+import { ROLE_GROUPS } from './utils/permissions';
 
 // Customer Pages
 import { OverviewPage } from './pages/customer/OverviewPage';
@@ -63,13 +65,31 @@ export function App() {
           <Route path="/" element={<LoginPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/santiye-login" element={<SiteLoginPage />} />
-          <Route path="/santiye-panel" element={<SiteOperatorPanel />} />
+          {/* FE-803: Saha paneli — SITE_MANAGER / PUMP_OPERATOR (+ üst roller).
+              DRIVER gibi yetkisiz bir rol doğrudan URL yazsa /403'e düşer. */}
+          <Route
+            path="/santiye-panel"
+            element={
+              <RoleRoute allow={ROLE_GROUPS.SITE_PANEL}>
+                <SiteOperatorPanel />
+              </RoleRoute>
+            }
+          />
           <Route path="/parola-degistir" element={<ForcedPasswordChangePage />} />
           <Route path="/welcome" element={<WelcomeScreen />} />
           <Route path="/403" element={<ForbiddenPage />} />
 
-          {/* Customer Panel Routes (/panel/*) */}
-          <Route path="/panel" element={<CustomerLayout />}>
+          {/* Customer Panel Routes (/panel/*) — FE-803: yalnızca COMPANY_OWNER /
+              SUPER_ADMIN. SITE_MANAGER'ın yeri /santiye-panel; buraya doğrudan
+              URL ile gelmeye çalışırsa /403. */}
+          <Route
+            path="/panel"
+            element={
+              <RoleRoute allow={ROLE_GROUPS.PANEL}>
+                <CustomerLayout />
+              </RoleRoute>
+            }
+          >
             <Route index element={<OverviewPage />} />
             <Route path="overview" element={<OverviewPage />} />
             <Route path="sites" element={<SitesPage />} />
@@ -95,8 +115,16 @@ export function App() {
             <Route path="*" element={<NotFoundPage />} />
           </Route>
 
-          {/* Developer Super Admin Panel Routes (/admin/*) */}
-          <Route path="/admin" element={<DeveloperLayout />}>
+          {/* Developer Super Admin Panel Routes (/admin/*) — FE-803: SUPER_ADMIN only.
+              DeveloperLayout içinde de aynı kontrol var (defense-in-depth). */}
+          <Route
+            path="/admin"
+            element={
+              <RoleRoute allow={ROLE_GROUPS.ADMIN}>
+                <DeveloperLayout />
+              </RoleRoute>
+            }
+          >
             <Route index element={<DeveloperOverviewPage />} />
             <Route path="overview" element={<DeveloperOverviewPage />} />
             <Route path="tenants" element={<TenantsPage />} />
