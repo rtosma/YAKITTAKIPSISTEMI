@@ -1777,3 +1777,148 @@ export async function rollbackKFactorCalibration(deviceId: string, requestedByUs
     return result.rows[0];
   });
 }
+
+// ============================================================================
+// FUEL-404.2 — Kalibrasyon Test Alımı (Referans Kap ile Sapma Hesabı)
+// ============================================================================
+
+export interface CalibrationTestIntakeRecord {
+  id: string;
+  device_id: string;
+  tank_name: string;
+  reference_volume_liters: number;
+  measured_liters: number;
+  ambient_temperature_celsius: number | null;
+  k_factor_at_test: number;
+  deviation_ratio: number;
+  proposed_k_factor: number;
+  verifies_calibration_command_id: string | null;
+  requested_by: string;
+  created_at: string;
+}
+
+/**
+ * AC: "Test alımı normal ikmal olarak faturalandırılmamalı ama stoktan
+ * düşmelidir." Bilerek transactions'a HİÇ yazmıyor (createTransaction/
+ * finalizeDispenseSession/syncOfflineDispenseBatch'in HİÇBİRİNİ çağırmıyor)
+ * — yalnızca tankın current_level_liters'ını AYNI FOR UPDATE kilitli
+ * desenle düşürüyor. Bu, "raporlarda ayrı sınıflandırılması" AC'sini de
+ * doğal olarak sağlıyor: transactions'ı sorgulayan hiçbir mevcut rapor bu
+ * tabloyu hiç görmez.
+ *
+ * K-factor önerisi formülü ticket'ın kendi notu: yeni = eski × (ölçülen / gerçek).
+ */
+export async function recordCalibrationTestIntake(data: {
+  deviceId: string;
+  tankName: string;
+  siteName: string;
+  referenceVolumeLiters: number;
+  measuredLiters: number;
+  ambientTemperatureCelsius?: number;
+  verifiesCalibrationCommandId?: string;
+  requestedByUserId: string;
+}): Promise<{ intake: CalibrationTestIntakeRecord; recommendedKFactor: number; basedOnSingleMeasurement: boolean }> {
+  return withTenant(async (client, tenantId) => {
+    const deviceRes = await client.query('SELECT k_factor FROM hardware_devices WHERE device_id = $1', [data.deviceId]);
+    if (deviceRes.rows.length === 0) {
+      throw new NotFoundError(`'${data.deviceId}' kimlikli bir cihaz bulunamadı.`, { error: 'DEVICE_NOT_FOUND' });
+    }
+    const kFactorAtTest = deviceRes.rows[0].k_factor !== null ? Number(deviceRes.rows[0].k_factor) : null;
+    if (kFactorAtTest === null) {
+      throw new ConflictError(
+        `'${data.deviceId}' cihazının hiç kalibre edilmiş bir k_factor'ü yok — önce bir başlangıç kalibrasyonu (POST /devices/${data.deviceId}/calibration) uygulanmalı.`,
+        { error: 'NO_BASELINE_K_FACTOR' }
+      );
+    }
+
+    // Henüz cihaz tarafından ACK'lenmemiş (uygulanmamış) bir kalibrasyonun
+    // "doğrulandığını" iddia etmek mantıksal olarak tutarsız olurdu —
+    // verifiesCalibrationCommandId yalnızca GERÇEKTEN uygulanmış (ONAYLANDI)
+    // bir komutu işaret edebilir.
+    if (data.verifiesCalibrationCommandId) {
+      const cmdRes = await client.query(
+        `SELECT status FROM calibration_commands WHERE id = $1 AND device_id = $2`,
+        [data.verifiesCalibrationCommandId, data.deviceId]
+      );
+      if (cmdRes.rows.length === 0) {
+        throw new NotFoundError(`'${data.verifiesCalibrationCommandId}' kimlikli bir kalibrasyon komutu bulunamadı.`, { error: 'CALIBRATION_COMMAND_NOT_FOUND' });
+      }
+      if (cmdRes.rows[0].status !== 'ONAYLANDI') {
+        throw new ConflictError(
+          `'${data.verifiesCalibrationCommandId}' kimlikli komut henüz cihaz tarafından onaylanmadı (durum: ${cmdRes.rows[0].status}) — doğrulama alımı yalnızca ONAYLANDI bir komut için yapılabilir.`,
+          { error: 'CALIBRATION_NOT_YET_ACKED' }
+        );
+      }
+    }
+
+    // Tank kilidi + düşümü — createTransaction/syncOfflineDispenseBatch'teki
+    // AYNI desen, ama BİLEREK transactions'a INSERT YOK.
+    const tankResult = await client.query(
+      'SELECT id, capacity_liters, current_level_liters FROM tanks WHERE name = $1 AND site_name = $2 FOR UPDATE',
+      [data.tankName, data.siteName]
+    );
+    if (tankResult.rows.length === 0) {
+      throw new NotFoundError(`'${data.tankName}' tankı '${data.siteName}' şantiyesinde bulunamadı.`, { error: 'TANK_NOT_FOUND' });
+    }
+    const tank = tankResult.rows[0];
+    const newLevel = Math.max(0, Number(tank.current_level_liters) - data.measuredLiters);
+    const percentage = (newLevel / Number(tank.capacity_liters)) * 100;
+    const newStatus = percentage < 20 ? 'KRİTİK' : percentage < 40 ? 'UYARI' : 'GÜVENLİ';
+    await client.query('UPDATE tanks SET current_level_liters = $1, status = $2 WHERE id = $3', [newLevel, newStatus, tank.id]);
+
+    const deviationRatio = Math.abs(data.measuredLiters - data.referenceVolumeLiters) / data.referenceVolumeLiters;
+    const proposedKFactor = kFactorAtTest * (data.measuredLiters / data.referenceVolumeLiters);
+
+    const id = generateId('testintake');
+    const result = await client.query(
+      `INSERT INTO calibration_test_intakes
+         (id, tenant_id, device_id, tank_name, reference_volume_liters, measured_liters, ambient_temperature_celsius, k_factor_at_test, deviation_ratio, proposed_k_factor, verifies_calibration_command_id, requested_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [
+        id, tenantId, data.deviceId, data.tankName, data.referenceVolumeLiters, data.measuredLiters,
+        data.ambientTemperatureCelsius ?? null, kFactorAtTest, deviationRatio, proposedKFactor,
+        data.verifiesCalibrationCommandId ?? null, data.requestedByUserId
+      ]
+    );
+    const intake: CalibrationTestIntakeRecord = result.rows[0];
+
+    // AC: "Tek ölçüm yanıltıcı olabilir; en az 2 test alımının ortalaması
+    // önerilmelidir." Bu cihaz için (bu dahil) son 2 ölçümün proposed_k_factor
+    // ortalaması hesaplanır; yalnızca 1 ölçüm varsa tek başına kullanılır ama
+    // basedOnSingleMeasurement=true ile işaretlenip çağıran tarafa bildirilir.
+    const recentRes = await client.query(
+      `SELECT proposed_k_factor FROM calibration_test_intakes
+       WHERE device_id = $1 ORDER BY created_at DESC LIMIT 2`,
+      [data.deviceId]
+    );
+    const recentValues = recentRes.rows.map((r) => Number(r.proposed_k_factor));
+    const recommendedKFactor = recentValues.reduce((sum, v) => sum + v, 0) / recentValues.length;
+
+    // AC: "Doğrulama alımı sonucu kalibrasyon geçmişine yazılmalıdır."
+    await writeAuditLog(client, {
+      action: data.verifiesCalibrationCommandId ? 'CALIBRATION_VERIFICATION_PASS_RECORDED' : 'CALIBRATION_TEST_INTAKE_RECORDED',
+      targetType: 'hardware_device',
+      targetId: data.deviceId,
+      afterValue: {
+        referenceVolumeLiters: data.referenceVolumeLiters,
+        measuredLiters: data.measuredLiters,
+        deviationRatio,
+        proposedKFactor,
+        recommendedKFactor,
+        verifiesCalibrationCommandId: data.verifiesCalibrationCommandId ?? null
+      }
+    });
+
+    return { intake, recommendedKFactor, basedOnSingleMeasurement: recentValues.length < 2 };
+  });
+}
+
+export async function getCalibrationTestIntakes(deviceId: string): Promise<CalibrationTestIntakeRecord[]> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      'SELECT * FROM calibration_test_intakes WHERE device_id = $1 ORDER BY created_at DESC',
+      [deviceId]
+    );
+    return result.rows;
+  });
+}

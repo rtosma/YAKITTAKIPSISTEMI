@@ -33,3 +33,20 @@ export const calibrationAckSchema = z.object({
   (data) => data.status === 'NACK' || data.appliedKFactor !== undefined,
   { message: 'ACK durumunda appliedKFactor zorunludur.', path: ['appliedKFactor'] }
 );
+
+/**
+ * FUEL-404.2 — POST /devices/:deviceId/test-intake. Teknisyen panelden
+ * elle giriyor (referans kabı fiziksel olarak tarttı/ölçtü) — bu yüzden
+ * HMAC değil, normal JWT ile korunuyor (AUTH-202.3'ün cihaz akışlarından
+ * farklı olarak burada "cihaz" değil bir İNSAN istek atıyor).
+ */
+export const testIntakeSchema = z.object({
+  tankName: z.string({ message: 'tankName zorunludur.' }).min(1),
+  siteName: z.string({ message: 'siteName zorunludur.' }).min(1),
+  referenceVolumeLiters: z.coerce.number({ message: 'referenceVolumeLiters zorunludur.' }).positive(),
+  measuredLiters: z.coerce.number({ message: 'measuredLiters zorunludur.' }).positive(),
+  ambientTemperatureCelsius: z.coerce.number().optional(),
+  // Bu alım, daha önce ONAYLANMIŞ bir kalibrasyon komutunun sapmayı
+  // GERÇEKTEN düzelttiğini doğrulamak için yapılan bir "doğrulama alımı"ysa.
+  verifiesCalibrationCommandId: z.string().optional()
+});

@@ -275,6 +275,39 @@ CREATE TABLE IF NOT EXISTS calibration_commands (
 );
 
 -- ==============================================================================
+-- [FUEL-404.2] Kalibrasyon Test Alımı — Referans Kap ile Sapma Hesabı
+-- ==============================================================================
+-- Teknisyen sahada bilinen hacimde (örn. 20L) bir referans kaba yakıt alır;
+-- cihazın KENDİ (o anki k_factor'e göre hesapladığı) ölçümü ile referans
+-- kabın GERÇEK hacmi arasındaki fark, K-factor hatasını ortaya çıkarır. Bu
+-- kayıt BİLEREK transactions tablosundan AYRI — AC: "test alımı normal
+-- ikmal olarak faturalandırılmamalı" (raporlarda otomatik ayrışır, çünkü
+-- transactions'ı sorgulayan hiçbir rapor bu tabloya hiç bakmaz) ama AC:
+-- "stoktan düşmeli" gereği tankın current_level_liters'ı YİNE DE düşürülür
+-- (bkz. tenantDb.ts recordCalibrationTestIntake).
+CREATE TABLE IF NOT EXISTS calibration_test_intakes (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    device_id VARCHAR(64) NOT NULL,
+    tank_name VARCHAR(128) NOT NULL,
+    reference_volume_liters NUMERIC(10, 3) NOT NULL,
+    measured_liters NUMERIC(10, 3) NOT NULL,
+    ambient_temperature_celsius NUMERIC(5, 2),
+    -- Test anında cihazın AKTİF olan k_factor'ü (hardware_devices'tan
+    -- kopyalanır) — sonradan k_factor değişse bile bu ölçümün HANGİ
+    -- katsayıyla alındığı asla belirsizleşmez.
+    k_factor_at_test NUMERIC(10, 4) NOT NULL,
+    deviation_ratio NUMERIC(6, 4) NOT NULL,
+    proposed_k_factor NUMERIC(10, 4) NOT NULL,
+    -- AC: "Doğrulama alımı sonucu kalibrasyon geçmişine yazılmalıdır" — bu
+    -- alan doluysa bu ölçüm, belirtilen kalibrasyon komutunun GERÇEKTEN
+    -- sapmayı düzelttiğini doğrulamak için yapılmış bir doğrulama alımıdır.
+    verifies_calibration_command_id VARCHAR(64),
+    requested_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ==============================================================================
 -- [AUTH-201] Users Table & Refresh Tokens Rotation Store
 -- ==============================================================================
 
@@ -318,6 +351,7 @@ ALTER TABLE cross_site_permissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE hardware_devices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE device_claim_codes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE calibration_commands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calibration_test_intakes ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -393,6 +427,7 @@ ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
 ALTER TABLE hardware_devices FORCE ROW LEVEL SECURITY;
 ALTER TABLE device_claim_codes FORCE ROW LEVEL SECURITY;
 ALTER TABLE calibration_commands FORCE ROW LEVEL SECURITY;
+ALTER TABLE calibration_test_intakes FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -406,6 +441,7 @@ DROP POLICY IF EXISTS audit_logs_tenant_isolation_policy ON audit_logs;
 DROP POLICY IF EXISTS hardware_devices_tenant_isolation_policy ON hardware_devices;
 DROP POLICY IF EXISTS device_claim_codes_tenant_isolation_policy ON device_claim_codes;
 DROP POLICY IF EXISTS calibration_commands_tenant_isolation_policy ON calibration_commands;
+DROP POLICY IF EXISTS calibration_test_intakes_tenant_isolation_policy ON calibration_test_intakes;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -485,6 +521,11 @@ CREATE POLICY calibration_commands_tenant_isolation_policy ON calibration_comman
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY calibration_test_intakes_tenant_isolation_policy ON calibration_test_intakes
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- ==============================================================================
 -- [PERF] tenant_id İndeksleri
 -- ==============================================================================
@@ -527,4 +568,8 @@ CREATE INDEX IF NOT EXISTS idx_tanks_tenant_site ON tanks(tenant_id, site_name);
 -- ("BEKLIYOR" olan, sent_at'i eski olan komutları bulması) sorgu deseni.
 CREATE INDEX IF NOT EXISTS idx_calibration_commands_device ON calibration_commands(tenant_id, device_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_calibration_commands_status ON calibration_commands(status) WHERE status = 'BEKLIYOR';
+
+-- FUEL-404.2: cihaz bazlı test alımı geçmişi + "son 2 ölçümün ortalaması"
+-- önerisinin sorgu deseni (bkz. tenantDb.ts recordCalibrationTestIntake).
+CREATE INDEX IF NOT EXISTS idx_calibration_test_intakes_device ON calibration_test_intakes(tenant_id, device_id, created_at DESC);
 

@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes } from '../db/tenantDb';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
@@ -13,7 +13,7 @@ import { createCompanySchema, updateCompanySchema } from '../schemas/companySche
 import { loginSchema, changePasswordSchema } from '../schemas/authSchema';
 import { createSiteSchema } from '../schemas/siteSchema';
 import { createHardwareDeviceSchema, relocateHardwareDeviceSchema, createDeviceClaimCodeSchema, claimDeviceSchema } from '../schemas/hardwareDeviceSchema';
-import { requestCalibrationSchema, calibrationAckSchema } from '../schemas/calibrationSchema';
+import { requestCalibrationSchema, calibrationAckSchema, testIntakeSchema } from '../schemas/calibrationSchema';
 import { verifyPassword } from '../utils/password';
 import { NotFoundError } from '../utils/errors';
 import { pool } from '../db/postgresPool';
@@ -713,6 +713,63 @@ router.get(
     try {
       const history = await getCalibrationHistory(req.params.deviceId);
       res.json({ success: true, totalCount: history.length, data: history });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * FUEL-404.2 — Kalibrasyon Test Alımı Sihirbazı (Referans Kap ile Sapma
+ * Hesabı). Ticket'ın FE-814 sihirbaz arayüzü kapsam dışı (bu backend-only
+ * bir oturum) — burada yalnızca teknisyenin elle girdiği ölçümü işleyip
+ * sapma/öneriyi hesaplayan API var. #68 (FW-1304, akışmetre pals sayımı)
+ * bir firmware bağımlılığı ve bu proje ESP-IDF firmware içermiyor — test
+ * alımının "gerçek" tarafı (cihazın fiilen dispense edip totalizatör
+ * okuması) zaten var olan dispense/telemetri altyapısıyla saha teknisyeni
+ * tarafından fiziksel olarak yapılır, buradaki uç yalnızca SONUCU
+ * (referans hacim + ölçülen hacim) kaydeder.
+ */
+router.post(
+  '/devices/:deviceId/test-intake',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: testIntakeSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await recordCalibrationTestIntake({
+        deviceId: req.params.deviceId,
+        tankName: req.body.tankName,
+        siteName: req.body.siteName,
+        referenceVolumeLiters: req.body.referenceVolumeLiters,
+        measuredLiters: req.body.measuredLiters,
+        ambientTemperatureCelsius: req.body.ambientTemperatureCelsius,
+        verifiesCalibrationCommandId: req.body.verifiesCalibrationCommandId,
+        requestedByUserId: req.user!.userId
+      });
+      res.json({
+        success: true,
+        message: result.basedOnSingleMeasurement
+          ? 'Test alımı kaydedildi. Yalnızca tek ölçüme dayanıyor — güvenilir bir öneri için en az bir test alımı daha yapılması önerilir.'
+          : 'Test alımı kaydedildi.',
+        data: result.intake,
+        recommendedKFactor: result.recommendedKFactor,
+        basedOnSingleMeasurement: result.basedOnSingleMeasurement
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/devices/:deviceId/test-intakes',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const intakes = await getCalibrationTestIntakes(req.params.deviceId);
+      res.json({ success: true, totalCount: intakes.length, data: intakes });
     } catch (error: any) {
       next(error);
     }
