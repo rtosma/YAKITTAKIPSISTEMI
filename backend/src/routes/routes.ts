@@ -1,9 +1,10 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, getDespatchAdviceSourceData } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
+import { generateDespatchAdviceXml } from '../compliance/despatchAdviceXmlService';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
@@ -1850,6 +1851,47 @@ router.get(
         res.destroy();
         return;
       }
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /transactions/{id}/e-irsaliye:
+ *   get:
+ *     summary: İkmal İçin UBL 2.1 DespatchAdvice (e-İrsaliye Taslağı) XML'i (COMP-601)
+ *     description: >
+ *       VKN, Plaka, Şoför TC, Sevk Tarihi ve GTIP kodunu (Motorin 10 ppm)
+ *       gerçek OASIS UBL 2.1 DespatchAdvice şemasına göre üretir ve o
+ *       şemaya karşı doğrular. GİB'in tam UBL-TR profili/XAdES imzası bu
+ *       kapsamda DEĞİLDİR (bkz. despatchAdviceXmlService.ts üst yorumu).
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: XML dosyası döner.
+ *       400:
+ *         description: Firma VKN'si veya sürücü TC'si tanımsız — üretilemez.
+ *       404:
+ *         description: İkmal kaydı bulunamadı.
+ */
+router.get(
+  '/transactions/:id/e-irsaliye',
+  authenticateJWT,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const source = await getDespatchAdviceSourceData(req.params.id, siteScopeFor(req.user!));
+      const xml = generateDespatchAdviceXml(source);
+      res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="e-irsaliye-${source.transactionId}.xml"`);
+      res.send(xml);
+    } catch (error: any) {
       next(error);
     }
   }

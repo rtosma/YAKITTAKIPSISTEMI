@@ -5,6 +5,11 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+  # TEST-1002: k6 yük/stres testi ~90 saniyelik gerçek yük üretir (100
+  # eşzamanlı "pompa" @ 1000 istek/sn) — her push/PR'da otomatik çalışmak
+  # yerine (CI süresini gereksiz uzatır, ölçüm gürültüsü paylaşımlı runner'a
+  # bağlı olur) manuel/elle tetiklemeli tutuluyor.
+  workflow_dispatch:
 
 jobs:
   quality-and-tests:
@@ -225,6 +230,9 @@ jobs:
       - name: Run AI-502 Consumption Anomaly Analysis Tests
         run: cd backend && npx tsx test/test_ai502_consumption_anomaly.ts
 
+      - name: Run COMP-601 UBL DespatchAdvice (e-İrsaliye) Tests
+        run: cd backend && npx tsx test/test_comp601_despatch_advice.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true
@@ -406,3 +414,62 @@ jobs:
             # Diğer servisler (nginx statik dosyaları, postgres şeması vb.)
             # zero-downtime gerektirmeyen normal bir 'up -d --build' ile.
             docker compose up -d --build frontend
+
+  load-test:
+    name: 🔥 TEST-1002 k6 Yük ve Stres Testi (yalnızca manuel tetikleme)
+    runs-on: ubuntu-latest
+    # scripts/load-test/README.md'nin belgelediği gibi tamamen compose ağında
+    # container-to-container çalışır (host firewall/NFS bind-mount kısıtları
+    # bu makineye özgüydü, GitHub Actions runner'ında geçerli değil ama aynı
+    # script değişmeden burada da çalışıyor) — repo kökünde bir .env ve ayakta
+    # bir docker compose yığını gerektirir, ikisini de bu job kendisi kurar.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Build minimal .env for docker compose
+        run: |
+          cat > .env << EOF
+          POSTGRES_USER=postgres
+          POSTGRES_PASSWORD=postgres
+          POSTGRES_DB=yakittakip_db
+          JWT_SECRET=ci_only_loadtest_access_${{ github.run_id }}
+          JWT_REFRESH_SECRET=ci_only_loadtest_refresh_${{ github.run_id }}
+          MQTT_USERNAME=ci_only_loadtest_mqtt
+          MQTT_PASSWORD=ci_only_loadtest_mqtt_pass
+          HW_SECRET_ESP32_PUMP_01=ci_only_hw_secret_pump_${{ github.run_id }}
+          HW_SECRET_ESP32_TANK_01=ci_only_hw_secret_tank_${{ github.run_id }}
+          HW_SECRET_ESP32_FLOW_ISR=ci_only_hw_secret_flow_${{ github.run_id }}
+          TRANSACTION_HASH_SECRET=ci_only_tx_hash_${{ github.run_id }}
+          HW_SECRET_ENCRYPTION_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          EOF
+
+      - name: Start Full Docker Compose Stack
+        run: |
+          docker compose up -d --build
+          echo "postgres/redis/emqx/backend sağlıklı olana kadar bekleniyor..."
+          for i in $(seq 1 60); do
+            docker compose ps backend | grep -q "healthy" && echo "Backend healthy after ${i}0s" && exit 0
+            sleep 10
+          done
+          docker compose logs backend --tail 100
+          exit 1
+
+      - name: Apply Database Schema & Seed Data
+        run: |
+          docker compose exec -T postgres psql -U postgres -d yakittakip_db < backend/src/db/schema.sql
+          docker compose exec -T postgres psql -U postgres -d yakittakip_db < backend/src/db/seed_mock_data.sql
+
+      - name: Run TEST-1002 Full AC Load Test (100 pompa @ 1000 rps, 90s)
+        run: |
+          chmod +x scripts/load-test/run.sh
+          TARGET_RPS=1000 DEVICE_COUNT=300 DURATION=90s VUS=200 scripts/load-test/run.sh
+
+      - name: Upload Load Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-1002-load-test-results
+          path: scripts/load-test/results/
+          retention-days: 14

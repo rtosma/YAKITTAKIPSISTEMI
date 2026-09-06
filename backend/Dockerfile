@@ -74,6 +74,10 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --from=builder --chown=node:node /app/dist/server.cjs ./dist/server.cjs
 COPY --chown=node:node src/db/schema.sql ./src/db/schema.sql
 COPY --chown=node:node src/routes ./src/routes
+# COMP-601: despatchAdviceXmlService.ts, bundle'a GÖMÜLEMEYEN (JS/TS değil)
+# vendored UBL 2.1 XSD dosyalarını process.cwd()'ye göre okur — src/routes
+# ile AYNI gerekçeyle burada AYRICA kopyalanması gerekiyor.
+COPY --chown=node:node src/compliance ./src/compliance
 
 # Switch to unprivileged non-root user
 USER node

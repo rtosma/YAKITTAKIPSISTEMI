@@ -143,6 +143,10 @@ services:
       TRANSACTION_HASH_SECRET: ${TRANSACTION_HASH_SECRET:?TRANSACTION_HASH_SECRET .env dosyasında tanımlanmalıdır}
       # AUTH-202.3: hardware_devices.encrypted_secret AES-256-GCM anahtarı.
       HW_SECRET_ENCRYPTION_KEY: ${HW_SECRET_ENCRYPTION_KEY:?HW_SECRET_ENCRYPTION_KEY .env dosyasında tanımlanmalıdır}
+      # AI-502: yukarıdakilerin AKSİNE zorunlu DEĞİL (`:-` boş varsayılan) —
+      # tanımsızsa özellik nazikçe 503 döner, uygulamanın geri kalanı normal
+      # çalışır (bkz. config/env.ts, consumptionAnomalyService.ts).
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     # OPS-1102: host'a sabit "5000:5000" port yayını kasıtlı olarak KALDIRILDI.
     # 1) frontend/nginx.conf zaten backend'e dahili yakit_network üzerinden
     #    hostname ile (http://backend:5000) erişiyor — dışarıdan doğrudan

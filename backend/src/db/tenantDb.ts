@@ -2348,3 +2348,72 @@ export async function getConsumptionAnomalyReports(): Promise<ConsumptionAnomaly
     return result.rows;
   });
 }
+
+// ============================================================================
+// COMP-601: UBL 2.1 DESPATCHADVICE (E-İRSALİYE TASLAĞI) İÇİN KAYNAK VERİ
+// ============================================================================
+
+export interface DespatchAdviceSourceData {
+  transactionId: string;
+  issueDate: string;
+  supplierVkn: string;
+  vehiclePlate: string;
+  driverTcNo: string;
+  amountLiters: number;
+}
+
+/**
+ * AC'nin istediği 4 alan (VKN, Plaka, Şoför TC, Sevk Tarihi) için gerekli
+ * ham veriyi tek yerde toplar — hiçbiri transactions tablosunda doğrudan
+ * durmuyor: VKN companies.tax_number'dan (firma zaten var olan bir alan),
+ * şoför TC'si ise transactions.driver_name'in (serbest metin) drivers
+ * tablosundaki AYNI isimli kayıtla eşleştirilmesinden gelir — transactions
+ * driver_id'ye FK değil (bkz. createTransaction), bu yüzden isim eşleşmesi
+ * dışında bir yol yok. İkisi de eksikse e-İrsaliye üretilemeyeceği için
+ * BadRequestError fırlatılır; sessizce boş/hatalı bir alan üretilmez.
+ */
+export async function getDespatchAdviceSourceData(
+  transactionId: string,
+  siteRestriction?: string
+): Promise<DespatchAdviceSourceData> {
+  return withTenant(async (client, tenantId) => {
+    const txRes = await client.query('SELECT * FROM transactions WHERE id = $1', [transactionId]);
+    if (txRes.rows.length === 0) throw new NotFoundError('İkmal kaydı bulunamadı.');
+    const tx = txRes.rows[0];
+    // AUTH-201.4 ile AYNI desen: SITE_MANAGER başka bir şantiyenin ikmal
+    // ID'sini tahmin edip e-İrsaliye üretemez. NotFoundError (403 değil) —
+    // aksi halde yanıt kodu, ID'nin var olup olmadığını sızdırırdı.
+    if (siteRestriction && tx.site_name !== siteRestriction) {
+      throw new NotFoundError('İkmal kaydı bulunamadı.');
+    }
+
+    const companyRes = await client.query('SELECT tax_number FROM companies WHERE id = $1', [tenantId]);
+    const supplierVkn: string | null = companyRes.rows[0]?.tax_number ?? null;
+    if (!supplierVkn) {
+      throw new BadRequestError('Firma VKN (Vergi Kimlik Numarası) bilgisi tanımlı değil, e-İrsaliye üretilemez.');
+    }
+
+    let driverTcNo: string | null = null;
+    if (tx.driver_name) {
+      const driverRes = await client.query(
+        'SELECT tc_no FROM drivers WHERE tenant_id = $1 AND name = $2 LIMIT 1',
+        [tenantId, tx.driver_name]
+      );
+      driverTcNo = driverRes.rows[0]?.tc_no ?? null;
+    }
+    if (!driverTcNo) {
+      throw new BadRequestError(
+        `Bu ikmal kaydındaki sürücü ('${tx.driver_name ?? 'tanımsız'}') sicilde kayıtlı değil (TC kimlik no bulunamadı), e-İrsaliye üretilemez.`
+      );
+    }
+
+    return {
+      transactionId: tx.id,
+      issueDate: new Date(tx.created_at).toISOString().slice(0, 10),
+      supplierVkn,
+      vehiclePlate: tx.vehicle_plate,
+      driverTcNo,
+      amountLiters: Number(tx.amount_liters)
+    };
+  });
+}
