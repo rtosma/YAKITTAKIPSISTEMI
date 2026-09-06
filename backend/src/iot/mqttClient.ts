@@ -5,6 +5,7 @@ import { redisPool } from '../db/redisPool';
 import { getHardwareDeviceByDeviceId } from '../db/adminDb';
 import { EventEmitter } from 'events';
 import { runWithTenant } from '../context/tenantContext';
+import { startTheftDetectionEngine } from '../services/theftDetectionService';
 
 // Local Event Bus for decoupling (Prep for ARCH-102: BullMQ)
 export const ioTEventBus = new EventEmitter();
@@ -35,6 +36,12 @@ class MQTTService {
 
   public connect(): void {
     this.manuallyDisconnected = false;
+
+    // AI-501: telemetri olay veri yoluna (ioTEventBus) bağlı hırsızlık tespit
+    // motorunu ayağa kaldır. Idempotent — reconnect'te tekrar çağrılması
+    // sorun değil (bkz. theftDetectionService.ts `started` bayrağı).
+    startTheftDetectionEngine();
+
     logger.info(`🔌 [MQTT] Broker'a bağlanılıyor: ${this.brokerUrl}`);
 
     this.client = mqtt.connect(this.brokerUrl, {
