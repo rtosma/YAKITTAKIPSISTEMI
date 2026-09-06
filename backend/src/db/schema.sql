@@ -207,6 +207,12 @@ ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS hardware_revision VARCHAR(
 -- pals/litre katsayısı. NULL = hiç kalibre edilmemiş, cihaz kendi firmware
 -- varsayılanını kullanıyor (backend'in bilgisi/kontrolü dışında bir sabit).
 ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS k_factor NUMERIC(10, 4);
+-- FUEL-410: cihazın EN SON çektiği (GET /telemetry/fail-open-policy) fail-open
+-- politikasının id'si. Panelin "dağıtım bekliyor" durumunu göstermesi için —
+-- bu değer, o şantiye/tenant için GEÇERLİ olan politikanın id'sinden
+-- FARKLIYSA cihaz henüz güncel politikayı çekmemiş demektir (bkz.
+-- tenantDb.ts getFailOpenPolicyDeploymentStatus).
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_fail_open_policy_id VARCHAR(64);
 
 -- ==============================================================================
 -- [IOT-304] Cihaz Provisioning ve Eşleştirme (Device Claim) Akışı
@@ -308,6 +314,34 @@ CREATE TABLE IF NOT EXISTS calibration_test_intakes (
 );
 
 -- ==============================================================================
+-- [FUEL-410] Hibrit Fail-Open Politika Motoru (Sunucu Erişilemezliği)
+-- ==============================================================================
+-- "Sunucuya ulaşılamadığında şantiye durmasın, ama yetkisiz alım da mümkün
+-- olmasın" kararının merkezden tanımlanan politikası. calibration_commands
+-- ile AYNI "her değişiklik YENİ bir satır" (versiyonlanan, asla UPDATE
+-- edilmeyen) deseni — bir şantiye/tenant için en son (created_at DESC) satır
+-- o an GEÇERLİ politikadır (bkz. tenantDb.ts getEffectiveFailOpenPolicy).
+-- site_name NULL ise bu, o tenant'ın TÜM şantiyeleri için VARSAYILANDIR —
+-- site_name dolu bir satır varsa o şantiye için ÖNCELİKLİDİR.
+CREATE TABLE IF NOT EXISTS fail_open_policies (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    site_name VARCHAR(128),
+    offline_dispense_allowed BOOLEAN NOT NULL DEFAULT TRUE,
+    max_liters_per_vehicle NUMERIC(10, 2) NOT NULL DEFAULT 200,
+    max_daily_dispenses_per_vehicle INTEGER NOT NULL DEFAULT 1,
+    whitelist_freshness_hours INTEGER NOT NULL DEFAULT 24,
+    -- true ise offline_dispense_allowed'ı GEÇERSİZ KILAR — ticket notu:
+    -- "Yüksek riskli tenant'lar için tam fail-close seçeneği de
+    -- desteklenmelidir." Cihaz bunu görünce sunucuya ulaşamadığında HİÇ
+    -- ikmal yapmaz (uygulanması firmware tarafı, backend'in işi bu kararı
+    -- doğru iletmek).
+    fail_close BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ==============================================================================
 -- [AUTH-201] Users Table & Refresh Tokens Rotation Store
 -- ==============================================================================
 
@@ -352,6 +386,7 @@ ALTER TABLE hardware_devices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE device_claim_codes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE calibration_commands ENABLE ROW LEVEL SECURITY;
 ALTER TABLE calibration_test_intakes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fail_open_policies ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -428,6 +463,7 @@ ALTER TABLE hardware_devices FORCE ROW LEVEL SECURITY;
 ALTER TABLE device_claim_codes FORCE ROW LEVEL SECURITY;
 ALTER TABLE calibration_commands FORCE ROW LEVEL SECURITY;
 ALTER TABLE calibration_test_intakes FORCE ROW LEVEL SECURITY;
+ALTER TABLE fail_open_policies FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -442,6 +478,7 @@ DROP POLICY IF EXISTS hardware_devices_tenant_isolation_policy ON hardware_devic
 DROP POLICY IF EXISTS device_claim_codes_tenant_isolation_policy ON device_claim_codes;
 DROP POLICY IF EXISTS calibration_commands_tenant_isolation_policy ON calibration_commands;
 DROP POLICY IF EXISTS calibration_test_intakes_tenant_isolation_policy ON calibration_test_intakes;
+DROP POLICY IF EXISTS fail_open_policies_tenant_isolation_policy ON fail_open_policies;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -526,6 +563,11 @@ CREATE POLICY calibration_test_intakes_tenant_isolation_policy ON calibration_te
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY fail_open_policies_tenant_isolation_policy ON fail_open_policies
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- ==============================================================================
 -- [PERF] tenant_id İndeksleri
 -- ==============================================================================
@@ -572,4 +614,8 @@ CREATE INDEX IF NOT EXISTS idx_calibration_commands_status ON calibration_comman
 -- FUEL-404.2: cihaz bazlı test alımı geçmişi + "son 2 ölçümün ortalaması"
 -- önerisinin sorgu deseni (bkz. tenantDb.ts recordCalibrationTestIntake).
 CREATE INDEX IF NOT EXISTS idx_calibration_test_intakes_device ON calibration_test_intakes(tenant_id, device_id, created_at DESC);
+
+-- FUEL-410: "en son geçerli politika" sorgusu (tenant+site VEYA tenant+NULL)
+-- her zaman created_at DESC LIMIT 1 ile çalışır.
+CREATE INDEX IF NOT EXISTS idx_fail_open_policies_lookup ON fail_open_policies(tenant_id, site_name, created_at DESC);
 

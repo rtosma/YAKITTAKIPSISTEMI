@@ -1077,6 +1077,38 @@ async function syncSingleOfflineRecord(deviceId: string, record: SyncBatchRecord
       const newStatus = percentage < 20 ? 'KRİTİK' : percentage < 40 ? 'UYARI' : 'GÜVENLİ';
       await client.query('UPDATE tanks SET current_level_liters = $1, status = $2 WHERE id = $3', [newLevel, newStatus, tank.id]);
 
+      // FUEL-410: bu geçmiş kayıt, o şantiyenin GEÇERLİ fail-open politikasını
+      // aşıyor mu? Fuel zaten fiziksel olarak dispense edildiğinden kaydın
+      // KENDİSİ reddedilMİYOR (negatif stok kontrolünden farklı olarak) —
+      // yalnızca bir denetim uyarısı üretiliyor, çünkü bu ya politika
+      // SONRADAN sıkılaştırıldığı için ya da cihaz politikayı görmezden
+      // geldiği (tamper/bug) için olabilir; ikisi de operatör incelemesi ister.
+      const policyViolations: string[] = [];
+      const effectivePolicy = await getEffectiveFailOpenPolicy(record.siteName, client);
+      if (effectivePolicy.fail_close) {
+        policyViolations.push('FAIL_CLOSE_VIOLATED');
+      }
+      if (record.amountLiters > Number(effectivePolicy.max_liters_per_vehicle)) {
+        policyViolations.push('MAX_LITERS_PER_VEHICLE_EXCEEDED');
+      }
+      const sameDayCountRes = await client.query(
+        `SELECT COUNT(*)::int AS c FROM transactions
+         WHERE vehicle_plate = $1 AND type = 'Çevrimdışı Senkron'
+           AND created_at::date = $2::timestamptz::date`,
+        [record.vehiclePlate, record.deviceTimestamp]
+      );
+      if (sameDayCountRes.rows[0].c + 1 > effectivePolicy.max_daily_dispenses_per_vehicle) {
+        policyViolations.push('MAX_DAILY_DISPENSES_EXCEEDED');
+      }
+      if (policyViolations.length > 0) {
+        await writeAuditLog(client, {
+          action: 'OFFLINE_DISPENSE_POLICY_VIOLATION',
+          targetType: 'vehicle',
+          targetId: record.vehiclePlate,
+          afterValue: { deviceId, localSequenceId: record.localSequenceId, siteName: record.siteName, amountLiters: record.amountLiters, violations: policyViolations, policyId: effectivePolicy.id }
+        });
+      }
+
       const id = generateId('tx');
       const hashSignature = crypto
         .createHmac('sha256', config.TRANSACTION_HASH_SECRET)
@@ -1920,5 +1952,187 @@ export async function getCalibrationTestIntakes(deviceId: string): Promise<Calib
       [deviceId]
     );
     return result.rows;
+  });
+}
+
+// ============================================================================
+// FUEL-410 — Hibrit Fail-Open Politika Motoru
+// ============================================================================
+
+export interface FailOpenPolicyRecord {
+  id: string;
+  site_name: string | null;
+  offline_dispense_allowed: boolean;
+  max_liters_per_vehicle: number;
+  max_daily_dispenses_per_vehicle: number;
+  whitelist_freshness_hours: number;
+  fail_close: boolean;
+  updated_by: string;
+  created_at: string;
+}
+
+// Ticket'ın kendi notu: "Varsayılan politika: çevrimdışı izin AÇIK, araç
+// başına 200 L, günde 1 alım, whitelist tazeliği 24 saat." Hiçbir tenant/
+// şantiye politikası tanımlanmamışsa bu, sistem genelindeki son çare.
+const SYSTEM_DEFAULT_FAIL_OPEN_POLICY: Omit<FailOpenPolicyRecord, 'id' | 'updated_by' | 'created_at'> = {
+  site_name: null,
+  offline_dispense_allowed: true,
+  max_liters_per_vehicle: 200,
+  max_daily_dispenses_per_vehicle: 1,
+  whitelist_freshness_hours: 24,
+  fail_close: false
+};
+
+/**
+ * AC: "Politika tenant ve şantiye bazında tanımlanabilmelidir." Her çağrı
+ * YENİ bir versiyon (satır) yaratır — calibration_commands'la AYNI "asla
+ * UPDATE edilmeyen geçmiş" deseni; hangi politikanın NE ZAMAN yürürlüğe
+ * girdiği hiçbir zaman belirsizleşmez.
+ */
+export async function setFailOpenPolicy(data: {
+  siteName?: string;
+  offlineDispenseAllowed: boolean;
+  maxLitersPerVehicle: number;
+  maxDailyDispensesPerVehicle: number;
+  whitelistFreshnessHours: number;
+  failClose: boolean;
+  updatedByUserId: string;
+}): Promise<FailOpenPolicyRecord> {
+  return withTenant(async (client, tenantId) => {
+    const id = generateId('failpolicy');
+    const result = await client.query(
+      `INSERT INTO fail_open_policies
+         (id, tenant_id, site_name, offline_dispense_allowed, max_liters_per_vehicle, max_daily_dispenses_per_vehicle, whitelist_freshness_hours, fail_close, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [
+        id, tenantId, data.siteName ?? null, data.offlineDispenseAllowed, data.maxLitersPerVehicle,
+        data.maxDailyDispensesPerVehicle, data.whitelistFreshnessHours, data.failClose, data.updatedByUserId
+      ]
+    );
+
+    await writeAuditLog(client, {
+      action: 'FAIL_OPEN_POLICY_UPDATED',
+      targetType: 'fail_open_policy',
+      targetId: data.siteName ?? '(tenant geneli)',
+      afterValue: {
+        siteName: data.siteName ?? null,
+        offlineDispenseAllowed: data.offlineDispenseAllowed,
+        maxLitersPerVehicle: data.maxLitersPerVehicle,
+        maxDailyDispensesPerVehicle: data.maxDailyDispensesPerVehicle,
+        failClose: data.failClose
+      }
+    });
+
+    return result.rows[0];
+  });
+}
+
+export async function getFailOpenPolicies(): Promise<FailOpenPolicyRecord[]> {
+  return withTenant(async (client) => {
+    const result = await client.query('SELECT * FROM fail_open_policies ORDER BY created_at DESC');
+    return result.rows;
+  });
+}
+
+/**
+ * Bir şantiye için GEÇERLİ olan politikayı bulur: önce o şantiyeye özel en
+ * son satır, yoksa tenant geneli (site_name IS NULL) en son satır, o da
+ * yoksa sistem varsayılanı (id='system-default' ile işaretlenir — hiç
+ * DB'den gelmedi). `client` parametresi opsiyonel: syncSingleOfflineRecord
+ * gibi ZATEN açık bir transaction'ı olan çağıranlar kendi client'ını
+ * geçirip GEREKSİZ ikinci bir DB bağlantısı/transaction'ı açmaktan kaçınır.
+ */
+export async function getEffectiveFailOpenPolicy(siteName: string, existingClient?: import('pg').PoolClient): Promise<FailOpenPolicyRecord> {
+  const query = async (client: import('pg').PoolClient) => {
+    const siteSpecific = await client.query(
+      `SELECT * FROM fail_open_policies WHERE site_name = $1 ORDER BY created_at DESC LIMIT 1`,
+      [siteName]
+    );
+    if (siteSpecific.rows.length > 0) return siteSpecific.rows[0];
+
+    const tenantWide = await client.query(
+      `SELECT * FROM fail_open_policies WHERE site_name IS NULL ORDER BY created_at DESC LIMIT 1`
+    );
+    if (tenantWide.rows.length > 0) return tenantWide.rows[0];
+
+    return { id: 'system-default', updated_by: 'system', created_at: new Date().toISOString(), ...SYSTEM_DEFAULT_FAIL_OPEN_POLICY };
+  };
+
+  if (existingClient) return query(existingClient);
+  return withTenant((client) => query(client));
+}
+
+/** Cihaz GET /telemetry/fail-open-policy'yi her çektiğinde çağrılır — "dağıtım bekliyor" durumunun kaynağı. */
+export async function recordFailOpenPolicyDelivery(deviceId: string, policyId: string): Promise<void> {
+  return withTenant(async (client) => {
+    await client.query('UPDATE hardware_devices SET last_fail_open_policy_id = $1 WHERE device_id = $2', [policyId, deviceId]);
+  });
+}
+
+/**
+ * AC: "Politika değişikliği cihazlara dağıtılıp uygulandığı doğrulanabilmelidir...
+ * panelde 'dağıtım bekliyor' durumu gösterilmelidir." Her cihaz için kendi
+ * şantiyesinin GEÇERLİ politika id'sini, cihazın EN SON ÇEKTİĞİ id ile
+ * karşılaştırır.
+ */
+export async function getFailOpenPolicyDeploymentStatus(): Promise<Array<{
+  deviceId: string;
+  siteName: string;
+  effectivePolicyId: string;
+  lastDeliveredPolicyId: string | null;
+  status: 'GÜNCEL' | 'DAĞITIM_BEKLIYOR';
+}>> {
+  return withTenant(async (client) => {
+    const devicesRes = await client.query('SELECT device_id, site_name, last_fail_open_policy_id FROM hardware_devices');
+    const results = [];
+    for (const device of devicesRes.rows) {
+      const effective = await getEffectiveFailOpenPolicy(device.site_name, client);
+      results.push({
+        deviceId: device.device_id,
+        siteName: device.site_name,
+        effectivePolicyId: effective.id,
+        lastDeliveredPolicyId: device.last_fail_open_policy_id,
+        status: (device.last_fail_open_policy_id === effective.id ? 'GÜNCEL' : 'DAĞITIM_BEKLIYOR') as 'GÜNCEL' | 'DAĞITIM_BEKLIYOR'
+      });
+    }
+    return results;
+  });
+}
+
+// Ticket bir sayı belirtmiyor — %15, "gözle görülür biçimde yüksek ama tek
+// bir gecikmiş senkronizasyonla tetiklenmeyecek kadar toleranslı" bir eşik
+// olarak seçildi; ileride tenant bazında yapılandırılabilir hale getirilebilir.
+const OFFLINE_DISPENSE_RATIO_ALERT_THRESHOLD = 0.15;
+
+/**
+ * AC: "Çevrimdışı alım oranı eşiği aşan şantiyeler için uyarı." IOT-303.1'in
+ * zaten yazdığı type='Çevrimdışı Senkron' sınıflandırmasını kullanır — yeni
+ * bir işaretleme mekanizması GEREKMEDİ.
+ */
+export async function getOfflineDispenseRatioAlerts(periodDays = 30): Promise<Array<{
+  siteName: string;
+  totalDispenses: number;
+  offlineDispenses: number;
+  offlineRatio: number;
+}>> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      `SELECT
+         site_name,
+         COUNT(*)::int AS total_dispenses,
+         COUNT(*) FILTER (WHERE type = 'Çevrimdışı Senkron')::int AS offline_dispenses
+       FROM transactions
+       WHERE created_at > NOW() - ($1 || ' days')::interval
+       GROUP BY site_name`,
+      [periodDays]
+    );
+    return result.rows
+      .map((r) => ({
+        siteName: r.site_name,
+        totalDispenses: r.total_dispenses,
+        offlineDispenses: r.offline_dispenses,
+        offlineRatio: r.total_dispenses > 0 ? r.offline_dispenses / r.total_dispenses : 0
+      }))
+      .filter((r) => r.offlineRatio > OFFLINE_DISPENSE_RATIO_ALERT_THRESHOLD);
   });
 }

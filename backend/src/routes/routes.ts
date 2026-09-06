@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts } from '../db/tenantDb';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
@@ -14,6 +14,7 @@ import { loginSchema, changePasswordSchema } from '../schemas/authSchema';
 import { createSiteSchema } from '../schemas/siteSchema';
 import { createHardwareDeviceSchema, relocateHardwareDeviceSchema, createDeviceClaimCodeSchema, claimDeviceSchema } from '../schemas/hardwareDeviceSchema';
 import { requestCalibrationSchema, calibrationAckSchema, testIntakeSchema } from '../schemas/calibrationSchema';
+import { setFailOpenPolicySchema } from '../schemas/failOpenPolicySchema';
 import { verifyPassword } from '../utils/password';
 import { NotFoundError } from '../utils/errors';
 import { pool } from '../db/postgresPool';
@@ -770,6 +771,113 @@ router.get(
     try {
       const intakes = await getCalibrationTestIntakes(req.params.deviceId);
       res.json({ success: true, totalCount: intakes.length, data: intakes });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * FUEL-410 — Hibrit Fail-Open Politika Motoru. Ticket'ın "Teknik Yığın"ı
+ * IOT-305 komut kuyruğu + FW-1310 + Drizzle + REP-711 öneriyor — hiçbiri bu
+ * kod tabanında yok. Politika, MQTT/komut kuyruğuyla cihaza İTİLMİYOR;
+ * cihaz periyodik olarak GET /telemetry/fail-open-policy ile ÇEKİYOR (mevcut
+ * dispense/sync-batch/calibration-ack'in HMAC korumalı HTTP deseniyle
+ * tutarlı) — "dağıtım bekliyor" durumu, cihazın en son çektiği politika
+ * id'sinin GEÇERLİ id'den farklı olmasıyla izleniyor.
+ */
+router.post(
+  '/policies/fail-open',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: setFailOpenPolicySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const policy = await setFailOpenPolicy({
+        siteName: req.body.siteName,
+        offlineDispenseAllowed: req.body.offlineDispenseAllowed,
+        maxLitersPerVehicle: req.body.maxLitersPerVehicle,
+        maxDailyDispensesPerVehicle: req.body.maxDailyDispensesPerVehicle,
+        whitelistFreshnessHours: req.body.whitelistFreshnessHours,
+        failClose: req.body.failClose,
+        updatedByUserId: req.user!.userId
+      });
+      res.json({ success: true, message: 'Fail-open politikası kaydedildi.', data: policy });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/policies/fail-open',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const policies = await getFailOpenPolicies();
+      res.json({ success: true, totalCount: policies.length, data: policies });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/policies/fail-open/deployment-status',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const status = await getFailOpenPolicyDeploymentStatus();
+      res.json({ success: true, totalCount: status.length, data: status });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/policies/fail-open/offline-ratio-alerts',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const alerts = await getOfflineDispenseRatioAlerts();
+      res.json({ success: true, totalCount: alerts.length, data: alerts });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /telemetry/fail-open-policy:
+ *   get:
+ *     summary: Cihazın Şantiyesi İçin Geçerli Fail-Open Politikasını Çekmesi (FUEL-410)
+ *     description: >
+ *       Cihaz bunu periyodik olarak çeker (önerilen: whitelist tazelik
+ *       süresinden daha sık) — sunucuya erişemediği anlarda EN SON çektiği
+ *       bu politikayı kendi yerel önbelleğinden uygular.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Geçerli politika döndü.
+ */
+router.get(
+  '/telemetry/fail-open-policy',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; siteName: string; tenantId: string };
+    try {
+      const policy = await runWithTenant({ tenantId: hw.tenantId }, async () => {
+        const effective = await getEffectiveFailOpenPolicy(hw.siteName);
+        await recordFailOpenPolicyDelivery(hw.deviceId, effective.id);
+        return effective;
+      });
+      res.json({ success: true, data: policy });
     } catch (error: any) {
       next(error);
     }

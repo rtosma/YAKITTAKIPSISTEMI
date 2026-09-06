@@ -208,6 +208,9 @@ jobs:
       - name: Run FUEL-404.2 Calibration Test Intake Wizard Tests
         run: cd backend && npx tsx test/test_fuel404_2_test_intake.ts
 
+      - name: Run FUEL-410 Hybrid Fail-Open Policy Tests
+        run: cd backend && npx tsx test/test_fuel410_fail_open_policy.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true
