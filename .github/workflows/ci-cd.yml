@@ -211,6 +211,9 @@ jobs:
       - name: Run FUEL-410 Hybrid Fail-Open Policy Tests
         run: cd backend && npx tsx test/test_fuel410_fail_open_policy.ts
 
+      - name: Run REP-701 Stream Excel Export Tests
+        run: cd backend && npx tsx test/test_rep701_transaction_export.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

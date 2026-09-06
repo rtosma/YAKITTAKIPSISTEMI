@@ -15,6 +15,7 @@
     "argon2": "^0.45.1",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
+    "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "express-rate-limit": "^8.7.0",
     "ioredis": "^6.0.0",

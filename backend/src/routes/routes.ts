@@ -1,12 +1,13 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
 import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts } from '../db/tenantDb';
+import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
 import { createTankSchema, updateTankSchema } from '../schemas/tankSchema';
-import { dispenseRequestSchema, transactionQuerySchema, syncBatchSchema } from '../schemas/transactionSchema';
+import { dispenseRequestSchema, transactionQuerySchema, transactionExportQuerySchema, syncBatchSchema } from '../schemas/transactionSchema';
 import { dispenseRequestAuthSchema, dispenseHeartbeatSchema, dispenseFinalizeSchema } from '../schemas/dispenseSessionSchema';
 import { createCrossSitePermissionSchema, updateCrossSitePermissionStatusSchema } from '../schemas/crossSiteSchema';
 import { createCompanySchema, updateCompanySchema } from '../schemas/companySchema';
@@ -1713,6 +1714,75 @@ router.get(
         }
       });
     } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /transactions/export:
+ *   get:
+ *     summary: İkmal Geçmişi Excel Dışa Aktarımı (REP-701)
+ *     description: >
+ *       RLS kurallarına göre oturum açmış firmanın (ve varsa şantiye
+ *       kısıtlamasının) ikmal geçmişini, aynı filtrelerle, bellek dostu
+ *       stream ile .xlsx olarak indirir. Sayfalama yoktur — filtreye uyan
+ *       TÜM kayıtlar tek dosyada, sonunda dinamik bir GENEL TOPLAM
+ *       satırıyla birlikte döner.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: startDate
+ *         schema: { type: string, format: date }
+ *       - in: query
+ *         name: endDate
+ *         schema: { type: string, format: date }
+ *       - in: query
+ *         name: siteName
+ *         schema: { type: string }
+ *       - in: query
+ *         name: driverName
+ *         schema: { type: string }
+ *       - in: query
+ *         name: pumpStatus
+ *         schema: { type: string, enum: [TAMAMLANTI, DURDURULDU, ANOMALİ] }
+ *       - in: query
+ *         name: type
+ *         schema: { type: string, enum: [Otomatik, Manuel, Çapraz Şantiye, Çevrimdışı Senkron] }
+ *       - in: query
+ *         name: search
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: .xlsx dosyası stream olarak döner.
+ */
+router.get(
+  '/transactions/export',
+  authenticateJWT,
+  validateRequest({ query: transactionExportQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as {
+        startDate?: string;
+        endDate?: string;
+        siteName?: string;
+        driverName?: string;
+        pumpStatus?: string;
+        type?: string;
+        search?: string;
+      };
+
+      await streamTransactionsToExcel(res, q, siteScopeFor(req.user!));
+    } catch (error: any) {
+      // Header'lar zaten gönderilmişse (stream başlamışsa) Express'in
+      // varsayılan hata middleware'i devreye giremez — bağlantıyı olduğu
+      // gibi keserek yarım/bozuk bir .xlsx indirmeyi önlüyoruz.
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
       next(error);
     }
   }

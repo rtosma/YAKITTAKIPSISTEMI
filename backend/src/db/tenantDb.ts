@@ -597,17 +597,17 @@ export interface PaginatedTransactions {
  * geçmişini görmeye çalışabilirdi — sunucu tarafı kısıtlama istemci
  * girdisine güvenmez.
  */
-export async function getTenantTransactionsPaginated(
-  filters: TransactionFilters = {},
+/**
+ * REP-701 — getTenantTransactionsPaginated VE streamTenantTransactionsForExport
+ * aynı filtre kümesini (tarih aralığı, şantiye, sürücü, durum, tip, arama)
+ * aynı önceliklerle (siteRestriction her zaman filters.siteName'i EZER) WHERE
+ * koşuluna çevirmek zorunda; mantık tek yerde tutulup ikisi de burayı çağırıyor.
+ */
+function buildTransactionFilterClause(
+  filters: TransactionFilters,
   siteRestriction?: string
-): Promise<PaginatedTransactions> {
+): { whereClause: string; params: any[] } {
   const effectiveSiteName = siteRestriction ?? filters.siteName;
-  const page = filters.page && filters.page > 0 ? Math.floor(filters.page) : 1;
-  const pageSize = filters.pageSize && filters.pageSize > 0
-    ? Math.min(Math.floor(filters.pageSize), 100)
-    : 10;
-  const offset = (page - 1) * pageSize;
-
   const conditions: string[] = [];
   const params: any[] = [];
 
@@ -642,6 +642,19 @@ export async function getTenantTransactionsPaginated(
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  return { whereClause, params };
+}
+
+export async function getTenantTransactionsPaginated(
+  filters: TransactionFilters = {},
+  siteRestriction?: string
+): Promise<PaginatedTransactions> {
+  const page = filters.page && filters.page > 0 ? Math.floor(filters.page) : 1;
+  const pageSize = filters.pageSize && filters.pageSize > 0
+    ? Math.min(Math.floor(filters.pageSize), 100)
+    : 10;
+  const offset = (page - 1) * pageSize;
+  const { whereClause, params } = buildTransactionFilterClause(filters, siteRestriction);
 
   return withTenant(async (client) => {
     // Sayaç ve toplam litre, filtreye uyan TÜM kayıtlar üzerinden (yalnızca
@@ -669,6 +682,91 @@ export async function getTenantTransactionsPaginated(
       totalPages: Math.max(1, Math.ceil(totalCount / pageSize)),
       totalLiters
     };
+  });
+}
+
+export interface TransactionExportAggregate {
+  totalCount: number;
+  totalLiters: number;
+}
+
+/**
+ * REP-701 — dışa aktarım başlamadan ÖNCE tek bir aggregate sorguyla toplam
+ * satır/litre hesaplanır; "GENEL TOPLAM" satırı bu yüzden akışın en sonunda,
+ * satırlar bellekte biriktirilmeden yazılabiliyor.
+ */
+export async function getTransactionExportAggregate(
+  filters: TransactionFilters,
+  siteRestriction?: string
+): Promise<TransactionExportAggregate> {
+  const { whereClause, params } = buildTransactionFilterClause(filters, siteRestriction);
+  return withTenant(async (client) => {
+    const result = await client.query(
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(amount_liters), 0)::numeric AS total_liters
+       FROM transactions ${whereClause}`,
+      params
+    );
+    return {
+      totalCount: result.rows[0]?.count ?? 0,
+      totalLiters: Number(result.rows[0]?.total_liters ?? 0)
+    };
+  });
+}
+
+const EXPORT_BATCH_SIZE = 2000;
+
+/**
+ * REP-701 AC: "100.000 satır dışa aktarılırken bellek 150 MB'ı aşmamalı."
+ * Tüm sonuç kümesini tek sorguda çekmek yerine (created_at, id) keyset
+ * sayfalamasıyla EXPORT_BATCH_SIZE'lık gruplar halinde okuyup her grubu
+ * hemen `onBatch` ile çağırana devrediyor — bir sonraki grup çekilmeden önce
+ * önceki grup zaten yazılıp serbest bırakılmış oluyor. OFFSET/LIMIT yerine
+ * keyset kullanılması da önemli: OFFSET N, Postgres'e önce N satırı taratıp
+ * atar (sayfa büyüdükçe O(N) maliyet) — 500.000 satırlık bir ihracatın son
+ * sayfalarında bu, dakikalar sürecek bir tarama demek olurdu. `id` PRIMARY
+ * KEY olduğu için (created_at DESC, id DESC) tam ve kararlı bir sıralama
+ * garanti eder, aynı created_at'e sahip satırlar arasında da atlama/tekrar
+ * olmaz.
+ *
+ * Tek bir withTenant() transaction'ı akışın tamamı boyunca açık kalır — bu
+ * export'un doğası gereği (RLS bağlamının ve tutarlı bir snapshot'ın tüm
+ * sayfalarda aynı kalması gerekir); büyük bir export uzun sürerse bu bir
+ * Postgres bağlantısını o süre boyunca meşgul eder, kabul edilen bir maliyet.
+ */
+export async function streamTenantTransactionsForExport(
+  filters: TransactionFilters,
+  siteRestriction: string | undefined,
+  onBatch: (rows: TransactionRecord[]) => Promise<void>
+): Promise<void> {
+  const { whereClause, params } = buildTransactionFilterClause(filters, siteRestriction);
+  return withTenant(async (client) => {
+    let lastCreatedAt: unknown = null;
+    let lastId: string | null = null;
+    for (;;) {
+      const keysetParams = [...params];
+      let keysetClause: string;
+      if (lastCreatedAt !== null && lastId !== null) {
+        keysetParams.push(lastCreatedAt, lastId);
+        keysetClause = `${whereClause ? 'AND' : 'WHERE'} (created_at, id) < ($${keysetParams.length - 1}, $${keysetParams.length})`;
+      } else {
+        keysetClause = '';
+      }
+      keysetParams.push(EXPORT_BATCH_SIZE);
+
+      const result = await client.query(
+        `SELECT * FROM transactions ${whereClause} ${keysetClause}
+         ORDER BY created_at DESC, id DESC LIMIT $${keysetParams.length}`,
+        keysetParams
+      );
+      if (result.rows.length === 0) break;
+
+      await onBatch(result.rows);
+
+      const last = result.rows[result.rows.length - 1];
+      lastCreatedAt = last.created_at;
+      lastId = last.id;
+      if (result.rows.length < EXPORT_BATCH_SIZE) break;
+    }
   });
 }
 

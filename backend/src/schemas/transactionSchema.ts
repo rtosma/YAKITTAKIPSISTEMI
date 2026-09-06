@@ -50,6 +50,15 @@ export const transactionQuerySchema = z.object({
 export type TransactionQueryDTO = z.infer<typeof transactionQuerySchema>;
 
 /**
+ * REP-701 — GET /transactions/export. Aynı filtre alanları (tarih aralığı,
+ * şantiye, sürücü, durum, tip, arama) geçerli; page/pageSize'ın export'ta
+ * anlamı yok (tüm sonuç kümesi stream edilir), o yüzden şemadan çıkarılıyor.
+ */
+export const transactionExportQuerySchema = transactionQuerySchema.omit({ page: true, pageSize: true });
+
+export type TransactionExportQueryDTO = z.infer<typeof transactionExportQuerySchema>;
+
+/**
  * IOT-303.1 — POST /telemetry/sync-batch. Cihaz bağlantısı kesikken
  * biriktirdiği ikmalleri, bağlantı geri geldiğinde tek istekte gönderir.
  * deviceTimestamp, dispense'in GERÇEKTEN gerçekleştiği an (cihazın RTC'si) —
