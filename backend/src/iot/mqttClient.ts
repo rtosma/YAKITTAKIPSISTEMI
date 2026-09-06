@@ -6,6 +6,7 @@ import { getHardwareDeviceByDeviceId } from '../db/adminDb';
 import { EventEmitter } from 'events';
 import { runWithTenant } from '../context/tenantContext';
 import { startTheftDetectionEngine } from '../services/theftDetectionService';
+import { decodeLoRaWANPayload, CorruptedPayloadException, LoRaWANRadioMeta } from './lorawanDecoder';
 
 // Local Event Bus for decoupling (Prep for ARCH-102: BullMQ)
 export const ioTEventBus = new EventEmitter();
@@ -142,7 +143,43 @@ class MQTTService {
               ioTEventBus.emit('deviceStatusChanged', { tenantId, siteId, deviceType, deviceId, status });
             }
           } else if (messageType === 'data') {
-            const parsedData = JSON.parse(messageStr);
+            let parsedData: Record<string, unknown>;
+
+            if (deviceType === 'lorawan') {
+              // IOT-302: LoRaWAN uplink'i — ya düz hex payload ya da ChirpStack/
+              // TTN zarfı ({ data|payloadHex|frmPayload: "<hex>", rxInfo: {rssi,snr} }).
+              try {
+                let hexPayload = messageStr.trim();
+                let meta: LoRaWANRadioMeta | undefined;
+                if (hexPayload.startsWith('{')) {
+                  const env = JSON.parse(hexPayload) as Record<string, any>;
+                  hexPayload = String(env.data ?? env.payloadHex ?? env.frmPayload ?? '');
+                  const rx = env.rxInfo ?? env;
+                  meta = {
+                    rssi: typeof rx.rssi === 'number' ? rx.rssi : undefined,
+                    snr: typeof (rx.snr ?? rx.loRaSNR) === 'number' ? (rx.snr ?? rx.loRaSNR) : undefined,
+                    devEui: env.devEUI ?? env.devEui,
+                    fPort: typeof env.fPort === 'number' ? env.fPort : undefined,
+                    gatewayId: env.gatewayId ?? rx.gatewayId
+                  };
+                }
+                parsedData = decodeLoRaWANPayload(hexPayload, meta) as unknown as Record<string, unknown>;
+              } catch (err) {
+                if (err instanceof CorruptedPayloadException) {
+                  // IOT-302 AC: bozuk paket İZOLE edilir — yalnızca bu paket
+                  // düşürülür; aynı akıştaki diğer cihazlar etkilenmez, ne
+                  // presence'a yansır ne de bir telemetryData olayı üretilir.
+                  logger.warn(
+                    { deviceId, topic, reason: err.reason, rawHex: err.rawHex, byteLength: err.byteLength },
+                    `🛰️ [IOT-302] Bozuk LoRaWAN paketi izole edildi ve atlandı: ${err.reason}`
+                  );
+                  return;
+                }
+                throw err; // beklenmeyen hata — dıştaki catch loglar
+              }
+            } else {
+              parsedData = JSON.parse(messageStr);
+            }
 
             // Gelen veriyi logla
             logger.debug({ deviceId, parsedData }, '📩 [MQTT] Telemetri verisi alındı.');
