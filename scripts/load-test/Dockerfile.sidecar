@@ -1,0 +1,18 @@
+# TEST-1002 — yük testi yardımcı imajı.
+#
+# Bu makinede NFS/Kerberos yüzünden `docker run -v <host-path>` bind-mount'ları
+# "Permission denied" ile kırılıyor (bkz. docker-compose.yml postgres notu),
+# bu yüzden script'ler bind-mount yerine build context ile imaja KOPYALANIR.
+#
+# Temel imaj: compose'un ürettiği backend imajı (derlenmiş dist/server.cjs +
+# üretim node_modules — argon2 vb. dahil). BASE build-arg'ı run.sh tarafından
+# geçilir.
+ARG BASE=yakittakipsistemi-backend:latest
+FROM ${BASE}
+
+COPY lag-sidecar.cjs /lag-sidecar.cjs
+COPY provision-devices.mjs /provision-devices.mjs
+
+# CMD run.sh tarafından belirtilir:
+#   node /lag-sidecar.cjs        → event-loop-lag ölçümlü backend
+#   node /provision-devices.mjs  → LOADTEST-* cihazlarını üretir (JSON → stdout)
