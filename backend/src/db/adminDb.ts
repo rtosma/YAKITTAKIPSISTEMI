@@ -265,6 +265,22 @@ export async function getAllHardwareDevices(): Promise<AdminHardwareDeviceSummar
   return result.rows;
 }
 
+/**
+ * AI-502 — index.ts'teki haftalık tüketim anomali süpürücüsünün, hangi
+ * tenant'lar için analiz üreteceğini bulmak için kullandığı sistem geneli
+ * sorgu (yukarıdaki getAllHardwareDevices ile AYNI gerekçe: bir bakım işi,
+ * tek bir tenant context'ine kısıtlı değil). `modules->>'aiAnomaly'` NULL
+ * (hiç ayarlanmamış) VEYA 'true' ise dahil edilir — yalnızca AÇIKÇA
+ * 'false' yapılmış tenant'lar hariç tutulur (bkz. tenantDb.ts
+ * isTenantModuleEnabled'daki AYNI varsayılan-açık mantığı).
+ */
+export async function getAllTenantIdsWithAiAnomalyEnabled(): Promise<string[]> {
+  const result = await pool.query(
+    `SELECT id FROM companies WHERE (modules->>'aiAnomaly') IS DISTINCT FROM 'false'`
+  );
+  return result.rows.map((r) => r.id);
+}
+
 // AUTH-202.3 öncesi (AUTH-202.1/OPS-1105), 3 demo cihazının sırları
 // hardwareAuthMiddleware.ts'te REGISTERED_HARDWARE_DEVICES adlı statik bir
 // nesnede, HW_SECRET_ESP32_* ortam değişkenlerinden okunuyordu. Bu fonksiyon

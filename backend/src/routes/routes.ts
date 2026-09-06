@@ -1,7 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
+import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
+import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
@@ -17,7 +19,7 @@ import { createHardwareDeviceSchema, relocateHardwareDeviceSchema, createDeviceC
 import { requestCalibrationSchema, calibrationAckSchema, testIntakeSchema } from '../schemas/calibrationSchema';
 import { setFailOpenPolicySchema } from '../schemas/failOpenPolicySchema';
 import { verifyPassword } from '../utils/password';
-import { NotFoundError } from '../utils/errors';
+import { NotFoundError, ForbiddenError } from '../utils/errors';
 import { pool } from '../db/postgresPool';
 import {
   generateAccessToken,
@@ -846,6 +848,71 @@ router.get(
     try {
       const alerts = await getOfflineDispenseRatioAlerts();
       res.json({ success: true, totalCount: alerts.length, data: alerts });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /ai/consumption-anomaly-reports:
+ *   post:
+ *     summary: Şoför/Araç Tüketim Anomali Analizi Üret (AI-502)
+ *     description: >
+ *       Son N gündeki (varsayılan 7) ikmalleri araç/şoför bazında özetleyip
+ *       Google Gemini'ye analiz ettirir; sonuç Zod ile doğrulanıp kalıcı
+ *       olarak saklanır. Tenant'ta `aiAnomaly` modülü kapalıysa 403,
+ *       GEMINI_API_KEY tanımlı değilse 503 döner.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Rapor üretildi ve kaydedildi.
+ *       403:
+ *         description: aiAnomaly modülü bu tenant için kapalı.
+ *       503:
+ *         description: GEMINI_API_KEY yapılandırılmamış veya AI servisine ulaşılamadı.
+ */
+router.post(
+  '/ai/consumption-anomaly-reports',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: generateAnomalyReportSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const enabled = await isTenantModuleEnabled('aiAnomaly');
+      if (!enabled) {
+        throw new ForbiddenError('Tüketim anomali analizi (aiAnomaly) modülü bu firma için kapatılmış.');
+      }
+      const { periodDays } = req.body as { periodDays: number };
+      const report = await generateAndStoreAnomalyReport(periodDays, req.user!.userId);
+      res.json({ success: true, data: report });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /ai/consumption-anomaly-reports:
+ *   get:
+ *     summary: Geçmiş Tüketim Anomali Raporlarını Listele (AI-502)
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Rapor geçmişi (en yeniden en eskiye).
+ */
+router.get(
+  '/ai/consumption-anomaly-reports',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const reports = await getConsumptionAnomalyReports();
+      res.json({ success: true, totalCount: reports.length, data: reports });
     } catch (error: any) {
       next(error);
     }

@@ -12,6 +12,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@google/genai": "^2.21.0",
     "argon2": "^0.45.1",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",

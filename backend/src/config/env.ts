@@ -79,7 +79,16 @@ const envSchema = z.object({
   // karakter) olmalı, aksi halde crypto.createCipheriv çalışma zamanında
   // (ilk cihaz kaydında) patlar; burada fail-fast doğrulanıyor.
   HW_SECRET_ENCRYPTION_KEY: z.string({ message: 'HW_SECRET_ENCRYPTION_KEY tanımlı değil.' })
-    .regex(/^[0-9a-fA-F]{64}$/, 'HW_SECRET_ENCRYPTION_KEY tam olarak 64 hex karakter (32 bayt) olmalıdır (öneri: openssl rand -hex 32).')
+    .regex(/^[0-9a-fA-F]{64}$/, 'HW_SECRET_ENCRYPTION_KEY tam olarak 64 hex karakter (32 bayt) olmalıdır (öneri: openssl rand -hex 32).'),
+
+  // AI-502: yukarıdaki sırların aksine BİLEREK opsiyonel — bu özellik
+  // (Gemini ile tüketim anomali analizi) yapılandırılmamışsa uygulamanın
+  // TAMAMI ayağa kalkmayı reddetmemeli, yalnızca consumptionAnomalyService.ts
+  // ilgili isteği 503 ile nazikçe reddetmeli (bkz. o dosyadaki
+  // requestAnomalyAnalysis). JWT/MQTT/HW_SECRET_* sırlarının hepsi sistemin
+  // ÇEKİRDEK güvenlik/işlev omurgası; bu ise P2 öncelikli, isteğe bağlı bir
+  // AI zenginleştirmesi.
+  GEMINI_API_KEY: z.string().min(1).optional()
 });
 
 type EnvShape = z.infer<typeof envSchema>;

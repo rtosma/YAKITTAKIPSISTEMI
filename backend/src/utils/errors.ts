@@ -44,6 +44,19 @@ export class ConflictError extends AppError {
 }
 
 /**
+ * AI-502 — GEMINI_API_KEY yapılandırılmamışsa VEYA model çağrısı/çıktısı
+ * başarısız olursa (ağ hatası, geçersiz/şema dışı JSON) bu fırlatılır.
+ * 500 DEĞİL 503: bu bir sunucu hatası değil, isteğe bağlı bir dış bağımlılığın
+ * şu an kullanılamadığını belirtir — isOperational: true (beklenen,
+ * loglanması gereken ama alarm/500 sayılmaması gereken bir durum).
+ */
+export class ServiceUnavailableError extends AppError {
+  constructor(message: string = 'Servis şu anda kullanılamıyor', details?: any) {
+    super(message, 503, true, details);
+  }
+}
+
+/**
  * ARCH-101.1 AC — "Context olmadan repository çağrısı yapılırsa
  * MissingTenantContextException fırlatılmalıdır". withTenant() (bkz.
  * db/withTenant.ts) dışında hiç fırlatılmamalıdır; bu her zaman bir

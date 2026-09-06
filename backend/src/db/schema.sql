@@ -341,6 +341,27 @@ CREATE TABLE IF NOT EXISTS fail_open_policies (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- AI-502: Google Gemini ile şoför/araç tüketim anomali analizi — her üretim
+-- YENİ bir satır (calibration_commands/fail_open_policies ile AYNI
+-- versiyonlu geçmiş deseni; bir önceki raporun ÜZERİNE yazılmaz, dashboard
+-- geçmiş raporları da listeleyebilir). `anomalies` Gemini'nin JSON çıktısı
+-- backend/src/schemas/consumptionAnomalySchema.ts'teki Zod şemasıyla
+-- doğrulandıktan SONRA buraya yazılır — asla ham/doğrulanmamış model çıktısı
+-- değildir.
+CREATE TABLE IF NOT EXISTS consumption_anomaly_reports (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    period_days INTEGER NOT NULL,
+    period_start TIMESTAMP WITH TIME ZONE NOT NULL,
+    period_end TIMESTAMP WITH TIME ZONE NOT NULL,
+    vehicle_count INTEGER NOT NULL,
+    anomaly_count INTEGER NOT NULL,
+    anomalies JSONB NOT NULL,
+    model_name VARCHAR(64) NOT NULL,
+    generated_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ==============================================================================
 -- [AUTH-201] Users Table & Refresh Tokens Rotation Store
 -- ==============================================================================
@@ -387,6 +408,7 @@ ALTER TABLE device_claim_codes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE calibration_commands ENABLE ROW LEVEL SECURITY;
 ALTER TABLE calibration_test_intakes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fail_open_policies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE consumption_anomaly_reports ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -464,6 +486,7 @@ ALTER TABLE device_claim_codes FORCE ROW LEVEL SECURITY;
 ALTER TABLE calibration_commands FORCE ROW LEVEL SECURITY;
 ALTER TABLE calibration_test_intakes FORCE ROW LEVEL SECURITY;
 ALTER TABLE fail_open_policies FORCE ROW LEVEL SECURITY;
+ALTER TABLE consumption_anomaly_reports FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -479,6 +502,7 @@ DROP POLICY IF EXISTS device_claim_codes_tenant_isolation_policy ON device_claim
 DROP POLICY IF EXISTS calibration_commands_tenant_isolation_policy ON calibration_commands;
 DROP POLICY IF EXISTS calibration_test_intakes_tenant_isolation_policy ON calibration_test_intakes;
 DROP POLICY IF EXISTS fail_open_policies_tenant_isolation_policy ON fail_open_policies;
+DROP POLICY IF EXISTS consumption_anomaly_reports_tenant_isolation_policy ON consumption_anomaly_reports;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -568,6 +592,11 @@ CREATE POLICY fail_open_policies_tenant_isolation_policy ON fail_open_policies
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY consumption_anomaly_reports_tenant_isolation_policy ON consumption_anomaly_reports
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- ==============================================================================
 -- [PERF] tenant_id İndeksleri
 -- ==============================================================================
@@ -618,4 +647,8 @@ CREATE INDEX IF NOT EXISTS idx_calibration_test_intakes_device ON calibration_te
 -- FUEL-410: "en son geçerli politika" sorgusu (tenant+site VEYA tenant+NULL)
 -- her zaman created_at DESC LIMIT 1 ile çalışır.
 CREATE INDEX IF NOT EXISTS idx_fail_open_policies_lookup ON fail_open_policies(tenant_id, site_name, created_at DESC);
+
+-- AI-502: dashboard'ın geçmiş raporları listelemesi tenant+created_at DESC
+-- deseniyle çalışır (diğer versiyonlu geçmiş tablolarıyla aynı).
+CREATE INDEX IF NOT EXISTS idx_consumption_anomaly_reports_tenant_created_at ON consumption_anomaly_reports(tenant_id, created_at DESC);
 

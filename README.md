@@ -90,3 +90,11 @@ npm run dev          # http://localhost:3000
 | Auth       | Argon2id + JWT (Access + Refresh Token Rotation)  |
 | IoT        | ESP32, HMAC-SHA256 Hardware Auth, MQTT             |
 | Deploy     | Docker, Docker Compose, Nginx                     |
+
+## 📚 Belgeler
+
+| Belge | Açıklama |
+| ----- | -------- |
+| [docs/HARDWARE_INTEGRATION_GUIDE.md](docs/HARDWARE_INTEGRATION_GUIDE.md) | Pano üreticileri için donanım entegrasyon rehberi (HMAC imza şeması, MQTT topic/LWT, LoRaWAN binary payload formatı, kalibrasyon/fail-open/offline-sync protokolleri) |
+| [docs/SECRETS.md](docs/SECRETS.md) | Ortam değişkenleri ve sır yönetimi |
+| `/api-docs` (backend ayaktayken) | Swagger UI — tüm REST endpoint'lerinin interaktif dokümantasyonu |

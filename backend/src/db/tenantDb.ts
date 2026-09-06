@@ -159,6 +159,22 @@ export async function getTenantCompanyProfile(opts?: { role?: string; siteName?:
   });
 }
 
+/**
+ * AI-502: `companies.modules` (SUPER_ADMIN'in TenantDetailModal'dan aç/kapa
+ * yaptığı JSONB) üzerinden bir modülün bu tenant için etkin olup olmadığını
+ * kontrol eder. Anahtar hiç yoksa (eski/önceden oluşturulmuş bir firma
+ * kaydı) VARSAYILAN AÇIK sayılır — DEFAULT_MODULES (adminDb.ts) yeni
+ * firmalarda zaten aiAnomaly:true ile başlıyor, burası yalnızca "false diye
+ * AÇIKÇA işaretlenmiş" durumu kapalı sayıyor.
+ */
+export async function isTenantModuleEnabled(moduleName: string): Promise<boolean> {
+  return withTenant(async (client, tenantId) => {
+    const result = await client.query('SELECT modules FROM companies WHERE id = $1', [tenantId]);
+    const modules: Record<string, boolean> = result.rows[0]?.modules || {};
+    return modules[moduleName] !== false;
+  });
+}
+
 export async function getTenantSites(): Promise<string[]> {
   return withTenant(async (client) => {
     // RLS will ensure we only see the current tenant's data in these queries
@@ -2232,5 +2248,103 @@ export async function getOfflineDispenseRatioAlerts(periodDays = 30): Promise<Ar
         offlineRatio: r.total_dispenses > 0 ? r.offline_dispenses / r.total_dispenses : 0
       }))
       .filter((r) => r.offlineRatio > OFFLINE_DISPENSE_RATIO_ALERT_THRESHOLD);
+  });
+}
+
+// ============================================================================
+// AI-502: GEMİNİ İLE ŞOFÖR/ARAÇ TÜKETİM ANOMALİ ANALİZİ
+// ============================================================================
+
+export interface VehicleConsumptionStat {
+  vehiclePlate: string;
+  driverName: string | null;
+  totalLiters: number;
+  dispenseCount: number;
+  avgLitersPerDispense: number;
+  distinctSites: number;
+}
+
+/**
+ * Trailing `periodDays` içindeki ikmalleri (araç plakası, sürücü) çiftine
+ * göre gruplar — ticket hem "aşırı yakan iş makinelerini" (araç) hem
+ * "şüpheli şoför tüketimlerini" (sürücü) hedefliyor; aynı aracı farklı
+ * şoförlerin kullanması mümkün olduğundan tek bir grup anahtarı ikisini de
+ * ayrı ayrı temsil edemezdi.
+ */
+export async function aggregateVehicleConsumption(periodDays: number): Promise<VehicleConsumptionStat[]> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      `SELECT
+         vehicle_plate,
+         driver_name,
+         SUM(amount_liters)::numeric AS total_liters,
+         COUNT(*)::int AS dispense_count,
+         COUNT(DISTINCT site_name)::int AS distinct_sites
+       FROM transactions
+       WHERE created_at > NOW() - ($1 || ' days')::interval
+       GROUP BY vehicle_plate, driver_name
+       ORDER BY total_liters DESC`,
+      [periodDays]
+    );
+    return result.rows.map((r) => ({
+      vehiclePlate: r.vehicle_plate,
+      driverName: r.driver_name,
+      totalLiters: Number(r.total_liters),
+      dispenseCount: r.dispense_count,
+      avgLitersPerDispense: r.dispense_count > 0 ? Number(r.total_liters) / r.dispense_count : 0,
+      distinctSites: r.distinct_sites
+    }));
+  });
+}
+
+export interface ConsumptionAnomalyReportRecord {
+  id: string;
+  tenant_id: string;
+  period_days: number;
+  period_start: string;
+  period_end: string;
+  vehicle_count: number;
+  anomaly_count: number;
+  anomalies: unknown;
+  model_name: string;
+  generated_by: string;
+  created_at: string;
+}
+
+/**
+ * Yalnızca ZATEN Zod ile doğrulanmış (bkz. consumptionAnomalyService.ts
+ * requestAnomalyAnalysis) bir sonuç buraya yazılmalı — bu fonksiyon kendisi
+ * bir doğrulama yapmaz, çağıranın sözleşmesine güvenir.
+ */
+export async function saveConsumptionAnomalyReport(data: {
+  periodDays: number;
+  periodStart: Date;
+  periodEnd: Date;
+  vehicleCount: number;
+  anomalies: unknown[];
+  modelName: string;
+  generatedBy: string;
+}): Promise<ConsumptionAnomalyReportRecord> {
+  return withTenant(async (client, tenantId) => {
+    const id = generateId('anomaly');
+    const result = await client.query(
+      `INSERT INTO consumption_anomaly_reports
+         (id, tenant_id, period_days, period_start, period_end, vehicle_count, anomaly_count, anomalies, model_name, generated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10) RETURNING *`,
+      [
+        id, tenantId, data.periodDays, data.periodStart, data.periodEnd, data.vehicleCount,
+        data.anomalies.length, JSON.stringify(data.anomalies), data.modelName, data.generatedBy
+      ]
+    );
+    return result.rows[0];
+  });
+}
+
+export async function getConsumptionAnomalyReports(): Promise<ConsumptionAnomalyReportRecord[]> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      'SELECT * FROM consumption_anomaly_reports ORDER BY created_at DESC'
+    );
+    return result.rows;
   });
 }

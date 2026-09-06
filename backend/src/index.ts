@@ -12,9 +12,11 @@ import { pool } from './db/postgresPool';
 import { redisPool } from './db/redisPool';
 import { mqttService } from './iot/mqttClient';
 import routes from './routes/routes';
-import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing, sweepTimedOutCalibrations } from './db/adminDb';
+import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing, sweepTimedOutCalibrations, getAllTenantIdsWithAiAnomalyEnabled } from './db/adminDb';
 import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
+import { runWithTenant } from './context/tenantContext';
+import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
 
 // NOTE: environment variables are loaded by ./bootstrap.ts (the real process
 // entry point — see package.json `dev`/`build`), BEFORE this module or any of
@@ -189,6 +191,37 @@ async function startServer(): Promise<void> {
     }
   }, CALIBRATION_TIMEOUT_SWEEP_MS);
 
+  // AI-502: ticket "Node.js Scheduled Cron" öneriyor ama bu kod tabanında
+  // BullMQ/agenda/@nestjs/schedule yok — yukarıdaki iki süpürücüyle AYNI
+  // düz setInterval deseni. GEMINI_API_KEY tanımlı DEĞİLSE interval'ı hiç
+  // KURMUYORUZ — aksi halde her 7 günde bir kaçınılmaz biçimde başarısız
+  // olacak (ve nafile hata logu üretecek) bir zamanlayıcı sunucu ömrü
+  // boyunca boşuna bellekte dururdu.
+  const WEEKLY_ANOMALY_SWEEP_MS = 7 * 24 * 60 * 60 * 1000;
+  let weeklyAnomalySweepInterval: ReturnType<typeof setInterval> | undefined;
+  if (config.GEMINI_API_KEY) {
+    weeklyAnomalySweepInterval = setInterval(async () => {
+      let tenantIds: string[] = [];
+      try {
+        tenantIds = await getAllTenantIdsWithAiAnomalyEnabled();
+      } catch (err) {
+        logger.error({ err }, '🚨 [AI-502] aiAnomaly etkin tenant listesi alınamadı, bu haftalık tur atlandı.');
+        return;
+      }
+      for (const tenantId of tenantIds) {
+        try {
+          await runWithTenant({ tenantId }, () => generateAndStoreAnomalyReport(7, 'system-weekly-scheduler'));
+        } catch (err) {
+          // Bir tenant'ın analizi başarısız olması (örn. Gemini geçici hata
+          // verdi) DİĞER tenant'ların turunu ENGELLEMEMELİ.
+          logger.error({ err, tenantId }, '🚨 [AI-502] Haftalık tüketim anomali analizi başarısız.');
+        }
+      }
+    }, WEEKLY_ANOMALY_SWEEP_MS);
+  } else {
+    logger.warn('⚠️ [AI-502] GEMINI_API_KEY tanımlı değil — haftalık otomatik tüketim anomali analizi devre dışı (manuel POST /ai/consumption-anomaly-reports yine de GEMINI_API_KEY ayarlanınca kullanılabilir).');
+  }
+
   // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
   setupGracefulShutdown(server, {
     timeoutMs: 30000,
@@ -197,6 +230,7 @@ async function startServer(): Promise<void> {
 
       clearInterval(dispenseTimeoutSweepInterval);
       clearInterval(calibrationTimeoutSweepInterval);
+      if (weeklyAnomalySweepInterval) clearInterval(weeklyAnomalySweepInterval);
 
       // MQTT, Redis ve Postgres birbirinden bağımsız kaynaklar — sırayla değil
       // birlikte kapatılır, toplam kapanış süresi üçünün toplamı değil en
