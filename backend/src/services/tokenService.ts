@@ -1,9 +1,7 @@
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import { JWT_SECRET, JWT_REFRESH_SECRET } from '../config/env';
 import { findAuthUserById } from '../db/userRepository';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'yakittakip_jwt_access_secret_key_2026_super_secure';
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'yakittakip_jwt_refresh_secret_key_2026_super_secure';
 
 export type UserRole = 'SUPER_ADMIN' | 'COMPANY_OWNER' | 'SITE_MANAGER' | 'PUMP_OPERATOR' | 'DRIVER';
 

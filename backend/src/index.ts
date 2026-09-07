@@ -1,6 +1,8 @@
+// MUST be first: loads .env and validates JWT secrets before any other
+// module reads process.env at import time.
+import { NODE_ENV } from './config/env';
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 
 import { traceMiddleware, httpLoggerMiddleware } from './middleware/loggerMiddleware';
 import { globalErrorHandler, notFoundHandler, registerProcessExceptionHandlers } from './middleware/errorHandler';
@@ -10,8 +12,6 @@ import { pool } from './db/postgresPool';
 import { redisPool } from './db/redisPool';
 import { mqttService } from './iot/mqttClient';
 import routes from './routes/routes';
-
-dotenv.config();
 
 // Register process-level uncaughtException and unhandledRejection handlers
 registerProcessExceptionHandlers();
@@ -317,7 +317,7 @@ app.use(globalErrorHandler);
 const server = app.listen(PORT, () => {
   logger.info({
     port: PORT,
-    environment: process.env.NODE_ENV || 'development',
+    environment: NODE_ENV,
     features: ['AsyncLocalStorage RLS', 'HMAC Auth', 'Pino Logger', 'Global Exception Filter', 'Graceful Shutdown', 'MQTT & LWT'],
   }, `🚀 [OPS-1101] Yakıttakip Backend Sunucusu Başlatıldı!`);
 
