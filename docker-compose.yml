@@ -89,8 +89,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-yakittakip_db}
-      JWT_SECRET: ${JWT_SECRET:-yakittakip_jwt_access_secret_key_2026_super_secure}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-yakittakip_jwt_refresh_secret_key_2026_super_secure}
+      # No default on purpose: this service runs with NODE_ENV=production, where a
+      # fallback secret would let anyone who can read the repo mint a token for any
+      # tenant and role. Compose refuses to start until these are supplied.
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET tanimli degil. Kok dizinde .env olusturun (bkz. .env.example).}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET tanimli degil. Kok dizinde .env olusturun (bkz. .env.example).}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       MQTT_URL: mqtt://emqx:1883
