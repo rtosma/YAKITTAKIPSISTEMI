@@ -143,14 +143,10 @@ router.post('/auth/refresh', async (req: Request, res: Response) => {
   }
 
   try {
-    const userPayload: JwtUserPayload = {
-      userId: 'usr-camsa-owner',
-      tenantId: 'comp-camsa',
-      username: 'camsa',
-      role: 'COMPANY_OWNER'
-    };
-
-    const newTokens = await rotateRefreshToken(refreshToken, userPayload);
+    // Identity is resolved inside the service from the refresh token's own
+    // store record + a fresh DB read. The route must not - and now cannot -
+    // supply one.
+    const newTokens = await rotateRefreshToken(refreshToken);
 
     res.json({
       success: true,
@@ -161,11 +157,26 @@ router.post('/auth/refresh', async (req: Request, res: Response) => {
       expiresInSeconds: 900
     });
   } catch (err: any) {
-    const isReuse = err.message.includes('TOKEN_REUSE_DETECTED');
+    const message: string = err?.message || '';
+    const isReuse = message.includes('TOKEN_REUSE_DETECTED');
+    const isInvalid = message.includes('INVALID_REFRESH_TOKEN');
+
+    // Anything else (DB outage, connection pool exhaustion...) is an
+    // infrastructure failure, not a token problem. Mirror /auth/login's
+    // 500 DB_ERROR instead of mislabelling it as an auth error.
+    if (!isReuse && !isInvalid) {
+      console.error('Refresh Rotation Error:', err);
+      return res.status(500).json({
+        success: false,
+        error: 'DB_ERROR',
+        message: 'Veritabanı bağlantı hatası oluştu.'
+      });
+    }
+
     res.status(401).json({
       success: false,
       error: isReuse ? 'TOKEN_REUSE_DETECTED' : 'INVALID_REFRESH_TOKEN',
-      message: err.message
+      message: message
     });
   }
 });
