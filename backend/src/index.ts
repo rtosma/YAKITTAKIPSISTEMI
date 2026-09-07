@@ -48,6 +48,7 @@ app.use(express.json({
 // Global middleware to parse JSON bodies
 // Apply Tenant Context is now handled by authenticateJWT middleware per-route.
 
+import path from 'path';
 import swaggerUi from 'swagger-ui-express';
 import swaggerJsdoc from 'swagger-jsdoc';
 
@@ -58,12 +59,20 @@ const swaggerOptions = {
     info: {
       title: 'Yakıttakip Sistemi API',
       version: '1.0.0',
-      description: 'Saha ikmal ve araç yakıt takip sistemi API dokümantasyonu',
+      description:
+        'Saha ikmal ve araç yakıt takip sistemi API dokümantasyonu. ' +
+        'Tüm uçlar /api/v1 altında yayınlanır; aşağıdaki yollar bu tabana görelidir.',
     },
+    // Relative server URL on purpose. The paths below are written WITHOUT the
+    // /api/v1 prefix (routes are mounted with it in this file), so the prefix
+    // has to live here. Keeping it relative means "Try it out" resolves against
+    // whatever origin served this page - so it works behind the nginx proxy, on
+    // a remapped host port and in production without touching the spec.
+    // Set SWAGGER_SERVER_URL only when the API lives on a different origin.
     servers: [
       {
-        url: 'http://localhost:5000',
-        description: 'Development Server',
+        url: process.env.SWAGGER_SERVER_URL || '/api/v1',
+        description: 'API tabanı',
       },
     ],
     components: {
@@ -72,15 +81,224 @@ const swaggerOptions = {
           type: 'http',
           scheme: 'bearer',
           bearerFormat: 'JWT',
+          description: 'POST /auth/login ile alınan accessToken.',
+        },
+        // Hardware telemetry is NOT protected by the JWT above - it uses an
+        // HMAC-SHA256 signature over `${timestamp}.${rawBody}` with a
+        // per-device shared secret (middleware/hardwareAuthMiddleware.ts).
+        hardwareAuth: {
+          type: 'apiKey',
+          in: 'header',
+          name: 'x-signature',
+          description:
+            'HMAC-SHA256 imza. x-device-id ve x-timestamp başlıklarıyla birlikte gönderilir; ' +
+            'imza penceresi 30 saniyedir.',
+        },
+      },
+      schemas: {
+        // ---- Envelopes ------------------------------------------------------
+        ErrorResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: false },
+            error: { type: 'string', description: 'Makine tarafından okunabilir hata kodu.', example: 'DB_ERROR' },
+            message: { type: 'string', description: 'Türkçe, kullanıcıya gösterilebilir mesaj.' },
+            traceId: {
+              type: 'string',
+              description:
+                'Yalnızca globalErrorHandler ve notFoundHandler yanıtlarında bulunur. ' +
+                'Route içi catch blokları traceId üretmez.',
+            },
+          },
+          required: ['success', 'error', 'message'],
+        },
+        ValidationErrorResponse: {
+          type: 'object',
+          description:
+            'validateRequest (Zod) ara katmanının ürettiği gövde. Not: globalErrorHandler ' +
+            'aynı VALIDATION_ERROR kodunu farklı bir gövdeyle (details: ham ZodIssue) üretir, ' +
+            'ancak validateRequest yanıtı kendi yazıp next() çağırmadığı için doğrulama ' +
+            'hataları bu şekilde döner.',
+          properties: {
+            success: { type: 'boolean', example: false },
+            error: { type: 'string', example: 'VALIDATION_ERROR' },
+            message: { type: 'string', example: 'Gelen istek verileri doğrulanamadı.' },
+            errors: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  field: { type: 'string', example: 'plate' },
+                  message: { type: 'string', example: 'Geçersiz Türkiye plaka formatı. (Örn: 34 CTP 82)' },
+                },
+                required: ['field', 'message'],
+              },
+            },
+          },
+          required: ['success', 'error', 'message', 'errors'],
+        },
+        SuccessMessage: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: true },
+            message: { type: 'string' },
+          },
+          required: ['success', 'message'],
+        },
+        TenantInfoResponse: {
+          type: 'object',
+          description:
+            'context alanı kodda yazılıdır ama pratikte HİÇ dönmez: bu route\'a authenticateJWT ' +
+            'bağlı olmadığı için AsyncLocalStorage bağlamı kurulmaz, getTenantStore() undefined ' +
+            'döner ve JSON.stringify alanı gövdeden düşürür.',
+          properties: {
+            success: { type: 'boolean', example: true },
+            message: { type: 'string', example: 'AsyncLocalStorage context başarıyla okundu.' },
+          },
+          required: ['success', 'message'],
+        },
+
+        // ---- Auth -----------------------------------------------------------
+        AuthUser: {
+          type: 'object',
+          properties: {
+            userId: { type: 'string', example: 'usr-camsa-owner' },
+            tenantId: { type: 'string', example: 'comp-camsa' },
+            username: { type: 'string', example: 'camsa' },
+            role: {
+              type: 'string',
+              enum: ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER', 'PUMP_OPERATOR', 'DRIVER'],
+            },
+            siteName: {
+              type: 'string',
+              nullable: true,
+              description:
+                'Koşullu alan. Yalnızca kullanıcıya bir şantiye atanmışsa (tipik olarak ' +
+                'SITE_MANAGER) gövdede bulunur; COMPANY_OWNER yanıtlarında hiç yer almaz.',
+              example: 'Gebze Ana Şantiye',
+            },
+          },
+          required: ['userId', 'tenantId', 'username', 'role'],
+        },
+        LoginResponse: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean', example: true },
+            message: { type: 'string' },
+            accessToken: { type: 'string', description: '15 dakika geçerli JWT.' },
+            refreshToken: { type: 'string', description: '7 gün geçerli, tek kullanımlık JWT.' },
+            tokenType: { type: 'string', example: 'Bearer' },
+            expiresInSeconds: { type: 'integer', example: 900 },
+            user: { $ref: '#/components/schemas/AuthUser' },
+          },
+          required: ['success', 'message', 'accessToken', 'refreshToken', 'tokenType', 'expiresInSeconds', 'user'],
+        },
+
+        // ---- Domain ---------------------------------------------------------
+        Site: {
+          type: 'object',
+          description: 'POST /sites bu nesneyi döndürür. GET /sites ise yalnızca isim listesi (string[]) döndürür.',
+          properties: {
+            id: { type: 'string', example: 'site-1788804136365' },
+            tenant_id: { type: 'string', example: 'comp-camsa' },
+            name: { type: 'string', example: 'Gebze Ana Şantiye' },
+            location: { type: 'string', nullable: true },
+            created_at: { type: 'string', format: 'date-time' },
+          },
+          required: ['id', 'tenant_id', 'name'],
+        },
+        CreateSiteRequest: {
+          type: 'object',
+          description: 'Bu uçta Zod doğrulaması YOKTUR; siteName yalnızca elle boş-string kontrolünden geçer.',
+          properties: {
+            siteName: { type: 'string', minLength: 1, example: 'Silivri Tesisleri' },
+            location: { type: 'string', example: 'Silivri / İstanbul' },
+          },
+          required: ['siteName'],
+        },
+        Vehicle: {
+          type: 'object',
+          description:
+            'Yanıt alanları snake_case gelir. created_at BULUNMAZ: getTenantVehicles satırları ' +
+            'elle map ettiği için o alanı düşürür (GET /drivers ve GET /tanks ise ham satır ' +
+            'döndürdüğü için created_at içerir - bu asimetri kasıtlı değildir).',
+          properties: {
+            id: { type: 'string', example: 'veh-1' },
+            tenant_id: { type: 'string', example: 'comp-camsa' },
+            plate: { type: 'string', example: '34 CTP 82' },
+            brand_model: { type: 'string', example: 'Volvo FMX 460 Damperli' },
+            vehicle_type: { type: 'string', example: 'Kamyon' },
+            rfid_tag: { type: 'string', example: 'TAG-882910' },
+            site_name: { type: 'string', nullable: true, example: 'Gebze Ana Şantiye' },
+            status: { type: 'string', example: 'AKTİF' },
+          },
+          required: ['id', 'tenant_id', 'plate', 'brand_model', 'vehicle_type', 'rfid_tag', 'status'],
+        },
+        CreateVehicleRequest: {
+          type: 'object',
+          description: 'createVehicleSchema (Zod) ile doğrulanır. Girdi camelCase, çıktı snake_case.',
+          properties: {
+            plate: {
+              type: 'string',
+              pattern: '^(0[1-9]|[1-7][0-9]|8[0-1])\\s?[A-Z]{1,3}\\s?[0-9]{2,4}$',
+              description: 'Türkiye plaka formatı, büyük/küçük harf duyarsız.',
+              example: '34 CTP 82',
+            },
+            brandModel: { type: 'string', minLength: 2, example: 'Volvo FMX 460 Damperli' },
+            type: { type: 'string', default: 'Kamyon', example: 'Kamyon' },
+            rfidTag: { type: 'string', minLength: 3, example: 'TAG-882910' },
+            fuelCapacityLiters: {
+              type: 'number',
+              minimum: 0,
+              exclusiveMinimum: true,
+              description: 'Zorunlu ve 0\'dan büyük olmalıdır.',
+              example: 400,
+            },
+            siteName: { type: 'string', example: 'Gebze Ana Şantiye' },
+          },
+          required: ['plate', 'brandModel', 'rfidTag', 'fuelCapacityLiters'],
+        },
+        DispenseRequest: {
+          type: 'object',
+          description: 'dispenseRequestSchema (Zod) ile doğrulanır. amountLiters string olarak da gönderilebilir (z.coerce).',
+          properties: {
+            vehiclePlate: {
+              type: 'string',
+              pattern: '^(0[1-9]|[1-7][0-9]|8[0-1])\\s?[A-Z]{1,3}\\s?[0-9]{2,4}$',
+              example: '34 CTP 82',
+            },
+            rfidTag: { type: 'string', minLength: 3, example: 'TAG-882910' },
+            amountLiters: { type: 'number', minimum: 0, exclusiveMinimum: true, example: 120.5 },
+            pumpCode: { type: 'string', example: 'PMP-1' },
+          },
+          required: ['vehiclePlate', 'rfidTag', 'amountLiters'],
         },
       },
     },
+    // Applied to every operation unless an operation overrides it with
+    // `security: []` (public endpoints) or its own scheme (hardware telemetry).
     security: [{ bearerAuth: [] }],
   },
-  apis: ['./src/routes/*.ts'], // read JSDoc from routes
+  // swagger-jsdoc parses the TypeScript SOURCE, which must therefore be present
+  // at runtime. A single cwd-relative glob silently yields an EMPTY spec when
+  // the process starts from anywhere else, so cover the three real layouts:
+  // cwd=/app (container), bundled dist/server.cjs (__dirname=/app/dist), and
+  // `tsx src/index.ts` in development (__dirname=<repo>/backend/src).
+  apis: [
+    path.join(process.cwd(), 'src/routes/*.ts'),
+    path.join(__dirname, '../src/routes/*.ts'),
+    path.join(__dirname, 'routes/*.ts'),
+  ],
 };
 
 const swaggerSpec = swaggerJsdoc(swaggerOptions);
+
+// Raw spec, for client codegen and contract tests. Without this the spec is
+// only reachable by scraping the UI bundle.
+app.get('/api-docs.json', (_req, res) => {
+  res.json(swaggerSpec);
+});
+
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Mount Routes
