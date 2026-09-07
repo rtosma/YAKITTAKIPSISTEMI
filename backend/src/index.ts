@@ -281,13 +281,17 @@ const swaggerOptions = {
   },
   // swagger-jsdoc parses the TypeScript SOURCE, which must therefore be present
   // at runtime. A single cwd-relative glob silently yields an EMPTY spec when
-  // the process starts from anywhere else, so cover the three real layouts:
-  // cwd=/app (container), bundled dist/server.cjs (__dirname=/app/dist), and
-  // `tsx src/index.ts` in development (__dirname=<repo>/backend/src).
+  // the process starts from anywhere else, so cover both real layouts: cwd at
+  // backend/ (container image and `npm run dev`) and cwd at the repo root.
+  //
+  // Deliberately NOT using __dirname: package.json sets "type": "module" and
+  // tsconfig targets ESNext, so `tsx src/index.ts` runs as a real ES module
+  // where __dirname does not exist. It only appears to work in production
+  // because esbuild bundles to CJS - which is exactly the kind of split that
+  // makes a crash show up in dev/CI but never in the container.
   apis: [
     path.join(process.cwd(), 'src/routes/*.ts'),
-    path.join(__dirname, '../src/routes/*.ts'),
-    path.join(__dirname, 'routes/*.ts'),
+    path.join(process.cwd(), 'backend/src/routes/*.ts'),
   ],
 };
 
