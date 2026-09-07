@@ -7,7 +7,10 @@ export const pool = new Pool({
   password: process.env.POSTGRES_PASSWORD || 'postgres',
   database: process.env.POSTGRES_DB || 'yakittakip_db',
   max: 10,
-  idleTimeoutMillis: 30000
+  idleTimeoutMillis: 30000,
+  // Without this a saturated pool makes callers hang forever. That is worst on
+  // POST /auth/refresh, where the token is already burned by the time we query.
+  connectionTimeoutMillis: 5000
 });
 
 pool.on('error', (err) => {
