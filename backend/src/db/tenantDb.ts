@@ -8,6 +8,15 @@ import { writeAuditLog } from '../utils/auditLog';
 import { encryptDeviceSecret, generateDeviceSecret } from '../utils/hardwareSecretCrypto';
 import { logger } from '../utils/logger';
 import { withTenant } from './withTenant';
+import { redisPool } from './redisPool';
+import {
+  interpolateStrappingVolume,
+  cylinderVolume,
+  correctToStandardVolume,
+  type StrappingPoint,
+  type CylinderConfig
+} from '../fuel/tankVolume';
+import { validateMonotonic, type StrappingPointInput } from '../schemas/strappingTableSchema';
 
 /**
  * updateVehicle/updateTank (ve kısmen updateDriver) aynı deseni tekrarlıyordu:
@@ -2507,4 +2516,206 @@ export async function prepareDespatchAdvice(
       amountLiters: Number(tx.amount_liters)
     };
   });
+}
+
+// ============================================================================
+// FUEL-403.1 / FUEL-403.2: TANK DALDIRMA CETVELİ + SEVİYE→HACİM HESABI
+// ============================================================================
+
+const STRAPPING_CACHE_TTL_SECONDS = 3600; // referans veri — 1 saat (redis-patterns)
+
+function strappingCacheKey(tenantId: string, tankName: string): string {
+  return `tank:strapping:${tenantId}:${tankName}`;
+}
+
+/** Route'lar tank'ı :id ile adresliyor (mevcut /tanks/:id deseni); cetvel
+ *  fonksiyonları ise name ile çalışır (transactions.tank_name alanı da öyle). */
+export async function getTankNameById(tankId: string): Promise<string> {
+  return withTenant(async (client) => {
+    const r = await client.query('SELECT name FROM tanks WHERE id = $1', [tankId]);
+    if (r.rows.length === 0) throw new NotFoundError('Tank bulunamadı.');
+    return r.rows[0].name as string;
+  });
+}
+
+export interface TankVolumeModel {
+  source: 'CSV_IMPORT' | 'CYLINDER_FORMULA';
+  points: StrappingPoint[] | null;
+  cylinderConfig: CylinderConfig | null;
+  pointCount: number;
+  createdAt: string;
+  /** Sıcaklık düzeltmesinde ASTM ürün grubunu seçmek için (cache'e dahil —
+   *  computeTankVolume ikinci bir DB round-trip'i yapmasın, AC: <1ms). */
+  fuelType: string | null;
+}
+
+export interface StrappingTableVersionRecord {
+  id: string;
+  tenant_id: string;
+  tank_name: string;
+  source: string;
+  points: unknown;
+  cylinder_config: unknown;
+  point_count: number;
+  notes: string | null;
+  imported_by: string;
+  created_at: string;
+}
+
+/**
+ * FUEL-403.1 — bir tank için YENİ bir cetvel versiyonu yazar (append-only).
+ * `points` verildiyse monotonluk/bütünlük denetlenir; bozuksa satır bazlı
+ * hatalarla BadRequestError fırlatılır (AC: "bozuk cetvel sessizce kabul
+ * edilmemeli"). Başarıda ilgili tank'ın strapping cache'i invalide edilir.
+ */
+export async function setTankStrappingTable(
+  tankName: string,
+  input: { points?: StrappingPointInput[]; cylinderConfig?: CylinderConfig; notes?: string },
+  importedByUserId: string
+): Promise<{ id: string; source: 'CSV_IMPORT' | 'CYLINDER_FORMULA'; pointCount: number }> {
+  return withTenant(async (client, tenantId) => {
+    // Tank gerçekten bu tenant'a ait mi? (RLS zaten kısıtlıyor ama net 404 için.)
+    const tankRes = await client.query('SELECT 1 FROM tanks WHERE name = $1 LIMIT 1', [tankName]);
+    if (tankRes.rows.length === 0) throw new NotFoundError(`'${tankName}' adlı tank bulunamadı.`);
+
+    let source: 'CSV_IMPORT' | 'CYLINDER_FORMULA';
+    let pointsJson: string | null = null;
+    let cylinderJson: string | null = null;
+    let pointCount = 0;
+
+    if (input.cylinderConfig) {
+      source = 'CYLINDER_FORMULA';
+      cylinderJson = JSON.stringify(input.cylinderConfig);
+    } else {
+      source = 'CSV_IMPORT';
+      const points = input.points ?? [];
+      const errors = validateMonotonic(points);
+      if (errors.length > 0) {
+        throw new BadRequestError('Strapping cetveli doğrulanamadı — bozuk/eksik satırlar var.', { rows: errors });
+      }
+      pointsJson = JSON.stringify(points);
+      pointCount = points.length;
+    }
+
+    const id = generateId('strap');
+    await client.query(
+      `INSERT INTO tank_strapping_tables
+         (id, tenant_id, tank_name, source, points, cylinder_config, point_count, notes, imported_by)
+       VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9)`,
+      [id, tenantId, tankName, source, pointsJson, cylinderJson, pointCount, input.notes ?? null, importedByUserId]
+    );
+
+    await writeAuditLog(client, {
+      action: 'TANK_STRAPPING_TABLE_SET',
+      targetType: 'tank',
+      targetId: tankName,
+      afterValue: { source, pointCount }
+    });
+
+    // Yeni versiyon → eski cache geçersiz (write-through invalidation).
+    await redisPool.cacheDel(strappingCacheKey(tenantId, tankName));
+
+    return { id, source, pointCount };
+  });
+}
+
+export async function getTankStrappingTableHistory(tankName: string): Promise<StrappingTableVersionRecord[]> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      'SELECT * FROM tank_strapping_tables WHERE tank_name = $1 ORDER BY created_at DESC',
+      [tankName]
+    );
+    return res.rows;
+  });
+}
+
+/**
+ * FUEL-403.1 AC: "cetvel sorguları <1 ms cache'den dönmeli". Cache-aside:
+ * önce Redis, yoksa DB'den EN SON versiyonu çekip cache'le. Cetvel hiç
+ * yoksa null döner.
+ */
+export async function getEffectiveTankVolumeModel(tankName: string): Promise<TankVolumeModel | null> {
+  return withTenant(async (client, tenantId) => {
+    const cacheKey = strappingCacheKey(tenantId, tankName);
+    const cached = await redisPool.cacheGetJson<TankVolumeModel | { __none: true }>(cacheKey);
+    if (cached) return '__none' in cached ? null : cached;
+
+    const [res, tankRes] = await Promise.all([
+      client.query(
+        'SELECT * FROM tank_strapping_tables WHERE tank_name = $1 ORDER BY created_at DESC LIMIT 1',
+        [tankName]
+      ),
+      client.query('SELECT fuel_type FROM tanks WHERE name = $1 LIMIT 1', [tankName])
+    ]);
+    if (res.rows.length === 0) {
+      // "Cetvel yok" durumunu da cache'le — her sorguda DB'ye gitmesin (kısa TTL yeterli).
+      await redisPool.cacheSetJson(cacheKey, { __none: true }, 300);
+      return null;
+    }
+
+    const row = res.rows[0];
+    const model: TankVolumeModel = {
+      source: row.source,
+      points: row.points ?? null,
+      cylinderConfig: row.cylinder_config ?? null,
+      pointCount: row.point_count,
+      createdAt: row.created_at,
+      fuelType: (tankRes.rows[0]?.fuel_type as string | undefined) ?? null
+    };
+    await redisPool.cacheSetJson(cacheKey, model, STRAPPING_CACHE_TTL_SECONDS);
+    return model;
+  });
+}
+
+export interface TankVolumeComputation {
+  tankName: string;
+  levelMm: number;
+  method: 'STRAPPING_INTERPOLATION' | 'CYLINDER_FORMULA';
+  observedLiters: number;
+  standardLiters: number;
+  temperatureCorrected: boolean;
+  observedTempC: number | null;
+  vcf: number;
+  productGroup: string;
+  outOfRange: boolean;
+  modelVersionAt: string;
+}
+
+/**
+ * FUEL-403.2 — verilen mm seviyesi (ve varsa sıcaklık) için ham + 15°C
+ * standart hacim. Cetvel yoksa NotFoundError. Sıcaklık yoksa standart = ham
+ * ve `temperatureCorrected: false` (AC: ölçülmeyen sıcaklık açıkça işaretli).
+ */
+export async function computeTankVolume(
+  tankName: string,
+  levelMm: number,
+  observedTempC?: number | null,
+  density15?: number
+): Promise<TankVolumeComputation> {
+  const model = await getEffectiveTankVolumeModel(tankName);
+  if (!model) {
+    throw new NotFoundError(`'${tankName}' için tanımlı bir daldırma cetveli / silindir formülü yok.`);
+  }
+  const fuelType = model.fuelType;
+
+  const raw =
+    model.source === 'CYLINDER_FORMULA'
+      ? cylinderVolume(model.cylinderConfig as CylinderConfig, levelMm)
+      : interpolateStrappingVolume(model.points as StrappingPoint[], levelMm);
+
+  const std = correctToStandardVolume(raw.observedLiters, observedTempC ?? null, fuelType, density15);
+
+  return {
+    tankName,
+    levelMm,
+    method: raw.method,
+    observedLiters: std.observedLiters,
+    standardLiters: std.standardLiters,
+    temperatureCorrected: std.temperatureCorrected,
+    observedTempC: std.observedTempC,
+    vcf: std.vcf,
+    productGroup: std.productGroup,
+    outOfRange: raw.outOfRange,
+    modelVersionAt: model.createdAt
+  };
 }

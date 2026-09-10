@@ -396,6 +396,32 @@ CREATE TABLE IF NOT EXISTS despatch_advice_counters (
     PRIMARY KEY (tenant_id, issue_year)
 );
 
+-- FUEL-403.1: tank daldırma cetveli (strapping table) VEYA silindirik tank
+-- formül konfigürasyonu. Versiyonlu/append-only — bir cetvel bir kez
+-- yazıldıktan sonra DEĞİŞTİRİLMEZ/SİLİNMEZ (app_user'dan UPDATE/DELETE/
+-- TRUNCATE geri alınır, aşağıda); düzeltme = yeni bir versiyon satırı.
+-- "En son satır GEÇERLİ" (bkz. tenantDb.ts getEffectiveTankVolumeModel).
+-- Geçmiş transactions kayıtları bu tablodan ETKİLENMEZ — yalnızca YENİ
+-- hacim sorguları bu cetveli kullanır (AC: cetvel değişikliği geçmişi
+-- yeniden hesaplamaz).
+CREATE TABLE IF NOT EXISTS tank_strapping_tables (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    tank_name VARCHAR(128) NOT NULL,
+    -- 'CSV_IMPORT' → points dolu; 'CYLINDER_FORMULA' → cylinder_config dolu.
+    source VARCHAR(32) NOT NULL,
+    -- [{ "levelMm": <int>, "volumeLiters": <numeric> }, ...] — levelMm'e göre
+    -- KESİN ARTAN, volumeLiters AZALMAYAN (monotonluk setTankStrappingTable'da
+    -- doğrulanır, bozuk cetvel sessizce kabul edilmez).
+    points JSONB,
+    -- { "diameterMm": <int>, "lengthMm": <int>, "orientation": "HORIZONTAL"|"VERTICAL" }
+    cylinder_config JSONB,
+    point_count INTEGER NOT NULL DEFAULT 0,
+    notes VARCHAR(256),
+    imported_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ==============================================================================
 -- [AUTH-201] Users Table & Refresh Tokens Rotation Store
 -- ==============================================================================
@@ -445,6 +471,7 @@ ALTER TABLE fail_open_policies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE consumption_anomaly_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_counters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tank_strapping_tables ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -515,6 +542,8 @@ REVOKE DELETE, TRUNCATE ON calibration_commands FROM app_user;
 -- yalnızca DELETE/TRUNCATE geri alınıyor.
 REVOKE UPDATE, DELETE, TRUNCATE ON despatch_advice_documents FROM app_user;
 REVOKE DELETE, TRUNCATE ON despatch_advice_counters FROM app_user;
+-- FUEL-403.1: cetvel versiyonlu/append-only (audit_logs deseni).
+REVOKE UPDATE, DELETE, TRUNCATE ON tank_strapping_tables FROM app_user;
 
 -- Force RLS even for table owners
 ALTER TABLE vehicles FORCE ROW LEVEL SECURITY;
@@ -533,6 +562,7 @@ ALTER TABLE fail_open_policies FORCE ROW LEVEL SECURITY;
 ALTER TABLE consumption_anomaly_reports FORCE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_documents FORCE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_counters FORCE ROW LEVEL SECURITY;
+ALTER TABLE tank_strapping_tables FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -551,6 +581,7 @@ DROP POLICY IF EXISTS fail_open_policies_tenant_isolation_policy ON fail_open_po
 DROP POLICY IF EXISTS consumption_anomaly_reports_tenant_isolation_policy ON consumption_anomaly_reports;
 DROP POLICY IF EXISTS despatch_advice_documents_tenant_isolation_policy ON despatch_advice_documents;
 DROP POLICY IF EXISTS despatch_advice_counters_tenant_isolation_policy ON despatch_advice_counters;
+DROP POLICY IF EXISTS tank_strapping_tables_tenant_isolation_policy ON tank_strapping_tables;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -655,6 +686,11 @@ CREATE POLICY despatch_advice_counters_tenant_isolation_policy ON despatch_advic
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY tank_strapping_tables_tenant_isolation_policy ON tank_strapping_tables
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- ==============================================================================
 -- [PERF] tenant_id İndeksleri
 -- ==============================================================================
@@ -715,3 +751,7 @@ CREATE INDEX IF NOT EXISTS idx_consumption_anomaly_reports_tenant_created_at ON 
 -- tutuyoruz).
 CREATE INDEX IF NOT EXISTS idx_despatch_advice_documents_tx ON despatch_advice_documents(tenant_id, transaction_id);
 
+
+-- FUEL-403.1: "en son geçerli cetvel" sorgusu her zaman
+-- tenant+tank_name+created_at DESC LIMIT 1 ile çalışır.
+CREATE INDEX IF NOT EXISTS idx_tank_strapping_tables_lookup ON tank_strapping_tables(tenant_id, tank_name, created_at DESC);

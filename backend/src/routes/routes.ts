@@ -1,10 +1,11 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
 import { generateDespatchAdviceXml } from '../compliance/despatchAdviceXmlService';
+import { setStrappingTableSchema, tankVolumeQuerySchema, parseStrappingCsv } from '../schemas/strappingTableSchema';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
@@ -1646,6 +1647,109 @@ router.delete(
         success: true,
         message: 'Tank kaydı başarıyla silindi.'
       });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /tanks/{id}/strapping-table:
+ *   post:
+ *     summary: Tank Daldırma Cetveli / Silindir Formülü Tanımla (FUEL-403.1)
+ *     description: >
+ *       csvContent (ham CSV), points (nokta dizisi) veya cylinderConfig
+ *       alanlarından TAM OLARAK biri. CSV/points monotonluk (mm kesin artan,
+ *       litre azalmayan) denetiminden geçmezse 400 + satır bazlı hatalar.
+ *       Her çağrı YENİ bir versiyon yazar (geçmiş silinmez); Redis cache
+ *       invalide edilir.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Tank Cetvel Versiyon Geçmişi (FUEL-403.1)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/tanks/:id/strapping-table',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ body: setStrappingTableSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const tankName = await getTankNameById(req.params.id);
+      const b = req.body as { csvContent?: string; points?: any[]; cylinderConfig?: any; notes?: string };
+
+      let points = b.points as { levelMm: number; volumeLiters: number }[] | undefined;
+      if (b.csvContent) {
+        const parsed = parseStrappingCsv(b.csvContent);
+        if (parsed.errors.length > 0) {
+          // setTankStrappingTable'ın monotonluk hatasıyla AYNI şekil: details.rows
+          res.status(400).json({
+            success: false,
+            error: 'STRAPPING_CSV_INVALID',
+            message: 'CSV cetveli ayrıştırılamadı — satır bazlı hatalar var.',
+            details: { rows: parsed.errors }
+          });
+          return;
+        }
+        points = parsed.points;
+      }
+
+      const result = await setTankStrappingTable(
+        tankName,
+        { points, cylinderConfig: b.cylinderConfig, notes: b.notes },
+        req.user!.userId
+      );
+      res.status(201).json({ success: true, data: { tankName, ...result } });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/tanks/:id/strapping-table',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const tankName = await getTankNameById(req.params.id);
+      const [effective, history] = await Promise.all([
+        getEffectiveTankVolumeModel(tankName),
+        getTankStrappingTableHistory(tankName)
+      ]);
+      res.json({ success: true, data: { tankName, effective, versionCount: history.length, history } });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /tanks/{id}/volume:
+ *   get:
+ *     summary: Seviye→Hacim (ham + 15°C standart) Hesabı (FUEL-403.2)
+ *     description: >
+ *       ?levelMm=<int> zorunlu, ?tempC=<num> ve ?density15=<num> opsiyonel.
+ *       Cetvel/silindir formülü üzerinden lineer interpolasyonla ham hacim +
+ *       ASTM D1250 VCF ile 15°C standart hacim. tempC yoksa
+ *       temperatureCorrected:false (ham=standart).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/tanks/:id/volume',
+  authenticateJWT,
+  validateRequest({ query: tankVolumeQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const tankName = await getTankNameById(req.params.id);
+      const q = req.query as unknown as { levelMm: number; tempC?: number; density15?: number };
+      const result = await computeTankVolume(tankName, q.levelMm, q.tempC ?? null, q.density15);
+      res.json({ success: true, data: result });
     } catch (error: any) {
       next(error);
     }

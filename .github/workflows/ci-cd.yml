@@ -240,6 +240,9 @@ jobs:
       - name: Run COMP-601 UBL DespatchAdvice (e-İrsaliye) Tests
         run: cd backend && npx tsx test/test_comp601_despatch_advice.ts
 
+      - name: Run FUEL-403 Strapping Table + Volume Math Tests
+        run: cd backend && npx tsx test/test_fuel403_strapping_table.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

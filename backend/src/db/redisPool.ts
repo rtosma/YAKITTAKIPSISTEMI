@@ -81,6 +81,38 @@ class RedisManager {
   }
 
   /**
+   * FUEL-403.1 — genel amaçlı JSON cache yardımcıları (cache-aside deseni).
+   * `redisPool.client`'a doğrudan erişmek yerine tipli + hatası yutulan
+   * (cache erişilemezse null/no-op → çağıran DB'ye düşer, istek DÜŞMEZ)
+   * bir sarmalayıcı. Her key MUTLAKA TTL ile yazılır.
+   */
+  public async cacheGetJson<T>(key: string): Promise<T | null> {
+    try {
+      const raw = await this.client.get(key);
+      return raw ? (JSON.parse(raw) as T) : null;
+    } catch (err) {
+      logger.warn({ err, key }, '⚠️ [Redis] cache okuma hatası — DB fallback.');
+      return null;
+    }
+  }
+
+  public async cacheSetJson(key: string, value: unknown, ttlSeconds: number): Promise<void> {
+    try {
+      await this.client.set(key, JSON.stringify(value), 'EX', ttlSeconds);
+    } catch (err) {
+      logger.warn({ err, key }, '⚠️ [Redis] cache yazma hatası — atlandı.');
+    }
+  }
+
+  public async cacheDel(key: string): Promise<void> {
+    try {
+      await this.client.del(key);
+    } catch (err) {
+      logger.warn({ err, key }, '⚠️ [Redis] cache invalidasyon hatası.');
+    }
+  }
+
+  /**
    * Bağlantıyı güvenli bir şekilde kapatır
    */
   public async close(): Promise<void> {
