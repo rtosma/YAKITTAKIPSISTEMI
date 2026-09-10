@@ -15,6 +15,9 @@
 //                          burada yine de allowlist'te tutuyoruz)
 //   - db/adminDb.ts       : SUPER_ADMIN'e özel, kasıtlı çapraz-tenant sorgular
 //                          (routes.ts'te authorizeRoles('SUPER_ADMIN') ile kilitli)
+//   - services/readinessService.ts : RES-906 readiness — `SELECT 1` bir sağlık
+//                          kontrolüdür (tenant verisi değil, tenant context'i
+//                          de yok); withTenant üzerinden geçemez.
 //   - routes/routes.ts    : yalnızca pre-auth login/refresh — henüz bir tenant
 //                          context'i yokken kullanıcıyı bulmak için
 //
@@ -31,7 +34,8 @@ const SRC_ROOT = path.join(__dirname, '..', 'backend', 'src');
 const ALLOWLIST = new Set([
   path.join(SRC_ROOT, 'db', 'withTenant.ts'),
   path.join(SRC_ROOT, 'db', 'adminDb.ts'),
-  path.join(SRC_ROOT, 'routes', 'routes.ts')
+  path.join(SRC_ROOT, 'routes', 'routes.ts'),
+  path.join(SRC_ROOT, 'services', 'readinessService.ts')
 ]);
 
 function walk(dir, out = []) {

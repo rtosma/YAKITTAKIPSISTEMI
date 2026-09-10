@@ -34,8 +34,13 @@ const PORT = config.PORT;
 app.use(cors());
 
 // Graceful Shutdown Check Middleware (returns 503 Service Unavailable if shutting down)
+// RES-906 Kritik Not 3: liveness ve legacy /health bu 503'ten MUAF — süreç
+// kapanırken de canlıdır; onları da 503'lersek orkestratör liveness probe'u
+// başarısız sayıp konteyneri drenaj ortasında öldürür. /health/ready ise
+// KASITLI olarak 503 döner (trafik çekilsin).
+const LIVENESS_PATHS = new Set(['/api/v1/health', '/api/v1/health/live']);
 app.use((req, res, next) => {
-  if (isServerShuttingDown()) {
+  if (isServerShuttingDown() && !LIVENESS_PATHS.has(req.path)) {
     res.setHeader('Connection', 'close');
     return res.status(503).json({
       success: false,
@@ -232,11 +237,18 @@ async function startServer(): Promise<void> {
       clearInterval(calibrationTimeoutSweepInterval);
       if (weeklyAnomalySweepInterval) clearInterval(weeklyAnomalySweepInterval);
 
-      // MQTT, Redis ve Postgres birbirinden bağımsız kaynaklar — sırayla değil
-      // birlikte kapatılır, toplam kapanış süresi üçünün toplamı değil en
-      // yavaşı kadar sürer.
+      // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
+      // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters
+      // sıra veri kaybına yol açar.
+      await mqttService.disconnect();
+
+      // ioTEventBus senkron bir EventEmitter; ayrı bir async telemetri
+      // tamponu/kuyruğu YOK. MQTT kapandıktan sonra yeni 'telemetryData'
+      // üretilmez; devam eden senkron dinleyicilerin (socketServer,
+      // theftDetectionService) oturması için kısa bir bekleme, ardından
+      // birbirinden bağımsız olan Redis + Postgres birlikte kapatılır.
+      await new Promise((resolve) => setTimeout(resolve, 250));
       await Promise.all([
-        mqttService.disconnect(),
         redisPool.close(),
         pool.end()
       ]);

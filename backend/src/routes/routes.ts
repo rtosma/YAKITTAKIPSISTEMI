@@ -7,6 +7,8 @@ import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema
 import { generateDespatchAdviceXml } from '../compliance/despatchAdviceXmlService';
 import { setStrappingTableSchema, tankVolumeQuerySchema, parseStrappingCsv } from '../schemas/strappingTableSchema';
 import { blockRfidCardSchema, replaceRfidCardSchema } from '../schemas/rfidCardSchema';
+import { checkReadiness } from '../services/readinessService';
+import { isServerShuttingDown } from '../utils/shutdown';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
@@ -77,6 +79,55 @@ router.get('/health', (_req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
     service: 'Yakıttakip Backend API [ARCH-101 / RES-901 / AUTH-201 (PostgreSQL Connected)]'
   });
+});
+
+/**
+ * @swagger
+ * /health/live:
+ *   get:
+ *     summary: Liveness Probe (RES-906)
+ *     description: >
+ *       Süreç ayakta mı — bağımlılıklara (DB/Redis/MQTT) BAKMAZ (Kritik Not
+ *       3: aksi halde Redis kesintisi sonsuz konteyner restart'ına yol açar).
+ *       Kapanma sırasında bile 200 döner (süreç canlı, yalnızca readiness
+ *       düşer). index.ts'teki shutdown-503 middleware'i bu yolu muaf tutar.
+ *     responses:
+ *       200:
+ *         description: Süreç canlı.
+ */
+router.get('/health/live', (_req: Request, res: Response) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ status: 'UP', shuttingDown: isServerShuttingDown(), timestamp: new Date().toISOString() });
+});
+
+/**
+ * @swagger
+ * /health/ready:
+ *   get:
+ *     summary: Readiness Probe (RES-906)
+ *     description: >
+ *       DB + Redis + MQTT erişilebilir VE sunucu kapanma modunda değilse 200,
+ *       aksi halde 503 (bağımlılık bazlı durum gövdededir). Sonuç 3 sn
+ *       cache'lenir (Kritik Not 1). SIGTERM alındığında derhal 503 döner ki
+ *       orkestratör trafiği bu pod'dan çeksin.
+ *     responses:
+ *       200:
+ *         description: Hazır — trafik alabilir.
+ *       503:
+ *         description: Hazır değil (bağımlılık erişilemez ya da kapanıyor).
+ */
+router.get('/health/ready', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    if (isServerShuttingDown()) {
+      res.status(503).json({ ready: false, reason: 'SHUTTING_DOWN', checkedAt: new Date().toISOString() });
+      return;
+    }
+    const result = await checkReadiness();
+    res.status(result.ready ? 200 : 503).json(result);
+  } catch (error: any) {
+    next(error);
+  }
 });
 
 /**

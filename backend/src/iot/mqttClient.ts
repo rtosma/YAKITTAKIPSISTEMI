@@ -259,6 +259,16 @@ class MQTTService {
     });
   }
 
+  /** RES-906: MQTT bu ortamda hiç yapılandırılmış mı (CI'da __CI_SKIP__). */
+  public isEnabled(): boolean {
+    return this.brokerUrl !== '__CI_SKIP__';
+  }
+
+  /** RES-906: broker bağlantısı şu an canlı mı (readiness kontrolü). */
+  public isConnected(): boolean {
+    return !!this.client && this.client.connected === true;
+  }
+
   public async disconnect(): Promise<void> {
     this.manuallyDisconnected = true;
     if (this.reconnectTimer) {

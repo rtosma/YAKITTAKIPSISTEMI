@@ -84,9 +84,11 @@ USER node
 
 EXPOSE 5000
 
-# Health check — hit the /api/v1/health endpoint every 30s
+# RES-906: container HEALTHCHECK = LIVENESS (bağımlılıklara bakmaz — bir DB/
+# Redis kesintisi konteyneri öldürmemeli). Trafik yönlendirme kararı için
+# orkestratör ayrıca /api/v1/health/ready kullanır.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:5000/api/v1/health || exit 1
+  CMD wget --no-verbose --tries=1 --spider http://localhost:5000/api/v1/health/live || exit 1
 
 # Use tini as init process to handle zombie reaping and signals gracefully
 ENTRYPOINT ["/sbin/tini", "--"]
