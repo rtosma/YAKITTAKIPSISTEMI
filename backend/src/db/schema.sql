@@ -498,6 +498,54 @@ CREATE TABLE IF NOT EXISTS fuel_quota_history (
     closed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- FUEL-408: tanka gelen tankerin dolum (alım irsaliyesi) kaydı. Stok
+-- hesabının GİRİŞ tarafı — ikmaller çıkış tarafını düşer, bu tablo dolumları
+-- ekler; ikisi birlikte FUEL-409 teorik/fiziksel mutabakatını besler.
+-- Kritik Not: "tanker beyanı ile fiziksel ölçüm arasındaki fark en sık
+-- rastlanan kayıp kalemidir" — bu yüzden hem declared (beyan) hem measured
+-- (seviye farkı) tutulur ve 15 °C'ye düzeltilmiş hacimler üzerinden
+-- karşılaştırılır (declared_liters_15c vs measured_liters_15c). Append-only.
+CREATE TABLE IF NOT EXISTS fuel_intake_receipts (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    tank_id VARCHAR(64) NOT NULL,
+    tank_name VARCHAR(128) NOT NULL,
+    site_name VARCHAR(128) NOT NULL,
+    supplier_name VARCHAR(160) NOT NULL,
+    waybill_no VARCHAR(64) NOT NULL,
+    delivery_date DATE NOT NULL,
+    tanker_plate VARCHAR(32),
+    -- Tankerin irsaliyede beyan ettiği miktar (gözlenen litre).
+    declared_liters NUMERIC(12, 2) NOT NULL,
+    unit_price NUMERIC(12, 4),
+    temperature_c NUMERIC(6, 2),
+    density_kg_m3 NUMERIC(8, 2),
+    -- Dolum öncesi/sonrası tank seviyesi (sensör veya manuel). after NULL ise
+    -- ölçüm yapılamamış → measured_* alanları da NULL, stok beyanla artırılır.
+    level_before_liters NUMERIC(12, 2),
+    level_after_liters NUMERIC(12, 2),
+    measured_liters NUMERIC(12, 2),
+    -- 15 °C standart hacme düzeltilmiş karşılıklar (ASTM D1250, FUEL-403 motoru).
+    declared_liters_15c NUMERIC(12, 2) NOT NULL,
+    measured_liters_15c NUMERIC(12, 2),
+    -- measured_15c - declared_15c (negatif = eksik teslimat). pct = / declared_15c.
+    discrepancy_liters NUMERIC(12, 2),
+    discrepancy_pct NUMERIC(8, 4),
+    -- Stoğa GERÇEKTEN eklenen miktar (measured varsa o, yoksa declared).
+    added_liters NUMERIC(12, 2) NOT NULL,
+    -- 'KAYITLI' | 'EKSİK_TESLİMAT_UYARISI'
+    status VARCHAR(32) NOT NULL DEFAULT 'KAYITLI',
+    -- Dolum penceresi — FUEL-409 mutabakatı bu aralıktaki pompa akışını
+    -- hesaba katmamalı (Kritik Not: "dolum sırasında pompa kullanımı hesabı bozar").
+    window_start TIMESTAMP WITH TIME ZONE,
+    window_end TIMESTAMP WITH TIME ZONE,
+    -- Nesne depolama bu yığında yok — irsaliye görseli yalnızca URL referansı.
+    waybill_image_url VARCHAR(512),
+    note TEXT,
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ==============================================================================
 -- [AUTH-201] Users Table & Refresh Tokens Rotation Store
 -- ==============================================================================
@@ -551,6 +599,7 @@ ALTER TABLE tank_strapping_tables ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rfid_card_blacklist ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quotas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quota_history ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fuel_intake_receipts ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -625,6 +674,8 @@ REVOKE DELETE, TRUNCATE ON despatch_advice_counters FROM app_user;
 REVOKE UPDATE, DELETE, TRUNCATE ON tank_strapping_tables FROM app_user;
 -- FUEL-402.1: settlement geçmişi değiştirilemez/silinemez.
 REVOKE UPDATE, DELETE, TRUNCATE ON fuel_quota_history FROM app_user;
+-- FUEL-408: dolum irsaliyeleri append-only (mali/stok kaydı, sonradan değişmez).
+REVOKE UPDATE, DELETE, TRUNCATE ON fuel_intake_receipts FROM app_user;
 
 -- Force RLS even for table owners
 ALTER TABLE vehicles FORCE ROW LEVEL SECURITY;
@@ -647,6 +698,7 @@ ALTER TABLE tank_strapping_tables FORCE ROW LEVEL SECURITY;
 ALTER TABLE rfid_card_blacklist FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quotas FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quota_history FORCE ROW LEVEL SECURITY;
+ALTER TABLE fuel_intake_receipts FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -669,6 +721,7 @@ DROP POLICY IF EXISTS tank_strapping_tables_tenant_isolation_policy ON tank_stra
 DROP POLICY IF EXISTS rfid_card_blacklist_tenant_isolation_policy ON rfid_card_blacklist;
 DROP POLICY IF EXISTS fuel_quotas_tenant_isolation_policy ON fuel_quotas;
 DROP POLICY IF EXISTS fuel_quota_history_tenant_isolation_policy ON fuel_quota_history;
+DROP POLICY IF EXISTS fuel_intake_receipts_tenant_isolation_policy ON fuel_intake_receipts;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -793,6 +846,11 @@ CREATE POLICY fuel_quota_history_tenant_isolation_policy ON fuel_quota_history
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY fuel_intake_receipts_tenant_isolation_policy ON fuel_intake_receipts
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- ==============================================================================
 -- [PERF] tenant_id İndeksleri
 -- ==============================================================================
@@ -866,3 +924,7 @@ CREATE INDEX IF NOT EXISTS idx_rfid_card_blacklist_lookup ON rfid_card_blacklist
 -- sorgusu (tek kota) bu desenlerle çalışır.
 CREATE INDEX IF NOT EXISTS idx_fuel_quotas_active_period ON fuel_quotas(tenant_id, status, period_end);
 CREATE INDEX IF NOT EXISTS idx_fuel_quota_history_quota ON fuel_quota_history(tenant_id, quota_id, closed_at DESC);
+
+-- FUEL-408: bir tankın dolum geçmişi (tank detayında liste) ve FUEL-409
+-- mutabakatının "dönemdeki dolumlar" sorgusu bu desenle çalışır.
+CREATE INDEX IF NOT EXISTS idx_fuel_intake_receipts_tank ON fuel_intake_receipts(tenant_id, tank_id, delivery_date DESC);

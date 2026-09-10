@@ -3199,3 +3199,219 @@ export async function resetDueQuotasForCurrentTenant(): Promise<{ reset: number;
 function round2(v: number): number {
   return Math.round(v * 100) / 100;
 }
+
+// ============================================================================
+// FUEL-408: TANK DOLUM (ALIM İRSALİYESİ) GİRİŞİ + STOK ARTIŞI
+// ============================================================================
+
+// Beyan (tanker irsaliyesi) ile fiziksel ölçüm (seviye farkı) arasında bu
+// oranı aşan fark "eksik teslimat" uyarısı üretir. Motorin dolumunda tanker
+// sayacı ile tank sensörü arasında ~%0.3-0.5 fark normaldir; varsayılan eşik
+// %0.5 (istek gövdesinde tolerancePct ile ezilebilir).
+const DEFAULT_INTAKE_TOLERANCE_PCT = 0.5;
+// Dolum penceresi: kayıt anından bu kadar geriye. FUEL-409 mutabakatı bu
+// aralıktaki pompa akışını "gerçek tüketim değil, dolum türbülansı" sayıp
+// hesap dışı bırakabilsin diye işaretlenir.
+const INTAKE_WINDOW_LOOKBACK_MS = 15 * 60 * 1000;
+
+export interface FuelIntakeRecord {
+  id: string;
+  tenant_id: string;
+  tank_id: string;
+  tank_name: string;
+  site_name: string;
+  supplier_name: string;
+  waybill_no: string;
+  delivery_date: string;
+  tanker_plate: string | null;
+  declared_liters: string;
+  unit_price: string | null;
+  temperature_c: string | null;
+  density_kg_m3: string | null;
+  level_before_liters: string | null;
+  level_after_liters: string | null;
+  measured_liters: string | null;
+  declared_liters_15c: string;
+  measured_liters_15c: string | null;
+  discrepancy_liters: string | null;
+  discrepancy_pct: string | null;
+  added_liters: string;
+  status: string;
+  window_start: string | null;
+  window_end: string | null;
+  waybill_image_url: string | null;
+  note: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+export interface FuelIntakeResult {
+  receipt: FuelIntakeRecord;
+  /** Beyan ile ölçüm 15 °C'de karşılaştırılabildi mi (levelAfter verildiyse). */
+  compared: boolean;
+  /** Tolerans aşıldı mı → EKSİK_TESLİMAT_UYARISI + WS uyarısı. */
+  shortDeliveryAlert: boolean;
+  tankLevelBefore: number;
+  tankLevelAfter: number;
+}
+
+/**
+ * FUEL-408 — bir dolum kaydı oluşturur ve tank stoğunu atomik olarak artırır.
+ *
+ *  - Tank satırı `FOR UPDATE` ile kilitlenir (createTransaction'daki FUEL-402
+ *    deseniyle aynı) — eşzamanlı bir ikmal/dolum seviyeyi ezmez.
+ *  - Beyan (declaredLiters) ve — verildiyse — ölçüm (levelAfter - levelBefore)
+ *    ASTM D1250 ile 15 °C'ye düzeltilip karşılaştırılır (Kritik Not:
+ *    "karşılaştırma sıcaklık düzeltilmiş hacimler üzerinden yapılmalıdır").
+ *  - Stoğa eklenen miktar: ölçüm varsa measured, yoksa declared (AC: "dolum
+ *    kaydı tank stoğunu DOĞRU artırmalıdır").
+ *  - Tank kapasitesi aşılırsa TANK_OVERFLOW ile reddedilir.
+ */
+export async function recordFuelIntake(
+  tankId: string,
+  data: {
+    supplierName: string;
+    waybillNo: string;
+    deliveryDate: string;
+    declaredLiters: number;
+    tankerPlate?: string;
+    unitPrice?: number;
+    temperatureC?: number;
+    densityKgM3?: number;
+    levelBeforeLiters?: number;
+    levelAfterLiters?: number;
+    tolerancePct?: number;
+    waybillImageUrl?: string;
+    note?: string;
+  },
+  createdByUserId: string
+): Promise<FuelIntakeResult> {
+  return withTenant(async (client, tenantId) => {
+    const tankRes = await client.query(
+      'SELECT id, name, site_name, fuel_type, capacity_liters, current_level_liters FROM tanks WHERE id = $1 FOR UPDATE',
+      [tankId]
+    );
+    if (tankRes.rows.length === 0) {
+      throw new NotFoundError(`'${tankId}' tankı bulunamadı.`, { error: 'TANK_NOT_FOUND' });
+    }
+    const tank = tankRes.rows[0];
+    const capacity = Number(tank.capacity_liters);
+    const levelBeforeActual = Number(tank.current_level_liters);
+
+    // level_before: çağıran bir "dolum öncesi" ölçüm beyan ettiyse onu SAKLA
+    // (irsaliye/tutanak değeri), ama stok hesabı her zaman tankın GERÇEK
+    // mevcut seviyesinden (levelBeforeActual) yürür.
+    const levelBefore = data.levelBeforeLiters ?? levelBeforeActual;
+    const hasMeasurement = data.levelAfterLiters !== undefined;
+    const measuredLiters = hasMeasurement ? round2(data.levelAfterLiters! - levelBefore) : null;
+
+    // Stoğa eklenecek miktar: ölçüm varsa fiziksel fark, yoksa beyan.
+    const addedLiters = round2(hasMeasurement ? measuredLiters! : data.declaredLiters);
+    if (addedLiters <= 0) {
+      throw new BadRequestError('Dolum miktarı sıfır veya negatif — kayıt oluşturulmadı.', { error: 'INTAKE_NON_POSITIVE' });
+    }
+
+    const newLevel = round2(levelBeforeActual + addedLiters);
+    if (newLevel > capacity + 0.01) {
+      throw new ConflictError(
+        `Dolum tank kapasitesini aşıyor: mevcut ${levelBeforeActual} L + ${addedLiters} L > ${capacity} L kapasite.`,
+        { error: 'TANK_OVERFLOW', capacityLiters: capacity, currentLevelLiters: levelBeforeActual, addedLiters }
+      );
+    }
+
+    // 15 °C standart hacim düzeltmesi (sıcaklık yoksa vcf=1, düzeltme yok).
+    const declared15c = correctToStandardVolume(data.declaredLiters, data.temperatureC ?? null, tank.fuel_type, data.densityKgM3 ?? undefined).standardLiters;
+    let measured15c: number | null = null;
+    let discrepancyLiters: number | null = null;
+    let discrepancyPct: number | null = null;
+    let shortDeliveryAlert = false;
+    const tolerancePct = data.tolerancePct ?? DEFAULT_INTAKE_TOLERANCE_PCT;
+
+    if (hasMeasurement) {
+      measured15c = correctToStandardVolume(measuredLiters!, data.temperatureC ?? null, tank.fuel_type, data.densityKgM3 ?? undefined).standardLiters;
+      discrepancyLiters = round2(measured15c - declared15c);
+      discrepancyPct = declared15c > 0 ? Number(((discrepancyLiters / declared15c) * 100).toFixed(4)) : 0;
+      // Eksik teslimat = ölçülen, beyan edilenden tolerans eşiğinin ÖTESİNDE az.
+      shortDeliveryAlert = discrepancyPct < -tolerancePct;
+    }
+
+    const status = shortDeliveryAlert ? 'EKSİK_TESLİMAT_UYARISI' : 'KAYITLI';
+    const now = new Date();
+    const windowStart = new Date(now.getTime() - INTAKE_WINDOW_LOOKBACK_MS);
+
+    const capacityPct = (newLevel / capacity) * 100;
+    const newTankStatus = capacityPct < 20 ? 'KRİTİK' : capacityPct < 40 ? 'UYARI' : 'GÜVENLİ';
+    await client.query('UPDATE tanks SET current_level_liters = $1, status = $2 WHERE id = $3', [newLevel, newTankStatus, tank.id]);
+
+    const id = generateId('intake');
+    const insRes = await client.query(
+      `INSERT INTO fuel_intake_receipts
+         (id, tenant_id, tank_id, tank_name, site_name, supplier_name, waybill_no, delivery_date, tanker_plate,
+          declared_liters, unit_price, temperature_c, density_kg_m3, level_before_liters, level_after_liters,
+          measured_liters, declared_liters_15c, measured_liters_15c, discrepancy_liters, discrepancy_pct,
+          added_liters, status, window_start, window_end, waybill_image_url, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+       RETURNING *`,
+      [
+        id, tenantId, tank.id, tank.name, tank.site_name, data.supplierName, data.waybillNo, data.deliveryDate,
+        data.tankerPlate ?? null, data.declaredLiters, data.unitPrice ?? null, data.temperatureC ?? null,
+        data.densityKgM3 ?? null, data.levelBeforeLiters ?? null, data.levelAfterLiters ?? null,
+        measuredLiters, declared15c, measured15c, discrepancyLiters, discrepancyPct,
+        addedLiters, status, windowStart.toISOString(), now.toISOString(), data.waybillImageUrl ?? null,
+        data.note ?? null, createdByUserId
+      ]
+    );
+
+    await writeAuditLog(client, {
+      action: 'FUEL_INTAKE_RECORDED',
+      targetType: 'fuel_intake_receipt',
+      targetId: id,
+      afterValue: {
+        tankId: tank.id, tankName: tank.name, declaredLiters: data.declaredLiters, addedLiters,
+        status, discrepancyLiters, discrepancyPct
+      }
+    });
+
+    if (shortDeliveryAlert) {
+      logger.warn(
+        { tankId: tank.id, tankName: tank.name, waybillNo: data.waybillNo, declared15c, measured15c, discrepancyPct },
+        `🚨 [FUEL-408] Eksik teslimat şüphesi: '${tank.name}' — beyan ${declared15c} L, ölçüm ${measured15c} L (%${discrepancyPct}).`
+      );
+    }
+
+    return {
+      receipt: insRes.rows[0] as FuelIntakeRecord,
+      compared: hasMeasurement,
+      shortDeliveryAlert,
+      tankLevelBefore: levelBeforeActual,
+      tankLevelAfter: newLevel
+    };
+  });
+}
+
+export async function getFuelIntakes(filters: {
+  tankId?: string;
+  status?: string;
+  from?: string;
+  to?: string;
+}): Promise<FuelIntakeRecord[]> {
+  return withTenant(async (client) => {
+    const where: string[] = [];
+    const params: any[] = [];
+    if (filters.tankId) { params.push(filters.tankId); where.push(`tank_id = $${params.length}`); }
+    if (filters.status) { params.push(filters.status); where.push(`status = $${params.length}`); }
+    if (filters.from) { params.push(filters.from); where.push(`delivery_date >= $${params.length}`); }
+    if (filters.to) { params.push(filters.to); where.push(`delivery_date <= $${params.length}`); }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const res = await client.query(`SELECT * FROM fuel_intake_receipts ${clause} ORDER BY delivery_date DESC, created_at DESC`, params);
+    return res.rows;
+  });
+}
+
+export async function getFuelIntake(intakeId: string): Promise<FuelIntakeRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM fuel_intake_receipts WHERE id = $1', [intakeId]);
+    if (res.rows.length === 0) throw new NotFoundError('Dolum kaydı bulunamadı.');
+    return res.rows[0];
+  });
+}

@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -9,6 +9,7 @@ import { setStrappingTableSchema, tankVolumeQuerySchema, parseStrappingCsv } fro
 import { blockRfidCardSchema, replaceRfidCardSchema } from '../schemas/rfidCardSchema';
 import { checkReadiness } from '../services/readinessService';
 import { createQuotaSchema, updateQuotaSchema } from '../schemas/quotaSchema';
+import { createFuelIntakeSchema, listFuelIntakeQuerySchema } from '../schemas/fuelIntakeSchema';
 import { isServerShuttingDown } from '../utils/shutdown';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
@@ -2041,6 +2042,122 @@ router.get(
       const q = req.query as unknown as { levelMm: number; tempC?: number; density15?: number };
       const result = await computeTankVolume(tankName, q.levelMm, q.tempC ?? null, q.density15);
       res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── FUEL-408: tank dolum (alım irsaliyesi) girişi + stok artışı ──────────
+// Dolum bir mali/stok kaydıdır ve tanker teslimatı şantiye sorumlusu
+// gözetiminde tutanaklanır — PUMP_OPERATOR bilinçli olarak hariç.
+const INTAKE_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /tanks/{id}/intakes:
+ *   post:
+ *     summary: Tank Dolum Kaydı (FUEL-408)
+ *     description: >
+ *       Tankere ait alım irsaliyesini kaydeder ve tank stoğunu ARTIRIR (tank
+ *       satırı FOR UPDATE ile kilitli). `levelAfterLiters` (+ `levelBeforeLiters`)
+ *       verilirse beyan ile fiziksel ölçüm 15 °C'ye düzeltilip karşılaştırılır;
+ *       fark `tolerancePct` (varsayılan %0.5) eşiğini aşarsa
+ *       EKSİK_TESLİMAT_UYARISI üretilir ve şantiyeye WebSocket uyarısı düşer.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Tank Dolum Geçmişi (FUEL-408)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/tanks/:id/intakes',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  validateRequest({ body: createFuelIntakeSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await recordFuelIntake(req.params.id, req.body, req.user!.userId);
+      const tenantId = req.user?.tenantId;
+      if (tenantId) {
+        try {
+          broadcastToTenant(tenantId, 'tank:intake', {
+            tankId: result.receipt.tank_id,
+            tankName: result.receipt.tank_name,
+            siteName: result.receipt.site_name,
+            addedLiters: Number(result.receipt.added_liters),
+            levelAfter: result.tankLevelAfter,
+            status: result.receipt.status
+          });
+          if (result.shortDeliveryAlert) {
+            broadcastToTenant(tenantId, 'tank:intake-alert', {
+              tankName: result.receipt.tank_name,
+              siteName: result.receipt.site_name,
+              waybillNo: result.receipt.waybill_no,
+              declaredLiters15c: Number(result.receipt.declared_liters_15c),
+              measuredLiters15c: result.receipt.measured_liters_15c === null ? null : Number(result.receipt.measured_liters_15c),
+              discrepancyLiters: result.receipt.discrepancy_liters === null ? null : Number(result.receipt.discrepancy_liters),
+              discrepancyPct: result.receipt.discrepancy_pct === null ? null : Number(result.receipt.discrepancy_pct)
+            });
+          }
+        } catch (broadcastErr) {
+          logger.warn({ err: broadcastErr }, '[FUEL-408] tank:intake yayını başarısız (kayıt yine de oluşturuldu).');
+        }
+      }
+      res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/tanks/:id/intakes',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const intakes = await getFuelIntakes({ tankId: req.params.id });
+      res.json({ success: true, totalCount: intakes.length, data: intakes });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fuel-intakes:
+ *   get:
+ *     summary: Dolum Kayıtları (filtreli) (FUEL-408)
+ *     description: '?tankId, ?status (KAYITLI|EKSİK_TESLİMAT_UYARISI), ?from, ?to (YYYY-AA-GG)'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fuel-intakes',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  validateRequest({ query: listFuelIntakeQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { tankId?: string; status?: string; from?: string; to?: string };
+      const intakes = await getFuelIntakes(q);
+      res.json({ success: true, totalCount: intakes.length, data: intakes });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/fuel-intakes/:id',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getFuelIntake(req.params.id) });
     } catch (error: any) {
       next(error);
     }
