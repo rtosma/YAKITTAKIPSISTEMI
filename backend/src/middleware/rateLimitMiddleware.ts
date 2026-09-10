@@ -89,3 +89,31 @@ export const hardwareRateLimiter = rateLimit({
     });
   }
 });
+
+/**
+ * IOT-302.1 — POST /api/v1/lorawan/uplink için IP bazlı limit. Bir filonun
+ * TÜM LoRaWAN uplink'leri tek bir ağ sunucusu (ChirpStack/TTN) IP'sinden
+ * geleceği için limit cömert: cihaz başına saatte birkaç uplink × yüzlerce
+ * cihaz = dakikada birkaç yüz. 1200/dk, hem gerçek yükü karşılar hem de
+ * ele geçirilmiş/yanlış yapılandırılmış bir kaynağın seli önlenir. Kimlik
+ * doğrulaması ayrıca lorawanWebhookAuth ile yapılır — bu yalnızca adil bir
+ * üst sınır.
+ */
+export const lorawanWebhookRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => ipKeyGenerator(req.ip || 'unknown-lns'),
+  store: new RedisStore({
+    prefix: 'rl:lorawan-webhook:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      error: 'TOO_MANY_REQUESTS',
+      message: 'LoRaWAN webhook istek limiti aşıldı.'
+    });
+  }
+});

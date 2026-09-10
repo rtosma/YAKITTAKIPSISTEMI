@@ -88,7 +88,15 @@ const envSchema = z.object({
   // requestAnomalyAnalysis). JWT/MQTT/HW_SECRET_* sırlarının hepsi sistemin
   // ÇEKİRDEK güvenlik/işlev omurgası; bu ise P2 öncelikli, isteğe bağlı bir
   // AI zenginleştirmesi.
-  GEMINI_API_KEY: z.string().min(1).optional()
+  GEMINI_API_KEY: z.string().min(1).optional(),
+
+  // IOT-302.1: ChirpStack/TTN uplink webhook'unun paylaşılan doğrulama
+  // token'ı. AI-502 gibi opsiyonel AMA "fail-closed": tanımlı değilse
+  // POST /lorawan/uplink TÜM çağrıları 503 ile reddeder (yapılandırılmamış
+  // bir webhook, doğrulanmamış istekleri kabul etmektense hiç veri almasın —
+  // internete açık bir uçtan sahte tank seviyesi enjeksiyonu bu şekilde
+  // engellenir). En az 24 karakter (öneri: openssl rand -hex 32).
+  LORAWAN_WEBHOOK_TOKEN: z.string().min(24).optional()
 });
 
 type EnvShape = z.infer<typeof envSchema>;

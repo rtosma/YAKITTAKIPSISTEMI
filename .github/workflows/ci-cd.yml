@@ -97,6 +97,10 @@ jobs:
       # bkz. config/env.ts'in regex doğrulaması) — diğer ci_only_* değerleri
       # gibi rastgele bir metin OLAMAZ.
       HW_SECRET_ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      # IOT-302.1: sunucu ve test_iot302_1 AYNI token'ı görmeli (test webhook'a
+      # bu token'la POST atıyor). Job seviyesinde tanımlı → hem "Start Backend
+      # Server" hem test adımları görür.
+      LORAWAN_WEBHOOK_TOKEN: ci_only_lorawan_webhook_token_${{ github.run_id }}
     services:
       postgres:
         image: postgres:16-alpine
@@ -200,6 +204,9 @@ jobs:
 
       - name: Run IOT-302 Binary LoRaWAN Payload Decoder Tests
         run: cd backend && npx tsx test/test_iot302_lorawan_decoder.ts
+
+      - name: Run IOT-302.1 LoRaWAN Uplink Webhook Tests
+        run: cd backend && npx tsx test/test_iot302_1_lorawan_webhook.ts
 
       - name: Run IOT-304 Device Claim/Provisioning Flow Tests
         run: cd backend && npx tsx test/test_iot304_device_claim_flow.ts

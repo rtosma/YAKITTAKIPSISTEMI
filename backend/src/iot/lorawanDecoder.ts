@@ -114,12 +114,26 @@ function toBuffer(input: string | Buffer): { buf: Buffer; rawHex: string } {
   return { buf: Buffer.from(hex, 'hex'), rawHex: hex.toLowerCase() };
 }
 
+export interface DecodeOptions {
+  /**
+   * IOT-302.1 — "endianness sensör üreticisine göre değişir". Sensör
+   * alanlarının (distanceMm, temperatureCentiC, uplinkCounter) bayt sırası.
+   * Varsayılan 'BE' (GENERIC-TANK-V1 protokolü — ağ bayt sırası). Bazı
+   * üreticiler tüm çok-baytlı alanları little-endian yazar; o modeller için
+   * decoder registry (lorawanDecoderRegistry.ts) bunu 'LE' geçer.
+   * `batteryVoltage` her iki modelde de LE IEEE-754 float'tır (cihaz
+   * firmware'inin doğal yazımı) — o değişmez.
+   */
+  byteOrder?: 'BE' | 'LE';
+}
+
 /**
  * Bir LoRaWAN uplink payload'ını (hex string ya da Buffer) çözer.
  * Bozuk/eksik/mantıksız her durumda `CorruptedPayloadException` fırlatır.
  */
-export function decodeLoRaWANPayload(input: string | Buffer, meta?: LoRaWANRadioMeta): DecodedTankUplink {
+export function decodeLoRaWANPayload(input: string | Buffer, meta?: LoRaWANRadioMeta, opts?: DecodeOptions): DecodedTankUplink {
   const { buf, rawHex } = toBuffer(input);
+  const byteOrder = opts?.byteOrder ?? 'BE';
 
   if (buf.length !== TANK_UPLINK_LENGTH_BYTES) {
     throw new CorruptedPayloadException(
@@ -140,11 +154,11 @@ export function decodeLoRaWANPayload(input: string | Buffer, meta?: LoRaWANRadio
     throw new CorruptedPayloadException(`bilinmeyen mesaj tipi 0x${messageTypeByte.toString(16)}`, rawHex, buf.length);
   }
 
-  const distanceMm = buf.readUInt16BE(2);
-  const temperatureC = buf.readInt16BE(4) / 100;
+  const distanceMm = byteOrder === 'LE' ? buf.readUInt16LE(2) : buf.readUInt16BE(2);
+  const temperatureC = (byteOrder === 'LE' ? buf.readInt16LE(4) : buf.readInt16BE(4)) / 100;
   const batteryVoltage = buf.readFloatLE(6);
   const statusFlags = buf.readUInt8(10);
-  const uplinkCounter = buf.readUInt32BE(11);
+  const uplinkCounter = byteOrder === 'LE' ? buf.readUInt32LE(11) : buf.readUInt32BE(11);
 
   // "Çözüldü ama fiziksel olarak imkânsız" — bozuk baytların sessizce geçmesini önler.
   if (!Number.isFinite(batteryVoltage) || batteryVoltage < MIN_PLAUSIBLE_BATTERY_V || batteryVoltage > MAX_PLAUSIBLE_BATTERY_V) {
@@ -196,18 +210,24 @@ export function encodeTankUplinkHex(fields: {
   uplinkCounter: number;
   messageType?: number;
   protocolVersion?: number;
+  /** Sensör alanlarının bayt sırası — decodeLoRaWANPayload ile aynı. */
+  byteOrder?: 'BE' | 'LE';
 }): string {
+  const le = fields.byteOrder === 'LE';
   const buf = Buffer.alloc(TANK_UPLINK_LENGTH_BYTES);
   buf.writeUInt8(fields.protocolVersion ?? LORAWAN_PROTOCOL_VERSION, 0);
   buf.writeUInt8(fields.messageType ?? 0x01, 1);
-  buf.writeUInt16BE(Math.round(fields.distanceMm), 2);
-  buf.writeInt16BE(Math.round(fields.temperatureC * 100), 4);
+  if (le) buf.writeUInt16LE(Math.round(fields.distanceMm), 2);
+  else buf.writeUInt16BE(Math.round(fields.distanceMm), 2);
+  if (le) buf.writeInt16LE(Math.round(fields.temperatureC * 100), 4);
+  else buf.writeInt16BE(Math.round(fields.temperatureC * 100), 4);
   buf.writeFloatLE(fields.batteryVoltage, 6);
   const flags =
     (fields.lowBattery ? STATUS_FLAG_LOW_BATTERY : 0) |
     (fields.sensorFault ? STATUS_FLAG_SENSOR_FAULT : 0) |
     (fields.tiltAlarm ? STATUS_FLAG_TILT_ALARM : 0);
   buf.writeUInt8(flags, 10);
-  buf.writeUInt32BE(fields.uplinkCounter, 11);
+  if (le) buf.writeUInt32LE(fields.uplinkCounter, 11);
+  else buf.writeUInt32BE(fields.uplinkCounter, 11);
   return buf.toString('hex');
 }

@@ -147,6 +147,9 @@ services:
       # tanımsızsa özellik nazikçe 503 döner, uygulamanın geri kalanı normal
       # çalışır (bkz. config/env.ts, consumptionAnomalyService.ts).
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # IOT-302.1: LoRaWAN uplink webhook token'ı — opsiyonel ama FAIL-CLOSED
+      # (tanımsızsa POST /lorawan/uplink tüm çağrıları 503 ile reddeder).
+      LORAWAN_WEBHOOK_TOKEN: ${LORAWAN_WEBHOOK_TOKEN:-}
     # OPS-1102: host'a sabit "5000:5000" port yayını kasıtlı olarak KALDIRILDI.
     # 1) frontend/nginx.conf zaten backend'e dahili yakit_network üzerinden
     #    hostname ile (http://backend:5000) erişiyor — dışarıdan doğrudan

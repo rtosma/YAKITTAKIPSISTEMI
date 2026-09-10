@@ -32,10 +32,13 @@ import {
 } from '../services/tokenService';
 import { authenticateJWT, authorizeRoles, AuthenticatedRequest } from '../middleware/authMiddleware';
 import { hardwareAuthMiddleware } from '../middleware/hardwareAuthMiddleware';
+import { lorawanWebhookAuth } from '../middleware/lorawanWebhookAuthMiddleware';
 import { redisPool } from '../db/redisPool';
 import { broadcastToTenant } from '../socket/socketServer';
 import { logger } from '../utils/logger';
-import { loginRateLimiter, refreshRateLimiter, hardwareRateLimiter } from '../middleware/rateLimitMiddleware';
+import { loginRateLimiter, refreshRateLimiter, hardwareRateLimiter, lorawanWebhookRateLimiter } from '../middleware/rateLimitMiddleware';
+import { lorawanUplinkSchema } from '../schemas/lorawanWebhookSchema';
+import { ingestLoRaWANUplink } from '../services/lorawanUplinkService';
 import { checkLockout, recordFailedLogin, clearFailedLogins } from '../services/accountLockoutService';
 import { runWithTenant } from '../context/tenantContext';
 import { mqttService } from '../iot/mqttClient';
@@ -2013,6 +2016,46 @@ router.post(
       receivedData: req.body,
       timestamp: new Date().toISOString()
     });
+  }
+);
+
+/**
+ * @swagger
+ * /lorawan/uplink:
+ *   post:
+ *     summary: ChirpStack/TTN LoRaWAN Uplink Webhook'u (IOT-302.1)
+ *     description: >
+ *       LoRaWAN ağ sunucusunun (ChirpStack v4 / TTN v3 / düz normalize gövde)
+ *       HTTP integration'ından gelen tek bir uplink'i alır, sensör modeline
+ *       göre çözer ve mevcut telemetri hattına aktarır (MQTT `data` yoluyla
+ *       aynı). İnternete açık — `Authorization: Bearer <LORAWAN_WEBHOOK_TOKEN>`
+ *       zorunludur (yoksa/yanlışsa 401; token hiç yapılandırılmamışsa 503,
+ *       fail-closed). Bozuk/eksik paketler 202 içinde `accepted:false` ile
+ *       izole edilir — ağ sunucusu retry'a girmesin ve hat durmasın diye
+ *       gövde hatası yine 2xx döner (yalnızca auth/limit hataları 4xx).
+ *     security:
+ *       - lorawanWebhookToken: []
+ *     responses:
+ *       202:
+ *         description: Uplink alındı (accepted true/false, decoded değerler payload'da).
+ *       401:
+ *         description: Eksik/geçersiz webhook token'ı.
+ *       503:
+ *         description: LORAWAN_WEBHOOK_TOKEN yapılandırılmamış (fail-closed).
+ */
+router.post(
+  '/lorawan/uplink',
+  lorawanWebhookRateLimiter,
+  lorawanWebhookAuth,
+  validateRequest({ body: lorawanUplinkSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await ingestLoRaWANUplink(req.body);
+      // 202: alındı ve işlendi/izole edildi. accepted alanı sonucu taşır.
+      res.status(202).json({ success: true, ...result });
+    } catch (error: any) {
+      next(error);
+    }
   }
 );
 
