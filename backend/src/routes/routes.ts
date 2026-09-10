@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -15,6 +15,7 @@ import { createManualDispenseSchema, rejectManualDispenseSchema, listManualDispe
 import { setWorkingHoursSchema, scanAnomalySchema, listAnomalyFlagQuerySchema, reviewAnomalyFlagSchema } from '../schemas/anomalyFlagSchema';
 import { updateAlarmSchema, snoozeAlarmSchema, listAlarmQuerySchema } from '../schemas/alarmSchema';
 import { validateTaxIdSchema, createRecipientSchema } from '../schemas/recipientSchema';
+import { setDeviceTankSchema, fuelStockSummaryQuerySchema } from '../schemas/fuelTypeSchema';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
@@ -1219,6 +1220,57 @@ router.post(
 );
 
 /**
+ * @swagger
+ * /hardware-devices/{deviceId}/tank:
+ *   patch:
+ *     summary: Pompa-Tank Eşlemesi (FUEL-407)
+ *     description: >
+ *       `{ tankName }` — bu pompanın beslendiği tank. Bir tank birden çok
+ *       pompaya bağlanabilir. `tankName: null` eşlemeyi kaldırır. Eşleme
+ *       varsa request-auth istekteki tankName ile karşılaştırılır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch(
+  '/hardware-devices/:deviceId/tank',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: setDeviceTankSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await setHardwareDeviceTank(req.params.deviceId, req.body.tankName ?? null);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fuel-stock-summary:
+ *   get:
+ *     summary: Yakıt Tipi Bazında Stok ve İkmal Özeti (FUEL-407)
+ *     description: '?days (varsayılan 30). Tank stoğu + dönem ikmali, yakıt tipi (grup) bazında.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fuel-stock-summary',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ query: fuelStockSummaryQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { days: number };
+      res.json({ success: true, data: await getFuelStockSummary(q.days) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
  * FUEL-404.1 — K-Factor Uzaktan Kalibrasyon: Komut, Ack, Geri Alma, Geçmiş.
  * Ticket'ın "Teknik Yığın"ı NestJS + IOT-305 komut kuyruğu + Drizzle
  * öneriyor — IOT-305 (genel amaçlı bir komut kuyruğu servisi) bu kod
@@ -2298,7 +2350,8 @@ router.post(
         site_name: sanitizedBody.siteName || sanitizedBody.site_name || 'Gebze Ana Şantiye',
         status: sanitizedBody.status || 'AKTİF',
         fuel_capacity_liters: sanitizedBody.fuelCapacityLiters ?? null,
-        assigned_driver_name: sanitizedBody.assignedDriver ?? null
+        assigned_driver_name: sanitizedBody.assignedDriver ?? null,
+        fuel_type: sanitizedBody.fuelType ?? null
       };
 
       const newVehicle = await createVehicle(vehicleData);
@@ -2326,7 +2379,7 @@ router.put(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const id = req.params.id;
-      const { plate, brandModel, type, rfidTag, siteName, status, fuelCapacityLiters, assignedDriver } = req.body;
+      const { plate, brandModel, type, rfidTag, siteName, status, fuelCapacityLiters, assignedDriver, fuelType } = req.body;
       const updateData = {
         ...(plate && { plate }),
         ...(brandModel && { brand_model: brandModel }),
@@ -2335,7 +2388,8 @@ router.put(
         ...(siteName && { site_name: siteName }),
         ...(status && { status }),
         ...(fuelCapacityLiters !== undefined && { fuel_capacity_liters: fuelCapacityLiters }),
-        ...(assignedDriver !== undefined && { assigned_driver_name: assignedDriver })
+        ...(assignedDriver !== undefined && { assigned_driver_name: assignedDriver }),
+        ...(fuelType !== undefined && { fuel_type: fuelType })
       };
 
       const updatedVehicle = await updateVehicle(id, updateData);
@@ -3918,7 +3972,8 @@ router.post(
         authorizeDispenseRequest({
           rfidCardId: req.body.rfidCardId,
           tankName: req.body.tankName,
-          deviceSiteName: hw.siteName
+          deviceSiteName: hw.siteName,
+          deviceId: hw.deviceId
         })
       );
 

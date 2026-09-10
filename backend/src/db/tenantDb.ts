@@ -27,6 +27,7 @@ import {
 import { listActiveSessions } from '../services/dispenseSessionService';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
+import { areFuelTypesCompatible, resolveFuelType } from '../fuel/fuelTypes';
 
 /**
  * updateVehicle/updateTank (ve kısmen updateDriver) aynı deseni tekrarlıyordu:
@@ -76,6 +77,7 @@ export interface VehicleRecord {
   status: string;
   fuel_capacity_liters: number | null;
   assigned_driver_name: string | null;
+  fuel_type: string | null;
 }
 
 // Şoför/araç formlarının "atanmadı" durumu için kullandığı sentinel değerler —
@@ -367,7 +369,8 @@ export async function getTenantVehicles(siteRestriction?: string): Promise<Vehic
       site_name: row.site_name,
       status: row.status,
       fuel_capacity_liters: row.fuel_capacity_liters !== null ? Number(row.fuel_capacity_liters) : null,
-      assigned_driver_name: row.assigned_driver_name
+      assigned_driver_name: row.assigned_driver_name,
+      fuel_type: row.fuel_type ?? null
     }));
   });
 }
@@ -379,9 +382,9 @@ export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'
       ? data.assigned_driver_name
       : null;
     const result = await client.query(
-      `INSERT INTO vehicles (id, tenant_id, plate, brand_model, vehicle_type, rfid_tag, site_name, status, fuel_capacity_liters, assigned_driver_name)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-      [id, tenantId, data.plate, data.brand_model, data.vehicle_type, data.rfid_tag, data.site_name, data.status, data.fuel_capacity_liters ?? null, assignedDriverName]
+      `INSERT INTO vehicles (id, tenant_id, plate, brand_model, vehicle_type, rfid_tag, site_name, status, fuel_capacity_liters, assigned_driver_name, fuel_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [id, tenantId, data.plate, data.brand_model, data.vehicle_type, data.rfid_tag, data.site_name, data.status, data.fuel_capacity_liters ?? null, assignedDriverName, data.fuel_type ?? null]
     );
     return result.rows[0];
   });
@@ -393,7 +396,7 @@ export async function updateVehicle(id: string, data: Partial<VehicleRecord>): P
 
     for (const [key, value] of Object.entries(data)) {
       if (value === undefined) continue;
-      if (['plate', 'brand_model', 'vehicle_type', 'rfid_tag', 'site_name', 'status', 'fuel_capacity_liters'].includes(key)) {
+      if (['plate', 'brand_model', 'vehicle_type', 'rfid_tag', 'site_name', 'status', 'fuel_capacity_liters', 'fuel_type'].includes(key)) {
         fields.push({ column: key, value });
       } else if (key === 'assigned_driver_name') {
         fields.push({
@@ -864,14 +867,16 @@ export async function createTransaction(
     // İlgili tankı bul ve satırı kilitle (varsa) — isim eşleşmesi olmayabilir
     // (örn. serbest metin girilmiş tankName), bu durumda seviye düşümü
     // sessizce atlanır ama ikmal kaydı yine de oluşturulur.
+    let txFuelType: string | null = null;
     if (data.tank_name) {
       const tankResult = await client.query(
-        'SELECT id, capacity_liters, current_level_liters FROM tanks WHERE name = $1 FOR UPDATE',
+        'SELECT id, capacity_liters, current_level_liters, fuel_type FROM tanks WHERE name = $1 FOR UPDATE',
         [data.tank_name]
       );
 
       if (tankResult.rows.length > 0) {
         const tank = tankResult.rows[0];
+        txFuelType = tank.fuel_type ?? null;
         const newLevel = Math.max(0, Number(tank.current_level_liters) - Number(data.amount_liters));
         const percentage = (newLevel / Number(tank.capacity_liters)) * 100;
         const newStatus = percentage < 20 ? 'KRİTİK' : percentage < 40 ? 'UYARI' : 'GÜVENLİ';
@@ -884,12 +889,12 @@ export async function createTransaction(
     }
 
     const result = await client.query(
-      `INSERT INTO transactions (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      `INSERT INTO transactions (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, fuel_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
       [
         id, tenantId, data.site_name, data.vehicle_plate, data.driver_name ?? null, data.tank_name ?? null,
         data.amount_liters, data.flow_rate_lpm ?? null, data.pump_status || 'TAMAMLANTI', data.type || 'Manuel',
-        data.rfid_auth ?? true
+        data.rfid_auth ?? true, txFuelType
       ]
     );
     return result.rows[0];
@@ -915,6 +920,8 @@ export interface DispenseAuthResult {
   siteName: string;
   tankName: string;
   maxAllowedLiters: number;
+  /** FUEL-407: ikmalin yakıt tipi (tanktan) — oturum/transaction taşır. */
+  tankFuelType: string | null;
 }
 
 /**
@@ -934,6 +941,7 @@ export async function authorizeDispenseRequest(input: {
   rfidCardId: string;
   tankName: string;
   deviceSiteName: string;
+  deviceId?: string;
 }): Promise<DispenseAuthResult> {
   return withTenant(async (client, tenantId) => {
     // 0. AUTH-210 — DENYLIST WHITELIST'TEN ÖNCE. Kayıp/çalıntı/değiştirilmiş
@@ -963,7 +971,7 @@ export async function authorizeDispenseRequest(input: {
 
     // 2. Sürücüye atanmış aktif bir araç var mı?
     const vehicleRes = await client.query(
-      'SELECT plate, status, site_name, fuel_capacity_liters FROM vehicles WHERE assigned_driver_name = $1',
+      'SELECT plate, status, site_name, fuel_capacity_liters, fuel_type FROM vehicles WHERE assigned_driver_name = $1',
       [driver.name]
     );
     if (vehicleRes.rows.length === 0) {
@@ -998,14 +1006,41 @@ export async function authorizeDispenseRequest(input: {
       maxAllowedLiters = Math.min(maxAllowedLiters, remaining);
     }
 
+    // 3.5 FUEL-407 — pompa-tank eşlemesi. Bu cihaz bir tanka bağlıysa ve
+    // istekteki tankName ondan farklıysa yanlış yapılandırma/manipülasyon
+    // vardır; reddet. (Eşleme yoksa istekteki tankName olduğu gibi kullanılır.)
+    if (input.deviceId) {
+      const devRes = await client.query(
+        'SELECT tank_name FROM hardware_devices WHERE device_id = $1',
+        [input.deviceId]
+      );
+      const mappedTank: string | null = devRes.rows[0]?.tank_name ?? null;
+      if (mappedTank && mappedTank !== input.tankName) {
+        throw new ConflictError(
+          `Pompa '${input.deviceId}' '${mappedTank}' tankına bağlı ama istek '${input.tankName}' tankını gösteriyor.`,
+          { error: 'DEVICE_TANK_MISMATCH', mappedTank, requestedTank: input.tankName }
+        );
+      }
+    }
+
     // 4. Tank bu şantiyede var mı, seviyesi yeterli mi?
     const tankRes = await client.query(
-      'SELECT current_level_liters FROM tanks WHERE name = $1 AND site_name = $2',
+      'SELECT current_level_liters, fuel_type FROM tanks WHERE name = $1 AND site_name = $2',
       [input.tankName, input.deviceSiteName]
     );
     if (tankRes.rows.length === 0) {
       throw new NotFoundError(`'${input.tankName}' tankı '${input.deviceSiteName}' şantiyesinde bulunamadı.`, { error: 'TANK_NOT_FOUND' });
     }
+    const tankFuelType: string | null = tankRes.rows[0].fuel_type ?? null;
+
+    // 4.5 FUEL-407 AC: "Araç yakıt tipi uyuşmazlığında ikmal reddedilmelidir."
+    if (!areFuelTypesCompatible(vehicle.fuel_type, tankFuelType)) {
+      throw new ForbiddenError(
+        `Yanlış yakıt tipi: '${vehicle.plate}' aracı '${vehicle.fuel_type}' alır, '${input.tankName}' tankı '${tankFuelType}' içerir.`,
+        { error: 'FUEL_TYPE_MISMATCH', vehicleFuelType: vehicle.fuel_type, tankFuelType }
+      );
+    }
+
     const tankLevel = Number(tankRes.rows[0].current_level_liters);
     if (tankLevel <= 0) {
       throw new ConflictError(`'${input.tankName}' tankında yakıt kalmamış.`, { error: 'TANK_LOW' });
@@ -1017,7 +1052,8 @@ export async function authorizeDispenseRequest(input: {
       driverName: driver.name,
       siteName: vehicle.site_name,
       tankName: input.tankName,
-      maxAllowedLiters
+      maxAllowedLiters,
+      tankFuelType
     };
   });
 }
@@ -1083,13 +1119,15 @@ export async function finalizeDispenseSession(
     const needsVerification = data.forceManualVerification || discrepancyRatio > DISCREPANCY_THRESHOLD_RATIO;
 
     // Tank seviyesi düşümü — createTransaction'daki AYNI kilitli-satır deseni.
+    let finalizeFuelType: string | null = null;
     if (data.tankName) {
       const tankResult = await client.query(
-        'SELECT id, capacity_liters, current_level_liters FROM tanks WHERE name = $1 AND site_name = $2 FOR UPDATE',
+        'SELECT id, capacity_liters, current_level_liters, fuel_type FROM tanks WHERE name = $1 AND site_name = $2 FOR UPDATE',
         [data.tankName, data.siteName]
       );
       if (tankResult.rows.length > 0) {
         const tank = tankResult.rows[0];
+        finalizeFuelType = tank.fuel_type ?? null;
         const newLevel = Math.max(0, Number(tank.current_level_liters) - totalizerLiters);
         const percentage = (newLevel / Number(tank.capacity_liters)) * 100;
         const newStatus = percentage < 20 ? 'KRİTİK' : percentage < 40 ? 'UYARI' : 'GÜVENLİ';
@@ -1126,12 +1164,12 @@ export async function finalizeDispenseSession(
 
     const result = await client.query(
       `INSERT INTO transactions
-         (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, idempotency_key, hash_signature, verification_status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
+         (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, idempotency_key, hash_signature, verification_status, fuel_type)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
       [
         id, tenantId, data.siteName, data.vehiclePlate, data.driverName, data.tankName,
         totalizerLiters, data.flowRateLpm, 'TAMAMLANTI', 'Otomatik', true,
-        data.idempotencyKey, hashSignature, needsVerification ? 'DOĞRULAMA_BEKLIYOR' : 'DOĞRULANDI'
+        data.idempotencyKey, hashSignature, needsVerification ? 'DOĞRULAMA_BEKLIYOR' : 'DOĞRULANDI', finalizeFuelType
       ]
     );
     return { ...(result.rows[0] as TransactionRecord), alreadyExisted: false };
@@ -4879,5 +4917,87 @@ export async function refreshRecipientObligation(id: string): Promise<RecipientT
       [id, oblig.obligated, oblig.source]
     );
     return res.rows[0];
+  });
+}
+
+// ============================================================================
+// FUEL-407: ÇOKLU TANK/POMPA/YAKIT TİPİ — POMPA-TANK EŞLEMESİ + YAKIT TİPİ STOK
+// ============================================================================
+
+/**
+ * FUEL-407 — bir pompanın (hardware_devices) hangi tanktan beslendiğini
+ * ayarlar. Bir tank BİRDEN ÇOK pompaya bağlanabilir (benzersizlik yok).
+ * tankName null → eşleme kaldırılır.
+ */
+export async function setHardwareDeviceTank(deviceId: string, tankName: string | null): Promise<{ deviceId: string; tankName: string | null }> {
+  return withTenant(async (client) => {
+    if (tankName) {
+      const t = await client.query('SELECT 1 FROM tanks WHERE name = $1', [tankName]);
+      if (t.rows.length === 0) throw new NotFoundError(`'${tankName}' tankı bu firmada bulunamadı.`, { error: 'TANK_NOT_FOUND' });
+    }
+    const res = await client.query(
+      'UPDATE hardware_devices SET tank_name = $2 WHERE device_id = $1 RETURNING device_id, tank_name',
+      [deviceId, tankName]
+    );
+    if (res.rows.length === 0) throw new NotFoundError(`'${deviceId}' cihazı bulunamadı.`, { error: 'DEVICE_NOT_FOUND' });
+    await writeAuditLog(client, {
+      action: 'DEVICE_TANK_MAPPED',
+      targetType: 'hardware_device',
+      targetId: deviceId,
+      afterValue: { tankName }
+    });
+    return { deviceId: res.rows[0].device_id, tankName: res.rows[0].tank_name };
+  });
+}
+
+export interface FuelStockByType {
+  fuelType: string;
+  group: string;
+  isFuel: boolean;
+  gtip: string;
+  tankCount: number;
+  currentStockLiters: number;
+  dispensedLiters: number;
+  transactionCount: number;
+}
+
+/**
+ * FUEL-407 AC: "Stok ve raporlar yakıt tipi bazında ayrışmalıdır."
+ * Tank stoğu (o anki) + son `days` günün ikmal toplamı, yakıt tipi bazında.
+ */
+export async function getFuelStockSummary(days: number): Promise<{ periodDays: number; byFuelType: FuelStockByType[] }> {
+  return withTenant(async (client) => {
+    const tankRows = await client.query(
+      `SELECT COALESCE(fuel_type, 'Tanımsız') AS ft, COUNT(*)::int AS n, COALESCE(SUM(current_level_liters), 0)::numeric AS lvl
+         FROM tanks GROUP BY COALESCE(fuel_type, 'Tanımsız')`
+    );
+    const txRows = await client.query(
+      `SELECT COALESCE(fuel_type, 'Tanımsız') AS ft, COUNT(*)::int AS n, COALESCE(SUM(amount_liters), 0)::numeric AS lit
+         FROM transactions WHERE created_at >= NOW() - ($1 || ' days')::interval
+        GROUP BY COALESCE(fuel_type, 'Tanımsız')`,
+      [String(days)]
+    );
+    const txMap = new Map<string, { n: number; lit: number }>();
+    for (const r of txRows.rows) txMap.set(r.ft, { n: Number(r.n), lit: Number(r.lit) });
+
+    const keys = new Set<string>([...tankRows.rows.map((r: any) => r.ft), ...txMap.keys()]);
+    const byFuelType: FuelStockByType[] = [];
+    for (const ft of keys) {
+      const info = resolveFuelType(ft === 'Tanımsız' ? null : ft);
+      const tank = tankRows.rows.find((r: any) => r.ft === ft);
+      const tx = txMap.get(ft);
+      byFuelType.push({
+        fuelType: ft,
+        group: info.group,
+        isFuel: info.isFuel,
+        gtip: info.gtip,
+        tankCount: tank ? Number(tank.n) : 0,
+        currentStockLiters: tank ? Math.round(Number(tank.lvl) * 100) / 100 : 0,
+        dispensedLiters: tx ? Math.round(tx.lit * 100) / 100 : 0,
+        transactionCount: tx ? tx.n : 0
+      });
+    }
+    byFuelType.sort((a, b) => b.currentStockLiters - a.currentStockLiters);
+    return { periodDays: days, byFuelType };
   });
 }

@@ -25,6 +25,9 @@ export const createVehicleSchema = z.object({
   // Serbest metin şoför adı — bkz. tenantDb.ts vehicles.assigned_driver_name.
   // 'Atanmadı' gibi sentinel değerler backend'de NULL'a normalize edilir.
   assignedDriver: z.string().optional(),
+  // FUEL-407: aracın alabileceği yakıt tipi (serbest metin — Motorin/Benzin/
+  // AdBlue/...). Dolu ve tank yakıt tipiyle uyumsuzsa ikmal reddedilir.
+  fuelType: z.string().min(1).max(64).optional(),
   // GERÇEK BİR HATA: bu alan önceden şemada hiç tanımlı değildi — Zod
   // (varsayılan olarak bilinmeyen alanları SESSİZCE siler) her PUT
   // /vehicles/:id isteğindeki status'u atıyordu. Frontend'in VehiclesPage.tsx

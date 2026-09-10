@@ -279,6 +279,9 @@ jobs:
       - name: Run COMP-605 Taxpayer (VKN/TCKN) Validation Tests
         run: cd backend && npx tsx test/test_comp605_taxpayer_validation.ts
 
+      - name: Run FUEL-407 Multi Fuel-Type + Wrong-Fuel Rejection Tests
+        run: cd backend && npx tsx test/test_fuel407_multi_fuel_type.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

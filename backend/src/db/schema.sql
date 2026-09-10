@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS vehicles (
 -- hiçbir DB kolonu olmadığı için değer sessizce atılıyordu — bkz. routes.ts)
 ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS fuel_capacity_liters NUMERIC(10, 2);
 ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS assigned_driver_name VARCHAR(128);
+-- FUEL-407: aracın alabileceği yakıt tipi (Motorin/Benzin/AdBlue/...). NULL
+-- ise kısıt yok; doluysa ikmal yetkilendirmesinde tank yakıt tipiyle uyumu
+-- denetlenir (yanlış yakıt = ciddi maddi hasar).
+ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS fuel_type VARCHAR(64);
 
 -- 3. Tanks Table with Tenant ID
 CREATE TABLE IF NOT EXISTS tanks (
@@ -108,6 +112,8 @@ ALTER TABLE transactions ADD COLUMN IF NOT EXISTS hash_signature VARCHAR(64);
 -- bir TIMED_OUT (zorla kesilmiş) oturumun kurtarma akışından geldi — bir
 -- operatörün manuel onayı bekleniyor.
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS verification_status VARCHAR(32) DEFAULT 'DOĞRULANDI';
+-- FUEL-407: ikmal anında tanktan kopyalanır — yakıt tipi bazlı stok/rapor için.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS fuel_type VARCHAR(64);
 DO $$
 BEGIN
     IF NOT EXISTS (
@@ -458,6 +464,10 @@ CREATE TABLE IF NOT EXISTS rfid_card_blacklist (
 -- işaretler (AC 3).
 ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_rfid_denylist_version VARCHAR(64);
 ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_rfid_denylist_pull_at TIMESTAMP WITH TIME ZONE;
+-- FUEL-407: bu pompanın beslendiği tank (bir tank BİRDEN ÇOK pompaya
+-- bağlanabilir → benzersizlik YOK). authorizeDispenseRequest istekteki
+-- tankName ile bu eşlemeyi karşılaştırır.
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS tank_name VARCHAR(128);
 
 -- FUEL-402.1: araç/şantiye/dönem bazlı yakıt kotası. Mevcut
 -- cross_site_permissions (FUEL-402) yalnızca çapraz-şantiye + tek pencere;
