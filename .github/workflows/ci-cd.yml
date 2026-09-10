@@ -258,6 +258,9 @@ jobs:
       - name: Run FUEL-408 Tank Intake Receipt + Stock Increase Tests
         run: cd backend && npx tsx test/test_fuel408_tank_intake.ts
 
+      - name: Run FUEL-409 Theoretical vs Physical Stock Reconciliation Tests
+        run: cd backend && npx tsx test/test_fuel409_stock_reconciliation.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

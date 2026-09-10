@@ -3415,3 +3415,336 @@ export async function getFuelIntake(intakeId: string): Promise<FuelIntakeRecord>
     return res.rows[0];
   });
 }
+
+// ============================================================================
+// FUEL-409: TEORİK vs FİZİKSEL STOK MUTABAKATI + FİRE HESABI
+// ============================================================================
+
+export type ReconciliationPeriodType = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'AD_HOC';
+
+// Kritik Not: "Motorin doğal buharlaşması aylık binde 1-2 mertebesindedir; bu
+// normal fire tolerans içinde sayılmalı, hırsızlık alarmı üretmemelidir."
+// Üst sınır (%0.2/ay) dönem uzunluğuna (gün) ölçeklenip "normal fire payı"
+// olarak kullanılır.
+const EVAPORATION_MONTHLY_PCT = 0.2;
+const DEFAULT_RECON_TOLERANCE_PCT = 1.0;
+
+export interface StockReconciliationRecord {
+  id: string;
+  tenant_id: string;
+  tank_id: string;
+  tank_name: string;
+  site_name: string;
+  period_type: ReconciliationPeriodType;
+  period_start: string;
+  period_end: string;
+  opening_book_liters: string;
+  intake_liters: string;
+  dispensed_liters: string;
+  test_intake_liters: string;
+  closing_book_liters: string;
+  physical_liters: string;
+  physical_temp_c: string | null;
+  physical_liters_15c: string;
+  variance_liters: string;
+  variance_pct: string;
+  tolerance_pct: string;
+  evaporation_allowance_pct: string;
+  classification: string;
+  status: string;
+  source: string;
+  note: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+function round4(v: number): number {
+  return Math.round(v * 10000) / 10000;
+}
+
+/**
+ * FUEL-409 çekirdeği — bir tank satırı için dönem mutabakatını hesaplayıp
+ * stock_reconciliations'a yazar. Hem manuel POST ucu hem index.ts günlük
+ * süpürücüsü bunu çağırır.
+ *
+ * Açılış bakiyesi (opening_book):
+ *   1) çağıran açıkça verdiyse onu kullan,
+ *   2) yoksa bu tankın bir önceki mutabakatının physical_liters'ı (fiziksel
+ *      ölçüm her dönem sonunda kaydı "gerçeğe" sıfırlar — Kritik Not:
+ *      "mutabakat sonucu düzeltme kaydı olarak saklanmalı"),
+ *   3) hiç önceki mutabakat yoksa: OTOMATIK çağrıda geriye hesaplayarak
+ *      (physical − intake + dispensed + test) bir taban çizgisi kur (ilk tur
+ *      yanlış alarm üretmesin); MANUEL çağrıda OPENING_BOOK_REQUIRED fırlat.
+ *
+ * Kütüphane tutarlılığı için mutabakat GÖZLENEN (ambient) litre üzerinden
+ * yapılır (defter zaten gözlenen hacimlerin akan toplamı: tank seviyesi,
+ * transactions.amount_liters, test alımı hepsi gözlenen). 15 °C'ye düzeltilmiş
+ * fiziksel hacim ayrıca physical_liters_15c'de raporlama (REP-714) için tutulur.
+ */
+async function reconcileTankRow(
+  client: any,
+  tenantId: string,
+  tank: { id: string; name: string; site_name: string; fuel_type: string | null },
+  input: {
+    periodType: ReconciliationPeriodType;
+    periodStart: Date;
+    periodEnd: Date;
+    physicalLiters: number;
+    physicalTempC?: number | null;
+    openingBookLiters?: number;
+    tolerancePct?: number;
+    source: 'MANUEL' | 'OTOMATIK';
+    note?: string;
+  },
+  createdByUserId: string
+): Promise<StockReconciliationRecord> {
+  const startIso = input.periodStart.toISOString();
+  const endIso = input.periodEnd.toISOString();
+
+  const [intakeRes, dispRes, testRes] = await Promise.all([
+    client.query(
+      `SELECT COALESCE(SUM(added_liters), 0)::numeric AS s FROM fuel_intake_receipts
+        WHERE tank_id = $1 AND created_at >= $2 AND created_at < $3`,
+      [tank.id, startIso, endIso]
+    ),
+    client.query(
+      `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS s FROM transactions
+        WHERE tank_name = $1 AND created_at >= $2 AND created_at < $3`,
+      [tank.name, startIso, endIso]
+    ),
+    client.query(
+      `SELECT COALESCE(SUM(measured_liters), 0)::numeric AS s FROM calibration_test_intakes
+        WHERE tank_name = $1 AND created_at >= $2 AND created_at < $3`,
+      [tank.name, startIso, endIso]
+    )
+  ]);
+  const intakeLiters = round2(Number(intakeRes.rows[0].s));
+  const dispensedLiters = round2(Number(dispRes.rows[0].s));
+  const testIntakeLiters = round2(Number(testRes.rows[0].s));
+
+  let openingBook: number;
+  if (input.openingBookLiters !== undefined) {
+    openingBook = round2(input.openingBookLiters);
+  } else {
+    const prior = await client.query(
+      `SELECT physical_liters FROM stock_reconciliations
+        WHERE tank_id = $1 AND period_end <= $2 ORDER BY period_end DESC LIMIT 1`,
+      [tank.id, startIso]
+    );
+    if (prior.rows.length > 0) {
+      openingBook = round2(Number(prior.rows[0].physical_liters));
+    } else if (input.source === 'OTOMATIK') {
+      // Taban çizgisi: closing_book == physical olacak şekilde geri hesapla.
+      openingBook = round2(input.physicalLiters - intakeLiters + dispensedLiters + testIntakeLiters);
+    } else {
+      throw new BadRequestError(
+        'Bu tank için önceki mutabakat kaydı yok — ilk mutabakatta openingBookLiters zorunludur.',
+        { error: 'OPENING_BOOK_REQUIRED' }
+      );
+    }
+  }
+
+  const closingBook = round2(openingBook + intakeLiters - dispensedLiters - testIntakeLiters);
+  const physical15c = correctToStandardVolume(input.physicalLiters, input.physicalTempC ?? null, tank.fuel_type).standardLiters;
+  const varianceLiters = round2(input.physicalLiters - closingBook);
+  const variancePct = closingBook !== 0 ? round4((varianceLiters / closingBook) * 100) : 0;
+
+  const tolerancePct = input.tolerancePct ?? DEFAULT_RECON_TOLERANCE_PCT;
+  const periodDays = Math.max(0, (input.periodEnd.getTime() - input.periodStart.getTime()) / 86_400_000);
+  const evaporationAllowancePct = round4((EVAPORATION_MONTHLY_PCT * periodDays) / 30);
+
+  let classification: string;
+  let status: string;
+  if (Math.abs(variancePct) <= tolerancePct) {
+    classification = 'TOLERANS_İÇİ';
+    status = 'NORMAL';
+  } else if (variancePct > tolerancePct) {
+    // Fiziksel, teorikten FAZLA — yakıt "kazanılamaz", ölçüm/kayıt hatası.
+    classification = 'ÖLÇÜM_HATASI';
+    status = 'MUTABAKAT_ALARMI';
+  } else {
+    // Fiziksel, teorikten toleransın ÖTESİNDE az (kayıp).
+    const lossBeyondTolerancePct = -variancePct - tolerancePct;
+    if (lossBeyondTolerancePct <= evaporationAllowancePct) {
+      classification = 'BUHARLAŞMA';
+      status = 'NORMAL';
+    } else {
+      classification = 'AÇIKLANAMAYAN';
+      status = 'MUTABAKAT_ALARMI';
+    }
+  }
+
+  const id = generateId('recon');
+  const insRes = await client.query(
+    `INSERT INTO stock_reconciliations
+       (id, tenant_id, tank_id, tank_name, site_name, period_type, period_start, period_end,
+        opening_book_liters, intake_liters, dispensed_liters, test_intake_liters, closing_book_liters,
+        physical_liters, physical_temp_c, physical_liters_15c, variance_liters, variance_pct,
+        tolerance_pct, evaporation_allowance_pct, classification, status, source, note, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+     RETURNING *`,
+    [
+      id, tenantId, tank.id, tank.name, tank.site_name, input.periodType, startIso, endIso,
+      openingBook, intakeLiters, dispensedLiters, testIntakeLiters, closingBook,
+      round2(input.physicalLiters), input.physicalTempC ?? null, physical15c, varianceLiters, variancePct,
+      tolerancePct, evaporationAllowancePct, classification, status, input.source, input.note ?? null, createdByUserId
+    ]
+  );
+
+  await writeAuditLog(client, {
+    action: 'STOCK_RECONCILIATION',
+    targetType: 'stock_reconciliation',
+    targetId: id,
+    afterValue: {
+      tankId: tank.id, tankName: tank.name, periodType: input.periodType,
+      closingBookLiters: closingBook, physicalLiters: round2(input.physicalLiters),
+      varianceLiters, variancePct, classification, status, source: input.source
+    }
+  });
+
+  if (status === 'MUTABAKAT_ALARMI') {
+    logger.warn(
+      { tankId: tank.id, tankName: tank.name, varianceLiters, variancePct, classification },
+      `🚨 [FUEL-409] Stok mutabakat alarmı: '${tank.name}' — teorik ${closingBook} L, fiziksel ${round2(input.physicalLiters)} L (fark %${variancePct}, ${classification}).`
+    );
+  }
+
+  return insRes.rows[0] as StockReconciliationRecord;
+}
+
+export interface StockReconciliationResult {
+  reconciliation: StockReconciliationRecord;
+  alarm: boolean;
+}
+
+/**
+ * FUEL-409 — manuel/entegrasyon mutabakat tetikleyicisi. `physicalLiters`
+ * çağıran tarafından verilir (gerçek kurulumda sensör anlık görüntüsü).
+ * `periodStart`/`periodEnd` verilmezse periodType'a göre son tam dönem
+ * (dün / geçen hafta / geçen ay) alınır; AD_HOC için ikisi de zorunludur.
+ */
+export async function computeStockReconciliation(
+  tankId: string,
+  input: {
+    periodType: ReconciliationPeriodType;
+    physicalLiters: number;
+    physicalTempC?: number;
+    periodStart?: string;
+    periodEnd?: string;
+    openingBookLiters?: number;
+    tolerancePct?: number;
+    note?: string;
+  },
+  createdByUserId: string
+): Promise<StockReconciliationResult> {
+  return withTenant(async (client, tenantId) => {
+    const tankRes = await client.query(
+      'SELECT id, name, site_name, fuel_type FROM tanks WHERE id = $1',
+      [tankId]
+    );
+    if (tankRes.rows.length === 0) {
+      throw new NotFoundError(`'${tankId}' tankı bulunamadı.`, { error: 'TANK_NOT_FOUND' });
+    }
+    const tank = tankRes.rows[0];
+
+    let periodStart: Date;
+    let periodEnd: Date;
+    if (input.periodStart && input.periodEnd) {
+      periodStart = new Date(input.periodStart);
+      periodEnd = new Date(input.periodEnd);
+    } else if (input.periodType === 'AD_HOC') {
+      throw new BadRequestError('AD_HOC mutabakat için periodStart ve periodEnd zorunludur.', { error: 'PERIOD_RANGE_REQUIRED' });
+    } else {
+      const now = new Date();
+      periodEnd = now;
+      const spanDays = input.periodType === 'WEEKLY' ? 7 : input.periodType === 'MONTHLY' ? 30 : 1;
+      periodStart = new Date(now.getTime() - spanDays * 86_400_000);
+    }
+    if (periodEnd.getTime() <= periodStart.getTime()) {
+      throw new BadRequestError('periodEnd, periodStart değerinden sonra olmalıdır.', { error: 'INVALID_PERIOD_RANGE' });
+    }
+
+    const reconciliation = await reconcileTankRow(
+      client,
+      tenantId,
+      tank,
+      {
+        periodType: input.periodType,
+        periodStart,
+        periodEnd,
+        physicalLiters: input.physicalLiters,
+        physicalTempC: input.physicalTempC,
+        openingBookLiters: input.openingBookLiters,
+        tolerancePct: input.tolerancePct,
+        source: 'MANUEL',
+        note: input.note
+      },
+      createdByUserId
+    );
+    return { reconciliation, alarm: reconciliation.status === 'MUTABAKAT_ALARMI' };
+  });
+}
+
+export async function getStockReconciliations(filters: {
+  tankId?: string;
+  status?: string;
+  from?: string;
+  to?: string;
+}): Promise<StockReconciliationRecord[]> {
+  return withTenant(async (client) => {
+    const where: string[] = [];
+    const params: any[] = [];
+    if (filters.tankId) { params.push(filters.tankId); where.push(`tank_id = $${params.length}`); }
+    if (filters.status) { params.push(filters.status); where.push(`status = $${params.length}`); }
+    if (filters.from) { params.push(filters.from); where.push(`period_end >= $${params.length}`); }
+    if (filters.to) { params.push(filters.to); where.push(`period_end <= $${params.length}`); }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const res = await client.query(`SELECT * FROM stock_reconciliations ${clause} ORDER BY period_end DESC, created_at DESC`, params);
+    return res.rows;
+  });
+}
+
+export async function getStockReconciliation(reconId: string): Promise<StockReconciliationRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM stock_reconciliations WHERE id = $1', [reconId]);
+    if (res.rows.length === 0) throw new NotFoundError('Mutabakat kaydı bulunamadı.');
+    return res.rows[0];
+  });
+}
+
+/**
+ * FUEL-409 AC: "Günlük mutabakat otomatik hesaplanıp kaydedilmelidir."
+ * index.ts'teki günlük süpürücü her tenant için bunu çağırır — her tank için
+ * son 24 saatlik rolling mutabakat, fiziksel = tankın o anki
+ * current_level_liters'ı (gerçek kurulumda sensör anlık görüntüsü).
+ */
+export async function runDailyStockReconciliationForCurrentTenant(): Promise<{ tanksProcessed: number; alarms: number }> {
+  return withTenant(async (client, tenantId) => {
+    const tanksRes = await client.query('SELECT id, name, site_name, fuel_type, current_level_liters FROM tanks');
+    const now = new Date();
+    const periodStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    let alarms = 0;
+    for (const t of tanksRes.rows) {
+      try {
+        const rec = await reconcileTankRow(
+          client,
+          tenantId,
+          { id: t.id, name: t.name, site_name: t.site_name, fuel_type: t.fuel_type },
+          {
+            periodType: 'DAILY',
+            periodStart,
+            periodEnd: now,
+            physicalLiters: Number(t.current_level_liters),
+            physicalTempC: null,
+            source: 'OTOMATIK'
+          },
+          'system-daily-reconciler'
+        );
+        if (rec.status === 'MUTABAKAT_ALARMI') alarms++;
+      } catch (err) {
+        logger.error({ err, tenantId, tankId: t.id }, '🚨 [FUEL-409] Tank günlük mutabakatı başarısız.');
+      }
+    }
+    return { tanksProcessed: tanksRes.rows.length, alarms };
+  });
+}

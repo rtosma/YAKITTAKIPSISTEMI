@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -10,6 +10,7 @@ import { blockRfidCardSchema, replaceRfidCardSchema } from '../schemas/rfidCardS
 import { checkReadiness } from '../services/readinessService';
 import { createQuotaSchema, updateQuotaSchema } from '../schemas/quotaSchema';
 import { createFuelIntakeSchema, listFuelIntakeQuerySchema } from '../schemas/fuelIntakeSchema';
+import { createReconciliationSchema, listReconciliationQuerySchema } from '../schemas/stockReconciliationSchema';
 import { isServerShuttingDown } from '../utils/shutdown';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
@@ -2158,6 +2159,116 @@ router.get(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       res.json({ success: true, data: await getFuelIntake(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── FUEL-409: teorik vs fiziksel stok mutabakatı + fire hesabı ──────────
+const RECONCILIATION_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /tanks/{id}/reconciliations:
+ *   post:
+ *     summary: Stok Mutabakatı Hesapla & Kaydet (FUEL-409)
+ *     description: >
+ *       teorik = açılış bakiyesi + dolumlar (FUEL-408) − ikmaller − kalibrasyon
+ *       test alımları; fiziksel = `physicalLiters` (gerçek kurulumda sensör
+ *       anlık görüntüsü). Fark `tolerancePct` (varsayılan ±%1) eşiğini aşarsa
+ *       MUTABAKAT_ALARMI + WebSocket uyarısı. Fark, dönem uzunluğuna ölçeklenen
+ *       doğal buharlaşma payıyla kıyaslanıp sınıflandırılır (TOLERANS_İÇİ /
+ *       BUHARLAŞMA / ÖLÇÜM_HATASI / AÇIKLANAMAYAN). Açılış bakiyesi verilmezse
+ *       bu tankın bir önceki mutabakatının fiziksel değeri kullanılır; hiç
+ *       yoksa openingBookLiters zorunludur.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Tank Mutabakat Geçmişi (FUEL-409 / REP-714)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/tanks/:id/reconciliations',
+  authenticateJWT,
+  authorizeRoles(...RECONCILIATION_ROLES),
+  validateRequest({ body: createReconciliationSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await computeStockReconciliation(req.params.id, req.body, req.user!.userId);
+      const tenantId = req.user?.tenantId;
+      if (tenantId && result.alarm) {
+        try {
+          const r = result.reconciliation;
+          broadcastToTenant(tenantId, 'stock:reconciliation-alert', {
+            tankId: r.tank_id,
+            tankName: r.tank_name,
+            siteName: r.site_name,
+            periodType: r.period_type,
+            closingBookLiters: Number(r.closing_book_liters),
+            physicalLiters: Number(r.physical_liters),
+            varianceLiters: Number(r.variance_liters),
+            variancePct: Number(r.variance_pct),
+            classification: r.classification
+          });
+        } catch (broadcastErr) {
+          logger.warn({ err: broadcastErr }, '[FUEL-409] stock:reconciliation-alert yayını başarısız (kayıt yine de oluşturuldu).');
+        }
+      }
+      res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/tanks/:id/reconciliations',
+  authenticateJWT,
+  authorizeRoles(...RECONCILIATION_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const recs = await getStockReconciliations({ tankId: req.params.id });
+      res.json({ success: true, totalCount: recs.length, data: recs });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /stock-reconciliations:
+ *   get:
+ *     summary: Stok Mutabakat Kayıtları (filtreli) (FUEL-409 / REP-714)
+ *     description: '?tankId, ?status (NORMAL|MUTABAKAT_ALARMI), ?from, ?to (YYYY-AA-GG)'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/stock-reconciliations',
+  authenticateJWT,
+  authorizeRoles(...RECONCILIATION_ROLES),
+  validateRequest({ query: listReconciliationQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { tankId?: string; status?: string; from?: string; to?: string };
+      const recs = await getStockReconciliations(q);
+      res.json({ success: true, totalCount: recs.length, data: recs });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/stock-reconciliations/:id',
+  authenticateJWT,
+  authorizeRoles(...RECONCILIATION_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getStockReconciliation(req.params.id) });
     } catch (error: any) {
       next(error);
     }

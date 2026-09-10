@@ -17,7 +17,7 @@ import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
-import { resetDueQuotasForCurrentTenant } from './db/tenantDb';
+import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant } from './db/tenantDb';
 
 // NOTE: environment variables are loaded by ./bootstrap.ts (the real process
 // entry point — see package.json `dev`/`build`), BEFORE this module or any of
@@ -259,6 +259,33 @@ async function startServer(): Promise<void> {
     }
   }, QUOTA_RESET_SWEEP_MS);
 
+  // FUEL-409 AC: "Günlük mutabakat otomatik hesaplanıp kaydedilmelidir."
+  // Ticket "BullMQ repeatable job" öneriyor — yok; yukarıdaki süpürücülerle
+  // AYNI düz setInterval. Her tenant'ın her tankı için son 24 saatlik rolling
+  // teorik/fiziksel stok mutabakatı; fiziksel = tankın o anki
+  // current_level_liters'ı (gerçek kurulumda sensör anlık görüntüsü). Tolerans
+  // aşımı stock_reconciliations'a MUTABAKAT_ALARMI + audit_logs olarak düşer.
+  const DAILY_RECON_SWEEP_MS = 24 * 60 * 60 * 1000;
+  const dailyReconSweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [FUEL-409] Tenant listesi alınamadı, bu günlük mutabakat turu atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const { tanksProcessed, alarms } = await runWithTenant({ tenantId }, () => runDailyStockReconciliationForCurrentTenant());
+        if (tanksProcessed > 0) {
+          logger.info({ tenantId, tanksProcessed, alarms }, `📊 [FUEL-409] Günlük stok mutabakatı tamamlandı (${tanksProcessed} tank, ${alarms} alarm).`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [FUEL-409] Günlük stok mutabakatı başarısız.');
+      }
+    }
+  }, DAILY_RECON_SWEEP_MS);
+
   // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
   setupGracefulShutdown(server, {
     timeoutMs: 30000,
@@ -269,6 +296,7 @@ async function startServer(): Promise<void> {
       clearInterval(calibrationTimeoutSweepInterval);
       if (weeklyAnomalySweepInterval) clearInterval(weeklyAnomalySweepInterval);
       clearInterval(quotaResetSweepInterval);
+      clearInterval(dailyReconSweepInterval);
 
       // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
       // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters
