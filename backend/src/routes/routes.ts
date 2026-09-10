@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -11,6 +11,7 @@ import { checkReadiness } from '../services/readinessService';
 import { createQuotaSchema, updateQuotaSchema } from '../schemas/quotaSchema';
 import { createFuelIntakeSchema, listFuelIntakeQuerySchema } from '../schemas/fuelIntakeSchema';
 import { createReconciliationSchema, listReconciliationQuerySchema } from '../schemas/stockReconciliationSchema';
+import { createManualDispenseSchema, rejectManualDispenseSchema, listManualDispenseQuerySchema, manualDispenseRatioQuerySchema } from '../schemas/manualDispenseSchema';
 import { isServerShuttingDown } from '../utils/shutdown';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
@@ -2269,6 +2270,152 @@ router.get(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       res.json({ success: true, data: await getStockReconciliation(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── FUEL-405: manuel ikmal girişi (cihaz arızası) + çift onay ───────────
+const MANUAL_DISPENSE_APPROVER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const MANUAL_DISPENSE_CREATE_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER', 'PUMP_OPERATOR'] as const;
+
+/**
+ * @swagger
+ * /manual-dispense-requests:
+ *   post:
+ *     summary: Manuel İkmal Girişi Oluştur (FUEL-405)
+ *     description: >
+ *       Cihaz arızası/elle pompa kullanımı durumunda ikmali kayıt altına alır.
+ *       Kayıt ONAY_BEKLIYOR durumunda açılır; İKİ FARKLI yetkilinin (bir
+ *       SITE_MANAGER + bir COMPANY_OWNER/SUPER_ADMIN) onayı olmadan
+ *       kesinleşmez. Geriye dönük tarih en fazla 7 gün.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Manuel İkmal Kayıtları (FUEL-405)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/manual-dispense-requests',
+  authenticateJWT,
+  authorizeRoles(...MANUAL_DISPENSE_CREATE_ROLES),
+  validateRequest({ body: createManualDispenseSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rec = await createManualDispenseRequest(req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: rec });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/manual-dispense-requests',
+  authenticateJWT,
+  authorizeRoles(...MANUAL_DISPENSE_APPROVER_ROLES),
+  validateRequest({ query: listManualDispenseQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { status?: string; siteName?: string };
+      const recs = await getManualDispenseRequests(q);
+      res.json({ success: true, totalCount: recs.length, data: recs });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /manual-dispense-requests/ratio:
+ *   get:
+ *     summary: Şantiye Bazlı Manuel İkmal Oranı + Eşik Uyarısı (FUEL-405)
+ *     description: '?siteName, ?days (varsayılan 30), ?thresholdPct (varsayılan 10)'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/manual-dispense-requests/ratio',
+  authenticateJWT,
+  authorizeRoles(...MANUAL_DISPENSE_APPROVER_ROLES),
+  validateRequest({ query: manualDispenseRatioQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { siteName?: string; days: number; thresholdPct: number };
+      const result = await getManualDispenseRatio(q);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/manual-dispense-requests/:id',
+  authenticateJWT,
+  authorizeRoles(...MANUAL_DISPENSE_APPROVER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getManualDispenseRequest(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /manual-dispense-requests/{id}/approve:
+ *   post:
+ *     summary: Manuel İkmal Onayı (FUEL-405)
+ *     description: >
+ *       İlk onay kaydı ONAY_BEKLIYOR bırakır; ikinci (farklı kullanıcı) onay,
+ *       roller birlikte SITE_MANAGER + COMPANY_OWNER/SUPER_ADMIN kuralını
+ *       karşılıyorsa kaydı ONAYLANDI yapar, stoğu düşer ve gerçek bir
+ *       transactions kaydı üretir (data.transactionId).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/manual-dispense-requests/:id/approve',
+  authenticateJWT,
+  authorizeRoles(...MANUAL_DISPENSE_APPROVER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await approveManualDispenseRequest(req.params.id, req.user!.userId, req.user!.role);
+      const tenantId = req.user?.tenantId;
+      if (tenantId && result.finalized) {
+        try {
+          broadcastToTenant(tenantId, 'manual-dispense:finalized', {
+            id: result.request.id,
+            transactionId: result.transactionId,
+            vehiclePlate: result.request.vehicle_plate,
+            tankName: result.request.tank_name,
+            liters: Number(result.request.liters)
+          });
+        } catch (broadcastErr) {
+          logger.warn({ err: broadcastErr }, '[FUEL-405] manual-dispense:finalized yayını başarısız.');
+        }
+      }
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/manual-dispense-requests/:id/reject',
+  authenticateJWT,
+  authorizeRoles(...MANUAL_DISPENSE_APPROVER_ROLES),
+  validateRequest({ body: rejectManualDispenseSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rec = await rejectManualDispenseRequest(req.params.id, req.user!.userId, req.body.reason);
+      res.json({ success: true, data: rec });
     } catch (error: any) {
       next(error);
     }

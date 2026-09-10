@@ -3748,3 +3748,312 @@ export async function runDailyStockReconciliationForCurrentTenant(): Promise<{ t
     return { tanksProcessed: tanksRes.rows.length, alarms };
   });
 }
+
+// ============================================================================
+// FUEL-405: MANUEL İKMAL GİRİŞİ (CİHAZ ARIZASI) + ÇİFT ONAY MEKANİZMASI
+// ============================================================================
+
+// Geriye dönük tarih sınırı (Kritik Not: "öneri: en fazla 7 gün").
+const MANUAL_BACKDATE_MAX_DAYS = 7;
+// İkinci onayda üretilen transactions kaydının tipi — raporlar bunu ayrı
+// gösterir (type LIKE 'Manuel (Çift Onaylı)%').
+const MANUAL_DISPENSE_TX_TYPE = 'Manuel (Çift Onaylı)';
+// Şantiye başına manuel ikmal oranı bu eşiği (%) aşarsa uyarı üretilir.
+export const MANUAL_RATIO_DEFAULT_THRESHOLD_PCT = 10;
+
+export interface ManualDispenseRequestRecord {
+  id: string;
+  tenant_id: string;
+  site_name: string;
+  vehicle_plate: string;
+  driver_name: string | null;
+  tank_id: string;
+  tank_name: string;
+  liters: string;
+  dispensed_at: string;
+  reason: string;
+  document_url: string | null;
+  status: string;
+  requested_by: string;
+  first_approver_id: string | null;
+  first_approver_role: string | null;
+  first_approved_at: string | null;
+  second_approver_id: string | null;
+  second_approver_role: string | null;
+  second_approved_at: string | null;
+  rejected_by: string | null;
+  rejected_at: string | null;
+  rejection_reason: string | null;
+  transaction_id: string | null;
+  created_at: string;
+}
+
+export async function createManualDispenseRequest(
+  data: {
+    tankId: string;
+    vehiclePlate: string;
+    driverName?: string;
+    liters: number;
+    dispensedAt: string;
+    reason: string;
+    documentUrl?: string;
+  },
+  requestedByUserId: string
+): Promise<ManualDispenseRequestRecord> {
+  return withTenant(async (client, tenantId) => {
+    const tankRes = await client.query('SELECT id, name, site_name FROM tanks WHERE id = $1', [data.tankId]);
+    if (tankRes.rows.length === 0) {
+      throw new NotFoundError(`'${data.tankId}' tankı bulunamadı.`, { error: 'TANK_NOT_FOUND' });
+    }
+    const tank = tankRes.rows[0];
+
+    const dispensedAt = new Date(data.dispensedAt);
+    const now = Date.now();
+    if (dispensedAt.getTime() > now + 60_000) {
+      throw new BadRequestError('dispensedAt gelecekte olamaz.', { error: 'FUTURE_DATE' });
+    }
+    if (dispensedAt.getTime() < now - MANUAL_BACKDATE_MAX_DAYS * 86_400_000) {
+      throw new BadRequestError(
+        `Geriye dönük giriş en fazla ${MANUAL_BACKDATE_MAX_DAYS} gün olabilir.`,
+        { error: 'BACKDATE_LIMIT_EXCEEDED', maxDays: MANUAL_BACKDATE_MAX_DAYS }
+      );
+    }
+
+    const id = generateId('mandisp');
+    const res = await client.query(
+      `INSERT INTO manual_dispense_requests
+         (id, tenant_id, site_name, vehicle_plate, driver_name, tank_id, tank_name, liters, dispensed_at, reason, document_url, requested_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [
+        id, tenantId, tank.site_name, data.vehiclePlate, data.driverName ?? null, tank.id, tank.name,
+        data.liters, dispensedAt.toISOString(), data.reason, data.documentUrl ?? null, requestedByUserId
+      ]
+    );
+    await writeAuditLog(client, {
+      action: 'MANUAL_DISPENSE_REQUESTED',
+      targetType: 'manual_dispense_request',
+      targetId: id,
+      afterValue: { tankId: tank.id, vehiclePlate: data.vehiclePlate, liters: data.liters, reason: data.reason }
+    });
+    return res.rows[0];
+  });
+}
+
+export async function getManualDispenseRequests(filters: {
+  status?: string;
+  siteName?: string;
+}): Promise<ManualDispenseRequestRecord[]> {
+  return withTenant(async (client) => {
+    const where: string[] = [];
+    const params: any[] = [];
+    if (filters.status) { params.push(filters.status); where.push(`status = $${params.length}`); }
+    if (filters.siteName) { params.push(filters.siteName); where.push(`site_name = $${params.length}`); }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const res = await client.query(`SELECT * FROM manual_dispense_requests ${clause} ORDER BY created_at DESC`, params);
+    return res.rows;
+  });
+}
+
+export async function getManualDispenseRequest(id: string): Promise<ManualDispenseRequestRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM manual_dispense_requests WHERE id = $1', [id]);
+    if (res.rows.length === 0) throw new NotFoundError('Manuel ikmal kaydı bulunamadı.');
+    return res.rows[0];
+  });
+}
+
+export interface ManualDispenseApprovalResult {
+  request: ManualDispenseRequestRecord;
+  finalized: boolean;
+  transactionId?: string;
+}
+
+/**
+ * FUEL-405 — bir manuel ikmal kaydına onay ekler.
+ *
+ * Çift onay kuralı (Kritik Not: "tek onayla açık bırakılırsa tüm otomasyon
+ * anlamsızlaşır"):
+ *   - İki onay İKİ FARKLI kullanıcıdan gelmeli, talep eden onaylayamaz.
+ *   - İkinci (kesinleştiren) onayda roller birlikte {SITE_MANAGER} VE
+ *     {COMPANY_OWNER | SUPER_ADMIN} kümelerini karşılamalı.
+ * İkinci onay geçince: tank satırı FOR UPDATE ile kilitlenir, stok düşülür ve
+ * dispensed_at tarihli GERÇEK bir transactions kaydı üretilir (transaction_id
+ * doldurulur). Bu kayıt COMP-601 e-İrsaliye ucundan da işlenebilir.
+ */
+export async function approveManualDispenseRequest(
+  id: string,
+  byUserId: string,
+  byUserRole: string
+): Promise<ManualDispenseApprovalResult> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query('SELECT * FROM manual_dispense_requests WHERE id = $1 FOR UPDATE', [id]);
+    if (res.rows.length === 0) throw new NotFoundError('Manuel ikmal kaydı bulunamadı.');
+    const reqRow = res.rows[0] as ManualDispenseRequestRecord;
+
+    if (reqRow.status !== 'ONAY_BEKLIYOR') {
+      throw new ConflictError(`Kayıt '${reqRow.status}' durumunda — yeni onay kabul edilmez.`, { error: 'ALREADY_RESOLVED' });
+    }
+    if (byUserId === reqRow.requested_by) {
+      throw new ForbiddenError('Talebi oluşturan kişi kendi kaydını onaylayamaz.', { error: 'REQUESTER_CANNOT_APPROVE' });
+    }
+    if (reqRow.first_approver_id === byUserId) {
+      throw new ConflictError('Bu kaydı zaten onayladınız — ikinci onay farklı bir yetkiliden gelmelidir.', { error: 'DUPLICATE_APPROVER' });
+    }
+
+    // BİRİNCİ ONAY
+    if (!reqRow.first_approver_id) {
+      const upd = await client.query(
+        `UPDATE manual_dispense_requests
+            SET first_approver_id = $2, first_approver_role = $3, first_approved_at = CURRENT_TIMESTAMP
+          WHERE id = $1 RETURNING *`,
+        [id, byUserId, byUserRole]
+      );
+      await writeAuditLog(client, {
+        action: 'MANUAL_DISPENSE_APPROVED',
+        targetType: 'manual_dispense_request',
+        targetId: id,
+        afterValue: { step: 1, approverId: byUserId, approverRole: byUserRole }
+      });
+      return { request: upd.rows[0], finalized: false };
+    }
+
+    // İKİNCİ ONAY — rol kuralı
+    const roles = [reqRow.first_approver_role, byUserRole];
+    const hasSiteManager = roles.includes('SITE_MANAGER');
+    const hasOwner = roles.some((r) => r === 'COMPANY_OWNER' || r === 'SUPER_ADMIN');
+    if (!(hasSiteManager && hasOwner)) {
+      throw new ForbiddenError(
+        'İki onay birlikte bir SITE_MANAGER ve bir COMPANY_OWNER (veya SUPER_ADMIN) içermelidir.',
+        { error: 'APPROVAL_ROLE_RULE_UNMET', roles }
+      );
+    }
+
+    // Tankı kilitle + stok düş (createTransaction'daki FUEL-402 deseni).
+    const tankRes = await client.query(
+      'SELECT id, capacity_liters, current_level_liters FROM tanks WHERE id = $1 FOR UPDATE',
+      [reqRow.tank_id]
+    );
+    if (tankRes.rows.length === 0) {
+      throw new NotFoundError(`'${reqRow.tank_id}' tankı bulunamadı — kayıt kesinleştirilemiyor.`, { error: 'TANK_NOT_FOUND' });
+    }
+    const tank = tankRes.rows[0];
+    const liters = Number(reqRow.liters);
+    const newLevel = Math.max(0, Number(tank.current_level_liters) - liters);
+    const pct = (newLevel / Number(tank.capacity_liters)) * 100;
+    const newStatus = pct < 20 ? 'KRİTİK' : pct < 40 ? 'UYARI' : 'GÜVENLİ';
+    await client.query('UPDATE tanks SET current_level_liters = $1, status = $2 WHERE id = $3', [newLevel, newStatus, tank.id]);
+
+    const txId = generateId('txn');
+    await client.query(
+      `INSERT INTO transactions
+         (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, pump_status, type, rfid_auth, created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [
+        txId, tenantId, reqRow.site_name, reqRow.vehicle_plate, reqRow.driver_name, reqRow.tank_name,
+        liters, 'ONAYLANDI', MANUAL_DISPENSE_TX_TYPE, false, reqRow.dispensed_at
+      ]
+    );
+
+    const upd = await client.query(
+      `UPDATE manual_dispense_requests
+          SET status = 'ONAYLANDI', second_approver_id = $2, second_approver_role = $3,
+              second_approved_at = CURRENT_TIMESTAMP, transaction_id = $4
+        WHERE id = $1 RETURNING *`,
+      [id, byUserId, byUserRole, txId]
+    );
+    await writeAuditLog(client, {
+      action: 'MANUAL_DISPENSE_FINALIZED',
+      targetType: 'manual_dispense_request',
+      targetId: id,
+      afterValue: {
+        step: 2, approverId: byUserId, approverRole: byUserRole,
+        transactionId: txId, liters, tankId: tank.id, tankNewLevel: newLevel
+      }
+    });
+    logger.info({ id, transactionId: txId, liters, tankId: tank.id }, '✅ [FUEL-405] Manuel ikmal çift onayla kesinleşti.');
+    return { request: upd.rows[0], finalized: true, transactionId: txId };
+  });
+}
+
+export async function rejectManualDispenseRequest(
+  id: string,
+  byUserId: string,
+  reason: string
+): Promise<ManualDispenseRequestRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT status, requested_by FROM manual_dispense_requests WHERE id = $1 FOR UPDATE', [id]);
+    if (res.rows.length === 0) throw new NotFoundError('Manuel ikmal kaydı bulunamadı.');
+    if (res.rows[0].status !== 'ONAY_BEKLIYOR') {
+      throw new ConflictError(`Kayıt '${res.rows[0].status}' durumunda — reddedilemez.`, { error: 'ALREADY_RESOLVED' });
+    }
+    const upd = await client.query(
+      `UPDATE manual_dispense_requests
+          SET status = 'REDDEDİLDİ', rejected_by = $2, rejected_at = CURRENT_TIMESTAMP, rejection_reason = $3
+        WHERE id = $1 RETURNING *`,
+      [id, byUserId, reason]
+    );
+    await writeAuditLog(client, {
+      action: 'MANUAL_DISPENSE_REJECTED',
+      targetType: 'manual_dispense_request',
+      targetId: id,
+      afterValue: { rejectedBy: byUserId, reason }
+    });
+    return upd.rows[0];
+  });
+}
+
+export interface ManualDispenseRatioRow {
+  siteName: string;
+  manualCount: number;
+  totalCount: number;
+  manualLiters: number;
+  ratioPct: number;
+  overThreshold: boolean;
+}
+
+/**
+ * FUEL-405 AC: "Manuel giriş oranı eşiği aşıldığında uyarı üretilmelidir."
+ * Şantiye bazında: kesinleşmiş manuel ikmal (transactions.type =
+ * 'Manuel (Çift Onaylı)') / tüm ikmal kayıtları — son `days` gün.
+ */
+export async function getManualDispenseRatio(filters: {
+  siteName?: string;
+  days: number;
+  thresholdPct: number;
+}): Promise<{ threshold_pct: number; period_days: number; rows: ManualDispenseRatioRow[]; alertSites: string[] }> {
+  return withTenant(async (client) => {
+    const params: any[] = [MANUAL_DISPENSE_TX_TYPE, `${filters.days} days`];
+    let siteClause = '';
+    if (filters.siteName) { params.push(filters.siteName); siteClause = `AND site_name = $${params.length}`; }
+    const res = await client.query(
+      `SELECT site_name,
+              COUNT(*) FILTER (WHERE type = $1)                       AS manual_count,
+              COUNT(*)                                                AS total_count,
+              COALESCE(SUM(amount_liters) FILTER (WHERE type = $1), 0) AS manual_liters
+         FROM transactions
+        WHERE created_at >= NOW() - $2::interval ${siteClause}
+        GROUP BY site_name
+        ORDER BY site_name`,
+      params
+    );
+    const rows: ManualDispenseRatioRow[] = res.rows.map((r: any) => {
+      const manualCount = Number(r.manual_count);
+      const totalCount = Number(r.total_count);
+      const ratioPct = totalCount > 0 ? Math.round((manualCount / totalCount) * 10000) / 100 : 0;
+      return {
+        siteName: r.site_name,
+        manualCount,
+        totalCount,
+        manualLiters: Math.round(Number(r.manual_liters) * 100) / 100,
+        ratioPct,
+        overThreshold: ratioPct > filters.thresholdPct
+      };
+    });
+    return {
+      threshold_pct: filters.thresholdPct,
+      period_days: filters.days,
+      rows,
+      alertSites: rows.filter((x) => x.overThreshold).map((x) => x.siteName)
+    };
+  });
+}

@@ -591,6 +591,42 @@ CREATE TABLE IF NOT EXISTS stock_reconciliations (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- FUEL-405: cihaz arızası / elle pompa kullanımı durumunda ikmalin kayıt
+-- dışı kalmaması için manuel ikmal girişi — AMA bu kapı kaçak için
+-- kullanılamasın diye İKİ FARKLI yetkilinin (bir SITE_MANAGER + bir
+-- COMPANY_OWNER/SUPER_ADMIN) onayı olmadan kesinleşMEZ. İkinci onayda gerçek
+-- bir transactions kaydı üretilir ve tank stoğu düşülür (transaction_id
+-- doldurulur). Geriye dönük tarih en fazla MANUAL_BACKDATE_MAX_DAYS gün.
+CREATE TABLE IF NOT EXISTS manual_dispense_requests (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    site_name VARCHAR(128) NOT NULL,
+    vehicle_plate VARCHAR(32) NOT NULL,
+    driver_name VARCHAR(128),
+    tank_id VARCHAR(64) NOT NULL,
+    tank_name VARCHAR(128) NOT NULL,
+    liters NUMERIC(10, 2) NOT NULL,
+    dispensed_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    reason TEXT NOT NULL,
+    -- Nesne depolama yok — belge/fotoğraf yalnızca URL referansı.
+    document_url VARCHAR(512),
+    -- 'ONAY_BEKLIYOR' | 'ONAYLANDI' | 'REDDEDİLDİ' | 'İPTAL'
+    status VARCHAR(24) NOT NULL DEFAULT 'ONAY_BEKLIYOR',
+    requested_by VARCHAR(64) NOT NULL,
+    first_approver_id VARCHAR(64),
+    first_approver_role VARCHAR(32),
+    first_approved_at TIMESTAMP WITH TIME ZONE,
+    second_approver_id VARCHAR(64),
+    second_approver_role VARCHAR(32),
+    second_approved_at TIMESTAMP WITH TIME ZONE,
+    rejected_by VARCHAR(64),
+    rejected_at TIMESTAMP WITH TIME ZONE,
+    rejection_reason TEXT,
+    -- İkinci onayda üretilen gerçek ikmal kaydının id'si.
+    transaction_id VARCHAR(64),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ==============================================================================
 -- [AUTH-201] Users Table & Refresh Tokens Rotation Store
 -- ==============================================================================
@@ -646,6 +682,7 @@ ALTER TABLE fuel_quotas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quota_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_intake_receipts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_reconciliations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE manual_dispense_requests ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -748,6 +785,7 @@ ALTER TABLE fuel_quotas FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quota_history FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_intake_receipts FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_reconciliations FORCE ROW LEVEL SECURITY;
+ALTER TABLE manual_dispense_requests FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -772,6 +810,7 @@ DROP POLICY IF EXISTS fuel_quotas_tenant_isolation_policy ON fuel_quotas;
 DROP POLICY IF EXISTS fuel_quota_history_tenant_isolation_policy ON fuel_quota_history;
 DROP POLICY IF EXISTS fuel_intake_receipts_tenant_isolation_policy ON fuel_intake_receipts;
 DROP POLICY IF EXISTS stock_reconciliations_tenant_isolation_policy ON stock_reconciliations;
+DROP POLICY IF EXISTS manual_dispense_requests_tenant_isolation_policy ON manual_dispense_requests;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -906,6 +945,11 @@ CREATE POLICY stock_reconciliations_tenant_isolation_policy ON stock_reconciliat
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY manual_dispense_requests_tenant_isolation_policy ON manual_dispense_requests
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- ==============================================================================
 -- [PERF] tenant_id İndeksleri
 -- ==============================================================================
@@ -987,3 +1031,7 @@ CREATE INDEX IF NOT EXISTS idx_fuel_intake_receipts_tank ON fuel_intake_receipts
 -- FUEL-409: bir tankın mutabakat geçmişi (REP-714) ve "önceki mutabakat"
 -- (açılış bakiyesi) sorgusu bu desenle çalışır.
 CREATE INDEX IF NOT EXISTS idx_stock_reconciliations_tank ON stock_reconciliations(tenant_id, tank_id, period_end DESC);
+
+-- FUEL-405: onay kuyruğu (status='ONAY_BEKLIYOR') ve şantiye bazlı manuel
+-- giriş oranı sorgusu bu desenle çalışır.
+CREATE INDEX IF NOT EXISTS idx_manual_dispense_requests_status ON manual_dispense_requests(tenant_id, status, created_at DESC);

@@ -261,6 +261,9 @@ jobs:
       - name: Run FUEL-409 Theoretical vs Physical Stock Reconciliation Tests
         run: cd backend && npx tsx test/test_fuel409_stock_reconciliation.ts
 
+      - name: Run FUEL-405 Manual Dispense Entry + Dual Approval Tests
+        run: cd backend && npx tsx test/test_fuel405_manual_dispense.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true
