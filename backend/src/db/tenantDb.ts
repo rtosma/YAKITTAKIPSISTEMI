@@ -2353,29 +2353,50 @@ export async function getConsumptionAnomalyReports(): Promise<ConsumptionAnomaly
 // COMP-601: UBL 2.1 DESPATCHADVICE (E-İRSALİYE TASLAĞI) İÇİN KAYNAK VERİ
 // ============================================================================
 
-export interface DespatchAdviceSourceData {
+export interface DespatchAdvicePreparation {
   transactionId: string;
+  /** COMP-601.1: boşluksuz sıralı belge numarası (IRS<yıl><9 hane>). */
+  documentNumber: string;
+  /** COMP-601.1: ETTN — belge başına kalıcı UUID (regenerasyonda AYNI kalır). */
+  ettn: string;
+  /** Aynı ikmal için e-İrsaliye daha önce üretildiyse true (yeni numara verilmedi). */
+  reusedExisting: boolean;
   issueDate: string;
   supplierVkn: string;
+  supplierName: string;
+  supplierCity: string | null;
   vehiclePlate: string;
   driverTcNo: string;
+  /** tanks.fuel_type serbest metni; GTIP çözümü despatchAdviceXmlService'te. */
+  fuelType: string;
   amountLiters: number;
 }
 
 /**
- * AC'nin istediği 4 alan (VKN, Plaka, Şoför TC, Sevk Tarihi) için gerekli
- * ham veriyi tek yerde toplar — hiçbiri transactions tablosunda doğrudan
- * durmuyor: VKN companies.tax_number'dan (firma zaten var olan bir alan),
- * şoför TC'si ise transactions.driver_name'in (serbest metin) drivers
- * tablosundaki AYNI isimli kayıtla eşleştirilmesinden gelir — transactions
- * driver_id'ye FK değil (bkz. createTransaction), bu yüzden isim eşleşmesi
- * dışında bir yol yok. İkisi de eksikse e-İrsaliye üretilemeyeceği için
- * BadRequestError fırlatılır; sessizce boş/hatalı bir alan üretilmez.
+ * COMP-601.1 — e-İrsaliye üretimi için gereken TÜM veriyi tek transaction
+ * içinde toplar VE (ilk kez üretiliyorsa) boşluksuz sıralı belge numarası +
+ * ETTN tahsis eder.
+ *
+ * Alanların hiçbiri transactions tablosunda doğrudan durmuyor:
+ *  - VKN / firma adı / şehir → companies (tenant kaydının kendisi)
+ *  - Şoför TC → transactions.driver_name'in (serbest metin) drivers'taki AYNI
+ *    isimli kayıtla eşleşmesi (FK yok, bkz. createTransaction)
+ *  - GTIP → transactions.tank_name'in tanks.fuel_type'ına çözülmesi (sabit
+ *    değil, denetim gereği yakıt tipine göre değişir)
+ * VKN veya şoför TC eksikse e-İrsaliye üretilemeyeceği için BadRequestError.
+ *
+ * Belge numarası: Postgres SEQUENCE boşluksuzluğu garanti edemez (rollback'te
+ * numara yanar). Bunun yerine tenant+yıl sayaç satırı bu transaction içinde
+ * `UPDATE ... +1` ile artırılır — transaction geri alınırsa artış da geri
+ * alınır. Eşzamanlılık: tahsis öncesi tenant başına bir advisory-xact-lock
+ * alınır, böylece aynı ikmal için gelen iki paralel istek sayacı iki kez
+ * artırıp bir numarayı boşa harcayamaz (ikincisi lock'u bekler, sonra
+ * mevcut satırı bulup onu döndürür).
  */
-export async function getDespatchAdviceSourceData(
+export async function prepareDespatchAdvice(
   transactionId: string,
   siteRestriction?: string
-): Promise<DespatchAdviceSourceData> {
+): Promise<DespatchAdvicePreparation> {
   return withTenant(async (client, tenantId) => {
     const txRes = await client.query('SELECT * FROM transactions WHERE id = $1', [transactionId]);
     if (txRes.rows.length === 0) throw new NotFoundError('İkmal kaydı bulunamadı.');
@@ -2387,11 +2408,16 @@ export async function getDespatchAdviceSourceData(
       throw new NotFoundError('İkmal kaydı bulunamadı.');
     }
 
-    const companyRes = await client.query('SELECT tax_number FROM companies WHERE id = $1', [tenantId]);
+    const companyRes = await client.query(
+      'SELECT tax_number, name, city FROM companies WHERE id = $1',
+      [tenantId]
+    );
     const supplierVkn: string | null = companyRes.rows[0]?.tax_number ?? null;
     if (!supplierVkn) {
       throw new BadRequestError('Firma VKN (Vergi Kimlik Numarası) bilgisi tanımlı değil, e-İrsaliye üretilemez.');
     }
+    const supplierName: string = companyRes.rows[0]?.name ?? 'Bilinmeyen Firma';
+    const supplierCity: string | null = companyRes.rows[0]?.city ?? null;
 
     let driverTcNo: string | null = null;
     if (tx.driver_name) {
@@ -2407,12 +2433,77 @@ export async function getDespatchAdviceSourceData(
       );
     }
 
+    let fuelType = 'Motorin';
+    if (tx.tank_name) {
+      const tankRes = await client.query(
+        'SELECT fuel_type FROM tanks WHERE tenant_id = $1 AND name = $2 LIMIT 1',
+        [tenantId, tx.tank_name]
+      );
+      if (tankRes.rows[0]?.fuel_type) fuelType = tankRes.rows[0].fuel_type;
+    }
+
+    // --- Belge numarası + ETTN tahsisi (idempotent) ---
+    const existing = await client.query(
+      'SELECT document_number, ettn FROM despatch_advice_documents WHERE transaction_id = $1',
+      [transactionId]
+    );
+    let documentNumber: string;
+    let ettn: string;
+    let reusedExisting: boolean;
+    if (existing.rows.length > 0) {
+      documentNumber = existing.rows[0].document_number;
+      ettn = existing.rows[0].ettn;
+      reusedExisting = true;
+    } else {
+      // Tenant başına seri tahsisi tek sıraya sok — hangi ikmal için olursa
+      // olsun aynı anda iki numara üretilmesin.
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('despatch:' || $1))", [tenantId]);
+      // Lock'u aldıktan sonra tekrar kontrol et — beklerken başka bir istek
+      // bu ikmal için numara vermiş olabilir.
+      const recheck = await client.query(
+        'SELECT document_number, ettn FROM despatch_advice_documents WHERE transaction_id = $1',
+        [transactionId]
+      );
+      if (recheck.rows.length > 0) {
+        documentNumber = recheck.rows[0].document_number;
+        ettn = recheck.rows[0].ettn;
+        reusedExisting = true;
+      } else {
+        const year = new Date(tx.created_at).getFullYear();
+        await client.query(
+          'INSERT INTO despatch_advice_counters (tenant_id, issue_year) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+          [tenantId, year]
+        );
+        const bump = await client.query(
+          `UPDATE despatch_advice_counters SET last_sequence = last_sequence + 1
+           WHERE tenant_id = $1 AND issue_year = $2 RETURNING last_sequence`,
+          [tenantId, year]
+        );
+        const seq: number = bump.rows[0].last_sequence;
+        documentNumber = `IRS${year}${String(seq).padStart(9, '0')}`;
+        ettn = crypto.randomUUID();
+        await client.query(
+          `INSERT INTO despatch_advice_documents
+             (id, tenant_id, transaction_id, document_number, ettn, issue_year, sequence_no)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [generateId('despatch'), tenantId, transactionId, documentNumber, ettn, year, seq]
+        );
+        reusedExisting = false;
+      }
+    }
+
     return {
       transactionId: tx.id,
+      documentNumber,
+      ettn,
+      reusedExisting,
       issueDate: new Date(tx.created_at).toISOString().slice(0, 10),
       supplierVkn,
+      supplierName,
+      supplierCity,
       vehiclePlate: tx.vehicle_plate,
       driverTcNo,
+      fuelType,
       amountLiters: Number(tx.amount_liters)
     };
   });

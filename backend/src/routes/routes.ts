@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, getDespatchAdviceSourceData } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -1862,10 +1862,15 @@ router.get(
  *   get:
  *     summary: İkmal İçin UBL 2.1 DespatchAdvice (e-İrsaliye Taslağı) XML'i (COMP-601)
  *     description: >
- *       VKN, Plaka, Şoför TC, Sevk Tarihi ve GTIP kodunu (Motorin 10 ppm)
- *       gerçek OASIS UBL 2.1 DespatchAdvice şemasına göre üretir ve o
- *       şemaya karşı doğrular. GİB'in tam UBL-TR profili/XAdES imzası bu
- *       kapsamda DEĞİLDİR (bkz. despatchAdviceXmlService.ts üst yorumu).
+ *       Belge no (boşluksuz sıralı) + ETTN (kalıcı UUID) tahsis eder; VKN,
+ *       firma adı/adres, Plaka, Şoför TC, Sevk Tarihi ve yakıt tipine göre
+ *       çözülen GTIP kodunu gerçek OASIS UBL 2.1 DespatchAdvice şemasına göre
+ *       üretip o şemaya karşı doğrular. Aynı ikmal için tekrar çağrılırsa AYNI
+ *       belge no + ETTN döner. GİB'in tam UBL-TR profili/Schematron/XAdES
+ *       imzası bu kapsamda DEĞİLDİR (COMP-602).
+ *     headers:
+ *       X-Despatch-Advice-Number: { schema: { type: string } }
+ *       X-Despatch-Advice-ETTN: { schema: { type: string } }
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -1886,10 +1891,12 @@ router.get(
   authenticateJWT,
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const source = await getDespatchAdviceSourceData(req.params.id, siteScopeFor(req.user!));
-      const xml = generateDespatchAdviceXml(source);
+      const prep = await prepareDespatchAdvice(req.params.id, siteScopeFor(req.user!));
+      const xml = generateDespatchAdviceXml(prep);
       res.setHeader('Content-Type', 'application/xml; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="e-irsaliye-${source.transactionId}.xml"`);
+      res.setHeader('Content-Disposition', `attachment; filename="e-irsaliye-${prep.documentNumber}.xml"`);
+      res.setHeader('X-Despatch-Advice-Number', prep.documentNumber);
+      res.setHeader('X-Despatch-Advice-ETTN', prep.ettn);
       res.send(xml);
     } catch (error: any) {
       next(error);

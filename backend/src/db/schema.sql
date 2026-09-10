@@ -362,6 +362,40 @@ CREATE TABLE IF NOT EXISTS consumption_anomaly_reports (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- COMP-601.1: üretilen her e-İrsaliye için KALICI belge kimliği. Bir ikmalin
+-- e-İrsaliyesi tekrar istendiğinde AYNI belge numarası ve AYNI ETTN (UUID)
+-- dönmeli (idempotent) — bu yüzden mapping burada saklanıyor, her istekte
+-- yeniden üretilmiyor. audit_logs gibi salt-ekleyici: app_user'dan UPDATE/
+-- DELETE/TRUNCATE geri alınıyor (aşağıda) — bir belge numarası bir kez
+-- verildiyse asla değişmez/silinmez (GİB denetim gereği).
+CREATE TABLE IF NOT EXISTS despatch_advice_documents (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    transaction_id VARCHAR(64) NOT NULL,
+    document_number VARCHAR(32) NOT NULL,
+    ettn UUID NOT NULL,
+    issue_year INTEGER NOT NULL,
+    sequence_no INTEGER NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_despatch_advice_documents_tx UNIQUE (tenant_id, transaction_id),
+    CONSTRAINT uq_despatch_advice_documents_number UNIQUE (tenant_id, document_number)
+);
+
+-- COMP-601.1 AC: "Belge numaralandırması boşluksuz sıralı olmalıdır (denetim
+-- gereği)". Postgres SEQUENCE bunu SAĞLAYAMAZ — rollback'te tüketilen numara
+-- geri gelmez, boşluk oluşur. Bunun yerine tenant+yıl başına bir sayaç
+-- satırı: numara, belge satırını ekleyen AYNI transaction içinde
+-- `UPDATE ... last_sequence + 1` ile alınır; transaction rollback olursa
+-- artış da geri alınır → gerçekten boşluksuz. Eşzamanlılık: allocation
+-- kodu (tenantDb.ts) tenant başına bir advisory-lock alır, aynı anda gelen
+-- iki istek sayacı iki kez artıramaz.
+CREATE TABLE IF NOT EXISTS despatch_advice_counters (
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    issue_year INTEGER NOT NULL,
+    last_sequence INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (tenant_id, issue_year)
+);
+
 -- ==============================================================================
 -- [AUTH-201] Users Table & Refresh Tokens Rotation Store
 -- ==============================================================================
@@ -409,6 +443,8 @@ ALTER TABLE calibration_commands ENABLE ROW LEVEL SECURITY;
 ALTER TABLE calibration_test_intakes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fail_open_policies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE consumption_anomaly_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_counters ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -472,6 +508,14 @@ REVOKE UPDATE, DELETE, TRUNCATE ON audit_logs FROM app_user;
 -- "durum meşru şekilde ilerler" arasındaki farktır.
 REVOKE DELETE, TRUNCATE ON calibration_commands FROM app_user;
 
+-- COMP-601.1 AC: "Belge numaralandırması boşluksuz sıralı olmalıdır (denetim
+-- gereği)". Verilen bir e-İrsaliye belge numarası/ETTN asla değiştirilemez,
+-- silinemez — audit_logs ile AYNI append-only kilidi (INSERT + SELECT).
+-- despatch_advice_counters ise UPDATE gerektirir (sayaç artışı) — o yüzden
+-- yalnızca DELETE/TRUNCATE geri alınıyor.
+REVOKE UPDATE, DELETE, TRUNCATE ON despatch_advice_documents FROM app_user;
+REVOKE DELETE, TRUNCATE ON despatch_advice_counters FROM app_user;
+
 -- Force RLS even for table owners
 ALTER TABLE vehicles FORCE ROW LEVEL SECURITY;
 ALTER TABLE tanks FORCE ROW LEVEL SECURITY;
@@ -487,6 +531,8 @@ ALTER TABLE calibration_commands FORCE ROW LEVEL SECURITY;
 ALTER TABLE calibration_test_intakes FORCE ROW LEVEL SECURITY;
 ALTER TABLE fail_open_policies FORCE ROW LEVEL SECURITY;
 ALTER TABLE consumption_anomaly_reports FORCE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_documents FORCE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_counters FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -503,6 +549,8 @@ DROP POLICY IF EXISTS calibration_commands_tenant_isolation_policy ON calibratio
 DROP POLICY IF EXISTS calibration_test_intakes_tenant_isolation_policy ON calibration_test_intakes;
 DROP POLICY IF EXISTS fail_open_policies_tenant_isolation_policy ON fail_open_policies;
 DROP POLICY IF EXISTS consumption_anomaly_reports_tenant_isolation_policy ON consumption_anomaly_reports;
+DROP POLICY IF EXISTS despatch_advice_documents_tenant_isolation_policy ON despatch_advice_documents;
+DROP POLICY IF EXISTS despatch_advice_counters_tenant_isolation_policy ON despatch_advice_counters;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -597,6 +645,16 @@ CREATE POLICY consumption_anomaly_reports_tenant_isolation_policy ON consumption
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY despatch_advice_documents_tenant_isolation_policy ON despatch_advice_documents
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY despatch_advice_counters_tenant_isolation_policy ON despatch_advice_counters
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- ==============================================================================
 -- [PERF] tenant_id İndeksleri
 -- ==============================================================================
@@ -651,4 +709,9 @@ CREATE INDEX IF NOT EXISTS idx_fail_open_policies_lookup ON fail_open_policies(t
 -- AI-502: dashboard'ın geçmiş raporları listelemesi tenant+created_at DESC
 -- deseniyle çalışır (diğer versiyonlu geçmiş tablolarıyla aynı).
 CREATE INDEX IF NOT EXISTS idx_consumption_anomaly_reports_tenant_created_at ON consumption_anomaly_reports(tenant_id, created_at DESC);
+
+-- COMP-601.1: aynı ikmalin e-İrsaliyesi tekrar istendiğinde mevcut belgeyi
+-- bulma sorgusu (UNIQUE constraint zaten bir indeks üretiyor ama açık
+-- tutuyoruz).
+CREATE INDEX IF NOT EXISTS idx_despatch_advice_documents_tx ON despatch_advice_documents(tenant_id, transaction_id);
 
