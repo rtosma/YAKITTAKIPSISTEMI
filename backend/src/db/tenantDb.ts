@@ -925,7 +925,16 @@ export async function authorizeDispenseRequest(input: {
   tankName: string;
   deviceSiteName: string;
 }): Promise<DispenseAuthResult> {
-  return withTenant(async (client) => {
+  return withTenant(async (client, tenantId) => {
+    // 0. AUTH-210 — DENYLIST WHITELIST'TEN ÖNCE. Kayıp/çalıntı/değiştirilmiş
+    // bir kart, sisteme kayıtlı ve sürücüsü aktif olsa BİLE ikmal alamaz.
+    if (await cardDeniedWithClient(client, tenantId, input.rfidCardId)) {
+      throw new ForbiddenError(
+        `'${input.rfidCardId}' kartı kara listede (kayıp/çalıntı/değiştirilmiş) — ikmal reddedildi.`,
+        { error: 'RFID_CARD_BLOCKED' }
+      );
+    }
+
     // 1. Kart tanınıyor mu, sürücü aktif mi?
     const driverRes = await client.query(
       'SELECT name, status FROM drivers WHERE rfid_card_id = $1',
@@ -2718,4 +2727,222 @@ export async function computeTankVolume(
     outOfRange: raw.outOfRange,
     modelVersionAt: model.createdAt
   };
+}
+
+// ============================================================================
+// AUTH-210: RFID KART KAYIP/BLOKAJ VE KARA LİSTE (DENYLIST)
+// ============================================================================
+
+const RFID_DENYLIST_CACHE_TTL_SECONDS = 3600;
+function rfidDenylistCacheKey(tenantId: string): string {
+  return `rfid:denylist:${tenantId}`;
+}
+
+/** Denylist'in kompakt sürüm damgası — herhangi bir ekleme/çıkarmada değişir. */
+function rfidDenylistVersion(cardUids: string[]): string {
+  if (cardUids.length === 0) return 'empty';
+  const sorted = [...cardUids].sort();
+  return crypto.createHash('sha1').update(sorted.join('|')).digest('hex').slice(0, 16);
+}
+
+export interface RfidBlacklistRecord {
+  id: string;
+  tenant_id: string;
+  card_uid: string;
+  status: string;
+  reason: string | null;
+  replaced_by_card_uid: string | null;
+  reported_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Bir kartı kara listeye alır (LOST/BLOCKED) — (tenant, card_uid) için tek
+ * satır (ON CONFLICT ile durum/gerekçe güncellenir). Redis SET invalide
+ * edilir → sonraki isCardDenied çağrısı DB'den yeniden kurar (AC 1: online
+ * cihazlarda 10 sn içinde ret — cache anında geçersiz kılınır).
+ */
+export async function blockRfidCard(
+  data: { cardUid: string; status: 'LOST' | 'BLOCKED'; reason?: string },
+  reportedByUserId: string
+): Promise<RfidBlacklistRecord> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query(
+      `INSERT INTO rfid_card_blacklist (id, tenant_id, card_uid, status, reason, reported_by)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (tenant_id, card_uid)
+       DO UPDATE SET status = EXCLUDED.status, reason = EXCLUDED.reason,
+                     reported_by = EXCLUDED.reported_by, replaced_by_card_uid = NULL,
+                     updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [generateId('rfidbl'), tenantId, data.cardUid, data.status, data.reason ?? null, reportedByUserId]
+    );
+    await writeAuditLog(client, {
+      action: 'RFID_CARD_BLOCKED',
+      targetType: 'rfid_card',
+      targetId: data.cardUid,
+      afterValue: { status: data.status, reason: data.reason ?? null }
+    });
+    await redisPool.cacheDel(rfidDenylistCacheKey(tenantId));
+    return res.rows[0];
+  });
+}
+
+/** Kartı kara listeden çıkarır (kart bulundu / yeniden etkinleştirildi). */
+export async function unblockRfidCard(cardUid: string, byUserId: string): Promise<{ removed: boolean }> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query(
+      'DELETE FROM rfid_card_blacklist WHERE card_uid = $1 RETURNING id',
+      [cardUid]
+    );
+    if (res.rows.length === 0) throw new NotFoundError(`'${cardUid}' kartı kara listede değil.`);
+    await writeAuditLog(client, {
+      action: 'RFID_CARD_UNBLOCKED',
+      targetType: 'rfid_card',
+      targetId: cardUid,
+      afterValue: { by: byUserId }
+    });
+    await redisPool.cacheDel(rfidDenylistCacheKey(tenantId));
+    return { removed: true };
+  });
+}
+
+/**
+ * Kart değiştirme: eski kartı REPLACED olarak kara listeye alır, drivers/
+ * vehicles kayıtlarındaki kart/tag alanını yeni uid'e taşır. transactions
+ * geçmişi driver_name/plate ile anahtarlandığından OTOMATİK korunur — bu
+ * fonksiyon yalnızca eski→yeni bağını audit'ler ve kartı geçersiz kılar.
+ * Yeni kart kendisi kara listedeyse reddedilir.
+ */
+export async function replaceRfidCard(
+  data: { oldCardUid: string; newCardUid: string },
+  byUserId: string
+): Promise<{ movedDrivers: number; movedVehicles: number }> {
+  return withTenant(async (client, tenantId) => {
+    const newBlocked = await client.query(
+      "SELECT 1 FROM rfid_card_blacklist WHERE card_uid = $1 AND status IN ('LOST','BLOCKED')",
+      [data.newCardUid]
+    );
+    if (newBlocked.rows.length > 0) {
+      throw new ConflictError(`Yeni kart '${data.newCardUid}' zaten kara listede — önce onu temizleyin.`, { error: 'NEW_CARD_BLOCKED' });
+    }
+
+    const d = await client.query('UPDATE drivers SET rfid_card_id = $2 WHERE rfid_card_id = $1', [data.oldCardUid, data.newCardUid]);
+    const v = await client.query('UPDATE vehicles SET rfid_tag = $2 WHERE rfid_tag = $1', [data.oldCardUid, data.newCardUid]);
+
+    await client.query(
+      `INSERT INTO rfid_card_blacklist (id, tenant_id, card_uid, status, reason, replaced_by_card_uid, reported_by)
+       VALUES ($1,$2,$3,'REPLACED',$4,$5,$6)
+       ON CONFLICT (tenant_id, card_uid)
+       DO UPDATE SET status = 'REPLACED', replaced_by_card_uid = EXCLUDED.replaced_by_card_uid,
+                     reason = EXCLUDED.reason, reported_by = EXCLUDED.reported_by, updated_at = CURRENT_TIMESTAMP`,
+      [generateId('rfidbl'), tenantId, data.oldCardUid, `Kart değiştirildi → ${data.newCardUid}`, data.newCardUid, byUserId]
+    );
+
+    await writeAuditLog(client, {
+      action: 'RFID_CARD_REPLACED',
+      targetType: 'rfid_card',
+      targetId: data.oldCardUid,
+      afterValue: { newCardUid: data.newCardUid, movedDrivers: d.rowCount ?? 0, movedVehicles: v.rowCount ?? 0 }
+    });
+    await redisPool.cacheDel(rfidDenylistCacheKey(tenantId));
+    return { movedDrivers: d.rowCount ?? 0, movedVehicles: v.rowCount ?? 0 };
+  });
+}
+
+export async function getRfidDenylist(): Promise<RfidBlacklistRecord[]> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM rfid_card_blacklist ORDER BY updated_at DESC');
+    return res.rows;
+  });
+}
+
+/**
+ * AUTH-210 AC: "Denylist WHITELIST'TEN ÖNCE değerlendirilir." Cache-aside:
+ * Redis SET'te SISMEMBER (O(1)); miss'te DB'den kurulur. LOST/BLOCKED ve
+ * REPLACED kartların hepsi reddedilir (değiştirilmiş kart artık geçersiz).
+ */
+export async function isCardDenied(cardUid: string): Promise<boolean> {
+  return withTenant(async (client, tenantId) => cardDeniedWithClient(client, tenantId, cardUid));
+}
+
+/**
+ * isCardDenied'in çekirdeği — authorizeDispenseRequest zaten açık bir
+ * withTenant client'ına sahip olduğundan onu doğrudan çağırır (iç içe
+ * withTenant / ikinci bir bağlantı açmamak için).
+ */
+export async function cardDeniedWithClient(
+  client: import('pg').PoolClient,
+  tenantId: string,
+  cardUid: string
+): Promise<boolean> {
+  const key = rfidDenylistCacheKey(tenantId);
+  try {
+    if ((await redisPool.client.exists(key)) === 1) {
+      return (await redisPool.client.sismember(key, cardUid)) === 1;
+    }
+  } catch {
+    // Redis erişilemez → DB otoritedir.
+  }
+  const res = await client.query('SELECT card_uid FROM rfid_card_blacklist');
+  const uids: string[] = res.rows.map((r) => r.card_uid);
+  try {
+    if (uids.length > 0) {
+      await redisPool.client.sadd(key, ...uids);
+      await redisPool.client.expire(key, RFID_DENYLIST_CACHE_TTL_SECONDS);
+    }
+  } catch {
+    /* cache yazılamadı — sorun değil */
+  }
+  return uids.includes(cardUid);
+}
+
+/** Cihazın çekeceği denylist: sürüm + reddedilen kart uid'leri. */
+export async function getRfidDenylistForDevice(): Promise<{ version: string; deniedCardUids: string[] }> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT card_uid FROM rfid_card_blacklist ORDER BY card_uid');
+    const deniedCardUids: string[] = res.rows.map((r) => r.card_uid);
+    return { version: rfidDenylistVersion(deniedCardUids), deniedCardUids };
+  });
+}
+
+/** Cihaz denylist'i çektiğinde sürüm + zaman damgası kaydedilir. */
+export async function recordRfidDenylistPull(deviceId: string, version: string): Promise<void> {
+  return withTenant(async (client) => {
+    await client.query(
+      'UPDATE hardware_devices SET last_rfid_denylist_version = $2, last_rfid_denylist_pull_at = CURRENT_TIMESTAMP WHERE device_id = $1',
+      [deviceId, version]
+    );
+  });
+}
+
+/**
+ * AUTH-210 AC 3: "Blok komutunu alamayan cihazlar panelde uyarı olarak
+ * işaretlenmelidir." FUEL-410 deployment-status ile AYNI desen: her cihazın
+ * en son çektiği denylist sürümü GÜNCEL sürümle karşılaştırılır.
+ */
+export async function getRfidDenylistDeploymentStatus(): Promise<Array<{
+  deviceId: string;
+  siteName: string;
+  currentVersion: string;
+  lastPulledVersion: string | null;
+  lastPulledAt: string | null;
+  status: 'GÜNCEL' | 'DAĞITIM_BEKLIYOR';
+}>> {
+  return withTenant(async (client) => {
+    const [uidsRes, devicesRes] = await Promise.all([
+      client.query('SELECT card_uid FROM rfid_card_blacklist ORDER BY card_uid'),
+      client.query('SELECT device_id, site_name, last_rfid_denylist_version, last_rfid_denylist_pull_at FROM hardware_devices')
+    ]);
+    const version = rfidDenylistVersion(uidsRes.rows.map((r) => r.card_uid));
+    return devicesRes.rows.map((d) => ({
+      deviceId: d.device_id,
+      siteName: d.site_name,
+      currentVersion: version,
+      lastPulledVersion: d.last_rfid_denylist_version,
+      lastPulledAt: d.last_rfid_denylist_pull_at,
+      status: (d.last_rfid_denylist_version === version ? 'GÜNCEL' : 'DAĞITIM_BEKLIYOR') as 'GÜNCEL' | 'DAĞITIM_BEKLIYOR'
+    }));
+  });
 }

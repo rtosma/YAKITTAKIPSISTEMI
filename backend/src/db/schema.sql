@@ -422,6 +422,37 @@ CREATE TABLE IF NOT EXISTS tank_strapping_tables (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- AUTH-210: kayıp/çalıntı/değiştirilmiş RFID kartları için KARA LİSTE
+-- (denylist). Bir (tenant, card_uid) için EN FAZLA bir satır; satırın
+-- YOKLUĞU kartın aktif olduğu anlamına gelir. "Kart bulundu / yeniden
+-- etkinleştirildi" = satırın SİLİNMESİ (her durum değişikliği ayrıca
+-- audit_logs'a yazılır). İkmal yetkilendirmesi (authorizeDispenseRequest)
+-- bu listeyi WHITELIST'TEN ÖNCE değerlendirir — kayıtlı ve sürücüsü aktif
+-- bir kart bile kara listedeyse ikmal alamaz.
+CREATE TABLE IF NOT EXISTS rfid_card_blacklist (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    card_uid VARCHAR(64) NOT NULL,
+    -- 'LOST' | 'BLOCKED' | 'REPLACED'
+    status VARCHAR(16) NOT NULL,
+    reason VARCHAR(256),
+    -- REPLACED durumunda kaydın devredildiği yeni kartın uid'i.
+    replaced_by_card_uid VARCHAR(64),
+    reported_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_rfid_card_blacklist_tenant_uid UNIQUE (tenant_id, card_uid)
+);
+
+-- AUTH-210: IOT-305 komut kuyruğu bu kod tabanında YOK — denylist cihazlara
+-- PUSH değil PULL ile dağıtılır (bkz. GET /telemetry/rfid-denylist,
+-- FUEL-410 fail-open politikasıyla aynı desen). Cihazın en son çektiği
+-- denylist sürümü/zamanı burada tutulur; deployment-status bunu güncel
+-- sürümle karşılaştırıp "blok komutunu alamayan" cihazları uyarı olarak
+-- işaretler (AC 3).
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_rfid_denylist_version VARCHAR(64);
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_rfid_denylist_pull_at TIMESTAMP WITH TIME ZONE;
+
 -- ==============================================================================
 -- [AUTH-201] Users Table & Refresh Tokens Rotation Store
 -- ==============================================================================
@@ -472,6 +503,7 @@ ALTER TABLE consumption_anomaly_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_counters ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tank_strapping_tables ENABLE ROW LEVEL SECURITY;
+ALTER TABLE rfid_card_blacklist ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -563,6 +595,7 @@ ALTER TABLE consumption_anomaly_reports FORCE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_documents FORCE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_counters FORCE ROW LEVEL SECURITY;
 ALTER TABLE tank_strapping_tables FORCE ROW LEVEL SECURITY;
+ALTER TABLE rfid_card_blacklist FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -582,6 +615,7 @@ DROP POLICY IF EXISTS consumption_anomaly_reports_tenant_isolation_policy ON con
 DROP POLICY IF EXISTS despatch_advice_documents_tenant_isolation_policy ON despatch_advice_documents;
 DROP POLICY IF EXISTS despatch_advice_counters_tenant_isolation_policy ON despatch_advice_counters;
 DROP POLICY IF EXISTS tank_strapping_tables_tenant_isolation_policy ON tank_strapping_tables;
+DROP POLICY IF EXISTS rfid_card_blacklist_tenant_isolation_policy ON rfid_card_blacklist;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -691,6 +725,11 @@ CREATE POLICY tank_strapping_tables_tenant_isolation_policy ON tank_strapping_ta
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY rfid_card_blacklist_tenant_isolation_policy ON rfid_card_blacklist
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- ==============================================================================
 -- [PERF] tenant_id İndeksleri
 -- ==============================================================================
@@ -755,3 +794,7 @@ CREATE INDEX IF NOT EXISTS idx_despatch_advice_documents_tx ON despatch_advice_d
 -- FUEL-403.1: "en son geçerli cetvel" sorgusu her zaman
 -- tenant+tank_name+created_at DESC LIMIT 1 ile çalışır.
 CREATE INDEX IF NOT EXISTS idx_tank_strapping_tables_lookup ON tank_strapping_tables(tenant_id, tank_name, created_at DESC);
+
+-- AUTH-210: denylist üyelik kontrolü (authorizeDispenseRequest step-0) ve
+-- cihaz pull sorgusu tenant+card_uid ile çalışır.
+CREATE INDEX IF NOT EXISTS idx_rfid_card_blacklist_lookup ON rfid_card_blacklist(tenant_id, card_uid);

@@ -246,6 +246,9 @@ jobs:
       - name: Run AUTH-206 Password Reset Flow Tests
         run: cd backend && npx tsx test/test_auth206_password_reset.ts
 
+      - name: Run AUTH-210 RFID Card Blacklist Tests
+        run: cd backend && npx tsx test/test_auth210_rfid_blacklist.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

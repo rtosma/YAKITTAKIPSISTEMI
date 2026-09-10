@@ -1,11 +1,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
 import { generateDespatchAdviceXml } from '../compliance/despatchAdviceXmlService';
 import { setStrappingTableSchema, tankVolumeQuerySchema, parseStrappingCsv } from '../schemas/strappingTableSchema';
+import { blockRfidCardSchema, replaceRfidCardSchema } from '../schemas/rfidCardSchema';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
@@ -1036,6 +1037,159 @@ router.get(
         return effective;
       });
       res.json({ success: true, data: policy });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── AUTH-210: RFID kart kayıp/blokaj/kara liste ──────────────────────────
+const RFID_CARD_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /rfid-cards/{cardUid}/block:
+ *   post:
+ *     summary: RFID Kartını Kara Listeye Al (AUTH-210)
+ *     description: >
+ *       `{ status: 'LOST'|'BLOCKED', reason? }`. Kart derhal ikmal
+ *       yetkilendirmesinde (WHITELIST'ten ÖNCE) reddedilir; Redis denylist
+ *       cache'i anında invalide edilir (online cihazlar AC 1: 10 sn içinde).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/rfid-cards/:cardUid/block',
+  authenticateJWT,
+  authorizeRoles(...RFID_CARD_MANAGER_ROLES),
+  validateRequest({ body: blockRfidCardSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const b = req.body as { status: 'LOST' | 'BLOCKED'; reason?: string };
+      const record = await blockRfidCard({ cardUid: req.params.cardUid, status: b.status, reason: b.reason }, req.user!.userId);
+      res.status(201).json({ success: true, data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /rfid-cards/{cardUid}/unblock:
+ *   post:
+ *     summary: RFID Kartını Kara Listeden Çıkar — kart bulundu (AUTH-210)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/rfid-cards/:cardUid/unblock',
+  authenticateJWT,
+  authorizeRoles(...RFID_CARD_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await unblockRfidCard(req.params.cardUid, req.user!.userId);
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /rfid-cards/replace:
+ *   post:
+ *     summary: RFID Kartı Değiştir — geçmişi yeni karta devret (AUTH-210)
+ *     description: >
+ *       `{ oldCardUid, newCardUid }`. Eski kart REPLACED olarak kara listeye
+ *       alınır; drivers.rfid_card_id / vehicles.rfid_tag yeni uid'e taşınır.
+ *       İkmal geçmişi (transactions) sürücü adı/plaka ile anahtarlandığından
+ *       otomatik korunur. Yeni kart kendisi kara listedeyse 409.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/rfid-cards/replace',
+  authenticateJWT,
+  authorizeRoles(...RFID_CARD_MANAGER_ROLES),
+  validateRequest({ body: replaceRfidCardSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const b = req.body as { oldCardUid: string; newCardUid: string };
+      const result = await replaceRfidCard(b, req.user!.userId);
+      res.json({ success: true, data: { ...b, ...result } });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/rfid-cards/denylist',
+  authenticateJWT,
+  authorizeRoles(...RFID_CARD_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const denylist = await getRfidDenylist();
+      res.json({ success: true, totalCount: denylist.length, data: denylist });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /rfid-cards/denylist-deployment-status:
+ *   get:
+ *     summary: Denylist Dağıtım Durumu — blok komutunu alamayan cihazlar (AUTH-210 AC 3)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/rfid-cards/denylist-deployment-status',
+  authenticateJWT,
+  authorizeRoles(...RFID_CARD_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const status = await getRfidDenylistDeploymentStatus();
+      const staleCount = status.filter((s) => s.status === 'DAĞITIM_BEKLIYOR').length;
+      res.json({ success: true, totalCount: status.length, staleCount, data: status });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /telemetry/rfid-denylist:
+ *   get:
+ *     summary: Cihazın RFID Kara Listesini Çekmesi (AUTH-210)
+ *     description: >
+ *       HMAC-doğrulamalı cihaz, kendi tenant'ının güncel denylist'ini
+ *       (sürüm + kart uid'leri) çeker; çekiş zamanı/sürümü kaydedilir
+ *       (deployment-status bunu izler). Cihaz bu listeyi yerel olarak
+ *       DENYLIST'İ WHITELIST'TEN ÖNCE uygulamalıdır (AC 2, firmware tarafı).
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Güncel denylist döndü.
+ */
+router.get(
+  '/telemetry/rfid-denylist',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; siteName: string; tenantId: string };
+    try {
+      const payload = await runWithTenant({ tenantId: hw.tenantId }, async () => {
+        const dl = await getRfidDenylistForDevice();
+        await recordRfidDenylistPull(hw.deviceId, dl.version);
+        return dl;
+      });
+      res.json({ success: true, data: payload });
     } catch (error: any) {
       next(error);
     }
