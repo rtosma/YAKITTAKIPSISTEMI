@@ -96,7 +96,15 @@ const envSchema = z.object({
   // bir webhook, doğrulanmamış istekleri kabul etmektense hiç veri almasın —
   // internete açık bir uçtan sahte tank seviyesi enjeksiyonu bu şekilde
   // engellenir). En az 24 karakter (öneri: openssl rand -hex 32).
-  LORAWAN_WEBHOOK_TOKEN: z.string().min(24).optional()
+  LORAWAN_WEBHOOK_TOKEN: z.string().min(24).optional(),
+
+  // AUTH-207: "true"/"1" ise SUPER_ADMIN ve COMPANY_OWNER hesapları 2FA
+  // KURMADAN sisteme giremez (login yalnızca kurulum için kısmi token döner;
+  // refresh de reddedilir). Varsayılan KAPALI — aksi halde seed/demo yönetici
+  // hesapları ve mevcut entegrasyon test paketi kilitlenirdi. 2FA'yı kendi
+  // isteğiyle KURAN her kullanıcı, bu bayraktan bağımsız olarak her girişte
+  // kod ister (opt-in geri alınamaz gevşeklikle çelişmesin).
+  TOTP_ENFORCED: z.string().optional().default('false').transform((v) => v === 'true' || v === '1')
 });
 
 type EnvShape = z.infer<typeof envSchema>;

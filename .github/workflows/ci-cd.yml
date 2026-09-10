@@ -270,6 +270,9 @@ jobs:
       - name: Run AI-504 Off-Hours + Rapid-Repeat Anomaly Detection Tests
         run: cd backend && npx tsx test/test_ai504_anomaly_detection.ts
 
+      - name: Run AUTH-207 TOTP 2FA Tests
+        run: cd backend && npx tsx test/test_auth207_totp_2fa.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

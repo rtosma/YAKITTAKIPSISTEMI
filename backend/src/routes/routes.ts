@@ -13,8 +13,10 @@ import { createFuelIntakeSchema, listFuelIntakeQuerySchema } from '../schemas/fu
 import { createReconciliationSchema, listReconciliationQuerySchema } from '../schemas/stockReconciliationSchema';
 import { createManualDispenseSchema, rejectManualDispenseSchema, listManualDispenseQuerySchema, manualDispenseRatioQuerySchema } from '../schemas/manualDispenseSchema';
 import { setWorkingHoursSchema, scanAnomalySchema, listAnomalyFlagQuerySchema, reviewAnomalyFlagSchema } from '../schemas/anomalyFlagSchema';
+import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
+import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes, normalizeRecoveryCode } from '../services/totpService';
 import { isServerShuttingDown } from '../utils/shutdown';
-import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
+import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
@@ -30,14 +32,18 @@ import { createSiteSchema } from '../schemas/siteSchema';
 import { createHardwareDeviceSchema, relocateHardwareDeviceSchema, createDeviceClaimCodeSchema, claimDeviceSchema } from '../schemas/hardwareDeviceSchema';
 import { requestCalibrationSchema, calibrationAckSchema, testIntakeSchema } from '../schemas/calibrationSchema';
 import { setFailOpenPolicySchema } from '../schemas/failOpenPolicySchema';
-import { verifyPassword } from '../utils/password';
-import { NotFoundError, ForbiddenError, BadRequestError } from '../utils/errors';
+import { verifyPassword, hashPassword } from '../utils/password';
+import { NotFoundError, ForbiddenError, BadRequestError, UnauthorizedError, ConflictError } from '../utils/errors';
 import { pool } from '../db/postgresPool';
 import {
   generateAccessToken,
   generateRefreshToken,
   rotateRefreshToken,
   revokeRefreshToken,
+  revokeAllUserTokens,
+  verifyAccessToken,
+  generatePendingTwoFactorToken,
+  verifyPendingTwoFactorToken,
   listUserSessions,
   revokeSession,
   revokeOtherSessions,
@@ -243,6 +249,30 @@ router.post(
         mustChangePassword: dbUser.must_change_password === true
       };
 
+      // AUTH-207: parola doğru — ama 2FA gerekiyorsa TAM token DEĞİL, yalnızca
+      // 5 dk ömürlü bir "kısmi" token dönülür. requires2fa: kullanıcının 2FA'sı
+      // zaten kurulu (opt-in, bayraktan bağımsız). requires2faSetup: rol
+      // zorunlu (config.TOTP_ENFORCED) ama henüz kurmamış.
+      const totpRow = await getUserTotp(dbUser.id);
+      if (totpRow?.enabled) {
+        return res.json({
+          success: true,
+          requires2fa: true,
+          partialToken: generatePendingTwoFactorToken(dbUser.id, dbUser.tenant_id, 'VERIFY'),
+          partialTokenExpiresInSeconds: 300,
+          message: 'Parola doğrulandı. İkinci adım: doğrulayıcı uygulamanızdaki 6 haneli kod (POST /auth/2fa/verify).'
+        });
+      }
+      if (REQUIRED_2FA_ROLES.has(dbUser.role) && config.TOTP_ENFORCED) {
+        return res.json({
+          success: true,
+          requires2faSetup: true,
+          partialToken: generatePendingTwoFactorToken(dbUser.id, dbUser.tenant_id, 'SETUP'),
+          partialTokenExpiresInSeconds: 300,
+          message: 'Bu rol için iki adımlı doğrulama zorunludur. POST /auth/2fa/setup ile kurun.'
+        });
+      }
+
       // AUTH-208: refresh token ÖNCE üretilir (yeni oturum ailesi) ki access
       // token'a o oturumun sid'i gömülebilsin.
       const newSession = await generateRefreshToken(dbUser.id, dbUser.tenant_id, {
@@ -306,6 +336,15 @@ router.post('/auth/refresh', refreshRateLimiter, async (req: Request, res: Respo
       if (dbRes.rows.length === 0) return null;
 
       const dbUser = dbRes.rows[0];
+
+      // AUTH-207: zorunlu bir rol 2FA kurmadan (config.TOTP_ENFORCED açıkken)
+      // yenileme yapamaz — mevcut oturumun eski access token'ı 15 dk içinde
+      // düşer, sonra yeniden login + kurulum akışına girer.
+      if (REQUIRED_2FA_ROLES.has(dbUser.role) && config.TOTP_ENFORCED) {
+        const t = await getUserTotp(dbUser.id);
+        if (!t?.enabled) return null;
+      }
+
       const payload: JwtUserPayload = {
         userId: dbUser.id,
         tenantId: dbUser.tenant_id,
@@ -451,6 +490,293 @@ router.get('/auth/me', authenticateJWT, (req: AuthenticatedRequest, res: Respons
     message: 'Kimlik bilgileri doğrulandı.',
     user: req.user
   });
+});
+
+// ── AUTH-207: TOTP tabanlı iki adımlı doğrulama (2FA) ───────────────────
+const REQUIRED_2FA_ROLES = new Set(['SUPER_ADMIN', 'COMPANY_OWNER']);
+
+interface TwoFactorActor {
+  userId: string;
+  tenantId: string;
+  role?: string;
+  viaPartial: boolean;
+  partialMode?: 'VERIFY' | 'SETUP';
+}
+
+/**
+ * 2FA uçları authenticateJWT KULLANMAZ (kısmi token onu geçemez). Aktörü
+ * ya tam bir access token'dan (opt-in kurulum / devre dışı bırakma) ya da
+ * gövdedeki `partialToken`'dan (login akışının 2. adımı) çözer.
+ */
+function resolveTwoFactorActor(req: Request): TwoFactorActor {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith('Bearer ')) {
+    try {
+      const p = verifyAccessToken(auth.slice(7)); // pending2fa token'ı için fırlatır
+      return { userId: p.userId, tenantId: p.tenantId, role: p.role, viaPartial: false };
+    } catch {
+      /* tam token değil — partialToken'a düş */
+    }
+  }
+  const partial = (req.body && (req.body as any).partialToken) as string | undefined;
+  if (partial) {
+    const p = verifyPendingTwoFactorToken(partial); // geçersizse fırlatır
+    return { userId: p.userId, tenantId: p.tenantId, viaPartial: true, partialMode: p.mode };
+  }
+  throw new UnauthorizedError('2FA işlemi için geçerli bir oturum ya da partialToken gerekli.', { error: 'NO_AUTH' });
+}
+
+async function buildLoginTokens(req: Request, base: JwtUserPayload): Promise<{ accessToken: string; refreshToken: string; tokenType: string; expiresInSeconds: number }> {
+  const session = await generateRefreshToken(base.userId, base.tenantId, {
+    userAgent: req.headers['user-agent'] ?? null,
+    ipAddress: req.ip ?? null
+  });
+  return {
+    accessToken: generateAccessToken({ ...base, sid: session.sessionId }),
+    refreshToken: session.token,
+    tokenType: 'Bearer',
+    expiresInSeconds: 900
+  };
+}
+
+async function payloadForUserId(userId: string): Promise<JwtUserPayload | null> {
+  const u = await getUserAuthById(userId);
+  if (!u) return null;
+  const full = await pool.query('SELECT site_name, must_change_password FROM users WHERE id = $1', [userId]);
+  return {
+    userId: u.id,
+    tenantId: u.tenant_id,
+    username: u.username,
+    role: u.role as UserRole,
+    siteName: full.rows[0]?.site_name || undefined,
+    mustChangePassword: full.rows[0]?.must_change_password === true
+  };
+}
+
+/**
+ * @swagger
+ * /auth/2fa/setup:
+ *   post:
+ *     summary: TOTP Kurulumunu Başlat (AUTH-207)
+ *     description: >
+ *       Yeni bir TOTP sırrı + `otpauth://` URI (istemci QR çizer) + 10 tek
+ *       kullanımlık kurtarma kodu döner. Kodlar YALNIZCA bu yanıtta gösterilir.
+ *       Henüz etkinleştirilmez — POST /auth/2fa/enable ile ilk doğru kod
+ *       girilince aktifleşir. Tam token veya login'in `partialToken`'ı ile.
+ *     security: []
+ */
+router.post('/auth/2fa/setup', validateRequest({ body: totpSetupSchema }), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const actor = resolveTwoFactorActor(req);
+    const user = await getUserAuthById(actor.userId);
+    if (!user) throw new NotFoundError('Kullanıcı bulunamadı.');
+
+    const existing = await getUserTotp(actor.userId);
+    if (existing?.enabled) {
+      throw new ConflictError('2FA zaten etkin. Önce POST /auth/2fa/disable ile kapatın.', { error: 'ALREADY_ENABLED' });
+    }
+
+    const secretBase32 = generateTotpSecret();
+    const recoveryCodes = generateRecoveryCodes(10);
+    const hashes = await Promise.all(recoveryCodes.map((c) => hashPassword(normalizeRecoveryCode(c))));
+    await saveUserTotpSecret(actor.userId, actor.tenantId, secretBase32, hashes);
+    await insertAuthAuditLog(actor.tenantId, actor.userId, 'TOTP_SETUP_INITIATED', actor.userId, { viaPartial: actor.viaPartial });
+
+    res.json({
+      success: true,
+      data: {
+        secretBase32,
+        otpauthUri: buildOtpauthUri(secretBase32, user.username),
+        recoveryCodes,
+        message: 'Sırrı doğrulayıcı uygulamanıza ekleyin, sonra POST /auth/2fa/enable ile 6 haneli kodu doğrulayın. Kurtarma kodlarını güvenli bir yere kaydedin — tekrar gösterilmez.'
+      }
+    });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/2fa/enable:
+ *   post:
+ *     summary: TOTP'yi Etkinleştir (AUTH-207)
+ *     description: >
+ *       `{ code }` — kurulumdaki sırdan üretilmiş 6 haneli kod. İlk doğru kodda
+ *       2FA aktifleşir. Kurulum akışı `partialToken` (SETUP) ile geldiyse bu
+ *       adımda tam token çifti de döner (login tamamlanır).
+ *     security: []
+ */
+router.post('/auth/2fa/enable', validateRequest({ body: totpEnableSchema }), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const actor = resolveTwoFactorActor(req);
+    const row = await getUserTotp(actor.userId);
+    if (!row) throw new BadRequestError('Önce POST /auth/2fa/setup ile kurulum yapın.', { error: 'NOT_SET_UP' });
+    if (row.enabled) throw new ConflictError('2FA zaten etkin.', { error: 'ALREADY_ENABLED' });
+    if (!verifyTotp(row.secret_base32, req.body.code)) {
+      throw new UnauthorizedError('Doğrulama kodu geçersiz. Uygulamanızdaki güncel kodu girin.', { error: 'INVALID_CODE' });
+    }
+    await enableUserTotp(actor.userId);
+    await insertAuthAuditLog(actor.tenantId, actor.userId, 'TOTP_ENABLED', actor.userId, {});
+
+    if (actor.viaPartial && actor.partialMode === 'SETUP') {
+      const base = await payloadForUserId(actor.userId);
+      if (!base) throw new NotFoundError('Kullanıcı bulunamadı.');
+      const tokens = await buildLoginTokens(req, base);
+      return res.json({ success: true, enabled: true, message: '2FA etkinleştirildi ve giriş tamamlandı.', ...tokens });
+    }
+    res.json({ success: true, enabled: true, message: '2FA etkinleştirildi.' });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/2fa/verify:
+ *   post:
+ *     summary: Login'in 2. Adımı — TOTP veya Kurtarma Kodu (AUTH-207)
+ *     description: >
+ *       `{ partialToken, code }` VEYA `{ partialToken, recoveryCode }`. Başarılı
+ *       olunca tam access + refresh token döner. Kurtarma kodları TEK
+ *       KULLANIMLIKTIR (kullanılınca listeden silinir).
+ *     security: []
+ */
+router.post('/auth/2fa/verify', validateRequest({ body: totpVerifySchema }), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const actor = resolveTwoFactorActor(req);
+    if (!actor.viaPartial) {
+      throw new BadRequestError('Bu uç yalnızca login akışının partialToken\'ı ile kullanılır.', { error: 'FULL_TOKEN_NOT_ALLOWED' });
+    }
+    const row = await getUserTotp(actor.userId);
+    if (!row || !row.enabled) {
+      throw new BadRequestError('Bu hesapta etkin bir 2FA yok.', { error: 'TOTP_NOT_ENABLED' });
+    }
+
+    let usedRecovery = false;
+    let recoveryRemaining = row.recovery_codes_total;
+
+    if (req.body.code) {
+      if (!verifyTotp(row.secret_base32, req.body.code)) {
+        throw new UnauthorizedError('Doğrulama kodu geçersiz.', { error: 'INVALID_CODE' });
+      }
+      await touchTotpLastUsed(actor.userId);
+    } else {
+      const candidate = normalizeRecoveryCode(req.body.recoveryCode);
+      let matchIdx = -1;
+      for (let i = 0; i < row.recovery_code_hashes.length; i++) {
+        if (await verifyPassword(row.recovery_code_hashes[i], candidate)) { matchIdx = i; break; }
+      }
+      if (matchIdx === -1) {
+        throw new UnauthorizedError('Kurtarma kodu geçersiz veya daha önce kullanılmış.', { error: 'INVALID_RECOVERY_CODE' });
+      }
+      const remaining = row.recovery_code_hashes.filter((_, i) => i !== matchIdx);
+      await setTotpRecoveryHashes(actor.userId, remaining);
+      usedRecovery = true;
+      recoveryRemaining = remaining.length;
+      await insertAuthAuditLog(actor.tenantId, actor.userId, 'TOTP_RECOVERY_USED', actor.userId, { remaining: remaining.length });
+    }
+
+    const base = await payloadForUserId(actor.userId);
+    if (!base) throw new NotFoundError('Kullanıcı bulunamadı.');
+    const tokens = await buildLoginTokens(req, base);
+    if (!usedRecovery) {
+      await insertAuthAuditLog(actor.tenantId, actor.userId, 'TOTP_LOGIN', actor.userId, {});
+    }
+    res.json({
+      success: true,
+      message: usedRecovery ? 'Kurtarma kodu ile giriş yapıldı.' : 'İki adımlı doğrulama başarılı.',
+      usedRecoveryCode: usedRecovery,
+      recoveryCodesRemaining: usedRecovery ? recoveryRemaining : undefined,
+      ...tokens
+    });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/2fa/disable:
+ *   post:
+ *     summary: 2FA'yı Devre Dışı Bırak (AUTH-207)
+ *     description: >
+ *       Tam token gerektirir; `{ code }` ile yeniden doğrulama ister. Başarılı
+ *       olunca 2FA kaldırılır ve kullanıcının DİĞER tüm oturumları kapatılır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/auth/2fa/disable', validateRequest({ body: totpDisableSchema }), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const actor = resolveTwoFactorActor(req);
+    if (actor.viaPartial) {
+      throw new UnauthorizedError('2FA devre dışı bırakma tam bir oturum gerektirir.', { error: 'FULL_TOKEN_REQUIRED' });
+    }
+    const row = await getUserTotp(actor.userId);
+    if (!row || !row.enabled) throw new BadRequestError('Etkin bir 2FA yok.', { error: 'TOTP_NOT_ENABLED' });
+    if (!verifyTotp(row.secret_base32, req.body.code)) {
+      throw new UnauthorizedError('Doğrulama kodu geçersiz.', { error: 'INVALID_CODE' });
+    }
+    await deleteUserTotp(actor.userId);
+    await revokeAllUserTokens(actor.userId);
+    await insertAuthAuditLog(actor.tenantId, actor.userId, 'TOTP_DISABLED', actor.userId, {});
+    res.json({ success: true, enabled: false, message: '2FA devre dışı bırakıldı. Güvenlik nedeniyle diğer oturumlar da kapatıldı.' });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/2fa/status:
+ *   get:
+ *     summary: 2FA Durumu (AUTH-207)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/auth/2fa/status', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const row = await getUserTotp(req.user!.userId);
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      success: true,
+      data: {
+        enabled: !!row?.enabled,
+        recoveryCodesRemaining: row ? row.recovery_code_hashes.length : 0,
+        requiredForRole: REQUIRED_2FA_ROLES.has(req.user!.role) && config.TOTP_ENFORCED
+      }
+    });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/2fa/users/{userId}:
+ *   delete:
+ *     summary: Bir Kullanıcının 2FA'sını Sıfırla (AUTH-207)
+ *     description: >
+ *       SUPER_ADMIN, aynı firmadaki bir kullanıcının 2FA'sını (cihaz
+ *       kaybı/kilitlenme durumunda) kaldırır ve oturumlarını kapatır. Kullanıcı
+ *       sonraki girişte yeniden kurmak zorunda kalır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete('/auth/2fa/users/:userId', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const target = await getUserAuthById(req.params.userId);
+    if (!target || target.tenant_id !== req.user!.tenantId) {
+      throw new NotFoundError('Kullanıcı bu firmada bulunamadı.', { error: 'USER_NOT_FOUND' });
+    }
+    const removed = await deleteUserTotp(req.params.userId);
+    if (!removed) throw new NotFoundError('Bu kullanıcıda kayıtlı 2FA yok.', { error: 'NO_TOTP' });
+    await revokeAllUserTokens(req.params.userId);
+    await insertAuthAuditLog(req.user!.tenantId, req.user!.userId, 'TOTP_RESET_BY_ADMIN', req.params.userId, { targetUserId: req.params.userId });
+    res.json({ success: true, message: 'Kullanıcının 2FA kaydı sıfırlandı ve oturumları kapatıldı.' });
+  } catch (error: any) {
+    next(error);
+  }
 });
 
 // ── AUTH-208: aktif oturum/cihaz listesi + uzaktan oturum kapatma ───────

@@ -442,3 +442,103 @@ export async function sweepTimedOutCalibrations(): Promise<Array<{ id: string; d
   );
   return result.rows.map((r) => ({ id: r.id, deviceId: r.device_id, tenantId: r.tenant_id }));
 }
+
+// ============================================================================
+// AUTH-207: TOTP 2FA — user_totp erişimi + auth denetim kaydı
+// ============================================================================
+// Login/2FA akışı henüz bir tenant context'i (RLS) kurmadan çalışır — bu
+// yüzden findUserForPasswordReset ile AYNI gerekçeyle ham pool.query
+// (adminDb.ts zaten check-no-raw-pool-query allowlist'inde).
+
+export interface UserAuthRow {
+  id: string;
+  tenant_id: string;
+  username: string;
+  role: string;
+}
+
+export async function getUserAuthById(userId: string): Promise<UserAuthRow | null> {
+  const r = await pool.query('SELECT id, tenant_id, username, role FROM users WHERE id = $1', [userId]);
+  return r.rows[0] ?? null;
+}
+
+export interface UserTotpRow {
+  user_id: string;
+  tenant_id: string;
+  secret_base32: string;
+  enabled: boolean;
+  enabled_at: string | null;
+  recovery_code_hashes: string[];
+  recovery_codes_total: number;
+  last_used_at: string | null;
+}
+
+export async function getUserTotp(userId: string): Promise<UserTotpRow | null> {
+  const r = await pool.query('SELECT * FROM user_totp WHERE user_id = $1', [userId]);
+  return r.rows[0] ?? null;
+}
+
+/** Kurulum: sırrı + kurtarma kodu hash'lerini yazar (enabled=FALSE). */
+export async function saveUserTotpSecret(
+  userId: string,
+  tenantId: string,
+  secretBase32: string,
+  recoveryCodeHashes: string[]
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO user_totp (user_id, tenant_id, secret_base32, enabled, recovery_code_hashes, recovery_codes_total, updated_at)
+     VALUES ($1, $2, $3, FALSE, $4, $5, CURRENT_TIMESTAMP)
+     ON CONFLICT (user_id) DO UPDATE SET
+       secret_base32 = EXCLUDED.secret_base32,
+       enabled = FALSE,
+       enabled_at = NULL,
+       recovery_code_hashes = EXCLUDED.recovery_code_hashes,
+       recovery_codes_total = EXCLUDED.recovery_codes_total,
+       last_used_at = NULL,
+       updated_at = CURRENT_TIMESTAMP`,
+    [userId, tenantId, secretBase32, recoveryCodeHashes, recoveryCodeHashes.length]
+  );
+}
+
+export async function enableUserTotp(userId: string): Promise<void> {
+  await pool.query(
+    `UPDATE user_totp SET enabled = TRUE, enabled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1`,
+    [userId]
+  );
+}
+
+export async function deleteUserTotp(userId: string): Promise<boolean> {
+  const r = await pool.query('DELETE FROM user_totp WHERE user_id = $1', [userId]);
+  return (r.rowCount ?? 0) > 0;
+}
+
+/** Kalan kurtarma kodu hash listesini değiştirir (bir kod tüketilince). */
+export async function setTotpRecoveryHashes(userId: string, hashes: string[]): Promise<void> {
+  await pool.query(
+    `UPDATE user_totp SET recovery_code_hashes = $2, last_used_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1`,
+    [userId, hashes]
+  );
+}
+
+export async function touchTotpLastUsed(userId: string): Promise<void> {
+  await pool.query('UPDATE user_totp SET last_used_at = CURRENT_TIMESTAMP WHERE user_id = $1', [userId]);
+}
+
+/**
+ * AUTH-207 AC: "2FA etkinleştirme/devre dışı bırakma audit log'a
+ * yazılmalıdır." Login/2FA akışı tenant context'i kurmadığı için writeAuditLog
+ * (getTenantStore'a bağımlı) kullanılamaz — doğrudan, açık tenant_id ile.
+ */
+export async function insertAuthAuditLog(
+  tenantId: string,
+  actorUserId: string | null,
+  action: string,
+  targetId: string,
+  detail: Record<string, unknown>
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO audit_logs (id, tenant_id, user_id, action, target_type, target_id, after_value)
+     VALUES ($1, $2, $3, $4, 'user_totp', $5, $6)`,
+    [generateId('audit'), tenantId, actorUserId, action, targetId, JSON.stringify(detail)]
+  );
+}

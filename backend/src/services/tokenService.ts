@@ -279,20 +279,53 @@ export async function rotateRefreshToken(
  * Verify Access Token
  */
 export function verifyAccessToken(token: string): JwtUserPayload {
+  let decoded: any;
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
-    return {
-      userId: decoded.userId,
-      tenantId: decoded.tenantId,
-      username: decoded.username,
-      role: decoded.role,
-      siteName: decoded.siteName,
-      mustChangePassword: decoded.mustChangePassword ?? false,
-      sid: decoded.sid
-    };
+    decoded = jwt.verify(token, JWT_SECRET) as any;
   } catch (err) {
     throw new Error('UNAUTHORIZED: Geçersiz veya süresi dolmuş access token.');
   }
+  // AUTH-207: 2FA bekleyen "kısmi" token bir ERİŞİM token'ı DEĞİLDİR — yalnızca
+  // /auth/2fa/* uçları verifyPendingTwoFactorToken ile kabul eder. Buradan
+  // geçen her şey normal API erişimidir; kısmi token'ı geçersiz say.
+  if (decoded.pending2fa === true) {
+    throw new Error('TWO_FACTOR_PENDING: İki adımlı doğrulama tamamlanmadan bu token kullanılamaz.');
+  }
+  return {
+    userId: decoded.userId,
+    tenantId: decoded.tenantId,
+    username: decoded.username,
+    role: decoded.role,
+    siteName: decoded.siteName,
+    mustChangePassword: decoded.mustChangePassword ?? false,
+    sid: decoded.sid
+  };
+}
+
+// ============================================================================
+// AUTH-207: 2FA "kısmi" (pending) token — parola doğru ama 2. adım eksik
+// ============================================================================
+
+const PENDING_2FA_TTL_SECONDS = 5 * 60;
+export type TwoFactorPendingMode = 'VERIFY' | 'SETUP';
+
+export function generatePendingTwoFactorToken(userId: string, tenantId: string, mode: TwoFactorPendingMode): string {
+  return jwt.sign({ userId, tenantId, pending2fa: true, twoFactorMode: mode }, JWT_SECRET, {
+    expiresIn: PENDING_2FA_TTL_SECONDS
+  });
+}
+
+export function verifyPendingTwoFactorToken(token: string): { userId: string; tenantId: string; mode: TwoFactorPendingMode } {
+  let decoded: any;
+  try {
+    decoded = jwt.verify(token, JWT_SECRET) as any;
+  } catch (err) {
+    throw new Error('INVALID_PARTIAL_TOKEN: Kısmi oturum süresi doldu veya geçersiz. Lütfen tekrar giriş yapın.');
+  }
+  if (decoded.pending2fa !== true || !decoded.userId) {
+    throw new Error('INVALID_PARTIAL_TOKEN: Bu token bir 2FA kısmi token\'ı değil.');
+  }
+  return { userId: decoded.userId, tenantId: decoded.tenantId, mode: decoded.twoFactorMode as TwoFactorPendingMode };
 }
 
 /**

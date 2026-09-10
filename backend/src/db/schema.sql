@@ -708,6 +708,25 @@ CREATE TABLE IF NOT EXISTS transaction_anomaly_flags (
     UNIQUE (transaction_id, anomaly_type)
 );
 
+-- AUTH-207: TOTP (RFC 6238) tabanlı 2FA. secret_base32 kurulumda üretilir,
+-- enabled ancak kullanıcı ilk doğru kodu girince TRUE olur. recovery_code_hashes
+-- = kalan tek kullanımlık kurtarma kodlarının Argon2id hash'leri (kullanılan
+-- diziden çıkarılır). Rol bazlı ZORUNLULUK config.TOTP_ENFORCED bayrağına
+-- bağlıdır (seed/demo ve mevcut test paketi yönetici hesaplarından kilitlenmesin
+-- diye varsayılan kapalı; üretimde TRUE).
+CREATE TABLE IF NOT EXISTS user_totp (
+    user_id VARCHAR(64) PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    secret_base32 VARCHAR(64) NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    enabled_at TIMESTAMP WITH TIME ZONE,
+    recovery_code_hashes TEXT[] NOT NULL DEFAULT '{}',
+    recovery_codes_total INTEGER NOT NULL DEFAULT 0,
+    last_used_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ==============================================================================
 -- 6. Enable Row Level Security (RLS) Policies
 -- ==============================================================================
@@ -736,6 +755,7 @@ ALTER TABLE stock_reconciliations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE manual_dispense_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE site_working_hours ENABLE ROW LEVEL SECURITY;
 ALTER TABLE transaction_anomaly_flags ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_totp ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -841,6 +861,7 @@ ALTER TABLE stock_reconciliations FORCE ROW LEVEL SECURITY;
 ALTER TABLE manual_dispense_requests FORCE ROW LEVEL SECURITY;
 ALTER TABLE site_working_hours FORCE ROW LEVEL SECURITY;
 ALTER TABLE transaction_anomaly_flags FORCE ROW LEVEL SECURITY;
+ALTER TABLE user_totp FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -868,6 +889,7 @@ DROP POLICY IF EXISTS stock_reconciliations_tenant_isolation_policy ON stock_rec
 DROP POLICY IF EXISTS manual_dispense_requests_tenant_isolation_policy ON manual_dispense_requests;
 DROP POLICY IF EXISTS site_working_hours_tenant_isolation_policy ON site_working_hours;
 DROP POLICY IF EXISTS transaction_anomaly_flags_tenant_isolation_policy ON transaction_anomaly_flags;
+DROP POLICY IF EXISTS user_totp_tenant_isolation_policy ON user_totp;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -1013,6 +1035,11 @@ CREATE POLICY site_working_hours_tenant_isolation_policy ON site_working_hours
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
 CREATE POLICY transaction_anomaly_flags_tenant_isolation_policy ON transaction_anomaly_flags
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY user_totp_tenant_isolation_policy ON user_totp
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
