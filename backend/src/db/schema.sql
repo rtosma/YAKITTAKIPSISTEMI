@@ -727,6 +727,53 @@ CREATE TABLE IF NOT EXISTS user_totp (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- AI-507: TÜM alarm kaynaklarının (hırsızlık AI-501, tüketim anomalisi
+-- AI-502/503, mesai dışı/mükerrer AI-504, stok mutabakatı FUEL-409, negatif
+-- stok IOT-303.2, kalibrasyon sapması FUEL-404, ...) tek bir yaşam döngüsüne
+-- aktığı birleşik alarm tablosu. alarm_key GRUPLAMA anahtarıdır: aynı kök
+-- nedenden doğan tekrarlar 50 ayrı satır değil, 1 alarm + event_count olur
+-- (olaylar alarm_events'te). Kritik Not.
+CREATE TABLE IF NOT EXISTS alarms (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    -- Kök nedene özgü sabit anahtar, ör. 'STOCK_RECON:tank-gebze-1' —
+    -- (tenant_id, alarm_key) BENZERSİZ → gruplama.
+    alarm_key VARCHAR(200) NOT NULL,
+    category VARCHAR(40) NOT NULL,
+    -- 'INFO' | 'WARNING' | 'CRITICAL'
+    severity VARCHAR(16) NOT NULL DEFAULT 'WARNING',
+    title VARCHAR(300) NOT NULL,
+    site_name VARCHAR(128),
+    subject_type VARCHAR(32),   -- 'VEHICLE' | 'TANK' | 'DRIVER' | 'DEVICE' | 'SITE'
+    subject_id VARCHAR(128),
+    -- 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE'
+    status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+    assignee_id VARCHAR(64),
+    event_count INTEGER NOT NULL DEFAULT 1,
+    first_seen_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    -- Susturma: bu ana kadar varsayılan listede/eskalasyonda gösterilmez.
+    snoozed_until TIMESTAMP WITH TIME ZONE,
+    escalation_level INTEGER NOT NULL DEFAULT 0,
+    escalated_at TIMESTAMP WITH TIME ZONE,
+    resolution_note TEXT,
+    resolved_by VARCHAR(64),
+    resolved_at TIMESTAMP WITH TIME ZONE,
+    source_ref JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tenant_id, alarm_key)
+);
+
+-- AI-507: gruplanmış alarmın altındaki tekil olaylar (append-only).
+CREATE TABLE IF NOT EXISTS alarm_events (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    alarm_id VARCHAR(64) NOT NULL,
+    detail JSONB,
+    occurred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ==============================================================================
 -- 6. Enable Row Level Security (RLS) Policies
 -- ==============================================================================
@@ -756,6 +803,8 @@ ALTER TABLE manual_dispense_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE site_working_hours ENABLE ROW LEVEL SECURITY;
 ALTER TABLE transaction_anomaly_flags ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_totp ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alarms ENABLE ROW LEVEL SECURITY;
+ALTER TABLE alarm_events ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -862,6 +911,8 @@ ALTER TABLE manual_dispense_requests FORCE ROW LEVEL SECURITY;
 ALTER TABLE site_working_hours FORCE ROW LEVEL SECURITY;
 ALTER TABLE transaction_anomaly_flags FORCE ROW LEVEL SECURITY;
 ALTER TABLE user_totp FORCE ROW LEVEL SECURITY;
+ALTER TABLE alarms FORCE ROW LEVEL SECURITY;
+ALTER TABLE alarm_events FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -890,6 +941,8 @@ DROP POLICY IF EXISTS manual_dispense_requests_tenant_isolation_policy ON manual
 DROP POLICY IF EXISTS site_working_hours_tenant_isolation_policy ON site_working_hours;
 DROP POLICY IF EXISTS transaction_anomaly_flags_tenant_isolation_policy ON transaction_anomaly_flags;
 DROP POLICY IF EXISTS user_totp_tenant_isolation_policy ON user_totp;
+DROP POLICY IF EXISTS alarms_tenant_isolation_policy ON alarms;
+DROP POLICY IF EXISTS alarm_events_tenant_isolation_policy ON alarm_events;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -1044,6 +1097,16 @@ CREATE POLICY user_totp_tenant_isolation_policy ON user_totp
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY alarms_tenant_isolation_policy ON alarms
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY alarm_events_tenant_isolation_policy ON alarm_events
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- ==============================================================================
 -- [PERF] tenant_id İndeksleri
 -- ==============================================================================
@@ -1132,3 +1195,8 @@ CREATE INDEX IF NOT EXISTS idx_manual_dispense_requests_status ON manual_dispens
 
 -- AI-504: inceleme kuyruğu (status='ACIK') ve dönem/şantiye filtreli listeleme.
 CREATE INDEX IF NOT EXISTS idx_transaction_anomaly_flags_queue ON transaction_anomaly_flags(tenant_id, status, transaction_at DESC);
+
+-- AI-507: aktif alarm listesi (RESOLVED/FALSE_POSITIVE hariç) + eskalasyon
+-- süpürücüsü (CRITICAL + OPEN + eski) bu desenle çalışır.
+CREATE INDEX IF NOT EXISTS idx_alarms_active ON alarms(tenant_id, status, severity, last_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alarm_events_alarm ON alarm_events(tenant_id, alarm_id, occurred_at DESC);

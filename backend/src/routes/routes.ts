@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -13,6 +13,7 @@ import { createFuelIntakeSchema, listFuelIntakeQuerySchema } from '../schemas/fu
 import { createReconciliationSchema, listReconciliationQuerySchema } from '../schemas/stockReconciliationSchema';
 import { createManualDispenseSchema, rejectManualDispenseSchema, listManualDispenseQuerySchema, manualDispenseRatioQuerySchema } from '../schemas/manualDispenseSchema';
 import { setWorkingHoursSchema, scanAnomalySchema, listAnomalyFlagQuerySchema, reviewAnomalyFlagSchema } from '../schemas/anomalyFlagSchema';
+import { updateAlarmSchema, snoozeAlarmSchema, listAlarmQuerySchema } from '../schemas/alarmSchema';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
 import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes, normalizeRecoveryCode } from '../services/totpService';
 import { isServerShuttingDown } from '../utils/shutdown';
@@ -1632,6 +1633,158 @@ router.patch(
     try {
       const rec = await reviewAnomalyFlag(req.params.id, req.user!.userId, req.body);
       res.json({ success: true, data: rec });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── AI-507: birleşik alarm yaşam döngüsü ───────────────────────────────
+const ALARM_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /alarms:
+ *   get:
+ *     summary: Alarm Kuyruğu (AI-507)
+ *     description: >
+ *       Varsayılan: RESOLVED/FALSE_POSITIVE ve susturulmuş alarmlar HARİÇ,
+ *       CRITICAL ve eskalasyon önce. `?status ?category ?severity ?siteName
+ *       ?assigneeId ?includeSnoozed=true ?includeResolved=true`.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/alarms',
+  authenticateJWT,
+  authorizeRoles(...ALARM_MANAGER_ROLES),
+  validateRequest({ query: listAlarmQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const alarms = await getAlarms(req.query as any);
+      res.json({ success: true, totalCount: alarms.length, data: alarms });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /alarms/false-positive-feedback:
+ *   get:
+ *     summary: Yanlış-Pozitif Geri Beslemesi (AI-507)
+ *     description: Kategori bazında FALSE_POSITIVE oranları — eşik kalibrasyonu için.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/alarms/false-positive-feedback',
+  authenticateJWT,
+  authorizeRoles(...ALARM_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getFalsePositiveFeedback() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/alarms/:id',
+  authenticateJWT,
+  authorizeRoles(...ALARM_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getAlarm(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /alarms/{id}:
+ *   patch:
+ *     summary: Alarm Durum/Atama/Çözüm Güncelle (AI-507)
+ *     description: >
+ *       `{ status?, assigneeId?, resolutionNote? }`. RESOLVED / FALSE_POSITIVE
+ *       için resolutionNote zorunlu. Değişiklik audit_logs'a (ALARM_UPDATED).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch(
+  '/alarms/:id',
+  authenticateJWT,
+  authorizeRoles(...ALARM_MANAGER_ROLES),
+  validateRequest({ body: updateAlarmSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const alarm = await updateAlarm(req.params.id, req.user!.userId, req.body);
+      const tenantId = req.user?.tenantId;
+      if (tenantId) {
+        try { broadcastToTenant(tenantId, 'alarm:updated', { id: alarm.id, status: alarm.status, assigneeId: alarm.assignee_id }); } catch { /* */ }
+      }
+      res.json({ success: true, data: alarm });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /alarms/{id}/snooze:
+ *   post:
+ *     summary: Alarmı Sustur (AI-507)
+ *     description: '`{ minutes }` (1..43200). Süre boyunca varsayılan listede ve eskalasyonda görünmez.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/alarms/:id/snooze',
+  authenticateJWT,
+  authorizeRoles(...ALARM_MANAGER_ROLES),
+  validateRequest({ body: snoozeAlarmSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const alarm = await snoozeAlarm(req.params.id, req.user!.userId, req.body.minutes);
+      res.json({ success: true, data: alarm });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /alarms/run-escalation:
+ *   post:
+ *     summary: Eskalasyon Turunu Şimdi Çalıştır (AI-507)
+ *     description: >
+ *       index.ts saatlik süpürücüsünün yaptığı işi bu tenant için manuel
+ *       tetikler (ops + entegrasyon testi). Yalnızca SUPER_ADMIN.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/alarms/run-escalation',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const escalated = await runAlarmEscalationForCurrentTenant();
+      const tenantId = req.user?.tenantId;
+      if (tenantId && escalated.length > 0) {
+        try {
+          for (const a of escalated) {
+            broadcastToTenant(tenantId, 'alarm:escalated', { id: a.id, title: a.title, escalationLevel: a.escalation_level, siteName: a.site_name });
+          }
+        } catch { /* */ }
+      }
+      res.json({ success: true, data: { escalatedCount: escalated.length, escalated } });
     } catch (error: any) {
       next(error);
     }

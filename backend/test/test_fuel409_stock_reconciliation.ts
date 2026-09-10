@@ -237,6 +237,10 @@ async function run() {
     await c.query("DELETE FROM fuel_intake_receipts WHERE id = 'recontest-in-1'");
     await c.query("DELETE FROM transactions WHERE id = 'recontest-tx-1'");
     await c.query("DELETE FROM calibration_test_intakes WHERE id = 'recontest-ti-1'");
+    // AI-507: MUTABAKAT_ALARMI artık birleşik alarm da üretiyor — bu tanka
+    // ait alarmı ve olaylarını temizle.
+    await c.query("DELETE FROM alarm_events WHERE alarm_id IN (SELECT id FROM alarms WHERE tenant_id='comp-camsa' AND alarm_key = $1)", [`STOCK_RECON:${TANK_ID}`]);
+    await c.query("DELETE FROM alarms WHERE tenant_id='comp-camsa' AND alarm_key = $1", [`STOCK_RECON:${TANK_ID}`]);
     await c.end();
   }
 

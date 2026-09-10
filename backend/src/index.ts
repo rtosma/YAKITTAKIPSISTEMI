@@ -17,7 +17,7 @@ import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
-import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant } from './db/tenantDb';
+import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant } from './db/tenantDb';
 
 // NOTE: environment variables are loaded by ./bootstrap.ts (the real process
 // entry point — see package.json `dev`/`build`), BEFORE this module or any of
@@ -313,6 +313,32 @@ async function startServer(): Promise<void> {
     }
   }, ANOMALY_SWEEP_MS);
 
+  // AI-507 AC: "Kritik alarm belirlenen sürede yanıtlanmazsa eskalasyon
+  // tetiklenmelidir." Saatlik: atanmamış + susturulmamış CRITICAL/OPEN
+  // alarmların (kademe başına ~60 dk) escalation_level'ını artırır ve
+  // WebSocket'te yayınlar. Ticket'ın NOTIF-1606'sı yok — düz setInterval.
+  const ALARM_ESCALATION_SWEEP_MS = 60 * 60 * 1000;
+  const alarmEscalationSweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [AI-507] Tenant listesi alınamadı, bu eskalasyon turu atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const escalated = await runWithTenant({ tenantId }, () => runAlarmEscalationForCurrentTenant());
+        for (const a of escalated) {
+          broadcastToTenant(tenantId, 'alarm:escalated', { id: a.id, title: a.title, escalationLevel: a.escalation_level, siteName: a.site_name });
+          logger.warn({ tenantId, alarmId: a.id, level: a.escalation_level }, `⛰️ [AI-507] Kritik alarm eskalasyonu (kademe ${a.escalation_level}): ${a.title}`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [AI-507] Alarm eskalasyon süpürmesi başarısız.');
+      }
+    }
+  }, ALARM_ESCALATION_SWEEP_MS);
+
   // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
   setupGracefulShutdown(server, {
     timeoutMs: 30000,
@@ -325,6 +351,7 @@ async function startServer(): Promise<void> {
       clearInterval(quotaResetSweepInterval);
       clearInterval(dailyReconSweepInterval);
       clearInterval(anomalySweepInterval);
+      clearInterval(alarmEscalationSweepInterval);
 
       // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
       // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters

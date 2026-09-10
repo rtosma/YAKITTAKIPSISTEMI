@@ -205,6 +205,10 @@ async function run() {
     // Tenant-geneli tarama, başka testlerin bıraktığı ikmallere de işaret
     // koymuş olabilir — silinmiş işlemlere ait öksüz işaretleri temizle.
     await c.query("DELETE FROM transaction_anomaly_flags f WHERE tenant_id='comp-camsa' AND NOT EXISTS (SELECT 1 FROM transactions t WHERE t.id = f.transaction_id)");
+    // AI-507: tarama artık birleşik alarm da üretiyor — bu testin plakalarına
+    // ait alarmları ve olaylarını temizle.
+    await c.query("DELETE FROM alarm_events WHERE alarm_id IN (SELECT id FROM alarms WHERE tenant_id='comp-camsa' AND (alarm_key LIKE 'OFFHOURS_DISPENSE:AI504-%' OR alarm_key LIKE 'RAPID_REPEAT:AI504-%'))");
+    await c.query("DELETE FROM alarms WHERE tenant_id='comp-camsa' AND (alarm_key LIKE 'OFFHOURS_DISPENSE:AI504-%' OR alarm_key LIKE 'RAPID_REPEAT:AI504-%')");
     await c.end();
   }
 

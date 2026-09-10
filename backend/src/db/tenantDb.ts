@@ -3607,6 +3607,18 @@ async function reconcileTankRow(
       { tankId: tank.id, tankName: tank.name, varianceLiters, variancePct, classification },
       `🚨 [FUEL-409] Stok mutabakat alarmı: '${tank.name}' — teorik ${closingBook} L, fiziksel ${round2(input.physicalLiters)} L (fark %${variancePct}, ${classification}).`
     );
+    // AI-507: birleşik alarm yaşam döngüsüne ilet (gruplama anahtarı tank).
+    await raiseAlarm(client, tenantId, {
+      alarmKey: `STOCK_RECON:${tank.id}`,
+      category: 'STOCK_RECONCILIATION',
+      severity: classification === 'AÇIKLANAMAYAN' ? 'CRITICAL' : 'WARNING',
+      title: `Stok mutabakat farkı: ${tank.name} (%${variancePct}, ${classification})`,
+      siteName: tank.site_name,
+      subjectType: 'TANK',
+      subjectId: tank.id,
+      detail: { reconciliationId: id, varianceLiters, variancePct, classification, closingBookLiters: closingBook, physicalLiters: round2(input.physicalLiters) },
+      sourceRef: { table: 'stock_reconciliations', id }
+    });
   }
 
   return insRes.rows[0] as StockReconciliationRecord;
@@ -4297,7 +4309,26 @@ export async function runAnomalyDetectionForCurrentTenant(opts: {
           f.row.vehicle_plate, f.row.driver_name, f.row.created_at, f.row.amount_liters, JSON.stringify(f.detail)
         ]
       );
-      if (ins.rows.length > 0) counts[f.type as 'MESAI_DISI' | 'KISA_ARALIK_MUKERRER']++;
+      if (ins.rows.length > 0) {
+        counts[f.type as 'MESAI_DISI' | 'KISA_ARALIK_MUKERRER']++;
+        // AI-507: her yeni işaret birleşik alarm yaşam döngüsüne akar. Gruplama
+        // anahtarı (kategori + plaka) → aynı aracın 10 mesai-dışı alımı = 1
+        // alarm + 10 olay.
+        const alarmCategory: AlarmCategory = f.type === 'MESAI_DISI' ? 'OFFHOURS_DISPENSE' : 'RAPID_REPEAT';
+        await raiseAlarm(client, tenantId, {
+          alarmKey: `${alarmCategory}:${f.row.vehicle_plate}`,
+          category: alarmCategory,
+          severity: 'WARNING',
+          title: f.type === 'MESAI_DISI'
+            ? `Mesai dışı yakıt alımı: ${f.row.vehicle_plate} @ ${f.row.site_name}`
+            : `Kısa aralıklı mükerrer alım: ${f.row.vehicle_plate}`,
+          siteName: f.row.site_name,
+          subjectType: 'VEHICLE',
+          subjectId: f.row.vehicle_plate,
+          detail: { transactionId: f.row.id, ...f.detail },
+          sourceRef: { table: 'transaction_anomaly_flags', transactionId: f.row.id, anomalyType: f.type }
+        });
+      }
     }
 
     if (counts.MESAI_DISI + counts.KISA_ARALIK_MUKERRER > 0) {
@@ -4362,5 +4393,314 @@ export async function reviewAnomalyFlag(
       afterValue: { status: data.status, by: byUserId, note: data.reviewNote ?? null }
     });
     return res.rows[0];
+  });
+}
+
+// ============================================================================
+// AI-507: BİRLEŞİK ALARM YAŞAM DÖNGÜSÜ (durum, atama, susturma, eskalasyon,
+//         gruplama, yanlış-pozitif geri beslemesi)
+// ============================================================================
+
+export type AlarmCategory =
+  | 'THEFT' | 'CONSUMPTION_ANOMALY' | 'STOCK_RECONCILIATION' | 'OFFHOURS_DISPENSE'
+  | 'RAPID_REPEAT' | 'NEGATIVE_STOCK' | 'CALIBRATION_DRIFT' | 'MANUAL_ENTRY_RATIO' | 'OTHER';
+export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
+export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
+
+const SEVERITY_RANK: Record<AlarmSeverity, number> = { INFO: 0, WARNING: 1, CRITICAL: 2 };
+const ALARM_TERMINAL: AlarmStatus[] = ['RESOLVED', 'FALSE_POSITIVE'];
+// AI-507 AC: "Kritik alarm belirlenen sürede yanıtlanmazsa eskalasyon".
+const ALARM_ESCALATE_AFTER_MINUTES = 60;
+const ALARM_MAX_ESCALATION_LEVEL = 3;
+
+export interface AlarmSpec {
+  alarmKey: string;
+  category: AlarmCategory;
+  severity: AlarmSeverity;
+  title: string;
+  siteName?: string | null;
+  subjectType?: string | null;
+  subjectId?: string | null;
+  detail?: Record<string, unknown>;
+  sourceRef?: Record<string, unknown>;
+}
+
+export interface RaiseAlarmResult {
+  alarmId: string;
+  isNew: boolean;
+  reopened: boolean;
+  suppressed: boolean;
+  status: AlarmStatus;
+}
+
+/**
+ * AI-507 çekirdeği — tüm alarm kaynaklarının çağırdığı TEK huni. (tenant_id,
+ * alarm_key) BENZERSİZ olduğundan aynı kök nedenden doğan tekrarlar yeni satır
+ * DEĞİL, mevcut alarmın event_count'unu artırır + alarm_events'e bir olay ekler
+ * (Kritik Not: "50 ayrı alarm yerine 1 alarm + 50 olay"). `client` çağıranın
+ * withTenant transaction'ıdır → atomik.
+ */
+export async function raiseAlarm(
+  client: any,
+  tenantId: string,
+  spec: AlarmSpec
+): Promise<RaiseAlarmResult> {
+  const found = await client.query(
+    'SELECT id, severity, status, snoozed_until FROM alarms WHERE tenant_id = $1 AND alarm_key = $2 FOR UPDATE',
+    [tenantId, spec.alarmKey]
+  );
+
+  if (found.rows.length === 0) {
+    const id = generateId('alarm');
+    await client.query(
+      `INSERT INTO alarms (id, tenant_id, alarm_key, category, severity, title, site_name, subject_type, subject_id, source_ref)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [
+        id, tenantId, spec.alarmKey, spec.category, spec.severity, spec.title,
+        spec.siteName ?? null, spec.subjectType ?? null, spec.subjectId ?? null,
+        spec.sourceRef ? JSON.stringify(spec.sourceRef) : null
+      ]
+    );
+    await client.query(
+      `INSERT INTO alarm_events (id, tenant_id, alarm_id, detail) VALUES ($1,$2,$3,$4)`,
+      [generateId('almev'), tenantId, id, JSON.stringify(spec.detail ?? {})]
+    );
+    return { alarmId: id, isNew: true, reopened: false, suppressed: false, status: 'OPEN' };
+  }
+
+  const a = found.rows[0];
+  await client.query(
+    `INSERT INTO alarm_events (id, tenant_id, alarm_id, detail) VALUES ($1,$2,$3,$4)`,
+    [generateId('almev'), tenantId, a.id, JSON.stringify(spec.detail ?? {})]
+  );
+
+  const snoozedActive = a.snoozed_until && new Date(a.snoozed_until).getTime() > Date.now();
+  const newSeverity: AlarmSeverity =
+    SEVERITY_RANK[spec.severity] > SEVERITY_RANK[a.severity as AlarmSeverity] ? spec.severity : (a.severity as AlarmSeverity);
+
+  let newStatus: AlarmStatus = a.status;
+  let reopened = false;
+  if (!snoozedActive && ALARM_TERMINAL.includes(a.status)) {
+    newStatus = 'OPEN'; // kapatılmış bir alarm tekrar tetiklendi → yeniden aç
+    reopened = true;
+  }
+
+  await client.query(
+    `UPDATE alarms SET
+        event_count = event_count + 1,
+        last_seen_at = CURRENT_TIMESTAMP,
+        severity = $2,
+        status = $3,
+        title = $4,
+        resolved_at = CASE WHEN $5 THEN NULL ELSE resolved_at END,
+        resolved_by = CASE WHEN $5 THEN NULL ELSE resolved_by END,
+        resolution_note = CASE WHEN $5 THEN NULL ELSE resolution_note END,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1`,
+    [a.id, newSeverity, newStatus, spec.title, reopened]
+  );
+  return { alarmId: a.id, isNew: false, reopened, suppressed: !!snoozedActive, status: newStatus };
+}
+
+export async function raiseAlarmForCurrentTenant(spec: AlarmSpec): Promise<RaiseAlarmResult> {
+  return withTenant((client, tenantId) => raiseAlarm(client, tenantId, spec));
+}
+
+export interface AlarmRecord {
+  id: string;
+  tenant_id: string;
+  alarm_key: string;
+  category: string;
+  severity: string;
+  title: string;
+  site_name: string | null;
+  subject_type: string | null;
+  subject_id: string | null;
+  status: string;
+  assignee_id: string | null;
+  event_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  snoozed_until: string | null;
+  escalation_level: number;
+  escalated_at: string | null;
+  resolution_note: string | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  source_ref: any;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function getAlarms(filters: {
+  status?: string;
+  category?: string;
+  severity?: string;
+  siteName?: string;
+  assigneeId?: string;
+  includeSnoozed?: boolean;
+  includeResolved?: boolean;
+}): Promise<AlarmRecord[]> {
+  return withTenant(async (client) => {
+    const where: string[] = [];
+    const params: any[] = [];
+    if (filters.status) {
+      params.push(filters.status); where.push(`status = $${params.length}`);
+    } else if (!filters.includeResolved) {
+      where.push(`status NOT IN ('RESOLVED', 'FALSE_POSITIVE')`);
+    }
+    if (!filters.includeSnoozed) where.push(`(snoozed_until IS NULL OR snoozed_until <= NOW())`);
+    if (filters.category) { params.push(filters.category); where.push(`category = $${params.length}`); }
+    if (filters.severity) { params.push(filters.severity); where.push(`severity = $${params.length}`); }
+    if (filters.siteName) { params.push(filters.siteName); where.push(`site_name = $${params.length}`); }
+    if (filters.assigneeId) { params.push(filters.assigneeId); where.push(`assignee_id = $${params.length}`); }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const res = await client.query(
+      `SELECT * FROM alarms ${clause}
+        ORDER BY (severity = 'CRITICAL') DESC, escalation_level DESC, last_seen_at DESC`,
+      params
+    );
+    return res.rows;
+  });
+}
+
+export async function getAlarm(id: string): Promise<AlarmRecord & { events: any[] }> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM alarms WHERE id = $1', [id]);
+    if (res.rows.length === 0) throw new NotFoundError('Alarm bulunamadı.');
+    const events = await client.query(
+      'SELECT id, detail, occurred_at FROM alarm_events WHERE alarm_id = $1 ORDER BY occurred_at DESC LIMIT 100',
+      [id]
+    );
+    return { ...res.rows[0], events: events.rows };
+  });
+}
+
+export async function updateAlarm(
+  id: string,
+  byUserId: string,
+  data: { status?: AlarmStatus; assigneeId?: string | null; resolutionNote?: string }
+): Promise<AlarmRecord> {
+  return withTenant(async (client, tenantId) => {
+    const cur = await client.query('SELECT * FROM alarms WHERE id = $1 FOR UPDATE', [id]);
+    if (cur.rows.length === 0) throw new NotFoundError('Alarm bulunamadı.');
+    const before = cur.rows[0] as AlarmRecord;
+
+    const sets: string[] = ['updated_at = CURRENT_TIMESTAMP'];
+    const params: any[] = [id];
+
+    if (data.assigneeId !== undefined) {
+      if (data.assigneeId) {
+        const u = await client.query('SELECT 1 FROM users WHERE id = $1', [data.assigneeId]);
+        if (u.rows.length === 0) throw new BadRequestError('Atanacak kullanıcı bulunamadı.', { error: 'ASSIGNEE_NOT_FOUND' });
+      }
+      params.push(data.assigneeId);
+      sets.push(`assignee_id = $${params.length}`);
+    }
+
+    if (data.status) {
+      const terminal = ALARM_TERMINAL.includes(data.status);
+      if (terminal && !(data.resolutionNote && data.resolutionNote.trim().length >= 3)) {
+        throw new BadRequestError('RESOLVED / FALSE_POSITIVE için resolutionNote (en az 3 karakter) zorunludur.', { error: 'RESOLUTION_NOTE_REQUIRED' });
+      }
+      params.push(data.status);
+      sets.push(`status = $${params.length}`);
+      if (terminal) {
+        params.push(byUserId); sets.push(`resolved_by = $${params.length}`);
+        sets.push(`resolved_at = CURRENT_TIMESTAMP`);
+      } else {
+        sets.push(`resolved_by = NULL`, `resolved_at = NULL`);
+      }
+    }
+    if (data.resolutionNote !== undefined) {
+      params.push(data.resolutionNote);
+      sets.push(`resolution_note = $${params.length}`);
+    }
+
+    const res = await client.query(`UPDATE alarms SET ${sets.join(', ')} WHERE id = $1 RETURNING *`, params);
+    await writeAuditLog(client, {
+      action: 'ALARM_UPDATED',
+      targetType: 'alarm',
+      targetId: id,
+      beforeValue: { status: before.status, assigneeId: before.assignee_id },
+      afterValue: { status: res.rows[0].status, assigneeId: res.rows[0].assignee_id, by: byUserId, resolutionNote: data.resolutionNote }
+    });
+    return res.rows[0];
+  });
+}
+
+export async function snoozeAlarm(id: string, byUserId: string, minutes: number): Promise<AlarmRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      `UPDATE alarms SET snoozed_until = NOW() + ($2 || ' minutes')::interval, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1 RETURNING *`,
+      [id, String(minutes)]
+    );
+    if (res.rows.length === 0) throw new NotFoundError('Alarm bulunamadı.');
+    await writeAuditLog(client, {
+      action: 'ALARM_SNOOZED',
+      targetType: 'alarm',
+      targetId: id,
+      afterValue: { minutes, until: res.rows[0].snoozed_until, by: byUserId }
+    });
+    return res.rows[0];
+  });
+}
+
+/**
+ * AI-507 AC: "FALSE_POSITIVE işaretlemeleri eşik kalibrasyonu için
+ * toplanmalıdır." Bu uç, o toplamı kategori bazında sunar (eşik ayarını
+ * elle/otomatik gözden geçirmek için).
+ */
+export async function getFalsePositiveFeedback(): Promise<{
+  byCategory: Array<{ category: string; falsePositives: number; totalResolved: number; falsePositiveRate: number }>;
+  recent: Array<{ id: string; category: string; title: string; resolution_note: string | null; resolved_at: string }>;
+}> {
+  return withTenant(async (client) => {
+    const agg = await client.query(
+      `SELECT category,
+              COUNT(*) FILTER (WHERE status = 'FALSE_POSITIVE') AS fp,
+              COUNT(*) FILTER (WHERE status IN ('RESOLVED', 'FALSE_POSITIVE')) AS closed
+         FROM alarms GROUP BY category ORDER BY fp DESC`
+    );
+    const recent = await client.query(
+      `SELECT id, category, title, resolution_note, resolved_at FROM alarms
+        WHERE status = 'FALSE_POSITIVE' ORDER BY resolved_at DESC NULLS LAST LIMIT 50`
+    );
+    return {
+      byCategory: agg.rows.map((r: any) => {
+        const fp = Number(r.fp);
+        const closed = Number(r.closed);
+        return {
+          category: r.category,
+          falsePositives: fp,
+          totalResolved: closed,
+          falsePositiveRate: closed > 0 ? Math.round((fp / closed) * 10000) / 100 : 0
+        };
+      }),
+      recent: recent.rows
+    };
+  });
+}
+
+/**
+ * AI-507 — index.ts saatlik süpürücüsü. CRITICAL + OPEN + atanmamış +
+ * susturulmamış, eşik süreyi (kademe başına) aşan alarmların escalation_level'ını
+ * artırır. Döndürülen satırları çağıran (index.ts) WebSocket'te yayınlar.
+ */
+export async function runAlarmEscalationForCurrentTenant(): Promise<Array<{ id: string; title: string; escalation_level: number; site_name: string | null }>> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      `UPDATE alarms SET escalation_level = escalation_level + 1, escalated_at = NOW(), updated_at = NOW()
+        WHERE severity = 'CRITICAL'
+          AND status = 'OPEN'
+          AND assignee_id IS NULL
+          AND escalation_level < $1
+          AND (snoozed_until IS NULL OR snoozed_until <= NOW())
+          AND COALESCE(escalated_at, first_seen_at) <= NOW() - (($2 * (escalation_level + 1)) || ' minutes')::interval
+      RETURNING id, title, escalation_level, site_name`,
+      [ALARM_MAX_ESCALATION_LEVEL, ALARM_ESCALATE_AFTER_MINUTES]
+    );
+    return res.rows;
   });
 }
