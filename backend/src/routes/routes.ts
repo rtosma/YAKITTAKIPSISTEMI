@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -30,13 +30,16 @@ import { createHardwareDeviceSchema, relocateHardwareDeviceSchema, createDeviceC
 import { requestCalibrationSchema, calibrationAckSchema, testIntakeSchema } from '../schemas/calibrationSchema';
 import { setFailOpenPolicySchema } from '../schemas/failOpenPolicySchema';
 import { verifyPassword } from '../utils/password';
-import { NotFoundError, ForbiddenError } from '../utils/errors';
+import { NotFoundError, ForbiddenError, BadRequestError } from '../utils/errors';
 import { pool } from '../db/postgresPool';
 import {
   generateAccessToken,
   generateRefreshToken,
   rotateRefreshToken,
   revokeRefreshToken,
+  listUserSessions,
+  revokeSession,
+  revokeOtherSessions,
   JwtUserPayload,
   UserRole
 } from '../services/tokenService';
@@ -239,8 +242,14 @@ router.post(
         mustChangePassword: dbUser.must_change_password === true
       };
 
-      const accessToken = generateAccessToken(payload);
-      const refreshToken = await generateRefreshToken(dbUser.id, dbUser.tenant_id);
+      // AUTH-208: refresh token ÖNCE üretilir (yeni oturum ailesi) ki access
+      // token'a o oturumun sid'i gömülebilsin.
+      const newSession = await generateRefreshToken(dbUser.id, dbUser.tenant_id, {
+        userAgent: req.headers['user-agent'] ?? null,
+        ipAddress: req.ip ?? null
+      });
+      const refreshToken = newSession.token;
+      const accessToken = generateAccessToken({ ...payload, sid: newSession.sessionId });
 
       res.json({
         success: true,
@@ -308,7 +317,7 @@ router.post('/auth/refresh', refreshRateLimiter, async (req: Request, res: Respo
         mustChangePassword: dbUser.must_change_password === true
       };
       return payload;
-    });
+    }, { userAgent: req.headers['user-agent'] ?? null, ipAddress: req.ip ?? null });
 
     res.json({
       success: true,
@@ -441,6 +450,106 @@ router.get('/auth/me', authenticateJWT, (req: AuthenticatedRequest, res: Respons
     message: 'Kimlik bilgileri doğrulandı.',
     user: req.user
   });
+});
+
+// ── AUTH-208: aktif oturum/cihaz listesi + uzaktan oturum kapatma ───────
+const SESSION_ADMIN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'];
+
+/**
+ * Hedef kullanıcının çağıranın kendi kullanıcısı mı, yoksa (yetkiliyse) aynı
+ * tenant'taki bir kullanıcı mı olduğunu çözer. Yetki yoksa/başka tenant ise
+ * hata fırlatır.
+ */
+async function resolveSessionTargetUserId(req: AuthenticatedRequest): Promise<string> {
+  const requested = (req.query.userId as string | undefined) || (req.body?.userId as string | undefined);
+  if (!requested || requested === req.user!.userId) return req.user!.userId;
+  if (!SESSION_ADMIN_ROLES.includes(req.user!.role)) {
+    throw new ForbiddenError('Başka bir kullanıcının oturumlarını görüntüleme/kapatma yetkiniz yok.', { error: 'FORBIDDEN' });
+  }
+  const r = await pool.query('SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2', [requested, req.user!.tenantId]);
+  if (r.rows.length === 0) {
+    throw new NotFoundError('Kullanıcı bu firmada bulunamadı.', { error: 'USER_NOT_FOUND' });
+  }
+  return requested;
+}
+
+/**
+ * @swagger
+ * /auth/sessions:
+ *   get:
+ *     summary: Aktif Oturum/Cihaz Listesi (AUTH-208)
+ *     description: >
+ *       Kullanıcının aktif oturumları (refresh token ailesi başına bir satır)
+ *       — cihaz etiketi, IP, oluşturulma ve son kullanım zamanı, `current`
+ *       bayrağı. `?userId=` ile COMPANY_OWNER/SUPER_ADMIN aynı firmadaki başka
+ *       bir kullanıcının oturumlarını görebilir.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/auth/sessions', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const targetUserId = await resolveSessionTargetUserId(req);
+    const isSelf = targetUserId === req.user!.userId;
+    const sessions = await listUserSessions(targetUserId, isSelf ? req.user!.sid : undefined);
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, totalCount: sessions.length, data: sessions });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/sessions/logout-others:
+ *   post:
+ *     summary: Diğer Tüm Oturumları Kapat (AUTH-208)
+ *     description: Çağıranın MEVCUT oturumu dışındaki tüm oturumlarını iptal eder.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/auth/sessions/logout-others', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user!.sid) {
+      throw new BadRequestError('Bu access token bir oturum kimliği (sid) taşımıyor — lütfen yeniden giriş yapın.', { error: 'NO_SESSION_CONTEXT' });
+    }
+    const closed = await revokeOtherSessions(req.user!.userId, req.user!.sid);
+    await auditSessionRevocation(req.user!.userId, { scope: 'OTHERS', keptSessionId: req.user!.sid, closedCount: closed, by: req.user!.userId });
+    res.json({ success: true, message: `${closed} oturum kapatıldı.`, data: { closedCount: closed } });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/sessions/{sessionId}:
+ *   delete:
+ *     summary: Belirli Bir Oturumu Uzaktan Kapat (AUTH-208)
+ *     description: >
+ *       Oturumun tüm refresh token'larını iptal eder ve 15 dk boyunca access
+ *       token'ını da deny-list'e alır. `?userId=` ile yetkili, başka bir
+ *       kullanıcının oturumunu kapatabilir.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete('/auth/sessions/:sessionId', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const targetUserId = await resolveSessionTargetUserId(req);
+    const count = await revokeSession(targetUserId, req.params.sessionId);
+    if (count === 0) {
+      throw new NotFoundError('Böyle bir aktif oturum bulunamadı.', { error: 'SESSION_NOT_FOUND' });
+    }
+    await auditSessionRevocation(targetUserId, {
+      scope: 'SINGLE',
+      sessionId: req.params.sessionId,
+      revokedTokenCount: count,
+      by: req.user!.userId,
+      self: targetUserId === req.user!.userId
+    });
+    res.json({ success: true, message: 'Oturum kapatıldı.', data: { sessionId: req.params.sessionId, revokedTokenCount: count } });
+  } catch (error: any) {
+    next(error);
+  }
 });
 
 /**
@@ -1463,8 +1572,14 @@ router.post(
       await changeOwnPassword(req.user!.userId, currentPassword, newPassword);
 
       const payload: JwtUserPayload = { ...req.user!, mustChangePassword: false };
-      const accessToken = generateAccessToken(payload);
-      const refreshToken = await generateRefreshToken(payload.userId, payload.tenantId);
+      // AUTH-208: parola değişimi sonrası taze token çifti — yeni bir oturum
+      // ailesi başlatır (eski refresh token ayrıca rotasyon görmediği için).
+      const changeSession = await generateRefreshToken(payload.userId, payload.tenantId, {
+        userAgent: req.headers['user-agent'] ?? null,
+        ipAddress: req.ip ?? null
+      });
+      const refreshToken = changeSession.token;
+      const accessToken = generateAccessToken({ ...payload, sid: changeSession.sessionId });
 
       res.json({
         success: true,

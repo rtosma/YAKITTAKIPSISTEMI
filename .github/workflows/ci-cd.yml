@@ -264,6 +264,9 @@ jobs:
       - name: Run FUEL-405 Manual Dispense Entry + Dual Approval Tests
         run: cd backend && npx tsx test/test_fuel405_manual_dispense.ts
 
+      - name: Run AUTH-208 Active Sessions + Remote Logout Tests
+        run: cd backend && npx tsx test/test_auth208_sessions.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

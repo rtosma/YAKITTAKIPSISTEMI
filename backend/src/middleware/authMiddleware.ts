@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { verifyAccessToken, JwtUserPayload, UserRole } from '../services/tokenService';
+import { verifyAccessToken, isSessionDenied, JwtUserPayload, UserRole } from '../services/tokenService';
 import { tenantStorage, TenantStore } from '../context/tenantContext';
 
 export interface AuthenticatedRequest extends Request {
@@ -17,7 +17,7 @@ const PASSWORD_CHANGE_GATE_ALLOWLIST = new Set(['/auth/change-password', '/auth/
  * Express Middleware to authenticate JWT Access Token
  * Also initializes the request-scoped AsyncLocalStorage tenant context
  */
-export function authenticateJWT(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+export async function authenticateJWT(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -33,6 +33,16 @@ export function authenticateJWT(req: AuthenticatedRequest, res: Response, next: 
   try {
     const userPayload = verifyAccessToken(token);
     req.user = userPayload;
+
+    // AUTH-208: uzaktan kapatılan bir oturumun access token'ı 15 dk daha
+    // geçerli kalmasın — deny-list'te ise hemen reddet.
+    if (userPayload.sid && (await isSessionDenied(userPayload.sid))) {
+      return res.status(401).json({
+        success: false,
+        error: 'SESSION_REVOKED',
+        message: 'Bu oturum uzaktan sonlandırıldı. Lütfen tekrar giriş yapınız.'
+      });
+    }
 
     if (userPayload.mustChangePassword && !PASSWORD_CHANGE_GATE_ALLOWLIST.has(req.path)) {
       return res.status(403).json({

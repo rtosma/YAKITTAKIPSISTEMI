@@ -4057,3 +4057,26 @@ export async function getManualDispenseRatio(filters: {
     };
   });
 }
+
+// ============================================================================
+// AUTH-208: OTURUM KAPATMA DENETİM KAYDI
+// ============================================================================
+
+/**
+ * AUTH-208 AC: "Oturum kapatma işlemi audit log'a yazılmalıdır."
+ * Oturum uçları authenticateJWT arkasında olduğundan tenant context (RLS)
+ * mevcuttur — writeAuditLog aynı transaction'da çalışır.
+ */
+export async function auditSessionRevocation(
+  targetUserId: string,
+  detail: Record<string, unknown>
+): Promise<void> {
+  await withTenant(async (client) => {
+    await writeAuditLog(client, {
+      action: 'SESSION_REVOKED',
+      targetType: 'auth_session',
+      targetId: targetUserId,
+      afterValue: detail
+    });
+  });
+}
