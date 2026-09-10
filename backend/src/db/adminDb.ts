@@ -314,6 +314,16 @@ export async function getAllTenantIdsWithAiAnomalyEnabled(): Promise<string[]> {
   return result.rows.map((r) => r.id);
 }
 
+/**
+ * FUEL-402.1 — kota dönem sıfırlama sweep'i (index.ts) hangi tenant'lar için
+ * çalışacağını buradan alır. getAllHardwareDevices ile AYNI gerekçe: sistem
+ * geneli bir bakım işi, tek tenant context'ine kısıtlı değil.
+ */
+export async function getAllTenantIds(): Promise<string[]> {
+  const result = await pool.query('SELECT id FROM companies');
+  return result.rows.map((r) => r.id);
+}
+
 // AUTH-202.3 öncesi (AUTH-202.1/OPS-1105), 3 demo cihazının sırları
 // hardwareAuthMiddleware.ts'te REGISTERED_HARDWARE_DEVICES adlı statik bir
 // nesnede, HW_SECRET_ESP32_* ortam değişkenlerinden okunuyordu. Bu fonksiyon

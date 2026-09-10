@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -8,6 +8,7 @@ import { generateDespatchAdviceXml } from '../compliance/despatchAdviceXmlServic
 import { setStrappingTableSchema, tankVolumeQuerySchema, parseStrappingCsv } from '../schemas/strappingTableSchema';
 import { blockRfidCardSchema, replaceRfidCardSchema } from '../schemas/rfidCardSchema';
 import { checkReadiness } from '../services/readinessService';
+import { createQuotaSchema, updateQuotaSchema } from '../schemas/quotaSchema';
 import { isServerShuttingDown } from '../utils/shutdown';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
@@ -2317,6 +2318,127 @@ router.get('/cross-site-permissions', authenticateJWT, async (req: Authenticated
   try {
     const permissions = await getTenantCrossSitePermissions();
     res.json({ success: true, totalCount: permissions.length, data: permissions });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+// ── FUEL-402.1: araç/şantiye/dönem bazlı yakıt kotası ────────────────────
+const QUOTA_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /quotas:
+ *   post:
+ *     summary: Yakıt Kotası Tanımla (FUEL-402.1)
+ *     description: >
+ *       `{ vehiclePlate?, siteName?, periodType, limitLiters, carryoverPolicy?,
+ *       validFrom?, validUntil? }`. Kapsam alanları boşsa kota tenant
+ *       genelidir. Dönem penceresi periodType'a göre Europe/Istanbul
+ *       sınırlarıyla hesaplanır.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Kotaları Listele (FUEL-402.1)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/quotas',
+  authenticateJWT,
+  authorizeRoles(...QUOTA_MANAGER_ROLES),
+  validateRequest({ body: createQuotaSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const b = req.body as any;
+      const q = await createFuelQuota(b, req.user!.userId);
+      res.status(201).json({ success: true, data: q });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get('/quotas', authenticateJWT, authorizeRoles(...QUOTA_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const quotas = await getFuelQuotas();
+    res.json({ success: true, totalCount: quotas.length, data: quotas });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.get('/quotas/:id', authenticateJWT, authorizeRoles(...QUOTA_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await getFuelQuota(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /quotas/{id}/balance:
+ *   get:
+ *     summary: Kalan Kota (FUEL-402.1)
+ *     description: >
+ *       kalan = efektif limit (limit + devir) − tamamlanan (mevcut dönem
+ *       transactions'ı) − rezerve (AKTİF dispense oturumları). Sonuç 5 sn
+ *       cache'lenir.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/quotas/:id/balance', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: await getQuotaBalance(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.get('/quotas/:id/history', authenticateJWT, authorizeRoles(...QUOTA_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const history = await getQuotaHistory(req.params.id);
+    res.json({ success: true, totalCount: history.length, data: history });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.patch(
+  '/quotas/:id',
+  authenticateJWT,
+  authorizeRoles(...QUOTA_MANAGER_ROLES),
+  validateRequest({ body: updateQuotaSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = await updateFuelQuota(req.params.id, req.body, req.user!.userId);
+      res.json({ success: true, data: q });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /quotas/reset-due:
+ *   post:
+ *     summary: Süresi Dolan Kotaları Şimdi Sıfırla (FUEL-402.1)
+ *     description: >
+ *       index.ts'teki saatlik otomatik süpürücünün yaptığı işi bu tenant için
+ *       MANUEL tetikler — dönemi bitmiş AKTİF kotaları fuel_quota_history'ye
+ *       arşivler, devir (carryover) politikasını uygular ve pencereyi bir
+ *       sonraki döneme kaydırır. Ops ekibinin uzlaşma öncesi elle çalıştırması
+ *       ve entegrasyon testleri için. Yalnızca SUPER_ADMIN.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/quotas/reset-due', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const result = await resetDueQuotasForCurrentTenant();
+    res.json({ success: true, data: result });
   } catch (error: any) {
     next(error);
   }

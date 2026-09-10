@@ -252,6 +252,9 @@ jobs:
       - name: Run RES-906 Health/Readiness Tests
         run: cd backend && npx tsx test/test_res906_health_readiness.ts
 
+      - name: Run FUEL-402.1 Fuel Quota + Periodic Reset Tests
+        run: cd backend && npx tsx test/test_fuel402_1_quota.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

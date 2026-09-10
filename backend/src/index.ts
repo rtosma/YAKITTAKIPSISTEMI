@@ -12,11 +12,12 @@ import { pool } from './db/postgresPool';
 import { redisPool } from './db/redisPool';
 import { mqttService } from './iot/mqttClient';
 import routes from './routes/routes';
-import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing, sweepTimedOutCalibrations, getAllTenantIdsWithAiAnomalyEnabled } from './db/adminDb';
+import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing, sweepTimedOutCalibrations, getAllTenantIdsWithAiAnomalyEnabled, getAllTenantIds } from './db/adminDb';
 import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
+import { resetDueQuotasForCurrentTenant } from './db/tenantDb';
 
 // NOTE: environment variables are loaded by ./bootstrap.ts (the real process
 // entry point — see package.json `dev`/`build`), BEFORE this module or any of
@@ -227,6 +228,37 @@ async function startServer(): Promise<void> {
     logger.warn('⚠️ [AI-502] GEMINI_API_KEY tanımlı değil — haftalık otomatik tüketim anomali analizi devre dışı (manuel POST /ai/consumption-anomaly-reports yine de GEMINI_API_KEY ayarlanınca kullanılabilir).');
   }
 
+  // FUEL-402.1: kota dönemleri (GÜNLÜK/HAFTALIK/AYLIK) süresi dolunca otomatik
+  // sıfırlanmalı, devir politikası uygulanmalı ve kapanan dönem uzlaşma için
+  // fuel_quota_history'ye arşivlenmeli. Ticket "@nestjs/schedule cron"
+  // öneriyor — bu kod tabanında yok; yukarıdaki süpürücülerle AYNI düz
+  // setInterval deseni. Dönem sınırları Europe/Istanbul (sabit UTC+3) olduğu
+  // için saatlik bir tur, gün/hafta/ay dönüşlerini en fazla ~1 saat gecikmeyle
+  // yakalamak için fazlasıyla yeterli (kalan-kota sorgusu zaten CANLI hesaplar,
+  // sweep yalnızca arşiv + devir satırını yazar).
+  const QUOTA_RESET_SWEEP_MS = 60 * 60 * 1000;
+  const quotaResetSweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [FUEL-402.1] Tenant listesi alınamadı, bu kota sıfırlama turu atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const { reset, expired } = await runWithTenant({ tenantId }, () => resetDueQuotasForCurrentTenant());
+        if (reset > 0 || expired > 0) {
+          logger.info({ tenantId, reset, expired }, `♻️ [FUEL-402.1] Dönemi dolan kotalar işlendi (sıfırlanan: ${reset}, süresi biten: ${expired}).`);
+        }
+      } catch (err) {
+        // Bir tenant'ın sıfırlaması başarısız olması DİĞER tenant'ların turunu
+        // ENGELLEMEMELİ (AI-502 ile aynı gerekçe).
+        logger.error({ err, tenantId }, '🚨 [FUEL-402.1] Kota dönemi sıfırlaması başarısız.');
+      }
+    }
+  }, QUOTA_RESET_SWEEP_MS);
+
   // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
   setupGracefulShutdown(server, {
     timeoutMs: 30000,
@@ -236,6 +268,7 @@ async function startServer(): Promise<void> {
       clearInterval(dispenseTimeoutSweepInterval);
       clearInterval(calibrationTimeoutSweepInterval);
       if (weeklyAnomalySweepInterval) clearInterval(weeklyAnomalySweepInterval);
+      clearInterval(quotaResetSweepInterval);
 
       // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
       // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters

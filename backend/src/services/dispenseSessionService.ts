@@ -64,6 +64,35 @@ async function readSession(deviceId: string): Promise<DispenseSession | null> {
   return raw ? (JSON.parse(raw) as DispenseSession) : null;
 }
 
+/**
+ * FUEL-402.1 — o an AKTİF (rezerve yakıt tutan: AUTHORIZED/PUMPING/
+ * FINALIZING) tüm dispense oturumları. Kota bakiyesi "rezerve ama
+ * tamamlanmamış" ikmalleri düşmek için kullanır. `KEYS` yerine `SCAN` —
+ * oturum sayısı pompa sayısı kadar (küçük) ama üretimde bloklamayan
+ * cursor'lı tarama tercih edilir.
+ */
+export async function listActiveSessions(): Promise<DispenseSession[]> {
+  const active: DispenseSession[] = [];
+  let cursor = '0';
+  do {
+    const [next, keys] = await redisPool.client.scan(cursor, 'MATCH', 'dispense:session:*', 'COUNT', 200);
+    cursor = next;
+    if (keys.length > 0) {
+      const raws = await redisPool.client.mget(...keys);
+      for (const raw of raws) {
+        if (!raw) continue;
+        try {
+          const s = JSON.parse(raw) as DispenseSession;
+          if (s.state === 'AUTHORIZED' || s.state === 'PUMPING' || s.state === 'FINALIZING') active.push(s);
+        } catch {
+          /* bozuk kayıt — atla */
+        }
+      }
+    }
+  } while (cursor !== '0');
+  return active;
+}
+
 async function writeSession(session: DispenseSession): Promise<void> {
   await redisPool.client.set(sessionKey(session.deviceId), JSON.stringify(session), 'EX', SESSION_TTL_SECONDS);
 }

@@ -453,6 +453,51 @@ CREATE TABLE IF NOT EXISTS rfid_card_blacklist (
 ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_rfid_denylist_version VARCHAR(64);
 ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_rfid_denylist_pull_at TIMESTAMP WITH TIME ZONE;
 
+-- FUEL-402.1: araç/şantiye/dönem bazlı yakıt kotası. Mevcut
+-- cross_site_permissions (FUEL-402) yalnızca çapraz-şantiye + tek pencere;
+-- bu tablo GÜNLÜK/HAFTALIK/AYLIK/TEK_SEFERLİK dönemleri, dönem sonu otomatik
+-- sıfırlamayı ve devir (carryover) politikasını ekler. Kapsam alanları NULL
+-- ise "hepsi" (tenant geneli). Tüketim balance sorgusunda transactions'tan
+-- CANLI hesaplanır; consumed kolonu yok — dönem kapanışında snapshot
+-- fuel_quota_history'ye yazılır (uzlaşma/settlement için saklanır).
+CREATE TABLE IF NOT EXISTS fuel_quotas (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    vehicle_plate VARCHAR(32),
+    site_name VARCHAR(128),
+    -- 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'ONE_TIME'
+    period_type VARCHAR(16) NOT NULL,
+    limit_liters NUMERIC(12, 2) NOT NULL,
+    -- 'NONE' (devir yok) | 'FULL' (kalan devreder) | 'CAPPED' (kalan ama en fazla limit kadar)
+    carryover_policy VARCHAR(16) NOT NULL DEFAULT 'NONE',
+    -- Şu anki dönem penceresi (reset sweep bunları ileri kaydırır).
+    period_start TIMESTAMP WITH TIME ZONE NOT NULL,
+    period_end TIMESTAMP WITH TIME ZONE NOT NULL,
+    -- Bir önceki dönemden devreden litre (efektif limit = limit_liters + bu).
+    carried_over_liters NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    valid_from DATE NOT NULL DEFAULT CURRENT_DATE,
+    valid_until DATE,
+    status VARCHAR(16) NOT NULL DEFAULT 'AKTİF',  -- 'AKTİF' | 'PASİF'
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- FUEL-402.1: kapanan her kota döneminin anlık görüntüsü — uzlaşma
+-- raporları için saklanır (Kritik Not: "geçmiş kota verisi settlement için
+-- tutulmalı"). Append-only: app_user'dan UPDATE/DELETE/TRUNCATE geri alınır.
+CREATE TABLE IF NOT EXISTS fuel_quota_history (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    quota_id VARCHAR(64) NOT NULL,
+    period_start TIMESTAMP WITH TIME ZONE NOT NULL,
+    period_end TIMESTAMP WITH TIME ZONE NOT NULL,
+    effective_limit_liters NUMERIC(12, 2) NOT NULL,
+    consumed_liters NUMERIC(12, 2) NOT NULL,
+    carried_over_to_next_liters NUMERIC(12, 2) NOT NULL,
+    closed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ==============================================================================
 -- [AUTH-201] Users Table & Refresh Tokens Rotation Store
 -- ==============================================================================
@@ -504,6 +549,8 @@ ALTER TABLE despatch_advice_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_counters ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tank_strapping_tables ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rfid_card_blacklist ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fuel_quotas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fuel_quota_history ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -576,6 +623,8 @@ REVOKE UPDATE, DELETE, TRUNCATE ON despatch_advice_documents FROM app_user;
 REVOKE DELETE, TRUNCATE ON despatch_advice_counters FROM app_user;
 -- FUEL-403.1: cetvel versiyonlu/append-only (audit_logs deseni).
 REVOKE UPDATE, DELETE, TRUNCATE ON tank_strapping_tables FROM app_user;
+-- FUEL-402.1: settlement geçmişi değiştirilemez/silinemez.
+REVOKE UPDATE, DELETE, TRUNCATE ON fuel_quota_history FROM app_user;
 
 -- Force RLS even for table owners
 ALTER TABLE vehicles FORCE ROW LEVEL SECURITY;
@@ -596,6 +645,8 @@ ALTER TABLE despatch_advice_documents FORCE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_counters FORCE ROW LEVEL SECURITY;
 ALTER TABLE tank_strapping_tables FORCE ROW LEVEL SECURITY;
 ALTER TABLE rfid_card_blacklist FORCE ROW LEVEL SECURITY;
+ALTER TABLE fuel_quotas FORCE ROW LEVEL SECURITY;
+ALTER TABLE fuel_quota_history FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -616,6 +667,8 @@ DROP POLICY IF EXISTS despatch_advice_documents_tenant_isolation_policy ON despa
 DROP POLICY IF EXISTS despatch_advice_counters_tenant_isolation_policy ON despatch_advice_counters;
 DROP POLICY IF EXISTS tank_strapping_tables_tenant_isolation_policy ON tank_strapping_tables;
 DROP POLICY IF EXISTS rfid_card_blacklist_tenant_isolation_policy ON rfid_card_blacklist;
+DROP POLICY IF EXISTS fuel_quotas_tenant_isolation_policy ON fuel_quotas;
+DROP POLICY IF EXISTS fuel_quota_history_tenant_isolation_policy ON fuel_quota_history;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -730,6 +783,16 @@ CREATE POLICY rfid_card_blacklist_tenant_isolation_policy ON rfid_card_blacklist
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY fuel_quotas_tenant_isolation_policy ON fuel_quotas
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY fuel_quota_history_tenant_isolation_policy ON fuel_quota_history
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- ==============================================================================
 -- [PERF] tenant_id İndeksleri
 -- ==============================================================================
@@ -798,3 +861,8 @@ CREATE INDEX IF NOT EXISTS idx_tank_strapping_tables_lookup ON tank_strapping_ta
 -- AUTH-210: denylist üyelik kontrolü (authorizeDispenseRequest step-0) ve
 -- cihaz pull sorgusu tenant+card_uid ile çalışır.
 CREATE INDEX IF NOT EXISTS idx_rfid_card_blacklist_lookup ON rfid_card_blacklist(tenant_id, card_uid);
+
+-- FUEL-402.1: reset sweep "period_end geçmiş AKTİF kotalar" ve balance
+-- sorgusu (tek kota) bu desenlerle çalışır.
+CREATE INDEX IF NOT EXISTS idx_fuel_quotas_active_period ON fuel_quotas(tenant_id, status, period_end);
+CREATE INDEX IF NOT EXISTS idx_fuel_quota_history_quota ON fuel_quota_history(tenant_id, quota_id, closed_at DESC);

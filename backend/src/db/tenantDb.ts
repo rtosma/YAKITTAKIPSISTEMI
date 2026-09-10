@@ -17,6 +17,14 @@ import {
   type CylinderConfig
 } from '../fuel/tankVolume';
 import { validateMonotonic, type StrappingPointInput } from '../schemas/strappingTableSchema';
+import {
+  periodWindowFor,
+  nextPeriodWindow,
+  computeCarryover,
+  type QuotaPeriodType,
+  type CarryoverPolicy
+} from '../fuel/quotaPeriod';
+import { listActiveSessions } from '../services/dispenseSessionService';
 
 /**
  * updateVehicle/updateTank (ve kısmen updateDriver) aynı deseni tekrarlıyordu:
@@ -2945,4 +2953,249 @@ export async function getRfidDenylistDeploymentStatus(): Promise<Array<{
       status: (d.last_rfid_denylist_version === version ? 'GÜNCEL' : 'DAĞITIM_BEKLIYOR') as 'GÜNCEL' | 'DAĞITIM_BEKLIYOR'
     }));
   });
+}
+
+// ============================================================================
+// FUEL-402.1: ARAÇ/ŞANTİYE/DÖNEM BAZLI YAKIT KOTASI + DÖNEMSEL SIFIRLAMA
+// ============================================================================
+
+const QUOTA_BALANCE_CACHE_TTL_SECONDS = 5;
+
+export interface FuelQuotaRecord {
+  id: string;
+  tenant_id: string;
+  vehicle_plate: string | null;
+  site_name: string | null;
+  period_type: QuotaPeriodType;
+  limit_liters: string;
+  carryover_policy: CarryoverPolicy;
+  period_start: string;
+  period_end: string;
+  carried_over_liters: string;
+  valid_from: string;
+  valid_until: string | null;
+  status: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function createFuelQuota(data: {
+  vehiclePlate?: string;
+  siteName?: string;
+  periodType: QuotaPeriodType;
+  limitLiters: number;
+  carryoverPolicy: CarryoverPolicy;
+  validFrom?: string;
+  validUntil?: string;
+}, createdByUserId: string): Promise<FuelQuotaRecord> {
+  return withTenant(async (client, tenantId) => {
+    const now = new Date();
+    const validFrom = data.validFrom ? new Date(`${data.validFrom}T00:00:00Z`) : now;
+    const validUntil = data.validUntil ? new Date(`${data.validUntil}T00:00:00Z`) : null;
+    const win = periodWindowFor(data.periodType, now, { validFrom, validUntil });
+
+    const res = await client.query(
+      `INSERT INTO fuel_quotas
+         (id, tenant_id, vehicle_plate, site_name, period_type, limit_liters, carryover_policy,
+          period_start, period_end, carried_over_liters, valid_from, valid_until, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,$10,$11,$12) RETURNING *`,
+      [
+        generateId('quota'), tenantId, data.vehiclePlate ?? null, data.siteName ?? null,
+        data.periodType, data.limitLiters, data.carryoverPolicy,
+        win.periodStart.toISOString(), win.periodEnd.toISOString(),
+        data.validFrom ?? now.toISOString().slice(0, 10), data.validUntil ?? null, createdByUserId
+      ]
+    );
+    await writeAuditLog(client, {
+      action: 'FUEL_QUOTA_CREATED',
+      targetType: 'fuel_quota',
+      targetId: res.rows[0].id,
+      afterValue: { periodType: data.periodType, limitLiters: data.limitLiters, vehiclePlate: data.vehiclePlate ?? null, siteName: data.siteName ?? null }
+    });
+    return res.rows[0];
+  });
+}
+
+export async function getFuelQuotas(): Promise<FuelQuotaRecord[]> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM fuel_quotas ORDER BY created_at DESC');
+    return res.rows;
+  });
+}
+
+export async function getFuelQuota(quotaId: string): Promise<FuelQuotaRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM fuel_quotas WHERE id = $1', [quotaId]);
+    if (res.rows.length === 0) throw new NotFoundError('Kota bulunamadı.');
+    return res.rows[0];
+  });
+}
+
+export async function updateFuelQuota(
+  quotaId: string,
+  data: { limitLiters?: number; carryoverPolicy?: CarryoverPolicy; status?: string },
+  byUserId: string
+): Promise<FuelQuotaRecord> {
+  return withTenant(async (client) => {
+    const sets: string[] = [];
+    const params: any[] = [];
+    if (data.limitLiters !== undefined) { params.push(data.limitLiters); sets.push(`limit_liters = $${params.length}`); }
+    if (data.carryoverPolicy !== undefined) { params.push(data.carryoverPolicy); sets.push(`carryover_policy = $${params.length}`); }
+    if (data.status !== undefined) { params.push(data.status); sets.push(`status = $${params.length}`); }
+    if (sets.length === 0) throw new BadRequestError('Güncellenecek alan yok.');
+    params.push(quotaId);
+    const res = await client.query(
+      `UPDATE fuel_quotas SET ${sets.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = $${params.length} RETURNING *`,
+      params
+    );
+    if (res.rows.length === 0) throw new NotFoundError('Kota bulunamadı.');
+    await writeAuditLog(client, { action: 'FUEL_QUOTA_UPDATED', targetType: 'fuel_quota', targetId: quotaId, afterValue: { ...data, by: byUserId } });
+    await redisPool.cacheDel(`quota:balance:${res.rows[0].tenant_id}:${quotaId}`);
+    return res.rows[0];
+  });
+}
+
+export interface QuotaBalance {
+  quotaId: string;
+  periodType: QuotaPeriodType;
+  periodStart: string;
+  periodEnd: string;
+  baseLimitLiters: number;
+  carriedOverLiters: number;
+  effectiveLimitLiters: number;
+  consumedLiters: number;
+  reservedLiters: number;
+  remainingLiters: number;
+  computedAt: string;
+}
+
+/**
+ * FUEL-402.1 — kalan kota. Kritik Not: "rezerve ama tamamlanmamış ikmal
+ * 'kullanımda' sayılır; kalan = tanımlı − tamamlanan − rezerve".
+ *  - consumed: mevcut dönem penceresinde, kotanın kapsamına uyan
+ *    transactions'ın SUM(amount_liters)'i (CANLI hesap).
+ *  - reserved: kapsam eşleşen AKTİF dispense oturumlarının maxAllowedLiters
+ *    toplamı (pesimist rezervasyon).
+ * Sonuç QUOTA_BALANCE_CACHE_TTL_SECONDS boyunca cache'lenir (AC: "with cache").
+ */
+export async function getQuotaBalance(quotaId: string): Promise<QuotaBalance> {
+  return withTenant(async (client, tenantId) => {
+    const cacheKey = `quota:balance:${tenantId}:${quotaId}`;
+    const cached = await redisPool.cacheGetJson<QuotaBalance>(cacheKey);
+    if (cached) return cached;
+
+    const qRes = await client.query('SELECT * FROM fuel_quotas WHERE id = $1', [quotaId]);
+    if (qRes.rows.length === 0) throw new NotFoundError('Kota bulunamadı.');
+    const q = qRes.rows[0] as FuelQuotaRecord;
+
+    const consRes = await client.query(
+      `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS c
+         FROM transactions
+        WHERE created_at >= $1 AND created_at < $2
+          AND ($3::text IS NULL OR vehicle_plate = $3)
+          AND ($4::text IS NULL OR site_name = $4)`,
+      [q.period_start, q.period_end, q.vehicle_plate, q.site_name]
+    );
+    const consumedLiters = Number(consRes.rows[0].c);
+
+    const sessions = await listActiveSessions();
+    const reservedLiters = sessions
+      .filter((s) => s.tenantId === tenantId)
+      .filter((s) => (!q.vehicle_plate || s.vehiclePlate === q.vehicle_plate) && (!q.site_name || s.siteName === q.site_name))
+      .reduce((sum, s) => sum + Number(s.maxAllowedLiters || 0), 0);
+
+    const baseLimitLiters = Number(q.limit_liters);
+    const carriedOverLiters = Number(q.carried_over_liters);
+    const effectiveLimitLiters = round2(baseLimitLiters + carriedOverLiters);
+    const remainingLiters = round2(effectiveLimitLiters - consumedLiters - reservedLiters);
+
+    const balance: QuotaBalance = {
+      quotaId,
+      periodType: q.period_type,
+      periodStart: q.period_start,
+      periodEnd: q.period_end,
+      baseLimitLiters,
+      carriedOverLiters,
+      effectiveLimitLiters,
+      consumedLiters: round2(consumedLiters),
+      reservedLiters: round2(reservedLiters),
+      remainingLiters,
+      computedAt: new Date().toISOString()
+    };
+    await redisPool.cacheSetJson(cacheKey, balance, QUOTA_BALANCE_CACHE_TTL_SECONDS);
+    return balance;
+  });
+}
+
+export async function getQuotaHistory(quotaId: string): Promise<any[]> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      'SELECT * FROM fuel_quota_history WHERE quota_id = $1 ORDER BY closed_at DESC',
+      [quotaId]
+    );
+    return res.rows;
+  });
+}
+
+/**
+ * FUEL-402.1 — mevcut tenant context'i için dönem sonu geçmiş AKTİF kotaları
+ * sıfırlar: kapanan dönemi fuel_quota_history'ye snapshot'lar, devir
+ * (carryover) politikasını uygular, pencereyi bir sonraki döneme kaydırır.
+ * ONE_TIME kotalar sıfırlanmaz — süresi geçmişse PASİF yapılır.
+ * index.ts'teki sweep her tenant için runWithTenant içinde bunu çağırır.
+ */
+export async function resetDueQuotasForCurrentTenant(): Promise<{ reset: number; expired: number }> {
+  return withTenant(async (client, tenantId) => {
+    const dueRes = await client.query(
+      `SELECT * FROM fuel_quotas WHERE status = 'AKTİF' AND period_end <= NOW()`
+    );
+    let reset = 0;
+    let expired = 0;
+
+    for (const q of dueRes.rows as FuelQuotaRecord[]) {
+      if (q.period_type === 'ONE_TIME') {
+        await client.query('UPDATE fuel_quotas SET status = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1', [q.id, 'PASİF']);
+        expired++;
+        continue;
+      }
+
+      const consRes = await client.query(
+        `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS c FROM transactions
+          WHERE created_at >= $1 AND created_at < $2
+            AND ($3::text IS NULL OR vehicle_plate = $3)
+            AND ($4::text IS NULL OR site_name = $4)`,
+        [q.period_start, q.period_end, q.vehicle_plate, q.site_name]
+      );
+      const consumed = Number(consRes.rows[0].c);
+      const baseLimit = Number(q.limit_liters);
+      const effectiveLimit = baseLimit + Number(q.carried_over_liters);
+      const carryToNext = computeCarryover(q.carryover_policy, baseLimit, effectiveLimit, consumed);
+
+      await client.query(
+        `INSERT INTO fuel_quota_history
+           (id, tenant_id, quota_id, period_start, period_end, effective_limit_liters, consumed_liters, carried_over_to_next_liters)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [generateId('quotahist'), tenantId, q.id, q.period_start, q.period_end, effectiveLimit, consumed, carryToNext]
+      );
+
+      const nextWin = nextPeriodWindow(q.period_type, {
+        periodStart: new Date(q.period_start),
+        periodEnd: new Date(q.period_end)
+      });
+      await client.query(
+        `UPDATE fuel_quotas
+            SET period_start = $2, period_end = $3, carried_over_liters = $4, updated_at = CURRENT_TIMESTAMP
+          WHERE id = $1`,
+        [q.id, nextWin.periodStart.toISOString(), nextWin.periodEnd.toISOString(), carryToNext]
+      );
+      await redisPool.cacheDel(`quota:balance:${tenantId}:${q.id}`);
+      reset++;
+    }
+    return { reset, expired };
+  });
+}
+
+function round2(v: number): number {
+  return Math.round(v * 100) / 100;
 }
