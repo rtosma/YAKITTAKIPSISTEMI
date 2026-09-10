@@ -50,6 +50,9 @@ ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS assigned_driver_name VARCHAR(128);
 -- ise kısıt yok; doluysa ikmal yetkilendirmesinde tank yakıt tipiyle uyumu
 -- denetlenir (yanlış yakıt = ciddi maddi hasar).
 ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS fuel_type VARCHAR(64);
+-- FLEET-1404: aracın sayaç ölçüm birimi. NULL ise vehicle_type'tan türetilir
+-- (iş makineleri MOTOR_SAAT, diğerleri KM). 'KM' | 'MOTOR_SAAT'.
+ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS meter_type VARCHAR(16);
 
 -- 3. Tanks Table with Tenant ID
 CREATE TABLE IF NOT EXISTS tanks (
@@ -794,6 +797,38 @@ CREATE TABLE IF NOT EXISTS alarm_events (
 -- algoritmik olarak doğrulanır; e-İrsaliye mükellefiyeti sorgulanıp
 -- (COMP-602 adaptörü yoksa deterministik taklit) 24 sa önbelleklenir;
 -- unvan/adres/vergi dairesi eksikse missing_fields uyarısı üretilir.
+-- FLEET-1404 + RES-903: araç sayaç (km / motor-saat) okumaları. L/100km ve
+-- L/motor-saat hesabının girdisi. APPEND-ONLY: bir düzeltme eski satırı
+-- SİLMEZ, corrects_reading_id ile yeni bir satır ekler (Kritik Not).
+-- RES-903 doğrulaması: geri giden değer / absürt sıçrama / mükerrer dönem →
+-- is_suspicious + suspicion_reasons; onaylı geçişte override_approved +
+-- override_reason + approved_by (audit'lenir).
+CREATE TABLE IF NOT EXISTS vehicle_meter_readings (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    vehicle_id VARCHAR(64) NOT NULL,
+    vehicle_plate VARCHAR(32) NOT NULL,
+    -- 'KM' | 'MOTOR_SAAT'
+    meter_type VARCHAR(16) NOT NULL,
+    reading_value NUMERIC(12, 2) NOT NULL,
+    reading_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    -- Dönem etiketi (ör. '2026-09' aylık, veya 'AD_HOC').
+    period_label VARCHAR(16) NOT NULL,
+    -- 'MANUEL' | 'TOPLU' | 'IKMAL'
+    source VARCHAR(16) NOT NULL DEFAULT 'MANUEL',
+    is_suspicious BOOLEAN NOT NULL DEFAULT FALSE,
+    -- 'BACKWARD' | 'ABSURD_JUMP' | 'DUPLICATE_PERIOD'
+    suspicion_reasons TEXT[] NOT NULL DEFAULT '{}',
+    override_approved BOOLEAN NOT NULL DEFAULT FALSE,
+    override_reason TEXT,
+    approved_by VARCHAR(64),
+    -- Bu okuma hangi (hatalı) okumayı düzeltiyor.
+    corrects_reading_id VARCHAR(64),
+    note TEXT,
+    entered_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS recipient_taxpayers (
     id VARCHAR(64) PRIMARY KEY,
     tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -848,6 +883,7 @@ ALTER TABLE user_totp ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alarms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alarm_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE recipient_taxpayers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_meter_readings ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -924,6 +960,8 @@ REVOKE UPDATE, DELETE, TRUNCATE ON tank_strapping_tables FROM app_user;
 REVOKE UPDATE, DELETE, TRUNCATE ON fuel_quota_history FROM app_user;
 -- FUEL-408: dolum irsaliyeleri append-only (mali/stok kaydı, sonradan değişmez).
 REVOKE UPDATE, DELETE, TRUNCATE ON fuel_intake_receipts FROM app_user;
+-- FLEET-1404 / RES-903: sayaç okumaları append-only; düzeltme = yeni satır.
+REVOKE UPDATE, DELETE, TRUNCATE ON vehicle_meter_readings FROM app_user;
 -- FUEL-409: mutabakat sonucu bir düzeltme kaydıdır — sonradan değiştirilemez.
 REVOKE UPDATE, DELETE, TRUNCATE ON stock_reconciliations FROM app_user;
 
@@ -957,6 +995,7 @@ ALTER TABLE user_totp FORCE ROW LEVEL SECURITY;
 ALTER TABLE alarms FORCE ROW LEVEL SECURITY;
 ALTER TABLE alarm_events FORCE ROW LEVEL SECURITY;
 ALTER TABLE recipient_taxpayers FORCE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_meter_readings FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -988,6 +1027,7 @@ DROP POLICY IF EXISTS user_totp_tenant_isolation_policy ON user_totp;
 DROP POLICY IF EXISTS alarms_tenant_isolation_policy ON alarms;
 DROP POLICY IF EXISTS alarm_events_tenant_isolation_policy ON alarm_events;
 DROP POLICY IF EXISTS recipient_taxpayers_tenant_isolation_policy ON recipient_taxpayers;
+DROP POLICY IF EXISTS vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_readings;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -1157,6 +1197,11 @@ CREATE POLICY recipient_taxpayers_tenant_isolation_policy ON recipient_taxpayers
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_readings
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- ==============================================================================
 -- [PERF] tenant_id İndeksleri
 -- ==============================================================================
@@ -1238,6 +1283,9 @@ CREATE INDEX IF NOT EXISTS idx_fuel_intake_receipts_tank ON fuel_intake_receipts
 -- FUEL-409: bir tankın mutabakat geçmişi (REP-714) ve "önceki mutabakat"
 -- (açılış bakiyesi) sorgusu bu desenle çalışır.
 CREATE INDEX IF NOT EXISTS idx_stock_reconciliations_tank ON stock_reconciliations(tenant_id, tank_id, period_end DESC);
+
+-- FLEET-1404: bir aracın en son okuması + dönem bazlı eksik-giriş sorgusu.
+CREATE INDEX IF NOT EXISTS idx_vehicle_meter_readings_lookup ON vehicle_meter_readings(tenant_id, vehicle_id, meter_type, reading_at DESC);
 
 -- FUEL-405: onay kuyruğu (status='ONAY_BEKLIYOR') ve şantiye bazlı manuel
 -- giriş oranı sorgusu bu desenle çalışır.

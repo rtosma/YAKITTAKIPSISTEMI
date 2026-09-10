@@ -28,6 +28,7 @@ import { listActiveSessions } from '../services/dispenseSessionService';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { areFuelTypesCompatible, resolveFuelType } from '../fuel/fuelTypes';
+import { checkMeterReading, resolveMeterType, type MeterType } from '../fleet/meterValidation';
 
 /**
  * updateVehicle/updateTank (ve kısmen updateDriver) aynı deseni tekrarlıyordu:
@@ -78,6 +79,7 @@ export interface VehicleRecord {
   fuel_capacity_liters: number | null;
   assigned_driver_name: string | null;
   fuel_type: string | null;
+  meter_type: string | null;
 }
 
 // Şoför/araç formlarının "atanmadı" durumu için kullandığı sentinel değerler —
@@ -370,7 +372,8 @@ export async function getTenantVehicles(siteRestriction?: string): Promise<Vehic
       status: row.status,
       fuel_capacity_liters: row.fuel_capacity_liters !== null ? Number(row.fuel_capacity_liters) : null,
       assigned_driver_name: row.assigned_driver_name,
-      fuel_type: row.fuel_type ?? null
+      fuel_type: row.fuel_type ?? null,
+      meter_type: row.meter_type ?? null
     }));
   });
 }
@@ -382,9 +385,9 @@ export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'
       ? data.assigned_driver_name
       : null;
     const result = await client.query(
-      `INSERT INTO vehicles (id, tenant_id, plate, brand_model, vehicle_type, rfid_tag, site_name, status, fuel_capacity_liters, assigned_driver_name, fuel_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [id, tenantId, data.plate, data.brand_model, data.vehicle_type, data.rfid_tag, data.site_name, data.status, data.fuel_capacity_liters ?? null, assignedDriverName, data.fuel_type ?? null]
+      `INSERT INTO vehicles (id, tenant_id, plate, brand_model, vehicle_type, rfid_tag, site_name, status, fuel_capacity_liters, assigned_driver_name, fuel_type, meter_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [id, tenantId, data.plate, data.brand_model, data.vehicle_type, data.rfid_tag, data.site_name, data.status, data.fuel_capacity_liters ?? null, assignedDriverName, data.fuel_type ?? null, data.meter_type ?? null]
     );
     return result.rows[0];
   });
@@ -396,7 +399,7 @@ export async function updateVehicle(id: string, data: Partial<VehicleRecord>): P
 
     for (const [key, value] of Object.entries(data)) {
       if (value === undefined) continue;
-      if (['plate', 'brand_model', 'vehicle_type', 'rfid_tag', 'site_name', 'status', 'fuel_capacity_liters', 'fuel_type'].includes(key)) {
+      if (['plate', 'brand_model', 'vehicle_type', 'rfid_tag', 'site_name', 'status', 'fuel_capacity_liters', 'fuel_type', 'meter_type'].includes(key)) {
         fields.push({ column: key, value });
       } else if (key === 'assigned_driver_name') {
         fields.push({
@@ -4999,5 +5002,272 @@ export async function getFuelStockSummary(days: number): Promise<{ periodDays: n
     }
     byFuelType.sort((a, b) => b.currentStockLiters - a.currentStockLiters);
     return { periodDays: days, byFuelType };
+  });
+}
+
+// ============================================================================
+// FLEET-1404 + RES-903: ARAÇ SAYAÇ (KM / MOTOR-SAAT) GİRİŞİ + DOĞRULAMA
+// ============================================================================
+
+function istanbulMonthLabel(d: Date): string {
+  const local = new Date(d.getTime() + 3 * 60 * 60 * 1000);
+  return `${local.getUTCFullYear()}-${String(local.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+export interface MeterReadingRecord {
+  id: string;
+  tenant_id: string;
+  vehicle_id: string;
+  vehicle_plate: string;
+  meter_type: string;
+  reading_value: string;
+  reading_at: string;
+  period_label: string;
+  source: string;
+  is_suspicious: boolean;
+  suspicion_reasons: string[];
+  override_approved: boolean;
+  override_reason: string | null;
+  approved_by: string | null;
+  corrects_reading_id: string | null;
+  note: string | null;
+  entered_by: string;
+  created_at: string;
+}
+
+export interface RecordMeterReadingInput {
+  meterType?: MeterType;
+  value: number;
+  readingAt?: string;
+  periodLabel?: string;
+  note?: string;
+  source?: 'MANUEL' | 'TOPLU' | 'IKMAL';
+  /** RES-903: şüpheli girişin onaylı geçişi (gerekçe). */
+  overrideReason?: string;
+  correctsReadingId?: string;
+}
+
+async function insertMeterReading(
+  client: any,
+  tenantId: string,
+  vehicle: { id: string; plate: string; vehicle_type: string; meter_type: string | null },
+  input: RecordMeterReadingInput,
+  enteredByUserId: string
+): Promise<{ reading: MeterReadingRecord; warnings: string[] }> {
+  const meterType: MeterType = resolveMeterType(vehicle.vehicle_type, input.meterType ?? vehicle.meter_type);
+  const readingAt = input.readingAt ? new Date(input.readingAt) : new Date();
+  if (Number.isNaN(readingAt.getTime())) {
+    throw new BadRequestError('readingAt geçerli bir tarih değil.', { error: 'INVALID_DATE' });
+  }
+  if (readingAt.getTime() > Date.now() + 60_000) {
+    throw new BadRequestError('readingAt gelecekte olamaz.', { error: 'FUTURE_DATE' });
+  }
+  const periodLabel = input.periodLabel ?? istanbulMonthLabel(readingAt);
+
+  const prevRes = await client.query(
+    `SELECT reading_value, reading_at FROM vehicle_meter_readings
+      WHERE vehicle_id = $1 AND meter_type = $2 AND reading_at <= $3
+      ORDER BY reading_at DESC LIMIT 1`,
+    [vehicle.id, meterType, readingAt.toISOString()]
+  );
+  const previous = prevRes.rows.length > 0
+    ? { value: Number(prevRes.rows[0].reading_value), at: new Date(prevRes.rows[0].reading_at) }
+    : null;
+
+  let duplicatePeriod = false;
+  if (!input.correctsReadingId) {
+    const dupRes = await client.query(
+      `SELECT 1 FROM vehicle_meter_readings
+        WHERE vehicle_id = $1 AND meter_type = $2 AND period_label = $3 AND corrects_reading_id IS NULL LIMIT 1`,
+      [vehicle.id, meterType, periodLabel]
+    );
+    duplicatePeriod = dupRes.rows.length > 0;
+  }
+
+  const check = checkMeterReading({ meterType, newValue: input.value, newAt: readingAt, previous, duplicatePeriod });
+
+  // RES-903 AC: "Geri giden değer UYARI üretmeli, GEREKÇELİ ONAYLA
+  // kaydedilebilmelidir." → gerekçe yoksa reddet (kalıcı engel değil).
+  if (check.suspicious && !(input.overrideReason && input.overrideReason.trim().length >= 3)) {
+    throw new ConflictError(
+      `Şüpheli sayaç girişi (${check.reasons.join(', ')}). Kaydetmek için gerekçeli onay (overrideReason) gereklidir.`,
+      { error: 'METER_READING_SUSPICIOUS', reasons: check.reasons, detail: check.detail, requiresOverride: true }
+    );
+  }
+
+  const id = generateId('meter');
+  const insRes = await client.query(
+    `INSERT INTO vehicle_meter_readings
+       (id, tenant_id, vehicle_id, vehicle_plate, meter_type, reading_value, reading_at, period_label, source,
+        is_suspicious, suspicion_reasons, override_approved, override_reason, approved_by, corrects_reading_id, note, entered_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+    [
+      id, tenantId, vehicle.id, vehicle.plate, meterType, input.value, readingAt.toISOString(), periodLabel,
+      input.source ?? 'MANUEL', check.suspicious, check.reasons, check.suspicious, input.overrideReason ?? null,
+      check.suspicious ? enteredByUserId : null, input.correctsReadingId ?? null, input.note ?? null, enteredByUserId
+    ]
+  );
+
+  await writeAuditLog(client, {
+    action: check.suspicious ? 'METER_READING_OVERRIDE' : 'METER_READING_RECORDED',
+    targetType: 'vehicle_meter_reading',
+    targetId: id,
+    afterValue: {
+      vehicleId: vehicle.id, plate: vehicle.plate, meterType, value: input.value, periodLabel,
+      suspicious: check.suspicious, reasons: check.reasons, overrideReason: input.overrideReason ?? null,
+      correctsReadingId: input.correctsReadingId ?? null
+    }
+  });
+
+  const warnings: string[] = [];
+  if (check.suspicious) warnings.push(`Şüpheli giriş onaylı geçişle kaydedildi: ${check.reasons.join(', ')}.`);
+  return { reading: insRes.rows[0], warnings };
+}
+
+export async function recordMeterReading(
+  vehicleId: string,
+  input: RecordMeterReadingInput,
+  enteredByUserId: string
+): Promise<{ reading: MeterReadingRecord; warnings: string[] }> {
+  return withTenant(async (client, tenantId) => {
+    const vRes = await client.query('SELECT id, plate, vehicle_type, meter_type FROM vehicles WHERE id = $1', [vehicleId]);
+    if (vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    return insertMeterReading(client, tenantId, vRes.rows[0], input, enteredByUserId);
+  });
+}
+
+export interface BulkMeterItem {
+  vehiclePlate: string;
+  value: number;
+  meterType?: MeterType;
+  readingAt?: string;
+  periodLabel?: string;
+  note?: string;
+  overrideReason?: string;
+}
+export interface BulkMeterResultRow {
+  vehiclePlate: string;
+  ok: boolean;
+  readingId?: string;
+  suspicious?: boolean;
+  reasons?: string[];
+  error?: string;
+  message?: string;
+}
+
+/** FLEET-1404 AC: "Toplu giriş ile 50 araç tek işlemde güncellenebilmelidir." */
+export async function recordMeterReadingsBulk(
+  items: BulkMeterItem[],
+  enteredByUserId: string
+): Promise<{ total: number; accepted: number; failed: number; rows: BulkMeterResultRow[] }> {
+  return withTenant(async (client, tenantId) => {
+    const rows: BulkMeterResultRow[] = [];
+    for (const item of items) {
+      try {
+        const vRes = await client.query('SELECT id, plate, vehicle_type, meter_type FROM vehicles WHERE plate = $1', [item.vehiclePlate]);
+        if (vRes.rows.length === 0) {
+          rows.push({ vehiclePlate: item.vehiclePlate, ok: false, error: 'VEHICLE_NOT_FOUND', message: 'Araç bulunamadı.' });
+          continue;
+        }
+        const res = await insertMeterReading(client, tenantId, vRes.rows[0], { ...item, source: 'TOPLU' }, enteredByUserId);
+        rows.push({
+          vehiclePlate: item.vehiclePlate, ok: true, readingId: res.reading.id,
+          suspicious: res.reading.is_suspicious, reasons: res.reading.suspicion_reasons,
+          message: res.warnings[0]
+        });
+      } catch (err: any) {
+        rows.push({
+          vehiclePlate: item.vehiclePlate, ok: false,
+          error: err?.details?.error ?? 'ERROR',
+          reasons: err?.details?.reasons,
+          message: err?.message
+        });
+      }
+    }
+    const accepted = rows.filter((r) => r.ok).length;
+    return { total: rows.length, accepted, failed: rows.length - accepted, rows };
+  });
+}
+
+export async function getVehicleMeterReadings(vehicleId: string): Promise<MeterReadingRecord[]> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      'SELECT * FROM vehicle_meter_readings WHERE vehicle_id = $1 ORDER BY reading_at DESC, created_at DESC',
+      [vehicleId]
+    );
+    return res.rows;
+  });
+}
+
+/** FLEET-1404 AC: "Eksik giriş yapılan araçların listelenmesi." */
+export async function getMissingMeterReadings(
+  periodLabel: string,
+  meterType?: MeterType
+): Promise<{ periodLabel: string; missingCount: number; bySite: Array<{ siteName: string; plates: string[] }> }> {
+  return withTenant(async (client) => {
+    const params: any[] = [periodLabel];
+    let mtClause = '';
+    if (meterType) { params.push(meterType); mtClause = `AND r.meter_type = $${params.length}`; }
+    const res = await client.query(
+      `SELECT v.plate, COALESCE(v.site_name, 'Tanımsız') AS site_name
+         FROM vehicles v
+        WHERE v.status <> 'PASİF'
+          AND NOT EXISTS (
+            SELECT 1 FROM vehicle_meter_readings r
+             WHERE r.vehicle_id = v.id AND r.period_label = $1 ${mtClause}
+          )
+        ORDER BY site_name, v.plate`,
+      params
+    );
+    const bySiteMap = new Map<string, string[]>();
+    for (const row of res.rows) {
+      if (!bySiteMap.has(row.site_name)) bySiteMap.set(row.site_name, []);
+      bySiteMap.get(row.site_name)!.push(row.plate);
+    }
+    return {
+      periodLabel,
+      missingCount: res.rows.length,
+      bySite: [...bySiteMap.entries()].map(([siteName, plates]) => ({ siteName, plates }))
+    };
+  });
+}
+
+/**
+ * FLEET-1404 AC: "Eksik giriş yapan şantiyelere hatırlatma gitmelidir."
+ * Bildirim modülü yok → şantiye bazında audit (METER_READING_REMINDER) +
+ * çağıran route WebSocket'te yayınlar.
+ */
+export async function remindMissingMeterReadings(
+  periodLabel: string,
+  meterType: MeterType | undefined,
+  byUserId: string
+): Promise<{ periodLabel: string; remindedSites: number; bySite: Array<{ siteName: string; missingCount: number; plates: string[] }> }> {
+  return withTenant(async (client) => {
+    const params: any[] = [periodLabel];
+    let mtClause = '';
+    if (meterType) { params.push(meterType); mtClause = `AND r.meter_type = $${params.length}`; }
+    const res = await client.query(
+      `SELECT v.plate, COALESCE(v.site_name, 'Tanımsız') AS site_name
+         FROM vehicles v
+        WHERE v.status <> 'PASİF'
+          AND NOT EXISTS (SELECT 1 FROM vehicle_meter_readings r WHERE r.vehicle_id = v.id AND r.period_label = $1 ${mtClause})
+        ORDER BY site_name, v.plate`,
+      params
+    );
+    const bySiteMap = new Map<string, string[]>();
+    for (const row of res.rows) {
+      if (!bySiteMap.has(row.site_name)) bySiteMap.set(row.site_name, []);
+      bySiteMap.get(row.site_name)!.push(row.plate);
+    }
+    const bySite = [...bySiteMap.entries()].map(([siteName, plates]) => ({ siteName, missingCount: plates.length, plates }));
+    if (bySite.length > 0) {
+      await writeAuditLog(client, {
+        action: 'METER_READING_REMINDER',
+        targetType: 'vehicle_meter_reading',
+        targetId: periodLabel,
+        afterValue: { periodLabel, meterType: meterType ?? 'ALL', sites: bySite.map((s) => ({ site: s.siteName, missing: s.missingCount })), by: byUserId }
+      });
+    }
+    return { periodLabel, remindedSites: bySite.length, bySite };
   });
 }

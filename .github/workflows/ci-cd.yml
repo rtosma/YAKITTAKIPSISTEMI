@@ -282,6 +282,9 @@ jobs:
       - name: Run FUEL-407 Multi Fuel-Type + Wrong-Fuel Rejection Tests
         run: cd backend && npx tsx test/test_fuel407_multi_fuel_type.ts
 
+      - name: Run FLEET-1404 + RES-903 Meter Reading Entry + Validation Tests
+        run: cd backend && npx tsx test/test_fleet1404_meter_readings.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

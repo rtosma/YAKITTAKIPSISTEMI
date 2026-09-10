@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -16,6 +16,7 @@ import { setWorkingHoursSchema, scanAnomalySchema, listAnomalyFlagQuerySchema, r
 import { updateAlarmSchema, snoozeAlarmSchema, listAlarmQuerySchema } from '../schemas/alarmSchema';
 import { validateTaxIdSchema, createRecipientSchema } from '../schemas/recipientSchema';
 import { setDeviceTankSchema, fuelStockSummaryQuerySchema } from '../schemas/fuelTypeSchema';
+import { recordMeterReadingSchema, bulkMeterReadingSchema, missingMeterQuerySchema, remindMeterSchema } from '../schemas/meterReadingSchema';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
@@ -1270,6 +1271,135 @@ router.get(
   }
 );
 
+// ── FLEET-1404 + RES-903: araç sayaç (km / motor-saat) girişi + doğrulama ──
+const METER_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /vehicles/{id}/meter-readings:
+ *   post:
+ *     summary: Araç Sayaç Girişi (FLEET-1404)
+ *     description: >
+ *       `{ value, meterType?, readingAt?, periodLabel?, note?, overrideReason?,
+ *       correctsReadingId? }`. RES-903: geri giden / absürt sıçrama / mükerrer
+ *       dönem tespit edilirse `overrideReason` (gerekçeli onay) olmadan 409.
+ *       Düzeltme için `correctsReadingId` verin (eski satır SİLİNMEZ).
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Araç Sayaç Geçmişi (FLEET-1404 — append-only)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicles/:id/meter-readings',
+  authenticateJWT,
+  authorizeRoles(...METER_MANAGER_ROLES),
+  validateRequest({ body: recordMeterReadingSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await recordMeterReading(req.params.id, req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/vehicles/:id/meter-readings',
+  authenticateJWT,
+  authorizeRoles(...METER_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const readings = await getVehicleMeterReadings(req.params.id);
+      res.json({ success: true, totalCount: readings.length, data: readings });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /meter-readings/bulk:
+ *   post:
+ *     summary: Toplu Sayaç Girişi (FLEET-1404 — 50 araç)
+ *     description: '`{ items: [{ vehiclePlate, value, ... }] }` (1..50). Satır bazlı sonuç döner.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/meter-readings/bulk',
+  authenticateJWT,
+  authorizeRoles(...METER_MANAGER_ROLES),
+  validateRequest({ body: bulkMeterReadingSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await recordMeterReadingsBulk(req.body.items, req.user!.userId);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /meter-readings/missing:
+ *   get:
+ *     summary: Eksik Sayaç Girişi Olan Araçlar (FLEET-1404)
+ *     description: '?periodLabel=YYYY-AA (zorunlu), ?meterType=KM|MOTOR_SAAT. Şantiye bazında gruplanır.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/meter-readings/missing',
+  authenticateJWT,
+  authorizeRoles(...METER_MANAGER_ROLES),
+  validateRequest({ query: missingMeterQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { periodLabel: string; meterType?: 'KM' | 'MOTOR_SAAT' };
+      res.json({ success: true, data: await getMissingMeterReadings(q.periodLabel, q.meterType) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /meter-readings/missing/remind:
+ *   post:
+ *     summary: Eksik Girişli Şantiyelere Hatırlatma (FLEET-1404)
+ *     description: '`{ periodLabel, meterType? }`. Şantiye bazında audit + WebSocket meter-reading:reminder.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/meter-readings/missing/remind',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  validateRequest({ body: remindMeterSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await remindMissingMeterReadings(req.body.periodLabel, req.body.meterType, req.user!.userId);
+      const tenantId = req.user?.tenantId;
+      if (tenantId) {
+        try {
+          for (const s of result.bySite) {
+            broadcastToTenant(tenantId, 'meter-reading:reminder', { periodLabel: result.periodLabel, siteName: s.siteName, missingCount: s.missingCount });
+          }
+        } catch { /* */ }
+      }
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
 /**
  * FUEL-404.1 — K-Factor Uzaktan Kalibrasyon: Komut, Ack, Geri Alma, Geçmiş.
  * Ticket'ın "Teknik Yığın"ı NestJS + IOT-305 komut kuyruğu + Drizzle
@@ -2351,7 +2481,8 @@ router.post(
         status: sanitizedBody.status || 'AKTİF',
         fuel_capacity_liters: sanitizedBody.fuelCapacityLiters ?? null,
         assigned_driver_name: sanitizedBody.assignedDriver ?? null,
-        fuel_type: sanitizedBody.fuelType ?? null
+        fuel_type: sanitizedBody.fuelType ?? null,
+        meter_type: sanitizedBody.meterType ?? null
       };
 
       const newVehicle = await createVehicle(vehicleData);
@@ -2379,7 +2510,7 @@ router.put(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const id = req.params.id;
-      const { plate, brandModel, type, rfidTag, siteName, status, fuelCapacityLiters, assignedDriver, fuelType } = req.body;
+      const { plate, brandModel, type, rfidTag, siteName, status, fuelCapacityLiters, assignedDriver, fuelType, meterType } = req.body;
       const updateData = {
         ...(plate && { plate }),
         ...(brandModel && { brand_model: brandModel }),
@@ -2389,7 +2520,8 @@ router.put(
         ...(status && { status }),
         ...(fuelCapacityLiters !== undefined && { fuel_capacity_liters: fuelCapacityLiters }),
         ...(assignedDriver !== undefined && { assigned_driver_name: assignedDriver }),
-        ...(fuelType !== undefined && { fuel_type: fuelType })
+        ...(fuelType !== undefined && { fuel_type: fuelType }),
+        ...(meterType !== undefined && { meter_type: meterType })
       };
 
       const updatedVehicle = await updateVehicle(id, updateData);

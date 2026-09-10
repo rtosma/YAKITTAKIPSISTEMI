@@ -28,6 +28,8 @@ export const createVehicleSchema = z.object({
   // FUEL-407: aracın alabileceği yakıt tipi (serbest metin — Motorin/Benzin/
   // AdBlue/...). Dolu ve tank yakıt tipiyle uyumsuzsa ikmal reddedilir.
   fuelType: z.string().min(1).max(64).optional(),
+  // FLEET-1404: sayaç ölçüm birimi (araç tipinden türetilir, açıkça da verilebilir).
+  meterType: z.enum(['KM', 'MOTOR_SAAT']).optional(),
   // GERÇEK BİR HATA: bu alan önceden şemada hiç tanımlı değildi — Zod
   // (varsayılan olarak bilinmeyen alanları SESSİZCE siler) her PUT
   // /vehicles/:id isteğindeki status'u atıyordu. Frontend'in VehiclesPage.tsx
