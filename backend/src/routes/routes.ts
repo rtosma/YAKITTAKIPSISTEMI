@@ -15,7 +15,9 @@ import { dispenseRequestSchema, transactionQuerySchema, transactionExportQuerySc
 import { dispenseRequestAuthSchema, dispenseHeartbeatSchema, dispenseFinalizeSchema } from '../schemas/dispenseSessionSchema';
 import { createCrossSitePermissionSchema, updateCrossSitePermissionStatusSchema } from '../schemas/crossSiteSchema';
 import { createCompanySchema, updateCompanySchema } from '../schemas/companySchema';
-import { loginSchema, changePasswordSchema } from '../schemas/authSchema';
+import { loginSchema, changePasswordSchema, forgotPasswordSchema, resetPasswordSchema } from '../schemas/authSchema';
+import { config } from '../config/env';
+import { requestPasswordReset, finalizePasswordReset } from '../services/passwordResetService';
 import { createSiteSchema } from '../schemas/siteSchema';
 import { createHardwareDeviceSchema, relocateHardwareDeviceSchema, createDeviceClaimCodeSchema, claimDeviceSchema } from '../schemas/hardwareDeviceSchema';
 import { requestCalibrationSchema, calibrationAckSchema, testIntakeSchema } from '../schemas/calibrationSchema';
@@ -37,7 +39,7 @@ import { lorawanWebhookAuth } from '../middleware/lorawanWebhookAuthMiddleware';
 import { redisPool } from '../db/redisPool';
 import { broadcastToTenant } from '../socket/socketServer';
 import { logger } from '../utils/logger';
-import { loginRateLimiter, refreshRateLimiter, hardwareRateLimiter, lorawanWebhookRateLimiter } from '../middleware/rateLimitMiddleware';
+import { loginRateLimiter, refreshRateLimiter, hardwareRateLimiter, lorawanWebhookRateLimiter, passwordResetPerMinuteLimiter, passwordResetPerHourLimiter, passwordResetSubmitLimiter } from '../middleware/rateLimitMiddleware';
 import { lorawanUplinkSchema } from '../schemas/lorawanWebhookSchema';
 import { ingestLoRaWANUplink } from '../services/lorawanUplinkService';
 import { checkLockout, recordFailedLogin, clearFailedLogins } from '../services/accountLockoutService';
@@ -269,6 +271,89 @@ router.post('/auth/refresh', refreshRateLimiter, async (req: Request, res: Respo
     });
   }
 });
+
+/**
+ * @swagger
+ * /auth/forgot-password:
+ *   post:
+ *     summary: Şifre Sıfırlama Talebi (AUTH-206)
+ *     description: >
+ *       Kullanıcı adı için tek kullanımlık, 30 dk geçerli bir sıfırlama
+ *       token'ı üretir (hash'i Redis'te). Kullanıcının var olup olmadığından
+ *       BAĞIMSIZ olarak HER ZAMAN aynı 200 mesajı döner (enumeration
+ *       koruması). Rate limit: kullanıcı başına 1/dk ve 5/saat. Gerçek
+ *       e-posta/SMS iletimi #159'a bağlı — o zamana kadar üretim-dışı
+ *       ortamlarda token yanıtta `devResetToken` olarak döner.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Talep alındı (kullanıcı var olsun olmasın aynı yanıt).
+ *       429:
+ *         description: Rate limit aşıldı.
+ */
+router.post(
+  '/auth/forgot-password',
+  passwordResetPerHourLimiter,
+  passwordResetPerMinuteLimiter,
+  validateRequest({ body: forgotPasswordSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { username } = req.body as { username: string };
+      const resetToken = await requestPasswordReset(username);
+
+      const body: Record<string, unknown> = {
+        success: true,
+        message: 'Eğer bu kullanıcı adı sistemde kayıtlıysa, şifre sıfırlama talimatları ilgili kanaldan iletilmiştir.'
+      };
+      // #159 (bildirim kanalı) tamamlanana kadar üretim-DIŞI ortamlarda
+      // token'ı doğrudan döndür ki akış uçtan uca kullanılabilir/test
+      // edilebilir olsun. Üretimde ASLA sızmaz.
+      if (!config.isProduction && resetToken) {
+        body.devResetToken = resetToken;
+      }
+      res.json(body);
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /auth/reset-password:
+ *   post:
+ *     summary: Şifre Sıfırlamayı Tamamla (AUTH-206)
+ *     description: >
+ *       Geçerli bir token + yeni parola ile şifreyi günceller. Token TEK
+ *       KULLANIMLIK (kullanılır kullanılmaz silinir), 30 dk geçerli.
+ *       Başarıda kullanıcının TÜM aktif oturumları (refresh token'ları)
+ *       iptal edilir. Geçersiz/kullanılmış token → jenerik 400.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Parola güncellendi.
+ *       400:
+ *         description: Geçersiz/süresi dolmuş token veya parola kuralı ihlali.
+ *       429:
+ *         description: Rate limit aşıldı.
+ */
+router.post(
+  '/auth/reset-password',
+  passwordResetSubmitLimiter,
+  validateRequest({ body: resetPasswordSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { token, newPassword } = req.body as { token: string; newPassword: string };
+      await finalizePasswordReset(token, newPassword);
+      res.json({
+        success: true,
+        message: 'Şifreniz başarıyla güncellendi. Lütfen yeni şifrenizle giriş yapın.'
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
 
 /**
  * POST /api/v1/auth/logout

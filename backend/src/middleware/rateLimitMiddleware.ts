@@ -117,3 +117,77 @@ export const lorawanWebhookRateLimiter = rateLimit({
     });
   }
 });
+
+/**
+ * AUTH-206 — POST /auth/forgot-password. Ticket: "kullanıcı başına en fazla
+ * dakikada 1, saatte 5". İKİ ayrı limiter (ikisi de aynı uca uygulanır),
+ * IP değil KULLANICI ADI ile anahtarlanır (bir kullanıcının sıfırlama
+ * talebi, aynı 4G IP'sindeki başka bir kullanıcıyı etkilemesin). username
+ * gövdede yoksa IP'ye düşer.
+ */
+function usernameKey(req: Request): string {
+  const u = (req.body?.username as string | undefined)?.trim().toLowerCase();
+  return u && u.length >= 3 ? `u:${u}` : ipKeyGenerator(req.ip || 'unknown');
+}
+
+export const passwordResetPerMinuteLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: usernameKey,
+  store: new RedisStore({
+    prefix: 'rl:pwreset-min:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      error: 'TOO_MANY_REQUESTS',
+      message: 'Çok sık şifre sıfırlama talebi. Lütfen bir dakika sonra tekrar deneyin.'
+    });
+  }
+});
+
+export const passwordResetPerHourLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: usernameKey,
+  store: new RedisStore({
+    prefix: 'rl:pwreset-hour:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      error: 'TOO_MANY_REQUESTS',
+      message: 'Saatlik şifre sıfırlama talebi limiti aşıldı. Lütfen daha sonra tekrar deneyin.'
+    });
+  }
+});
+
+/**
+ * AUTH-206 — POST /auth/reset-password. Token 256 bit entropiye sahip
+ * (kaba kuvvet zaten imkânsız) ama IP başına mütevazı bir üst sınır yine de
+ * hijyen: 30/saat.
+ */
+export const passwordResetSubmitLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => ipKeyGenerator(req.ip || 'unknown'),
+  store: new RedisStore({
+    prefix: 'rl:pwreset-submit:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      error: 'TOO_MANY_REQUESTS',
+      message: 'Çok fazla şifre sıfırlama denemesi. Lütfen daha sonra tekrar deneyin.'
+    });
+  }
+});

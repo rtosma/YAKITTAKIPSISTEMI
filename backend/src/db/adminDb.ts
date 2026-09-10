@@ -246,6 +246,39 @@ export async function getHardwareDeviceByDeviceId(deviceId: string): Promise<Har
   return result.rows[0] ?? null;
 }
 
+// ── AUTH-206: parola sıfırlama (pre-auth, tenant context YOK) ─────────────
+// getHardwareDeviceByDeviceId / login akışıyla AYNI gerekçe: token/istek
+// henüz hangi tenant'a ait belli değil, bu yüzden withTenant() DIŞINDA ham
+// pool.query. Bu iki fonksiyon yalnızca passwordResetService.ts'ten çağrılır.
+
+export interface AuthUserLite {
+  id: string;
+  tenant_id: string;
+  username: string;
+}
+
+export async function findUserForPasswordReset(username: string): Promise<AuthUserLite | null> {
+  const result = await pool.query(
+    'SELECT id, tenant_id, username FROM users WHERE LOWER(username) = LOWER($1)',
+    [username]
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
+ * Parola sıfırlama tamamlandığında hash'i günceller VE geçici-parola
+ * bayraklarını temizler (bir sıfırlama, kalıcı ve bilinçli bir parola
+ * belirlemedir — must_change_password akışını bitirir).
+ */
+export async function updateUserPasswordHash(userId: string, passwordHash: string): Promise<void> {
+  await pool.query(
+    `UPDATE users
+       SET password_hash = $2, must_change_password = FALSE, temp_password_expires_at = NULL
+     WHERE id = $1`,
+    [userId, passwordHash]
+  );
+}
+
 export interface AdminHardwareDeviceSummary {
   device_id: string;
   tenant_id: string;
