@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -14,6 +14,9 @@ import { createReconciliationSchema, listReconciliationQuerySchema } from '../sc
 import { createManualDispenseSchema, rejectManualDispenseSchema, listManualDispenseQuerySchema, manualDispenseRatioQuerySchema } from '../schemas/manualDispenseSchema';
 import { setWorkingHoursSchema, scanAnomalySchema, listAnomalyFlagQuerySchema, reviewAnomalyFlagSchema } from '../schemas/anomalyFlagSchema';
 import { updateAlarmSchema, snoozeAlarmSchema, listAlarmQuerySchema } from '../schemas/alarmSchema';
+import { validateTaxIdSchema, createRecipientSchema } from '../schemas/recipientSchema';
+import { validateTaxId } from '../compliance/taxIdValidation';
+import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
 import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes, normalizeRecoveryCode } from '../services/totpService';
 import { isServerShuttingDown } from '../utils/shutdown';
@@ -3396,13 +3399,136 @@ router.get(
   authenticateJWT,
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const prep = await prepareDespatchAdvice(req.params.id, siteScopeFor(req.user!));
+      const recipientTaxId = typeof req.query.recipientTaxId === 'string' ? req.query.recipientTaxId : undefined;
+      const prep = await prepareDespatchAdvice(req.params.id, siteScopeFor(req.user!), recipientTaxId);
+      // COMP-605: alıcı e-İrsaliye mükellefi değilse (deliveryMode KAGIT)
+      // elektronik XML üretme — kağıt süreç uyarısını JSON döndür.
+      if (req.query.format === 'json' || prep.deliveryMode === 'KAGIT') {
+        res.set('Cache-Control', 'no-store');
+        res.status(prep.deliveryMode === 'KAGIT' ? 409 : 200).json({
+          success: prep.deliveryMode !== 'KAGIT',
+          error: prep.deliveryMode === 'KAGIT' ? 'RECIPIENT_NOT_EINVOICE_OBLIGATED' : undefined,
+          data: {
+            documentNumber: prep.documentNumber,
+            ettn: prep.ettn,
+            reusedExisting: prep.reusedExisting,
+            deliveryMode: prep.deliveryMode,
+            recipientTaxId: prep.recipientTaxId,
+            recipientTitle: prep.recipientTitle,
+            recipientObligated: prep.recipientObligated,
+            warnings: prep.recipientWarnings
+          }
+        });
+        return;
+      }
       const xml = generateDespatchAdviceXml(prep);
       res.setHeader('Content-Type', 'application/xml; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="e-irsaliye-${prep.documentNumber}.xml"`);
       res.setHeader('X-Despatch-Advice-Number', prep.documentNumber);
       res.setHeader('X-Despatch-Advice-ETTN', prep.ettn);
+      res.setHeader('X-Delivery-Mode', prep.deliveryMode);
       res.send(xml);
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── COMP-605: mükellef (VKN/TCKN) doğrulama + alıcı bilgisi ─────────────
+const RECIPIENT_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /taxpayers/validate:
+ *   post:
+ *     summary: VKN/TCKN Algoritmik Doğrulama + Mükellefiyet Sorgusu (COMP-605)
+ *     description: '`{ taxId }` → { valid, kind (VKN|TCKN), obligation }. Mükellefiyet 24 sa önbelleklidir.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/taxpayers/validate',
+  authenticateJWT,
+  validateRequest({ body: validateTaxIdSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const v = validateTaxId(req.body.taxId);
+      let obligation = null;
+      if (v.ok) {
+        const o = await getEInvoiceObligation(v.normalized);
+        obligation = { obligated: o.obligated, source: o.source, checkedAt: o.checkedAt };
+      }
+      res.json({ success: true, data: { valid: v.ok, kind: v.kind, normalized: v.normalized, reason: v.reason, obligation } });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /recipients:
+ *   post:
+ *     summary: Alıcı Mükellef Kaydı (COMP-605)
+ *     description: >
+ *       `{ taxId, title?, address?, taxOffice?, status? }`. VKN/TCKN geçersizse
+ *       400. Kayıt oluşur ama zorunlu alan(lar) eksikse `warnings` ile döner.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Alıcı Mükellef Listesi (COMP-605)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/recipients',
+  authenticateJWT,
+  authorizeRoles(...RECIPIENT_MANAGER_ROLES),
+  validateRequest({ body: createRecipientSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await upsertRecipientTaxpayer(req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/recipients',
+  authenticateJWT,
+  authorizeRoles(...RECIPIENT_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const recs = await getRecipientTaxpayers();
+      res.json({ success: true, totalCount: recs.length, data: recs });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/recipients/:id',
+  authenticateJWT,
+  authorizeRoles(...RECIPIENT_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getRecipientTaxpayer(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/recipients/:id/refresh-obligation',
+  authenticateJWT,
+  authorizeRoles(...RECIPIENT_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await refreshRecipientObligation(req.params.id) });
     } catch (error: any) {
       next(error);
     }

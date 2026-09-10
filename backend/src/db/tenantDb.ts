@@ -25,6 +25,8 @@ import {
   type CarryoverPolicy
 } from '../fuel/quotaPeriod';
 import { listActiveSessions } from '../services/dispenseSessionService';
+import { validateTaxId } from '../compliance/taxIdValidation';
+import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 
 /**
  * updateVehicle/updateTank (ve kısmen updateDriver) aynı deseni tekrarlıyordu:
@@ -2396,6 +2398,15 @@ export interface DespatchAdvicePreparation {
   /** tanks.fuel_type serbest metni; GTIP çözümü despatchAdviceXmlService'te. */
   fuelType: string;
   amountLiters: number;
+  // COMP-605 — alıcı (mükellef) doğrulaması. recipientTaxId verilmediyse
+  // hepsi null/varsayılan (öz filo teslimi — ayrı bir alıcı yok).
+  recipientTaxId: string | null;
+  recipientTitle: string | null;
+  recipientObligated: boolean | null;
+  /** 'ELEKTRONIK' (alıcı e-İrsaliye mükellefi) | 'KAGIT' (değil → kağıt süreç). */
+  deliveryMode: 'ELEKTRONIK' | 'KAGIT';
+  /** Alıcı kaydında eksik zorunlu alanlar (unvan/adres/vergi dairesi). */
+  recipientWarnings: string[];
 }
 
 /**
@@ -2421,7 +2432,8 @@ export interface DespatchAdvicePreparation {
  */
 export async function prepareDespatchAdvice(
   transactionId: string,
-  siteRestriction?: string
+  siteRestriction?: string,
+  recipientTaxId?: string | null
 ): Promise<DespatchAdvicePreparation> {
   return withTenant(async (client, tenantId) => {
     const txRes = await client.query('SELECT * FROM transactions WHERE id = $1', [transactionId]);
@@ -2468,9 +2480,47 @@ export async function prepareDespatchAdvice(
       if (tankRes.rows[0]?.fuel_type) fuelType = tankRes.rows[0].fuel_type;
     }
 
+    // --- COMP-605: alıcı (mükellef) doğrulaması ---
+    let recipientTaxIdNorm: string | null = null;
+    let recipientTitle: string | null = null;
+    let recipientObligated: boolean | null = null;
+    let deliveryMode: 'ELEKTRONIK' | 'KAGIT' = 'ELEKTRONIK';
+    const recipientWarnings: string[] = [];
+    if (recipientTaxId) {
+      const v = validateTaxId(recipientTaxId);
+      if (!v.ok) {
+        throw new BadRequestError(
+          `Alıcı VKN/TCKN geçersiz — belge kesilemez: ${v.reason}`,
+          { error: 'INVALID_RECIPIENT_TAX_ID', taxId: v.normalized }
+        );
+      }
+      recipientTaxIdNorm = v.normalized;
+      const rec = await client.query('SELECT * FROM recipient_taxpayers WHERE tax_id = $1', [recipientTaxIdNorm]);
+      const oblig = await getEInvoiceObligation(recipientTaxIdNorm);
+      recipientObligated = oblig.obligated;
+      if (rec.rows.length > 0) {
+        const r = rec.rows[0] as RecipientTaxpayerRecord;
+        recipientTitle = r.title;
+        if (Array.isArray(r.missing_fields) && r.missing_fields.length > 0) {
+          recipientWarnings.push(`Alıcı kaydında eksik alan(lar): ${r.missing_fields.join(', ')}.`);
+        }
+        // Mükellefiyet bilgisini kayıtta da tazele.
+        await client.query(
+          `UPDATE recipient_taxpayers SET is_einvoice_obligated = $2, obligation_checked_at = CURRENT_TIMESTAMP, obligation_source = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+          [r.id, oblig.obligated, oblig.source]
+        );
+      } else {
+        recipientWarnings.push('Alıcı sistemde kayıtlı değil — POST /recipients ile unvan/adres/vergi dairesi bilgilerini kaydedin.');
+      }
+      if (!oblig.obligated) {
+        deliveryMode = 'KAGIT';
+        recipientWarnings.push('Alıcı e-İrsaliye mükellefi DEĞİL — elektronik belge kesilemez, KAĞIT süreç işaretlendi (Kritik Not).');
+      }
+    }
+
     // --- Belge numarası + ETTN tahsisi (idempotent) ---
     const existing = await client.query(
-      'SELECT document_number, ettn FROM despatch_advice_documents WHERE transaction_id = $1',
+      'SELECT document_number, ettn, delivery_mode, recipient_tax_id FROM despatch_advice_documents WHERE transaction_id = $1',
       [transactionId]
     );
     let documentNumber: string;
@@ -2480,6 +2530,10 @@ export async function prepareDespatchAdvice(
       documentNumber = existing.rows[0].document_number;
       ettn = existing.rows[0].ettn;
       reusedExisting = true;
+      // Yeniden üretim: ilk kesimdeki teslim yöntemi/alıcı KORUNUR (belge no
+      // gibi değişmez); yeni bir recipientTaxId ile çağrılsa bile.
+      deliveryMode = (existing.rows[0].delivery_mode as 'ELEKTRONIK' | 'KAGIT') ?? deliveryMode;
+      recipientTaxIdNorm = existing.rows[0].recipient_tax_id ?? recipientTaxIdNorm;
     } else {
       // Tenant başına seri tahsisi tek sıraya sok — hangi ikmal için olursa
       // olsun aynı anda iki numara üretilmesin.
@@ -2491,9 +2545,12 @@ export async function prepareDespatchAdvice(
         [transactionId]
       );
       if (recheck.rows.length > 0) {
+        const r2 = await client.query('SELECT delivery_mode, recipient_tax_id FROM despatch_advice_documents WHERE transaction_id = $1', [transactionId]);
         documentNumber = recheck.rows[0].document_number;
         ettn = recheck.rows[0].ettn;
         reusedExisting = true;
+        deliveryMode = (r2.rows[0]?.delivery_mode as 'ELEKTRONIK' | 'KAGIT') ?? deliveryMode;
+        recipientTaxIdNorm = r2.rows[0]?.recipient_tax_id ?? recipientTaxIdNorm;
       } else {
         const year = new Date(tx.created_at).getFullYear();
         await client.query(
@@ -2510,9 +2567,9 @@ export async function prepareDespatchAdvice(
         ettn = crypto.randomUUID();
         await client.query(
           `INSERT INTO despatch_advice_documents
-             (id, tenant_id, transaction_id, document_number, ettn, issue_year, sequence_no)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-          [generateId('despatch'), tenantId, transactionId, documentNumber, ettn, year, seq]
+             (id, tenant_id, transaction_id, document_number, ettn, issue_year, sequence_no, recipient_tax_id, delivery_mode)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [generateId('despatch'), tenantId, transactionId, documentNumber, ettn, year, seq, recipientTaxIdNorm, deliveryMode]
         );
         reusedExisting = false;
       }
@@ -2530,7 +2587,12 @@ export async function prepareDespatchAdvice(
       vehiclePlate: tx.vehicle_plate,
       driverTcNo,
       fuelType,
-      amountLiters: Number(tx.amount_liters)
+      amountLiters: Number(tx.amount_liters),
+      recipientTaxId: recipientTaxIdNorm,
+      recipientTitle,
+      recipientObligated,
+      deliveryMode,
+      recipientWarnings
     };
   });
 }
@@ -4702,5 +4764,120 @@ export async function runAlarmEscalationForCurrentTenant(): Promise<Array<{ id: 
       [ALARM_MAX_ESCALATION_LEVEL, ALARM_ESCALATE_AFTER_MINUTES]
     );
     return res.rows;
+  });
+}
+
+// ============================================================================
+// COMP-605: MÜKELLEF (VKN/TCKN) DOĞRULAMA + ALICI BİLGİSİ KONTROLÜ
+// ============================================================================
+
+const RECIPIENT_REQUIRED_FIELDS = ['title', 'address', 'tax_office'] as const;
+
+export interface RecipientTaxpayerRecord {
+  id: string;
+  tenant_id: string;
+  tax_id: string;
+  tax_id_type: string;
+  title: string | null;
+  address: string | null;
+  tax_office: string | null;
+  is_einvoice_obligated: boolean | null;
+  obligation_checked_at: string | null;
+  obligation_source: string | null;
+  missing_fields: string[];
+  status: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function computeMissingRecipientFields(data: { title?: string; address?: string; taxOffice?: string }): string[] {
+  const missing: string[] = [];
+  if (!data.title || !data.title.trim()) missing.push('title');
+  if (!data.address || !data.address.trim()) missing.push('address');
+  if (!data.taxOffice || !data.taxOffice.trim()) missing.push('tax_office');
+  return missing;
+}
+
+/**
+ * COMP-605 — alıcı mükellef kaydı oluşturur/günceller. VKN/TCKN algoritmik
+ * doğrulamadan geçmezse INVALID (AC). Kayıt oluşur ama unvan/adres/vergi
+ * dairesi eksikse `missing_fields` uyarısıyla döner (AC: "eksik alan uyarısı").
+ * e-İrsaliye mükellefiyeti sorgulanıp saklanır.
+ */
+export async function upsertRecipientTaxpayer(
+  data: { taxId: string; title?: string; address?: string; taxOffice?: string; status?: string },
+  createdByUserId: string
+): Promise<{ recipient: RecipientTaxpayerRecord; obligation: { obligated: boolean; source: string; checkedAt: string }; warnings: string[] }> {
+  const v = validateTaxId(data.taxId);
+  if (!v.ok) {
+    throw new BadRequestError(`VKN/TCKN geçersiz: ${v.reason}`, { error: 'INVALID_TAX_ID', taxId: v.normalized, kind: v.kind });
+  }
+  const oblig = await getEInvoiceObligation(v.normalized);
+  const missing = computeMissingRecipientFields(data);
+
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query(
+      `INSERT INTO recipient_taxpayers
+         (id, tenant_id, tax_id, tax_id_type, title, address, tax_office, is_einvoice_obligated, obligation_checked_at, obligation_source, missing_fields, status, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_TIMESTAMP,$9,$10,$11,$12)
+       ON CONFLICT (tenant_id, tax_id) DO UPDATE SET
+         tax_id_type = EXCLUDED.tax_id_type,
+         title = EXCLUDED.title,
+         address = EXCLUDED.address,
+         tax_office = EXCLUDED.tax_office,
+         is_einvoice_obligated = EXCLUDED.is_einvoice_obligated,
+         obligation_checked_at = CURRENT_TIMESTAMP,
+         obligation_source = EXCLUDED.obligation_source,
+         missing_fields = EXCLUDED.missing_fields,
+         status = EXCLUDED.status,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [
+        generateId('rcpt'), tenantId, v.normalized, v.kind, data.title ?? null, data.address ?? null,
+        data.taxOffice ?? null, oblig.obligated, oblig.source, missing, data.status ?? 'AKTİF', createdByUserId
+      ]
+    );
+    await writeAuditLog(client, {
+      action: 'RECIPIENT_TAXPAYER_UPSERTED',
+      targetType: 'recipient_taxpayer',
+      targetId: res.rows[0].id,
+      afterValue: { taxId: v.normalized, kind: v.kind, obligated: oblig.obligated, missingFields: missing }
+    });
+
+    const warnings: string[] = [];
+    if (missing.length > 0) warnings.push(`Eksik zorunlu alan(lar): ${missing.join(', ')}. Bu alanlar tamamlanmadan e-İrsaliye reddedilebilir.`);
+    if (!oblig.obligated) warnings.push('Bu alıcı e-İrsaliye mükellefi değil — belge kesilirse KAĞIT süreç işaretlenir.');
+    return { recipient: res.rows[0], obligation: { obligated: oblig.obligated, source: oblig.source, checkedAt: oblig.checkedAt }, warnings };
+  });
+}
+
+export async function getRecipientTaxpayers(): Promise<RecipientTaxpayerRecord[]> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM recipient_taxpayers ORDER BY created_at DESC');
+    return res.rows;
+  });
+}
+
+export async function getRecipientTaxpayer(id: string): Promise<RecipientTaxpayerRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM recipient_taxpayers WHERE id = $1', [id]);
+    if (res.rows.length === 0) throw new NotFoundError('Alıcı kaydı bulunamadı.');
+    return res.rows[0];
+  });
+}
+
+/** COMP-605 — mükellefiyet durumunu entegratörden (taklit) yeniden sorgular. */
+export async function refreshRecipientObligation(id: string): Promise<RecipientTaxpayerRecord> {
+  return withTenant(async (client) => {
+    const cur = await client.query('SELECT tax_id FROM recipient_taxpayers WHERE id = $1', [id]);
+    if (cur.rows.length === 0) throw new NotFoundError('Alıcı kaydı bulunamadı.');
+    const oblig = await getEInvoiceObligation(cur.rows[0].tax_id, true);
+    const res = await client.query(
+      `UPDATE recipient_taxpayers SET is_einvoice_obligated = $2, obligation_checked_at = CURRENT_TIMESTAMP, obligation_source = $3, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1 RETURNING *`,
+      [id, oblig.obligated, oblig.source]
+    );
+    return res.rows[0];
   });
 }

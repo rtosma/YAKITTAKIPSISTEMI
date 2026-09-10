@@ -276,6 +276,9 @@ jobs:
       - name: Run AI-507 Unified Alarm Lifecycle Tests
         run: cd backend && npx tsx test/test_ai507_alarm_lifecycle.ts
 
+      - name: Run COMP-605 Taxpayer (VKN/TCKN) Validation Tests
+        run: cd backend && npx tsx test/test_comp605_taxpayer_validation.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

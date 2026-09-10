@@ -381,6 +381,12 @@ CREATE TABLE IF NOT EXISTS despatch_advice_documents (
     CONSTRAINT uq_despatch_advice_documents_number UNIQUE (tenant_id, document_number)
 );
 
+-- COMP-605: belge kesilen alıcının VKN'si ve teslim yöntemi. Alıcı
+-- e-İrsaliye mükellefi DEĞİLSE elektronik belge kesilemez → delivery_mode
+-- 'KAGIT' olarak işaretlenir (Kritik Not).
+ALTER TABLE despatch_advice_documents ADD COLUMN IF NOT EXISTS recipient_tax_id VARCHAR(16);
+ALTER TABLE despatch_advice_documents ADD COLUMN IF NOT EXISTS delivery_mode VARCHAR(16) NOT NULL DEFAULT 'ELEKTRONIK';
+
 -- COMP-601.1 AC: "Belge numaralandırması boşluksuz sıralı olmalıdır (denetim
 -- gereği)". Postgres SEQUENCE bunu SAĞLAYAMAZ — rollback'te tüketilen numara
 -- geri gelmez, boşluk oluşur. Bunun yerine tenant+yıl başına bir sayaç
@@ -774,6 +780,32 @@ CREATE TABLE IF NOT EXISTS alarm_events (
     occurred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- COMP-605: e-İrsaliye kesilecek alıcı (mükellef) kayıtları. VKN/TCKN
+-- algoritmik olarak doğrulanır; e-İrsaliye mükellefiyeti sorgulanıp
+-- (COMP-602 adaptörü yoksa deterministik taklit) 24 sa önbelleklenir;
+-- unvan/adres/vergi dairesi eksikse missing_fields uyarısı üretilir.
+CREATE TABLE IF NOT EXISTS recipient_taxpayers (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    tax_id VARCHAR(16) NOT NULL,
+    -- 'VKN' | 'TCKN'
+    tax_id_type VARCHAR(8) NOT NULL,
+    title VARCHAR(300),
+    address VARCHAR(500),
+    tax_office VARCHAR(160),
+    is_einvoice_obligated BOOLEAN,
+    obligation_checked_at TIMESTAMP WITH TIME ZONE,
+    obligation_source VARCHAR(24),
+    -- Eksik zorunlu alanlar (unvan/adres/vergi dairesi) — belge üretiminden
+    -- önce kullanıcıya gösterilir.
+    missing_fields TEXT[] NOT NULL DEFAULT '{}',
+    status VARCHAR(16) NOT NULL DEFAULT 'AKTİF',
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tenant_id, tax_id)
+);
+
 -- ==============================================================================
 -- 6. Enable Row Level Security (RLS) Policies
 -- ==============================================================================
@@ -805,6 +837,7 @@ ALTER TABLE transaction_anomaly_flags ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_totp ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alarms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alarm_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE recipient_taxpayers ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -913,6 +946,7 @@ ALTER TABLE transaction_anomaly_flags FORCE ROW LEVEL SECURITY;
 ALTER TABLE user_totp FORCE ROW LEVEL SECURITY;
 ALTER TABLE alarms FORCE ROW LEVEL SECURITY;
 ALTER TABLE alarm_events FORCE ROW LEVEL SECURITY;
+ALTER TABLE recipient_taxpayers FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -943,6 +977,7 @@ DROP POLICY IF EXISTS transaction_anomaly_flags_tenant_isolation_policy ON trans
 DROP POLICY IF EXISTS user_totp_tenant_isolation_policy ON user_totp;
 DROP POLICY IF EXISTS alarms_tenant_isolation_policy ON alarms;
 DROP POLICY IF EXISTS alarm_events_tenant_isolation_policy ON alarm_events;
+DROP POLICY IF EXISTS recipient_taxpayers_tenant_isolation_policy ON recipient_taxpayers;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -1103,6 +1138,11 @@ CREATE POLICY alarms_tenant_isolation_policy ON alarms
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
 CREATE POLICY alarm_events_tenant_isolation_policy ON alarm_events
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY recipient_taxpayers_tenant_isolation_policy ON recipient_taxpayers
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
