@@ -657,6 +657,57 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_password_expires_at TIMESTAMP WI
 -- tablosu eklenmeli — token durumunu aynalayan bir tablo değil.
 DROP TABLE IF EXISTS refresh_tokens;
 
+-- AI-504: şantiye bazında mesai saatleri + çalışma günleri. Mesai dışı alım
+-- tespiti bunlara göre yapılır. Kritik Not: "Vardiyalı şantiyelerde gece
+-- alımı normaldir; mesai tanımı olmadan bu kural gürültü üretir" → tanımı
+-- olmayan şantiye için makul bir varsayılan (07:00-19:00, Pzt-Cmt) uygulanır;
+-- is_24_7=TRUE ise şantiye mesai-dışı kuralından TAMAMEN muaftır (beyaz liste).
+CREATE TABLE IF NOT EXISTS site_working_hours (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    site_name VARCHAR(128) NOT NULL,
+    -- Europe/Istanbul yerel gün içi dakika [0..1440). start<end varsayılır
+    -- (gece yarısını aşan vardiya bu modelde is_24_7 ile ele alınır).
+    start_minute INTEGER NOT NULL DEFAULT 420,   -- 07:00
+    end_minute INTEGER NOT NULL DEFAULT 1140,    -- 19:00
+    -- ISO haftagünü: 1=Pazartesi ... 7=Pazar.
+    working_days INTEGER[] NOT NULL DEFAULT '{1,2,3,4,5,6}',
+    is_24_7 BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Aynı araca bu süre içinde ikinci alım "kısa aralıklı mükerrer" sayılır.
+    rapid_repeat_window_minutes INTEGER NOT NULL DEFAULT 30,
+    updated_by VARCHAR(64) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tenant_id, site_name)
+);
+
+-- AI-504: kural tabanlı işaretlemeler. Kritik Not: "Kısa aralıklı ikinci
+-- alım ... işaretleme ALARM DEĞİL inceleme kaydı üretmelidir" → bu tablo bir
+-- inceleme kuyruğudur, ayrı bir alarm mekanizması değil.
+CREATE TABLE IF NOT EXISTS transaction_anomaly_flags (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    transaction_id VARCHAR(64) NOT NULL,
+    -- 'MESAI_DISI' | 'KISA_ARALIK_MUKERRER'
+    anomaly_type VARCHAR(32) NOT NULL,
+    -- 'BILGI' | 'INCELEME'
+    severity VARCHAR(16) NOT NULL DEFAULT 'INCELEME',
+    site_name VARCHAR(128) NOT NULL,
+    vehicle_plate VARCHAR(32) NOT NULL,
+    driver_name VARCHAR(128),
+    transaction_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    amount_liters NUMERIC(10, 2),
+    detail JSONB,
+    -- 'ACIK' | 'INCELENDI' | 'MUAF'
+    status VARCHAR(16) NOT NULL DEFAULT 'ACIK',
+    reviewed_by VARCHAR(64),
+    reviewed_at TIMESTAMP WITH TIME ZONE,
+    review_note TEXT,
+    detected_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- Tespit idempotent: aynı işlem+tip ikinci kez işaretlenmez.
+    UNIQUE (transaction_id, anomaly_type)
+);
+
 -- ==============================================================================
 -- 6. Enable Row Level Security (RLS) Policies
 -- ==============================================================================
@@ -683,6 +734,8 @@ ALTER TABLE fuel_quota_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_intake_receipts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_reconciliations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE manual_dispense_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE site_working_hours ENABLE ROW LEVEL SECURITY;
+ALTER TABLE transaction_anomaly_flags ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
 DO $$
@@ -786,6 +839,8 @@ ALTER TABLE fuel_quota_history FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_intake_receipts FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_reconciliations FORCE ROW LEVEL SECURITY;
 ALTER TABLE manual_dispense_requests FORCE ROW LEVEL SECURITY;
+ALTER TABLE site_working_hours FORCE ROW LEVEL SECURITY;
+ALTER TABLE transaction_anomaly_flags FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -811,6 +866,8 @@ DROP POLICY IF EXISTS fuel_quota_history_tenant_isolation_policy ON fuel_quota_h
 DROP POLICY IF EXISTS fuel_intake_receipts_tenant_isolation_policy ON fuel_intake_receipts;
 DROP POLICY IF EXISTS stock_reconciliations_tenant_isolation_policy ON stock_reconciliations;
 DROP POLICY IF EXISTS manual_dispense_requests_tenant_isolation_policy ON manual_dispense_requests;
+DROP POLICY IF EXISTS site_working_hours_tenant_isolation_policy ON site_working_hours;
+DROP POLICY IF EXISTS transaction_anomaly_flags_tenant_isolation_policy ON transaction_anomaly_flags;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -950,6 +1007,16 @@ CREATE POLICY manual_dispense_requests_tenant_isolation_policy ON manual_dispens
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY site_working_hours_tenant_isolation_policy ON site_working_hours
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY transaction_anomaly_flags_tenant_isolation_policy ON transaction_anomaly_flags
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- ==============================================================================
 -- [PERF] tenant_id İndeksleri
 -- ==============================================================================
@@ -1035,3 +1102,6 @@ CREATE INDEX IF NOT EXISTS idx_stock_reconciliations_tank ON stock_reconciliatio
 -- FUEL-405: onay kuyruğu (status='ONAY_BEKLIYOR') ve şantiye bazlı manuel
 -- giriş oranı sorgusu bu desenle çalışır.
 CREATE INDEX IF NOT EXISTS idx_manual_dispense_requests_status ON manual_dispense_requests(tenant_id, status, created_at DESC);
+
+-- AI-504: inceleme kuyruğu (status='ACIK') ve dönem/şantiye filtreli listeleme.
+CREATE INDEX IF NOT EXISTS idx_transaction_anomaly_flags_queue ON transaction_anomaly_flags(tenant_id, status, transaction_at DESC);

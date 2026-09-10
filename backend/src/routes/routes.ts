@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -12,6 +12,7 @@ import { createQuotaSchema, updateQuotaSchema } from '../schemas/quotaSchema';
 import { createFuelIntakeSchema, listFuelIntakeQuerySchema } from '../schemas/fuelIntakeSchema';
 import { createReconciliationSchema, listReconciliationQuerySchema } from '../schemas/stockReconciliationSchema';
 import { createManualDispenseSchema, rejectManualDispenseSchema, listManualDispenseQuerySchema, manualDispenseRatioQuerySchema } from '../schemas/manualDispenseSchema';
+import { setWorkingHoursSchema, scanAnomalySchema, listAnomalyFlagQuerySchema, reviewAnomalyFlagSchema } from '../schemas/anomalyFlagSchema';
 import { isServerShuttingDown } from '../utils/shutdown';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode } from '../db/adminDb';
 import { validateRequest } from '../middleware/validateMiddleware';
@@ -1168,6 +1169,143 @@ router.get(
     try {
       const reports = await getConsumptionAnomalyReports();
       res.json({ success: true, totalCount: reports.length, data: reports });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── AI-504: mesai dışı / kısa aralıklı mükerrer alım tespiti ────────────
+const ANOMALY_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const ANOMALY_SCAN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /sites/{siteName}/working-hours:
+ *   get:
+ *     summary: Şantiye Mesai Saatleri (AI-504)
+ *     description: Tanım yoksa varsayılan (07:00-19:00, Pzt-Cmt, is247:false) döner (isDefault:true).
+ *     security:
+ *       - bearerAuth: []
+ *   put:
+ *     summary: Şantiye Mesai Saatleri Tanımla/Güncelle (AI-504)
+ *     description: >
+ *       `{ startMinute, endMinute, workingDays:[1..7], is247?, rapidRepeatWindowMinutes? }`.
+ *       is247:true → şantiye mesai-dışı kuralından TAMAMEN muaf (7/24 / vardiyalı).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/sites/:siteName/working-hours',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getSiteWorkingHours(decodeURIComponent(req.params.siteName)) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.put(
+  '/sites/:siteName/working-hours',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_MANAGER_ROLES),
+  validateRequest({ body: setWorkingHoursSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rec = await setSiteWorkingHours(decodeURIComponent(req.params.siteName), req.body, req.user!.userId);
+      res.json({ success: true, data: rec });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /anomaly-flags/scan:
+ *   post:
+ *     summary: Anomali Taramasını Şimdi Çalıştır (AI-504)
+ *     description: >
+ *       index.ts'teki saatlik süpürücünün yaptığı işi bu tenant için manuel
+ *       tetikler. `{ sinceHours? }` (varsayılan 168). Yeni işaretler için
+ *       audit_logs (ANOMALY_SCAN) + WebSocket 'anomaly:flagged'. Yalnızca
+ *       SUPER_ADMIN / COMPANY_OWNER.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/anomaly-flags/scan',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_SCAN_ROLES),
+  validateRequest({ body: scanAnomalySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await runAnomalyDetectionForCurrentTenant({ sinceHours: req.body.sinceHours });
+      const tenantId = req.user?.tenantId;
+      if (tenantId && result.newFlags.MESAI_DISI + result.newFlags.KISA_ARALIK_MUKERRER > 0) {
+        try {
+          broadcastToTenant(tenantId, 'anomaly:flagged', { source: 'manual-scan', ...result });
+        } catch (broadcastErr) {
+          logger.warn({ err: broadcastErr }, '[AI-504] anomaly:flagged yayını başarısız.');
+        }
+      }
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /anomaly-flags:
+ *   get:
+ *     summary: Anomali İnceleme Kuyruğu (AI-504)
+ *     description: '?type (MESAI_DISI|KISA_ARALIK_MUKERRER), ?status (ACIK|INCELENDI|MUAF), ?siteName, ?from, ?to'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/anomaly-flags',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_MANAGER_ROLES),
+  validateRequest({ query: listAnomalyFlagQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { type?: string; status?: string; siteName?: string; from?: string; to?: string };
+      const flags = await getAnomalyFlags(q);
+      res.json({ success: true, totalCount: flags.length, data: flags });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/anomaly-flags/:id',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getAnomalyFlag(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.patch(
+  '/anomaly-flags/:id',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_MANAGER_ROLES),
+  validateRequest({ body: reviewAnomalyFlagSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rec = await reviewAnomalyFlag(req.params.id, req.user!.userId, req.body);
+      res.json({ success: true, data: rec });
     } catch (error: any) {
       next(error);
     }

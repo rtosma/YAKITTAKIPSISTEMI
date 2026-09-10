@@ -4080,3 +4080,287 @@ export async function auditSessionRevocation(
     });
   });
 }
+
+// ============================================================================
+// AI-504: MESAİ DIŞI / GECE ALIMI + KISA ARALIKLI MÜKERRER ALIM TESPİTİ
+// ============================================================================
+
+const DEFAULT_WORKING_HOURS = {
+  start_minute: 420,   // 07:00
+  end_minute: 1140,    // 19:00
+  working_days: [1, 2, 3, 4, 5, 6] as number[], // Pzt-Cmt
+  is_24_7: false,
+  rapid_repeat_window_minutes: 30
+};
+
+export interface SiteWorkingHoursRecord {
+  id: string;
+  tenant_id: string;
+  site_name: string;
+  start_minute: number;
+  end_minute: number;
+  working_days: number[];
+  is_24_7: boolean;
+  rapid_repeat_window_minutes: number;
+  updated_by: string;
+  updated_at: string;
+  created_at: string;
+}
+
+/** Europe/Istanbul (sabit UTC+3) yerel gün-içi dakika + ISO haftagünü. */
+function istanbulLocalParts(d: Date): { minuteOfDay: number; isoWeekday: number; hhmm: string } {
+  const local = new Date(d.getTime() + 3 * 60 * 60 * 1000);
+  const h = local.getUTCHours();
+  const m = local.getUTCMinutes();
+  const jsDay = local.getUTCDay(); // 0=Pazar
+  return {
+    minuteOfDay: h * 60 + m,
+    isoWeekday: jsDay === 0 ? 7 : jsDay,
+    hhmm: `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+  };
+}
+function minutesToHHMM(min: number): string {
+  const h = Math.floor(min / 60) % 24;
+  const m = min % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+export async function setSiteWorkingHours(
+  siteName: string,
+  data: { startMinute: number; endMinute: number; workingDays: number[]; is247: boolean; rapidRepeatWindowMinutes: number },
+  updatedByUserId: string
+): Promise<SiteWorkingHoursRecord> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query(
+      `INSERT INTO site_working_hours
+         (id, tenant_id, site_name, start_minute, end_minute, working_days, is_24_7, rapid_repeat_window_minutes, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (tenant_id, site_name) DO UPDATE SET
+         start_minute = EXCLUDED.start_minute,
+         end_minute = EXCLUDED.end_minute,
+         working_days = EXCLUDED.working_days,
+         is_24_7 = EXCLUDED.is_24_7,
+         rapid_repeat_window_minutes = EXCLUDED.rapid_repeat_window_minutes,
+         updated_by = EXCLUDED.updated_by,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [
+        generateId('swh'), tenantId, siteName, data.startMinute, data.endMinute,
+        data.workingDays, data.is247, data.rapidRepeatWindowMinutes, updatedByUserId
+      ]
+    );
+    await writeAuditLog(client, {
+      action: 'SITE_WORKING_HOURS_SET',
+      targetType: 'site_working_hours',
+      targetId: siteName,
+      afterValue: { ...data }
+    });
+    return res.rows[0];
+  });
+}
+
+export async function getSiteWorkingHours(siteName: string): Promise<SiteWorkingHoursRecord & { isDefault: boolean }> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query('SELECT * FROM site_working_hours WHERE site_name = $1', [siteName]);
+    if (res.rows.length > 0) return { ...res.rows[0], isDefault: false };
+    return {
+      id: '', tenant_id: tenantId, site_name: siteName,
+      ...DEFAULT_WORKING_HOURS,
+      updated_by: '', updated_at: '', created_at: '', isDefault: true
+    };
+  });
+}
+
+export interface AnomalyFlagRecord {
+  id: string;
+  tenant_id: string;
+  transaction_id: string;
+  anomaly_type: string;
+  severity: string;
+  site_name: string;
+  vehicle_plate: string;
+  driver_name: string | null;
+  transaction_at: string;
+  amount_liters: string | null;
+  detail: any;
+  status: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  review_note: string | null;
+  detected_at: string;
+}
+
+export interface AnomalyScanResult {
+  scannedTransactions: number;
+  sinceHours: number;
+  newFlags: { MESAI_DISI: number; KISA_ARALIK_MUKERRER: number };
+}
+
+/**
+ * AI-504 — kural tabanlı tespit. Mevcut tenant context'inde son `sinceHours`
+ * saatlik (veya verilen `transactionIds`) ikmalleri tarar:
+ *   1. MESAI_DISI: şantiyenin mesai saatleri/çalışma günleri dışında yapılan
+ *      alım (is_24_7 şantiyeler MUAF — Kritik Not / AC).
+ *   2. KISA_ARALIK_MUKERRER: aynı araca, yapılandırılan pencere içinde (ö.
+ *      30 dk) yapılan ikinci alım — ALARM DEĞİL, "İNCELEME" kaydı (Kritik Not).
+ * Tespit idempotent: (transaction_id, anomaly_type) benzersiz.
+ */
+export async function runAnomalyDetectionForCurrentTenant(opts: {
+  sinceHours?: number;
+  transactionIds?: string[];
+}): Promise<AnomalyScanResult> {
+  return withTenant(async (client, tenantId) => {
+    const sinceHours = opts.sinceHours ?? 168;
+
+    const whRes = await client.query('SELECT * FROM site_working_hours');
+    const whMap = new Map<string, SiteWorkingHoursRecord>();
+    for (const r of whRes.rows) whMap.set(r.site_name, r);
+
+    const params: any[] = [];
+    let filterClause: string;
+    if (opts.transactionIds && opts.transactionIds.length > 0) {
+      params.push(opts.transactionIds);
+      filterClause = `t.id = ANY($1::text[])`;
+    } else {
+      params.push(`${sinceHours} hours`);
+      filterClause = `t.created_at >= NOW() - $1::interval`;
+    }
+
+    const txRes = await client.query(
+      `SELECT t.id, t.site_name, t.vehicle_plate, t.driver_name, t.amount_liters, t.created_at,
+              LAG(t.created_at) OVER (PARTITION BY t.vehicle_plate ORDER BY t.created_at) AS prev_at,
+              LAG(t.id)         OVER (PARTITION BY t.vehicle_plate ORDER BY t.created_at) AS prev_id
+         FROM transactions t
+        WHERE ${filterClause}
+        ORDER BY t.created_at`,
+      params
+    );
+
+    const toInsert: Array<{ type: string; severity: string; row: any; detail: any }> = [];
+    for (const row of txRes.rows) {
+      const cfg = whMap.get(row.site_name);
+      const startMin = cfg?.start_minute ?? DEFAULT_WORKING_HOURS.start_minute;
+      const endMin = cfg?.end_minute ?? DEFAULT_WORKING_HOURS.end_minute;
+      const days: number[] = cfg?.working_days ?? DEFAULT_WORKING_HOURS.working_days;
+      const is247 = cfg?.is_24_7 ?? DEFAULT_WORKING_HOURS.is_24_7;
+      const repeatWindowMin = cfg?.rapid_repeat_window_minutes ?? DEFAULT_WORKING_HOURS.rapid_repeat_window_minutes;
+
+      const { minuteOfDay, isoWeekday, hhmm } = istanbulLocalParts(new Date(row.created_at));
+
+      if (!is247) {
+        const outsideDay = !days.includes(isoWeekday);
+        const outsideHours = minuteOfDay < startMin || minuteOfDay >= endMin;
+        if (outsideDay || outsideHours) {
+          toInsert.push({
+            type: 'MESAI_DISI',
+            severity: 'INCELEME',
+            row,
+            detail: {
+              localTime: hhmm,
+              isoWeekday,
+              isNight: minuteOfDay < 360 || minuteOfDay >= 1320,
+              reason: outsideDay ? 'CALISMA_GUNU_DISI' : 'MESAI_SAATI_DISI',
+              workingWindow: `${minutesToHHMM(startMin)}-${minutesToHHMM(endMin)}`,
+              workingDays: days
+            }
+          });
+        }
+      }
+
+      if (row.prev_at) {
+        const gapMs = new Date(row.created_at).getTime() - new Date(row.prev_at).getTime();
+        if (gapMs >= 0 && gapMs <= repeatWindowMin * 60_000) {
+          toInsert.push({
+            type: 'KISA_ARALIK_MUKERRER',
+            severity: 'INCELEME',
+            row,
+            detail: {
+              previousTransactionId: row.prev_id,
+              gapMinutes: Math.round(gapMs / 60_000),
+              windowMinutes: repeatWindowMin
+            }
+          });
+        }
+      }
+    }
+
+    const counts = { MESAI_DISI: 0, KISA_ARALIK_MUKERRER: 0 };
+    for (const f of toInsert) {
+      const ins = await client.query(
+        `INSERT INTO transaction_anomaly_flags
+           (id, tenant_id, transaction_id, anomaly_type, severity, site_name, vehicle_plate, driver_name, transaction_at, amount_liters, detail)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         ON CONFLICT (transaction_id, anomaly_type) DO NOTHING
+         RETURNING id`,
+        [
+          generateId('anom'), tenantId, f.row.id, f.type, f.severity, f.row.site_name,
+          f.row.vehicle_plate, f.row.driver_name, f.row.created_at, f.row.amount_liters, JSON.stringify(f.detail)
+        ]
+      );
+      if (ins.rows.length > 0) counts[f.type as 'MESAI_DISI' | 'KISA_ARALIK_MUKERRER']++;
+    }
+
+    if (counts.MESAI_DISI + counts.KISA_ARALIK_MUKERRER > 0) {
+      await writeAuditLog(client, {
+        action: 'ANOMALY_SCAN',
+        targetType: 'transaction_anomaly_flags',
+        targetId: tenantId,
+        afterValue: { sinceHours, scanned: txRes.rows.length, newFlags: counts }
+      });
+    }
+
+    return { scannedTransactions: txRes.rows.length, sinceHours, newFlags: counts };
+  });
+}
+
+export async function getAnomalyFlags(filters: {
+  type?: string;
+  status?: string;
+  siteName?: string;
+  from?: string;
+  to?: string;
+}): Promise<AnomalyFlagRecord[]> {
+  return withTenant(async (client) => {
+    const where: string[] = [];
+    const params: any[] = [];
+    if (filters.type) { params.push(filters.type); where.push(`anomaly_type = $${params.length}`); }
+    if (filters.status) { params.push(filters.status); where.push(`status = $${params.length}`); }
+    if (filters.siteName) { params.push(filters.siteName); where.push(`site_name = $${params.length}`); }
+    if (filters.from) { params.push(filters.from); where.push(`transaction_at >= $${params.length}`); }
+    if (filters.to) { params.push(filters.to); where.push(`transaction_at <= $${params.length}`); }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const res = await client.query(`SELECT * FROM transaction_anomaly_flags ${clause} ORDER BY transaction_at DESC, detected_at DESC`, params);
+    return res.rows;
+  });
+}
+
+export async function getAnomalyFlag(id: string): Promise<AnomalyFlagRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM transaction_anomaly_flags WHERE id = $1', [id]);
+    if (res.rows.length === 0) throw new NotFoundError('Anomali işareti bulunamadı.');
+    return res.rows[0];
+  });
+}
+
+export async function reviewAnomalyFlag(
+  id: string,
+  byUserId: string,
+  data: { status: 'INCELENDI' | 'MUAF'; reviewNote?: string }
+): Promise<AnomalyFlagRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      `UPDATE transaction_anomaly_flags
+          SET status = $2, reviewed_by = $3, reviewed_at = CURRENT_TIMESTAMP, review_note = $4
+        WHERE id = $1 RETURNING *`,
+      [id, data.status, byUserId, data.reviewNote ?? null]
+    );
+    if (res.rows.length === 0) throw new NotFoundError('Anomali işareti bulunamadı.');
+    await writeAuditLog(client, {
+      action: 'ANOMALY_FLAG_REVIEWED',
+      targetType: 'transaction_anomaly_flag',
+      targetId: id,
+      afterValue: { status: data.status, by: byUserId, note: data.reviewNote ?? null }
+    });
+    return res.rows[0];
+  });
+}

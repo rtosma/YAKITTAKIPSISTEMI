@@ -17,7 +17,7 @@ import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
-import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant } from './db/tenantDb';
+import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant } from './db/tenantDb';
 
 // NOTE: environment variables are loaded by ./bootstrap.ts (the real process
 // entry point — see package.json `dev`/`build`), BEFORE this module or any of
@@ -286,6 +286,33 @@ async function startServer(): Promise<void> {
     }
   }, DAILY_RECON_SWEEP_MS);
 
+  // AI-504 AC: "Mesai dışı alımlar işaretlenip bildirim üretmelidir." Ticket
+  // "ARCH-102 event handler" öneriyor — yok; yukarıdakilerle AYNI setInterval.
+  // Son 2 saatlik ikmalleri tarar (üst üste binme (transaction_id, anomaly_type)
+  // benzersizliğiyle zararsız); kural tabanlı, harici bağımlılık yok.
+  const ANOMALY_SWEEP_MS = 60 * 60 * 1000;
+  const anomalySweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [AI-504] Tenant listesi alınamadı, bu anomali tarama turu atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const r = await runWithTenant({ tenantId }, () => runAnomalyDetectionForCurrentTenant({ sinceHours: 2 }));
+        const newTotal = r.newFlags.MESAI_DISI + r.newFlags.KISA_ARALIK_MUKERRER;
+        if (newTotal > 0) {
+          broadcastToTenant(tenantId, 'anomaly:flagged', { source: 'scheduled-sweep', ...r });
+          logger.info({ tenantId, newFlags: r.newFlags }, `🕵️ [AI-504] Anomali taraması: ${newTotal} yeni işaret.`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [AI-504] Anomali taraması başarısız.');
+      }
+    }
+  }, ANOMALY_SWEEP_MS);
+
   // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
   setupGracefulShutdown(server, {
     timeoutMs: 30000,
@@ -297,6 +324,7 @@ async function startServer(): Promise<void> {
       if (weeklyAnomalySweepInterval) clearInterval(weeklyAnomalySweepInterval);
       clearInterval(quotaResetSweepInterval);
       clearInterval(dailyReconSweepInterval);
+      clearInterval(anomalySweepInterval);
 
       // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
       // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters
