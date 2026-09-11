@@ -309,6 +309,9 @@ jobs:
       - name: Run BILL-1702 Package Limits + License Expiry Warning Tests
         run: cd backend && npx tsx test/test_bill1702_package_limits_and_expiry_warnings.ts
 
+      - name: Run BILL-1703 Module Add-on Sales + Controlled Package Reapply Tests
+        run: cd backend && npx tsx test/test_bill1703_module_addons_and_reapply.ts
+
       - name: Run FLEET-1408 Inspection/Exhaust/Insurance Deadlines + Tire Tracking Tests
         run: cd backend && npx tsx test/test_fleet1408_inspection_tire_tracking.ts
 
