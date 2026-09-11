@@ -8,6 +8,7 @@ import { runWithTenant } from '../context/tenantContext';
 import { startTheftDetectionEngine } from '../services/theftDetectionService';
 import { decodeLoRaWANPayload, CorruptedPayloadException, LoRaWANRadioMeta } from './lorawanDecoder';
 import { startUnauthorizedFlowDetectionEngine } from './unauthorizedFlowDetector';
+import { startCommandQueueEngine } from './commandQueueService';
 
 // Local Event Bus for decoupling (Prep for ARCH-102: BullMQ)
 export const ioTEventBus = new EventEmitter();
@@ -48,6 +49,9 @@ class MQTTService {
     // edip acil FORCE_CUTOFF gönderen motoru ayağa kaldır. Idempotent.
     startUnauthorizedFlowDetectionEngine();
 
+    // IOT-305: uzaktan komut kuyruğu (ack/timeout/retry) sweep döngüsünü ayağa kaldır. Idempotent.
+    startCommandQueueEngine();
+
     logger.info(`🔌 [MQTT] Broker'a bağlanılıyor: ${this.brokerUrl}`);
 
     this.client = mqtt.connect(this.brokerUrl, {
@@ -80,6 +84,12 @@ class MQTTService {
         if (err) logger.error({ err }, '🚨 [MQTT] /status topic abone olunamadı!');
         else logger.info('📡 [MQTT] Cihaz durum akışı (status/LWT) dinleniyor... (paylaşımlı abonelik)');
       });
+
+      // IOT-305: cihazların publishCommand() ile gönderilen komutları ack'lediği kanal.
+      this.client?.subscribe(`$share/${MQTT_SHARE_GROUP}/command/v1/+/ack`, { qos: 1 }, (err) => {
+        if (err) logger.error({ err }, '🚨 [MQTT] /ack topic abone olunamadı!');
+        else logger.info('📡 [MQTT] Komut ack akışı dinleniyor... (paylaşımlı abonelik)');
+      });
     });
 
     this.client.on('message', async (topic, payload) => {
@@ -88,6 +98,29 @@ class MQTTService {
         // broker teslim ederken mesajın topic'ini asıl (paylaşımsız) haline
         // döndürür, bu yüzden parse mantığı DEĞİŞMİYOR.
         const parts = topic.split('/');
+
+        // IOT-305: command/v1/{deviceId}/ack — cihazın publishCommand() ile
+        // gönderilen bir komutu aldığını doğrulaması. Telemetri topic'inden
+        // (7 parça) farklı şekli (4 parça) olduğu için ayrı, erken dallanır;
+        // tenantId topic'te YOK (command/v1/{deviceId} zaten tenant'sız —
+        // bkz. publishCommand), bu yüzden tenant doğrulaması gerekmiyor.
+        if (parts[0] === 'command' && parts[1] === 'v1' && parts[3] === 'ack') {
+          const ackDeviceId = parts[2];
+          try {
+            const ack = JSON.parse(payload.toString()) as { commandId?: string; status?: string };
+            ioTEventBus.emit('commandAck', {
+              deviceId: ackDeviceId,
+              commandId: ack.commandId,
+              status: ack.status,
+              payload: ack,
+              timestamp: new Date().toISOString()
+            });
+          } catch (err) {
+            logger.warn({ err, topic }, '⚠️ [IOT-305] Komut ack mesajı ayrıştırılamadı.');
+          }
+          return;
+        }
+
         // Örnek: ["telemetry", "v1", "tenant1", "site1", "pump", "device123", "data"]
         if (parts.length < 7) return;
 

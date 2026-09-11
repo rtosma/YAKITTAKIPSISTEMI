@@ -1,9 +1,10 @@
 import { redisPool } from '../db/redisPool';
 import { logger } from '../utils/logger';
-import { ioTEventBus, mqttService } from './mqttClient';
+import { ioTEventBus } from './mqttClient';
 import { runWithTenant } from '../context/tenantContext';
 import { raiseAlarmForCurrentTenant } from '../db/tenantDb';
 import { broadcastToTenant } from '../socket/socketServer';
+import { sendCommandWithAck } from './commandQueueService';
 
 /**
  * FUEL-406 — Kartsız/Yetkisiz Akış Alarmı ve Acil Kesme (#98)
@@ -22,6 +23,14 @@ import { broadcastToTenant } from '../socket/socketServer';
 // Aynı cihaz için art arda her telemetri paketinde yeni alarm/kesme
 // komutu üretmemek için kapaklı bekleme süresi.
 const ALERT_COOLDOWN_SECONDS = 60;
+
+// IOT-305: FORCE_CUTOFF güvenlik-kritik bir komut — fire-and-forget yerine
+// commandQueueService.ts'in ack/timeout/retry kuyruğundan gönderilir. Kısa
+// ack penceresi + birkaç hızlı deneme: cihaz gerçekten hatta olsa acil
+// kesmeyi saniyeler içinde doğrulamalı; hiç yanıt yoksa (offline/arızalı)
+// FAILED olarak loglanır — operasyon ekibi bunu görmeli.
+const FORCE_CUTOFF_ACK_TIMEOUT_MS = 3000;
+const FORCE_CUTOFF_MAX_ATTEMPTS = 3;
 
 const ACTIVE_STATES = new Set(['AUTHORIZED', 'PUMPING']);
 
@@ -96,8 +105,6 @@ async function handleUnauthorizedFlow(evt: TelemetryEvent, flowDetail: Record<st
     logger.warn({ err, deviceId: evt.deviceId }, '⚠️ [FUEL-406] Alarm kaydı oluşturulamadı.');
   }
 
-  mqttService.publishCommand(evt.deviceId, 'FORCE_CUTOFF', { reason: 'UNAUTHORIZED_FLOW' });
-
   try {
     broadcastToTenant(evt.tenantId, 'flow:unauthorized', {
       deviceId: evt.deviceId,
@@ -108,6 +115,23 @@ async function handleUnauthorizedFlow(evt: TelemetryEvent, flowDetail: Record<st
   } catch (err) {
     logger.warn({ err }, '⚠️ [FUEL-406] flow:unauthorized Socket.io yayını başarısız.');
   }
+
+  // IOT-305: ack/timeout/retry döngüsü birkaç saniye sürebilir (offline
+  // cihazda tüm denemeler tükenene kadar) — yukarıdaki alarm/canlı-yayın
+  // bunu BEKLEMEMELİ, bu yüzden bilerek `await` edilmiyor.
+  void sendCommandWithAck(
+    evt.deviceId,
+    'FORCE_CUTOFF',
+    { reason: 'UNAUTHORIZED_FLOW' },
+    { ackTimeoutMs: FORCE_CUTOFF_ACK_TIMEOUT_MS, maxAttempts: FORCE_CUTOFF_MAX_ATTEMPTS }
+  ).then((cutoffResult) => {
+    if (cutoffResult.status !== 'ACKED') {
+      logger.error(
+        { deviceId: evt.deviceId, cutoffResult },
+        `🚨 [FUEL-406] FORCE_CUTOFF cihaz tarafından ack edilmedi (${cutoffResult.status}, ${cutoffResult.attempts} deneme) — donanım/ağ sorunu olabilir, MANUEL müdahale gerekebilir.`
+      );
+    }
+  });
 }
 
 async function handleTelemetry(evt: TelemetryEvent): Promise<void> {

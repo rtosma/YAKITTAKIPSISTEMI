@@ -1,6 +1,6 @@
 import mqtt from 'mqtt';
 import { io as socketIoClient, Socket } from 'socket.io-client';
-import Redis from 'ioredis';
+import { execFileSync } from 'child_process';
 
 /**
  * FUEL-406 — Kartsız/Yetkisiz Akış Alarmı ve Acil Kesme uçtan uca testi.
@@ -29,10 +29,29 @@ const TENANT_ID = 'comp-camsa';
 const SITE_ID = 'site-gebze';
 const PUMP_DEVICE = 'ESP32-PUMP-01';
 
-const redis = new Redis({
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10)
-});
+// NOT: Bu makinede host'un 6379'unda Docker Compose'un Redis'i İLE İLGİSİZ
+// AYRI bir yerel Redis çalışıyor (run_id ile doğrulandı) — host'tan doğrudan
+// `new Redis({host:'localhost'})` sessizce YANLIŞ instance'a bağlanır ve
+// resetState() gerçek backend durumunu hiç DEĞİŞTİRMEZ (docker-compose.yml
+// `redis` servisine kasıtlı olarak host portu YAYINLAMIYOR). Bunun yerine
+// `docker compose exec redis redis-cli` ile GERÇEK konteynerdeki Redis'e
+// ulaşılıyor — TEST-1002'nin "her şey compose ağında" ilkesiyle aynı gerekçe.
+// ESM'de __dirname yok; test her zaman backend/ dizininden çalıştırılır
+// (bkz. README/test dosyalarının hepsindeki `cd backend && npx tsx test/...`).
+const REPO_ROOT = `${process.cwd()}/..`;
+
+function redisCli(...args: string[]): string {
+  return execFileSync('docker', ['compose', 'exec', '-T', 'redis', 'redis-cli', ...args], {
+    cwd: REPO_ROOT,
+    encoding: 'utf-8'
+  }).trim();
+}
+function redisDel(...keys: string[]): void {
+  if (keys.length) redisCli('DEL', ...keys);
+}
+function redisSet(key: string, value: string, exSeconds: number): void {
+  redisCli('SET', key, value, 'EX', String(exSeconds));
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -50,7 +69,7 @@ async function login(username: string): Promise<string> {
 }
 
 async function resetState(): Promise<void> {
-  await redis.del(`dispense:session:${PUMP_DEVICE}`, `unauthorized-flow:cooldown:${PUMP_DEVICE}`);
+  redisDel(`dispense:session:${PUMP_DEVICE}`, `unauthorized-flow:cooldown:${PUMP_DEVICE}`);
 }
 
 function pumpTopic(): string {
@@ -58,6 +77,9 @@ function pumpTopic(): string {
 }
 function commandTopic(): string {
   return `command/v1/${PUMP_DEVICE}`;
+}
+function ackTopic(): string {
+  return `command/v1/${PUMP_DEVICE}/ack`;
 }
 
 async function run() {
@@ -96,7 +118,19 @@ async function run() {
     commandSub.on('error', reject);
   });
   commandSub.on('message', (_topic, payload) => {
-    commands.push(JSON.parse(payload.toString()));
+    const msg = JSON.parse(payload.toString());
+    commands.push(msg);
+    // IOT-305: FORCE_CUTOFF artık ack/timeout/retry kuyruğundan gönderiliyor
+    // (bkz. commandQueueService.ts) — burada HEMEN ack'lenmezse arka planda
+    // ~9sn boyunca (3 deneme * 3sn) yeniden yayınlanmaya devam eder ve bu
+    // gecikmeli tekrarlar SONRAKİ test bloklarının `commands` sayacına sızar.
+    // Bu test yalnızca "alarm + kesme tetiklendi mi" ile ilgileniyor (ack/
+    // retry mekaniğinin kendisi test_iot305_device_shadow_command_queue.ts'te
+    // kapsanıyor), bu yüzden burada basitçe hemen ack'lenip arka plan
+    // döngüsü hızlıca kapatılıyor.
+    if (msg.commandId) {
+      commandSub.publish(ackTopic(), JSON.stringify({ commandId: msg.commandId, status: 'ACK' }), { qos: 1 });
+    }
   });
 
   const socket: Socket = socketIoClient('http://localhost:3000', {
@@ -141,10 +175,9 @@ async function run() {
   await resetState();
   flowAlerts.length = 0;
   commands.length = 0;
-  await redis.set(
+  redisSet(
     `dispense:session:${PUMP_DEVICE}`,
     JSON.stringify({ state: 'PUMPING', deviceId: PUMP_DEVICE, tenantId: TENANT_ID }),
-    'EX',
     300
   );
   await pub(pumpTopic(), { litersDispensed: 5, flowRate: 12 });
@@ -177,7 +210,6 @@ async function run() {
   publisher.end();
   commandSub.end();
   socket.disconnect();
-  redis.disconnect();
 
   console.log('===========================================================');
   console.log(`📊 TEST SONUÇLARI: ${passed} / ${total} TEST BAŞARILI`);
