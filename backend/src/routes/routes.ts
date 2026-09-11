@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -21,6 +21,7 @@ import { fleetConsumptionQuerySchema, fleetComparisonQuerySchema, fleetTrendQuer
 import { vehicleConsumptionAnomalyQuerySchema, consumptionAnomalyScanSchema } from '../schemas/consumptionAnomalySchemaFleet';
 import { setVehicleFuelLimitSchema, temporaryFuelLimitIncreaseSchema } from '../schemas/vehicleFuelLimitSchema';
 import { enqueueDespatchAdviceTransmissionSchema, despatchAdviceTransmissionListQuerySchema } from '../schemas/despatchAdviceTransmissionSchema';
+import { rejectDespatchAdviceSchema, cancelDespatchAdviceSchema } from '../schemas/despatchAdviceDispositionSchema';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
@@ -1720,6 +1721,114 @@ router.post(
   async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       res.json({ success: true, data: await runDespatchAdviceTransmissionSweepForCurrentTenant() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// İptal, red işleminden daha ağır bir hukuki eylem (sertifika üretir) — bu
+// yüzden VEHICLE_LIMIT_APPROVER_ROLES/DESPATCH_TRANSMISSION_SWEEP_ROLES ile
+// AYNI daha dar rol kümesi. Red/yeniden gönderim ise transmit ile AYNI kapsam.
+const DESPATCH_DISPOSITION_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const DESPATCH_CANCEL_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /transactions/{id}/e-irsaliye/status:
+ *   get:
+ *     summary: e-İrsaliye Yaşam Döngüsü Durumu (COMP-603)
+ *     description: 'ISSUED | REJECTED | CANCELLED | SUPERSEDED. Belge yoksa 404.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/transactions/:id/e-irsaliye/status',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_VIEW_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getDespatchAdviceStatus(req.params.id, siteScopeFor(req.user!)) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /transactions/{id}/e-irsaliye/reject:
+ *   post:
+ *     summary: Alıcı Reddi Kaydet (COMP-603)
+ *     description: >
+ *       `{ reason }`. Yalnızca GERÇEKTEN gönderilmiş (SENT) bir belge
+ *       reddedilebilir. Red sebebi kaydedilir — düzeltme için
+ *       POST .../resubmit ile yeni belge numarası alınır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/transactions/:id/e-irsaliye/reject',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_DISPOSITION_ROLES),
+  validateRequest({ body: rejectDespatchAdviceSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await rejectDespatchAdvice(req.params.id, req.body.reason, siteScopeFor(req.user!)) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /transactions/{id}/e-irsaliye/cancel:
+ *   post:
+ *     summary: Belgeyi İptal Et — Sertifika Üretir (COMP-603)
+ *     description: >
+ *       `{ reason }`. Yasal iptal süresi (72 saat) aşılmışsa 400. Yalnızca
+ *       SUPER_ADMIN/COMPANY_OWNER. Simüle edilmiş bir iptal sertifika
+ *       referansı üretir (gerçek HSM/PKI bu ortamda yok — COMP-601 ile
+ *       AYNI kapsam sınırı).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/transactions/:id/e-irsaliye/cancel',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_CANCEL_ROLES),
+  validateRequest({ body: cancelDespatchAdviceSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await cancelDespatchAdvice(req.params.id, req.body.reason, siteScopeFor(req.user!)) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /transactions/{id}/e-irsaliye/resubmit:
+ *   post:
+ *     summary: Düzeltip Yeniden Gönder — Yeni Belge No (COMP-603)
+ *     description: >
+ *       Yalnızca REJECTED veya CANCELLED durumundaki bir belge için. Eski
+ *       belge SUPERSEDED olur, YENİ bir belge numarası + ETTN tahsis edilir.
+ *       Yeni belge otomatik iletim kuyruğuna EKLENMEZ — ayrıca
+ *       POST .../transmit çağrılmalıdır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/transactions/:id/e-irsaliye/resubmit',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_DISPOSITION_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await resubmitDespatchAdvice(req.params.id, siteScopeFor(req.user!)) });
     } catch (error: any) {
       next(error);
     }

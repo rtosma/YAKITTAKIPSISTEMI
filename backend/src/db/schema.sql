@@ -386,7 +386,6 @@ CREATE TABLE IF NOT EXISTS despatch_advice_documents (
     issue_year INTEGER NOT NULL,
     sequence_no INTEGER NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT uq_despatch_advice_documents_tx UNIQUE (tenant_id, transaction_id),
     CONSTRAINT uq_despatch_advice_documents_number UNIQUE (tenant_id, document_number)
 );
 
@@ -395,6 +394,22 @@ CREATE TABLE IF NOT EXISTS despatch_advice_documents (
 -- 'KAGIT' olarak işaretlenir (Kritik Not).
 ALTER TABLE despatch_advice_documents ADD COLUMN IF NOT EXISTS recipient_tax_id VARCHAR(16);
 ALTER TABLE despatch_advice_documents ADD COLUMN IF NOT EXISTS delivery_mode VARCHAR(16) NOT NULL DEFAULT 'ELEKTRONIK';
+
+-- COMP-603: bir ikmal için normalde TEK aktif belge olur, ama reddedilen/iptal
+-- edilen bir belge "düzeltilip yeniden gönderilebilir" (AC: yeni belge no ile).
+-- Bu yüzden (tenant_id, transaction_id) artık MUTLAK tekil DEĞİL — yalnızca
+-- is_correction=false olan (ORİJİNAL) satır tekildir (aşağıdaki kısmi index).
+-- Düzeltme satırları corrects_document_id ile önceki (supersede edilen)
+-- belgeye zincirlenir — bkz. tenantDb.ts resolveActiveDespatchAdviceDocument.
+ALTER TABLE despatch_advice_documents ADD COLUMN IF NOT EXISTS is_correction BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE despatch_advice_documents ADD COLUMN IF NOT EXISTS corrects_document_id VARCHAR(64);
+-- Halihazırda çalışan veritabanlarında tablo ilk CREATE TABLE ile (eski
+-- UNIQUE(tenant_id, transaction_id) kısıtıyla) zaten var olabilir — schema.sql
+-- yeniden çalıştırıldığında CREATE TABLE IF NOT EXISTS o eski kısıtı SİLMEZ,
+-- bu yüzden burada açıkça DROP edilip yerine kısmi index konur.
+ALTER TABLE despatch_advice_documents DROP CONSTRAINT IF EXISTS uq_despatch_advice_documents_tx;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_despatch_advice_documents_tx_original
+    ON despatch_advice_documents(tenant_id, transaction_id) WHERE NOT is_correction;
 
 -- COMP-601.1 AC: "Belge numaralandırması boşluksuz sıralı olmalıdır (denetim
 -- gereği)". Postgres SEQUENCE bunu SAĞLAYAMAZ — rollback'te tüketilen numara
@@ -440,6 +455,30 @@ CREATE TABLE IF NOT EXISTS despatch_advice_transmissions (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT uq_despatch_advice_transmissions_doc UNIQUE (tenant_id, despatch_advice_document_id)
 );
+
+-- COMP-603: bir e-İrsaliye belgesinin İŞ/HUKUKİ durumu (ISSUED/REJECTED/
+-- CANCELLED/SUPERSEDED). despatch_advice_transmissions'tan (entegratöre
+-- TEKNİK gönderim durumu) KASITLI olarak AYRI bir tablo — biri "gönderildi mi"
+-- sorusuna, diğeri "alıcı/GİB nezdinde geçerli mi" sorusuna cevap verir. Bu
+-- tablo MUTABLE'dır (durum makinesi); geçmiş İSE audit_logs'ta (append-only)
+-- zaten tutulur, bu yüzden ayrıca bir *_events tablosuna gerek yok.
+CREATE TABLE IF NOT EXISTS despatch_advice_documents_status (
+    despatch_advice_document_id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    transaction_id VARCHAR(64) NOT NULL,
+    -- ISSUED (varsayılan) → REJECTED | CANCELLED → (yeniden gönderimde) SUPERSEDED
+    status VARCHAR(16) NOT NULL DEFAULT 'ISSUED',
+    reject_reason TEXT,
+    rejected_at TIMESTAMP WITH TIME ZONE,
+    cancel_reason TEXT,
+    -- Gerçek bir GİB iptal sertifikası/HSM imzası bu ortamda YOK (COMP-601'in
+    -- XAdES kısıt notuyla AYNI gerekçe) — simüle edilmiş bir referans üretilir.
+    cancellation_certificate_ref VARCHAR(128),
+    cancelled_at TIMESTAMP WITH TIME ZONE,
+    superseded_by_document_id VARCHAR(64),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_despatch_advice_documents_status_tx ON despatch_advice_documents_status(tenant_id, transaction_id);
 
 -- FUEL-403.1: tank daldırma cetveli (strapping table) VEYA silindirik tank
 -- formül konfigürasyonu. Versiyonlu/append-only — bir cetvel bir kez
@@ -930,6 +969,7 @@ ALTER TABLE consumption_anomaly_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_counters ENABLE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_transmissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_documents_status ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tank_strapping_tables ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rfid_card_blacklist ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quotas ENABLE ROW LEVEL SECURITY;
@@ -1044,6 +1084,7 @@ ALTER TABLE consumption_anomaly_reports FORCE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_documents FORCE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_counters FORCE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_transmissions FORCE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_documents_status FORCE ROW LEVEL SECURITY;
 ALTER TABLE tank_strapping_tables FORCE ROW LEVEL SECURITY;
 ALTER TABLE rfid_card_blacklist FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quotas FORCE ROW LEVEL SECURITY;
@@ -1078,6 +1119,7 @@ DROP POLICY IF EXISTS consumption_anomaly_reports_tenant_isolation_policy ON con
 DROP POLICY IF EXISTS despatch_advice_documents_tenant_isolation_policy ON despatch_advice_documents;
 DROP POLICY IF EXISTS despatch_advice_counters_tenant_isolation_policy ON despatch_advice_counters;
 DROP POLICY IF EXISTS despatch_advice_transmissions_tenant_isolation_policy ON despatch_advice_transmissions;
+DROP POLICY IF EXISTS despatch_advice_documents_status_tenant_isolation_policy ON despatch_advice_documents_status;
 DROP POLICY IF EXISTS tank_strapping_tables_tenant_isolation_policy ON tank_strapping_tables;
 DROP POLICY IF EXISTS rfid_card_blacklist_tenant_isolation_policy ON rfid_card_blacklist;
 DROP POLICY IF EXISTS fuel_quotas_tenant_isolation_policy ON fuel_quotas;
@@ -1198,6 +1240,11 @@ CREATE POLICY despatch_advice_counters_tenant_isolation_policy ON despatch_advic
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
 CREATE POLICY despatch_advice_transmissions_tenant_isolation_policy ON despatch_advice_transmissions
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY despatch_advice_documents_status_tenant_isolation_policy ON despatch_advice_documents_status
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

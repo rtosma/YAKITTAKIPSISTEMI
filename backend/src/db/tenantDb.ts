@@ -113,6 +113,7 @@ export interface CompanyProfile {
   licenseStatus: string;
   licenseExpiry: string | null;
   modules: Record<string, boolean>;
+  package: string;
   sites: CompanySiteProfile[];
   activeVehiclesCount: number;
   totalFuelThisMonth: number;
@@ -135,7 +136,7 @@ export interface CompanyProfile {
 export async function getTenantCompanyProfile(opts?: { role?: string; siteName?: string }): Promise<CompanyProfile> {
   return withTenant(async (client, tenantId) => {
     const companyRes = await client.query(
-      `SELECT id, name, tax_number, code, city, license_status, license_expiry, modules
+      `SELECT id, name, tax_number, code, city, license_status, license_expiry, modules, package
        FROM companies WHERE id = $1`,
       [tenantId]
     );
@@ -171,6 +172,7 @@ export async function getTenantCompanyProfile(opts?: { role?: string; siteName?:
         ? new Date(c.license_expiry).toISOString().slice(0, 10)
         : null,
       modules: c.modules || {},
+      package: c.package || 'TEMEL',
       sites: sitesRes.rows.map((s) => ({
         id: s.id,
         name: s.name,
@@ -2521,6 +2523,154 @@ export async function prepareDespatchAdvice(
   return withTenant((client, tenantId) => prepareDespatchAdviceCore(client, tenantId, transactionId, siteRestriction, recipientTaxId));
 }
 
+interface DespatchAdviceDerivedFields {
+  tx: any;
+  supplierVkn: string;
+  supplierName: string;
+  supplierCity: string | null;
+  driverTcNo: string;
+  fuelType: string;
+  recipientTaxIdNorm: string | null;
+  recipientTitle: string | null;
+  recipientObligated: boolean | null;
+  deliveryMode: 'ELEKTRONIK' | 'KAGIT';
+  recipientWarnings: string[];
+}
+
+/**
+ * Belge NUMARASI/ETTN dışındaki TÜM iş alanlarını (VKN, şoför, yakıt tipi,
+ * alıcı mükellefiyet doğrulaması) türetir. COMP-603'ün `resubmitDespatchAdvice`
+ * fonksiyonu da (belge no tahsisi hariç, AYNI türetmeyle) bunu çağırır — iki
+ * kez yazılmasın diye `prepareDespatchAdviceCore`'dan ayrıştırıldı.
+ */
+async function deriveDespatchAdviceFields(
+  client: any,
+  tenantId: string,
+  transactionId: string,
+  siteRestriction?: string,
+  recipientTaxId?: string | null
+): Promise<DespatchAdviceDerivedFields> {
+  const txRes = await client.query('SELECT * FROM transactions WHERE id = $1', [transactionId]);
+  if (txRes.rows.length === 0) throw new NotFoundError('İkmal kaydı bulunamadı.');
+  const tx = txRes.rows[0];
+  // AUTH-201.4 ile AYNI desen: SITE_MANAGER başka bir şantiyenin ikmal
+  // ID'sini tahmin edip e-İrsaliye üretemez. NotFoundError (403 değil) —
+  // aksi halde yanıt kodu, ID'nin var olup olmadığını sızdırırdı.
+  if (siteRestriction && tx.site_name !== siteRestriction) {
+    throw new NotFoundError('İkmal kaydı bulunamadı.');
+  }
+
+  const companyRes = await client.query(
+    'SELECT tax_number, name, city FROM companies WHERE id = $1',
+    [tenantId]
+  );
+  const supplierVkn: string | null = companyRes.rows[0]?.tax_number ?? null;
+  if (!supplierVkn) {
+    throw new BadRequestError('Firma VKN (Vergi Kimlik Numarası) bilgisi tanımlı değil, e-İrsaliye üretilemez.');
+  }
+  const supplierName: string = companyRes.rows[0]?.name ?? 'Bilinmeyen Firma';
+  const supplierCity: string | null = companyRes.rows[0]?.city ?? null;
+
+  let driverTcNo: string | null = null;
+  if (tx.driver_name) {
+    const driverRes = await client.query(
+      'SELECT tc_no FROM drivers WHERE tenant_id = $1 AND name = $2 LIMIT 1',
+      [tenantId, tx.driver_name]
+    );
+    driverTcNo = driverRes.rows[0]?.tc_no ?? null;
+  }
+  if (!driverTcNo) {
+    throw new BadRequestError(
+      `Bu ikmal kaydındaki sürücü ('${tx.driver_name ?? 'tanımsız'}') sicilde kayıtlı değil (TC kimlik no bulunamadı), e-İrsaliye üretilemez.`
+    );
+  }
+
+  let fuelType = 'Motorin';
+  if (tx.tank_name) {
+    const tankRes = await client.query(
+      'SELECT fuel_type FROM tanks WHERE tenant_id = $1 AND name = $2 LIMIT 1',
+      [tenantId, tx.tank_name]
+    );
+    if (tankRes.rows[0]?.fuel_type) fuelType = tankRes.rows[0].fuel_type;
+  }
+
+  // --- COMP-605: alıcı (mükellef) doğrulaması ---
+  let recipientTaxIdNorm: string | null = null;
+  let recipientTitle: string | null = null;
+  let recipientObligated: boolean | null = null;
+  let deliveryMode: 'ELEKTRONIK' | 'KAGIT' = 'ELEKTRONIK';
+  const recipientWarnings: string[] = [];
+  if (recipientTaxId) {
+    const v = validateTaxId(recipientTaxId);
+    if (!v.ok) {
+      throw new BadRequestError(
+        `Alıcı VKN/TCKN geçersiz — belge kesilemez: ${v.reason}`,
+        { error: 'INVALID_RECIPIENT_TAX_ID', taxId: v.normalized }
+      );
+    }
+    recipientTaxIdNorm = v.normalized;
+    const rec = await client.query('SELECT * FROM recipient_taxpayers WHERE tax_id = $1', [recipientTaxIdNorm]);
+    const oblig = await getEInvoiceObligation(recipientTaxIdNorm);
+    recipientObligated = oblig.obligated;
+    if (rec.rows.length > 0) {
+      const r = rec.rows[0] as RecipientTaxpayerRecord;
+      recipientTitle = r.title;
+      if (Array.isArray(r.missing_fields) && r.missing_fields.length > 0) {
+        recipientWarnings.push(`Alıcı kaydında eksik alan(lar): ${r.missing_fields.join(', ')}.`);
+      }
+      // Mükellefiyet bilgisini kayıtta da tazele.
+      await client.query(
+        `UPDATE recipient_taxpayers SET is_einvoice_obligated = $2, obligation_checked_at = CURRENT_TIMESTAMP, obligation_source = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+        [r.id, oblig.obligated, oblig.source]
+      );
+    } else {
+      recipientWarnings.push('Alıcı sistemde kayıtlı değil — POST /recipients ile unvan/adres/vergi dairesi bilgilerini kaydedin.');
+    }
+    if (!oblig.obligated) {
+      deliveryMode = 'KAGIT';
+      recipientWarnings.push('Alıcı e-İrsaliye mükellefi DEĞİL — elektronik belge kesilemez, KAĞIT süreç işaretlendi (Kritik Not).');
+    }
+  }
+
+  return { tx, supplierVkn, supplierName, supplierCity, driverTcNo, fuelType, recipientTaxIdNorm, recipientTitle, recipientObligated, deliveryMode, recipientWarnings };
+}
+
+/**
+ * COMP-603: bir ikmal için AKTİF (henüz supersede edilmemiş) e-İrsaliye
+ * belgesini bulur. Bir belge reddedilip/iptal edilip yeniden gönderildiğinde
+ * ORİJİNAL satır supersede edilir ve YENİ bir despatch_advice_documents
+ * satırı "aktif" olur — bu yüzden artık transaction_id ile TEK bir satır
+ * garanti edilemez (bkz. schema.sql'deki kısmi UNIQUE index: yalnızca
+ * is_correction=false olan satır tekildir). Zincir uzunluğu pratikte 1-2
+ * düzeltmeyi geçmez; sonsuz döngüye karşı üst sınır 10.
+ */
+async function resolveActiveDespatchAdviceDocument(client: any, tenantId: string, transactionId: string): Promise<any | null> {
+  let doc = (
+    await client.query(
+      `SELECT d.*, COALESCE(s.status, 'ISSUED') AS lifecycle_status, s.superseded_by_document_id
+         FROM despatch_advice_documents d
+         LEFT JOIN despatch_advice_documents_status s ON s.despatch_advice_document_id = d.id
+        WHERE d.tenant_id = $1 AND d.transaction_id = $2 AND d.is_correction = false`,
+      [tenantId, transactionId]
+    )
+  ).rows[0];
+  if (!doc) return null;
+  for (let hops = 0; hops < 10 && doc.superseded_by_document_id; hops++) {
+    const next = (
+      await client.query(
+        `SELECT d.*, COALESCE(s.status, 'ISSUED') AS lifecycle_status, s.superseded_by_document_id
+           FROM despatch_advice_documents d
+           LEFT JOIN despatch_advice_documents_status s ON s.despatch_advice_document_id = d.id
+          WHERE d.id = $1`,
+        [doc.superseded_by_document_id]
+      )
+    ).rows[0];
+    if (!next) break;
+    doc = next;
+  }
+  return doc;
+}
+
 /**
  * `prepareDespatchAdvice`'ın çekirdeği — `client`'ı çağırandan alır. COMP-602.1
  * bunu KENDİ withTenant transaction'ının İÇİNDEN çağırır (belge numarası
@@ -2534,166 +2684,102 @@ async function prepareDespatchAdviceCore(
   siteRestriction?: string,
   recipientTaxId?: string | null
 ): Promise<DespatchAdvicePreparation> {
-  {
-    const txRes = await client.query('SELECT * FROM transactions WHERE id = $1', [transactionId]);
-    if (txRes.rows.length === 0) throw new NotFoundError('İkmal kaydı bulunamadı.');
-    const tx = txRes.rows[0];
-    // AUTH-201.4 ile AYNI desen: SITE_MANAGER başka bir şantiyenin ikmal
-    // ID'sini tahmin edip e-İrsaliye üretemez. NotFoundError (403 değil) —
-    // aksi halde yanıt kodu, ID'nin var olup olmadığını sızdırırdı.
-    if (siteRestriction && tx.site_name !== siteRestriction) {
-      throw new NotFoundError('İkmal kaydı bulunamadı.');
-    }
+  const f = await deriveDespatchAdviceFields(client, tenantId, transactionId, siteRestriction, recipientTaxId);
+  let { deliveryMode, recipientTaxIdNorm } = f;
 
-    const companyRes = await client.query(
-      'SELECT tax_number, name, city FROM companies WHERE id = $1',
-      [tenantId]
-    );
-    const supplierVkn: string | null = companyRes.rows[0]?.tax_number ?? null;
-    if (!supplierVkn) {
-      throw new BadRequestError('Firma VKN (Vergi Kimlik Numarası) bilgisi tanımlı değil, e-İrsaliye üretilemez.');
-    }
-    const supplierName: string = companyRes.rows[0]?.name ?? 'Bilinmeyen Firma';
-    const supplierCity: string | null = companyRes.rows[0]?.city ?? null;
-
-    let driverTcNo: string | null = null;
-    if (tx.driver_name) {
-      const driverRes = await client.query(
-        'SELECT tc_no FROM drivers WHERE tenant_id = $1 AND name = $2 LIMIT 1',
-        [tenantId, tx.driver_name]
-      );
-      driverTcNo = driverRes.rows[0]?.tc_no ?? null;
-    }
-    if (!driverTcNo) {
-      throw new BadRequestError(
-        `Bu ikmal kaydındaki sürücü ('${tx.driver_name ?? 'tanımsız'}') sicilde kayıtlı değil (TC kimlik no bulunamadı), e-İrsaliye üretilemez.`
-      );
-    }
-
-    let fuelType = 'Motorin';
-    if (tx.tank_name) {
-      const tankRes = await client.query(
-        'SELECT fuel_type FROM tanks WHERE tenant_id = $1 AND name = $2 LIMIT 1',
-        [tenantId, tx.tank_name]
-      );
-      if (tankRes.rows[0]?.fuel_type) fuelType = tankRes.rows[0].fuel_type;
-    }
-
-    // --- COMP-605: alıcı (mükellef) doğrulaması ---
-    let recipientTaxIdNorm: string | null = null;
-    let recipientTitle: string | null = null;
-    let recipientObligated: boolean | null = null;
-    let deliveryMode: 'ELEKTRONIK' | 'KAGIT' = 'ELEKTRONIK';
-    const recipientWarnings: string[] = [];
-    if (recipientTaxId) {
-      const v = validateTaxId(recipientTaxId);
-      if (!v.ok) {
-        throw new BadRequestError(
-          `Alıcı VKN/TCKN geçersiz — belge kesilemez: ${v.reason}`,
-          { error: 'INVALID_RECIPIENT_TAX_ID', taxId: v.normalized }
-        );
-      }
-      recipientTaxIdNorm = v.normalized;
-      const rec = await client.query('SELECT * FROM recipient_taxpayers WHERE tax_id = $1', [recipientTaxIdNorm]);
-      const oblig = await getEInvoiceObligation(recipientTaxIdNorm);
-      recipientObligated = oblig.obligated;
-      if (rec.rows.length > 0) {
-        const r = rec.rows[0] as RecipientTaxpayerRecord;
-        recipientTitle = r.title;
-        if (Array.isArray(r.missing_fields) && r.missing_fields.length > 0) {
-          recipientWarnings.push(`Alıcı kaydında eksik alan(lar): ${r.missing_fields.join(', ')}.`);
-        }
-        // Mükellefiyet bilgisini kayıtta da tazele.
-        await client.query(
-          `UPDATE recipient_taxpayers SET is_einvoice_obligated = $2, obligation_checked_at = CURRENT_TIMESTAMP, obligation_source = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
-          [r.id, oblig.obligated, oblig.source]
-        );
-      } else {
-        recipientWarnings.push('Alıcı sistemde kayıtlı değil — POST /recipients ile unvan/adres/vergi dairesi bilgilerini kaydedin.');
-      }
-      if (!oblig.obligated) {
-        deliveryMode = 'KAGIT';
-        recipientWarnings.push('Alıcı e-İrsaliye mükellefi DEĞİL — elektronik belge kesilemez, KAĞIT süreç işaretlendi (Kritik Not).');
-      }
-    }
-
-    // --- Belge numarası + ETTN tahsisi (idempotent) ---
-    const existing = await client.query(
-      'SELECT document_number, ettn, delivery_mode, recipient_tax_id FROM despatch_advice_documents WHERE transaction_id = $1',
-      [transactionId]
-    );
-    let documentNumber: string;
-    let ettn: string;
-    let reusedExisting: boolean;
-    if (existing.rows.length > 0) {
-      documentNumber = existing.rows[0].document_number;
-      ettn = existing.rows[0].ettn;
+  // --- Belge numarası + ETTN tahsisi (idempotent, AKTİF belgeyi arar) ---
+  const active = await resolveActiveDespatchAdviceDocument(client, tenantId, transactionId);
+  let documentNumber: string;
+  let ettn: string;
+  let reusedExisting: boolean;
+  if (active) {
+    documentNumber = active.document_number;
+    ettn = active.ettn;
+    reusedExisting = true;
+    // Yeniden üretim: kesimdeki teslim yöntemi/alıcı KORUNUR (belge no gibi
+    // değişmez); yeni bir recipientTaxId ile çağrılsa bile.
+    deliveryMode = (active.delivery_mode as 'ELEKTRONIK' | 'KAGIT') ?? deliveryMode;
+    recipientTaxIdNorm = active.recipient_tax_id ?? recipientTaxIdNorm;
+  } else {
+    // Tenant başına seri tahsisi tek sıraya sok — hangi ikmal için olursa
+    // olsun aynı anda iki numara üretilmesin.
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('despatch:' || $1))", [tenantId]);
+    // Lock'u aldıktan sonra tekrar kontrol et — beklerken başka bir istek
+    // bu ikmal için numara vermiş olabilir.
+    const recheck = await resolveActiveDespatchAdviceDocument(client, tenantId, transactionId);
+    if (recheck) {
+      documentNumber = recheck.document_number;
+      ettn = recheck.ettn;
       reusedExisting = true;
-      // Yeniden üretim: ilk kesimdeki teslim yöntemi/alıcı KORUNUR (belge no
-      // gibi değişmez); yeni bir recipientTaxId ile çağrılsa bile.
-      deliveryMode = (existing.rows[0].delivery_mode as 'ELEKTRONIK' | 'KAGIT') ?? deliveryMode;
-      recipientTaxIdNorm = existing.rows[0].recipient_tax_id ?? recipientTaxIdNorm;
+      deliveryMode = (recheck.delivery_mode as 'ELEKTRONIK' | 'KAGIT') ?? deliveryMode;
+      recipientTaxIdNorm = recheck.recipient_tax_id ?? recipientTaxIdNorm;
     } else {
-      // Tenant başına seri tahsisi tek sıraya sok — hangi ikmal için olursa
-      // olsun aynı anda iki numara üretilmesin.
-      await client.query("SELECT pg_advisory_xact_lock(hashtext('despatch:' || $1))", [tenantId]);
-      // Lock'u aldıktan sonra tekrar kontrol et — beklerken başka bir istek
-      // bu ikmal için numara vermiş olabilir.
-      const recheck = await client.query(
-        'SELECT document_number, ettn FROM despatch_advice_documents WHERE transaction_id = $1',
-        [transactionId]
-      );
-      if (recheck.rows.length > 0) {
-        const r2 = await client.query('SELECT delivery_mode, recipient_tax_id FROM despatch_advice_documents WHERE transaction_id = $1', [transactionId]);
-        documentNumber = recheck.rows[0].document_number;
-        ettn = recheck.rows[0].ettn;
-        reusedExisting = true;
-        deliveryMode = (r2.rows[0]?.delivery_mode as 'ELEKTRONIK' | 'KAGIT') ?? deliveryMode;
-        recipientTaxIdNorm = r2.rows[0]?.recipient_tax_id ?? recipientTaxIdNorm;
-      } else {
-        const year = new Date(tx.created_at).getFullYear();
-        await client.query(
-          'INSERT INTO despatch_advice_counters (tenant_id, issue_year) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-          [tenantId, year]
-        );
-        const bump = await client.query(
-          `UPDATE despatch_advice_counters SET last_sequence = last_sequence + 1
-           WHERE tenant_id = $1 AND issue_year = $2 RETURNING last_sequence`,
-          [tenantId, year]
-        );
-        const seq: number = bump.rows[0].last_sequence;
-        documentNumber = `IRS${year}${String(seq).padStart(9, '0')}`;
-        ettn = crypto.randomUUID();
-        await client.query(
-          `INSERT INTO despatch_advice_documents
-             (id, tenant_id, transaction_id, document_number, ettn, issue_year, sequence_no, recipient_tax_id, delivery_mode)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-          [generateId('despatch'), tenantId, transactionId, documentNumber, ettn, year, seq, recipientTaxIdNorm, deliveryMode]
-        );
-        reusedExisting = false;
-      }
+      const allocated = await allocateDespatchAdviceDocumentNumber(client, tenantId, f.tx, recipientTaxIdNorm, deliveryMode, false, null);
+      documentNumber = allocated.documentNumber;
+      ettn = allocated.ettn;
+      reusedExisting = false;
     }
-
-    return {
-      transactionId: tx.id,
-      documentNumber,
-      ettn,
-      reusedExisting,
-      issueDate: new Date(tx.created_at).toISOString().slice(0, 10),
-      supplierVkn,
-      supplierName,
-      supplierCity,
-      vehiclePlate: tx.vehicle_plate,
-      driverTcNo,
-      fuelType,
-      amountLiters: Number(tx.amount_liters),
-      recipientTaxId: recipientTaxIdNorm,
-      recipientTitle,
-      recipientObligated,
-      deliveryMode,
-      recipientWarnings
-    };
   }
+
+  return {
+    transactionId: f.tx.id,
+    documentNumber,
+    ettn,
+    reusedExisting,
+    issueDate: new Date(f.tx.created_at).toISOString().slice(0, 10),
+    supplierVkn: f.supplierVkn,
+    supplierName: f.supplierName,
+    supplierCity: f.supplierCity,
+    vehiclePlate: f.tx.vehicle_plate,
+    driverTcNo: f.driverTcNo,
+    fuelType: f.fuelType,
+    amountLiters: Number(f.tx.amount_liters),
+    recipientTaxId: recipientTaxIdNorm,
+    recipientTitle: f.recipientTitle,
+    recipientObligated: f.recipientObligated,
+    deliveryMode,
+    recipientWarnings: f.recipientWarnings
+  };
+}
+
+/**
+ * Boşluksuz sıralı belge no + kalıcı ETTN tahsis edip yeni bir
+ * despatch_advice_documents satırı ekler. `isCorrection`/`correctsDocumentId`
+ * COMP-603'ün yeniden gönderim akışı için — normal ilk kesimde ikisi de
+ * false/null'dur. Çağıran, tahsisten ÖNCE advisory-lock almış olmalıdır
+ * (prepareDespatchAdviceCore) VEYA zaten tekil bir durum makinesi geçişiyle
+ * korunuyor olmalıdır (resubmitDespatchAdvice — status satırı FOR UPDATE).
+ */
+async function allocateDespatchAdviceDocumentNumber(
+  client: any,
+  tenantId: string,
+  tx: any,
+  recipientTaxIdNorm: string | null,
+  deliveryMode: 'ELEKTRONIK' | 'KAGIT',
+  isCorrection: boolean,
+  correctsDocumentId: string | null
+): Promise<{ id: string; documentNumber: string; ettn: string }> {
+  const year = new Date(tx.created_at).getFullYear();
+  await client.query(
+    'INSERT INTO despatch_advice_counters (tenant_id, issue_year) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+    [tenantId, year]
+  );
+  const bump = await client.query(
+    `UPDATE despatch_advice_counters SET last_sequence = last_sequence + 1
+     WHERE tenant_id = $1 AND issue_year = $2 RETURNING last_sequence`,
+    [tenantId, year]
+  );
+  const seq: number = bump.rows[0].last_sequence;
+  const documentNumber = `IRS${year}${String(seq).padStart(9, '0')}`;
+  const ettn = crypto.randomUUID();
+  const id = generateId('despatch');
+  await client.query(
+    `INSERT INTO despatch_advice_documents
+       (id, tenant_id, transaction_id, document_number, ettn, issue_year, sequence_no, recipient_tax_id, delivery_mode, is_correction, corrects_document_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    [id, tenantId, tx.id, documentNumber, ettn, year, seq, recipientTaxIdNorm, deliveryMode, isCorrection, correctsDocumentId]
+  );
+  return { id, documentNumber, ettn };
 }
 
 // ============================================================================
@@ -2772,11 +2858,12 @@ export async function enqueueDespatchAdviceTransmission(
       );
     }
 
-    const docRes = await client.query(
-      'SELECT id FROM despatch_advice_documents WHERE tenant_id = $1 AND transaction_id = $2',
-      [tenantId, transactionId]
-    );
-    const despatchAdviceDocumentId: string = docRes.rows[0].id;
+    // COMP-603: transaction_id artık TEK bir belgeye karşılık gelmeyebilir
+    // (reddedilip yeniden gönderilmiş olabilir) — AKTİF (supersede edilmemiş)
+    // belge çözülür; prepareDespatchAdviceCore zaten AYNI çözümlemeyi
+    // kullandığı için `prep.documentNumber` burada dönen belgeyle tutarlıdır.
+    const activeDoc = await resolveActiveDespatchAdviceDocument(client, tenantId, transactionId);
+    const despatchAdviceDocumentId: string = activeDoc.id;
 
     const existing = await client.query(
       'SELECT * FROM despatch_advice_transmissions WHERE tenant_id = $1 AND despatch_advice_document_id = $2',
@@ -2927,6 +3014,229 @@ export async function runDespatchAdviceTransmissionSweepForCurrentTenant(): Prom
     else requeued++;
   }
   return { processed, sent, failed, requeued };
+}
+
+// ============================================================================
+// COMP-603: e-İRSALİYE RED/İPTAL SENARYOSU + YENİDEN GÖNDERİM (DÜZELTME)
+// ============================================================================
+
+// Gerçek GİB e-İrsaliye/e-Fatura sisteminde iptal, belgenin GİB'e iletildiği
+// günü izleyen belirli bir süreyle sınırlıdır (belge türüne göre değişir).
+// Ticket kesin bir süre vermiyor — 72 saat, "gönderildikten kısa süre sonra"
+// gerçeğine makul bir yaklaşım olarak seçildi (Bilinçli sapma, ticket'ta yok).
+const DESPATCH_ADVICE_CANCELLATION_WINDOW_HOURS = 72;
+
+export interface DespatchAdviceStatusRecord {
+  despatchAdviceDocumentId: string;
+  transactionId: string;
+  documentNumber: string;
+  status: 'ISSUED' | 'REJECTED' | 'CANCELLED' | 'SUPERSEDED';
+  rejectReason: string | null;
+  rejectedAt: string | null;
+  cancelReason: string | null;
+  cancellationCertificateRef: string | null;
+  cancelledAt: string | null;
+  supersededByDocumentId: string | null;
+  supersededByDocumentNumber: string | null;
+}
+
+function mapDespatchAdviceStatusRow(row: any, documentNumber: string, supersededByDocumentNumber: string | null = null): DespatchAdviceStatusRecord {
+  return {
+    despatchAdviceDocumentId: row.despatch_advice_document_id,
+    transactionId: row.transaction_id,
+    documentNumber,
+    status: row.status,
+    rejectReason: row.reject_reason,
+    rejectedAt: row.rejected_at,
+    cancelReason: row.cancel_reason,
+    cancellationCertificateRef: row.cancellation_certificate_ref,
+    cancelledAt: row.cancelled_at,
+    supersededByDocumentId: row.superseded_by_document_id,
+    supersededByDocumentNumber
+  };
+}
+
+/**
+ * Aktif belgenin durum satırını LAZY olarak var eder (COMP-602.1'den önceki
+ * belgelerin hiç durum satırı yoktur — ilk erişimde ISSUED olarak yaratılır)
+ * ve `FOR UPDATE` ile kilitler — reject/cancel/resubmit arasındaki yarışı
+ * önler (aynı belge için iki eşzamanlı istek).
+ */
+async function lockOrCreateDespatchAdviceStatus(client: any, tenantId: string, activeDoc: any): Promise<any> {
+  await client.query(
+    `INSERT INTO despatch_advice_documents_status (despatch_advice_document_id, tenant_id, transaction_id)
+     VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+    [activeDoc.id, tenantId, activeDoc.transaction_id]
+  );
+  const res = await client.query(
+    'SELECT * FROM despatch_advice_documents_status WHERE despatch_advice_document_id = $1 FOR UPDATE',
+    [activeDoc.id]
+  );
+  return res.rows[0];
+}
+
+async function resolveActiveDocOrThrow(client: any, tenantId: string, transactionId: string, siteRestriction?: string): Promise<any> {
+  // Şantiye kapsaması + "hiç ikmal yok" ayrımı diğer tüm despatch fonksiyonlarıyla
+  // AYNI (NotFoundError, 403 değil — ID sızıntısı önlenir).
+  const txRes = await client.query('SELECT site_name FROM transactions WHERE id = $1', [transactionId]);
+  if (txRes.rows.length === 0 || (siteRestriction && txRes.rows[0].site_name !== siteRestriction)) {
+    throw new NotFoundError('İkmal kaydı bulunamadı.');
+  }
+  const active = await resolveActiveDespatchAdviceDocument(client, tenantId, transactionId);
+  if (!active) {
+    throw new NotFoundError('Bu ikmal için henüz üretilmiş bir e-İrsaliye yok — önce POST /transactions/:id/e-irsaliye/transmit ile kuyruğa alın.');
+  }
+  return active;
+}
+
+export async function getDespatchAdviceStatus(transactionId: string, siteRestriction?: string): Promise<DespatchAdviceStatusRecord> {
+  return withTenant(async (client, tenantId) => {
+    const active = await resolveActiveDocOrThrow(client, tenantId, transactionId, siteRestriction);
+    const status = await lockOrCreateDespatchAdviceStatus(client, tenantId, active);
+    return mapDespatchAdviceStatusRow(status, active.document_number);
+  });
+}
+
+/**
+ * Alıcının belgeyi reddettiğini kaydeder (AC: "Red sebepleri kaydedilip
+ * kullanıcıya anlaşılır biçimde gösterilmelidir"). Yalnızca GERÇEKTEN
+ * gönderilmiş (despatch_advice_transmissions.status='SENT') bir belge
+ * reddedilebilir — hiç gönderilmemiş bir belgeyi "alıcı reddetti" demek
+ * anlamsızdır.
+ */
+export async function rejectDespatchAdvice(transactionId: string, reason: string, siteRestriction?: string): Promise<DespatchAdviceStatusRecord> {
+  return withTenant(async (client, tenantId) => {
+    const active = await resolveActiveDocOrThrow(client, tenantId, transactionId, siteRestriction);
+    const sent = await client.query(
+      "SELECT 1 FROM despatch_advice_transmissions WHERE tenant_id = $1 AND despatch_advice_document_id = $2 AND status = 'SENT'",
+      [tenantId, active.id]
+    );
+    if (sent.rows.length === 0) {
+      throw new BadRequestError(
+        'Bu belge henüz entegratöre GÖNDERİLMEDİ (SENT) — gönderilmemiş bir belge reddedilemez.',
+        { error: 'NOT_YET_TRANSMITTED' }
+      );
+    }
+    const statusRow = await lockOrCreateDespatchAdviceStatus(client, tenantId, active);
+    if (statusRow.status !== 'ISSUED') {
+      throw new ConflictError(`Belge zaten '${statusRow.status}' durumunda — tekrar reddedilemez.`, { error: 'INVALID_STATUS_TRANSITION', currentStatus: statusRow.status });
+    }
+    const updated = await client.query(
+      `UPDATE despatch_advice_documents_status
+         SET status = 'REJECTED', reject_reason = $2, rejected_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE despatch_advice_document_id = $1 RETURNING *`,
+      [active.id, reason]
+    );
+    await writeAuditLog(client, {
+      action: 'DESPATCH_ADVICE_REJECTED',
+      targetType: 'despatch_advice_document',
+      targetId: active.id,
+      afterValue: { documentNumber: active.document_number, reason }
+    });
+    return mapDespatchAdviceStatusRow(updated.rows[0], active.document_number);
+  });
+}
+
+/**
+ * İhraç eden tarafın belgeyi iptal etmesi — sertifika/imza yerine (bu ortamda
+ * gerçek bir HSM/PKI yok, COMP-601'in XAdES notuyla AYNI gerekçe) simüle
+ * edilmiş bir iptal referansı üretir. Yasal süre penceresi dışında reddedilir.
+ */
+export async function cancelDespatchAdvice(transactionId: string, reason: string, siteRestriction?: string): Promise<DespatchAdviceStatusRecord> {
+  return withTenant(async (client, tenantId) => {
+    const active = await resolveActiveDocOrThrow(client, tenantId, transactionId, siteRestriction);
+    const ageHours = (Date.now() - new Date(active.created_at).getTime()) / (60 * 60 * 1000);
+    if (ageHours > DESPATCH_ADVICE_CANCELLATION_WINDOW_HOURS) {
+      throw new BadRequestError(
+        `Belge iptal süresi (${DESPATCH_ADVICE_CANCELLATION_WINDOW_HOURS} saat) aşıldı — artık yalnızca reddedilip yeniden gönderilebilir.`,
+        { error: 'CANCELLATION_WINDOW_EXPIRED' }
+      );
+    }
+    const statusRow = await lockOrCreateDespatchAdviceStatus(client, tenantId, active);
+    if (statusRow.status === 'CANCELLED' || statusRow.status === 'SUPERSEDED') {
+      throw new ConflictError(`Belge zaten '${statusRow.status}' durumunda — tekrar iptal edilemez.`, { error: 'INVALID_STATUS_TRANSITION', currentStatus: statusRow.status });
+    }
+    const certificateRef = `IPTAL-${active.document_number}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    const updated = await client.query(
+      `UPDATE despatch_advice_documents_status
+         SET status = 'CANCELLED', cancel_reason = $2, cancellation_certificate_ref = $3, cancelled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE despatch_advice_document_id = $1 RETURNING *`,
+      [active.id, reason, certificateRef]
+    );
+    await writeAuditLog(client, {
+      action: 'DESPATCH_ADVICE_CANCELLED',
+      targetType: 'despatch_advice_document',
+      targetId: active.id,
+      afterValue: { documentNumber: active.document_number, reason, certificateRef }
+    });
+    return mapDespatchAdviceStatusRow(updated.rows[0], active.document_number);
+  });
+}
+
+export interface DespatchAdviceResubmission {
+  previousDocumentId: string;
+  previousDocumentNumber: string;
+  newDocumentId: string;
+  newDocumentNumber: string;
+  newEttn: string;
+}
+
+/**
+ * AC: "Düzeltilen belgeler YENİ belge numarasıyla yeniden gönderilmelidir."
+ * Yalnızca REDDEDİLMİŞ veya İPTAL EDİLMİŞ bir belge düzeltilebilir. Alıcı/
+ * teslim yöntemi ÖNCEKİ belgeden KORUNUR (ticket alıcı değişikliğinden söz
+ * etmiyor — yalnızca "düzeltme" istiyor). Yeni belge otomatik OLARAK
+ * iletim kuyruğuna EKLENMEZ — çağıran ayrıca POST .../transmit çağırmalı
+ * (COMP-602.1 ile AYNI kompozisyon: her adım kendi sorumluluğunda).
+ */
+export async function resubmitDespatchAdvice(transactionId: string, siteRestriction?: string): Promise<DespatchAdviceResubmission> {
+  return withTenant(async (client, tenantId) => {
+    const active = await resolveActiveDocOrThrow(client, tenantId, transactionId, siteRestriction);
+    const statusRow = await lockOrCreateDespatchAdviceStatus(client, tenantId, active);
+    if (statusRow.status !== 'REJECTED' && statusRow.status !== 'CANCELLED') {
+      throw new ConflictError(
+        `Yalnızca REDDEDİLMİŞ veya İPTAL EDİLMİŞ bir belge yeniden gönderilebilir (mevcut durum: '${statusRow.status}').`,
+        { error: 'INVALID_STATUS_TRANSITION', currentStatus: statusRow.status }
+      );
+    }
+
+    const f = await deriveDespatchAdviceFields(client, tenantId, transactionId, siteRestriction, active.recipient_tax_id);
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('despatch:' || $1))", [tenantId]);
+    const allocated = await allocateDespatchAdviceDocumentNumber(
+      client,
+      tenantId,
+      f.tx,
+      active.recipient_tax_id,
+      active.delivery_mode,
+      true,
+      active.id
+    );
+    await client.query(
+      `INSERT INTO despatch_advice_documents_status (despatch_advice_document_id, tenant_id, transaction_id)
+       VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+      [allocated.id, tenantId, transactionId]
+    );
+    await client.query(
+      `UPDATE despatch_advice_documents_status
+         SET status = 'SUPERSEDED', superseded_by_document_id = $2, updated_at = CURRENT_TIMESTAMP
+       WHERE despatch_advice_document_id = $1`,
+      [active.id, allocated.id]
+    );
+    await writeAuditLog(client, {
+      action: 'DESPATCH_ADVICE_RESUBMITTED',
+      targetType: 'despatch_advice_document',
+      targetId: allocated.id,
+      beforeValue: { previousDocumentId: active.id, previousDocumentNumber: active.document_number },
+      afterValue: { newDocumentNumber: allocated.documentNumber }
+    });
+    return {
+      previousDocumentId: active.id,
+      previousDocumentNumber: active.document_number,
+      newDocumentId: allocated.id,
+      newDocumentNumber: allocated.documentNumber,
+      newEttn: allocated.ettn
+    };
+  });
 }
 
 // ============================================================================

@@ -297,6 +297,9 @@ jobs:
       - name: Run COMP-602.1 e-Invoice Integrator Adapter + Transmission Queue Tests
         run: cd backend && npx tsx test/test_comp602_1_einvoice_integrator_queue.ts
 
+      - name: Run COMP-603 e-Invoice Rejection/Cancellation/Resubmission Lifecycle Tests
+        run: cd backend && npx tsx test/test_comp603_despatch_advice_lifecycle.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true
