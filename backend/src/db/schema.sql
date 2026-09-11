@@ -48,6 +48,28 @@ CREATE TABLE IF NOT EXISTS company_module_addons (
     PRIMARY KEY (tenant_id, module_name)
 );
 
+-- BILL-1704: dönemsel (aylık) kullanım ölçümü — faturalama verisi. Diğer
+-- mutabakat/geçmiş kayıtlarıyla (fuel_quota_history, stock_reconciliations,
+-- vehicle_maintenance_records) AYNI gerekçeyle APPEND-ONLY: bir fatura
+-- döneminin ölçümü bir kez hesaplanıp kilitlenir, sonradan "düzeltilmez"
+-- (düzeltme gerekirse yeni bir kayıt — bu ilk sürümde kapsam dışı, YAGNI).
+-- `device_days` = aktif (BLOKE olmayan) cihaz sayısı × dönemdeki gün sayısı
+-- (SaaS'ta standart "provisioned device-days" ölçüsü — telemetri UPTIME'ı
+-- DEĞİL, çünkü MQTT paketleri kalıcı loglanmıyor; bkz. telemetry_packet_count
+-- için mqttClient.ts'teki Redis sayaç notu).
+CREATE TABLE IF NOT EXISTS usage_metering_records (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    period_label VARCHAR(7) NOT NULL, -- 'YYYY-MM'
+    active_device_count INTEGER NOT NULL,
+    device_days INTEGER NOT NULL,
+    dispense_count INTEGER NOT NULL,
+    telemetry_packet_count INTEGER NOT NULL,
+    edocument_count INTEGER NOT NULL,
+    computed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tenant_id, period_label)
+);
+
 -- 2. Vehicles Table with Tenant ID
 CREATE TABLE IF NOT EXISTS vehicles (
     id VARCHAR(64) PRIMARY KEY,
@@ -1052,28 +1074,6 @@ CREATE INDEX IF NOT EXISTS idx_vehicle_tires_vehicle ON vehicle_tires(tenant_id,
 CREATE UNIQUE INDEX IF NOT EXISTS uq_vehicle_tires_active_position
     ON vehicle_tires(tenant_id, vehicle_id, position) WHERE status = 'AKTİF';
 
--- ==============================================================================
--- 6. Enable Row Level Security (RLS) Policies
--- ==============================================================================
-
--- Enable RLS on vehicles, tanks, users
-ALTER TABLE vehicles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE tanks ENABLE ROW LEVEL SECURITY;
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE drivers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE cross_site_permissions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE hardware_devices ENABLE ROW LEVEL SECURITY;
-ALTER TABLE device_claim_codes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE calibration_commands ENABLE ROW LEVEL SECURITY;
-ALTER TABLE calibration_test_intakes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE fail_open_policies ENABLE ROW LEVEL SECURITY;
-ALTER TABLE consumption_anomaly_reports ENABLE ROW LEVEL SECURITY;
-ALTER TABLE despatch_advice_documents ENABLE ROW LEVEL SECURITY;
-ALTER TABLE despatch_advice_counters ENABLE ROW LEVEL SECURITY;
-ALTER TABLE despatch_advice_transmissions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE despatch_advice_documents_status ENABLE ROW LEVEL SECURITY;
-ALTER TABLE tank_strapping_tables ENABLE ROW LEVEL SECURITY;
 -- INV-1506: yedek parça/sarf malzeme kartı. Yakıt tanklarından (tanks)
 -- KASITLI olarak farklı bir mimari — Kritik Not (ticket): "yakıt envanteri
 -- SENSÖRLÜ, burası SENSÖRSÜZ." `current_stock` yalnızca KAYDEDİLEN
@@ -1121,6 +1121,28 @@ CREATE TABLE IF NOT EXISTS inventory_movements (
 );
 CREATE INDEX IF NOT EXISTS idx_inventory_movements_item ON inventory_movements(tenant_id, item_id, created_at DESC);
 
+-- ==============================================================================
+-- 6. Enable Row Level Security (RLS) Policies
+-- ==============================================================================
+
+-- Enable RLS on vehicles, tanks, users
+ALTER TABLE vehicles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tanks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE drivers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cross_site_permissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hardware_devices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE device_claim_codes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calibration_commands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calibration_test_intakes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fail_open_policies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE consumption_anomaly_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_counters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_transmissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_documents_status ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tank_strapping_tables ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rfid_card_blacklist ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quotas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quota_history ENABLE ROW LEVEL SECURITY;
@@ -1137,7 +1159,10 @@ ALTER TABLE vehicle_fuel_limits ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_maintenance_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_compliance_deadlines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_tires ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inventory_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inventory_movements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE company_module_addons ENABLE ROW LEVEL SECURITY;
+ALTER TABLE usage_metering_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
@@ -1159,8 +1184,6 @@ CREATE TABLE IF NOT EXISTS sites (
 );
 
 -- Enable RLS on sites (FORCE alone is a no-op without ENABLE — bu satır olmadan
-ALTER TABLE inventory_items ENABLE ROW LEVEL SECURITY;
-ALTER TABLE inventory_movements ENABLE ROW LEVEL SECURITY;
 -- sites_tenant_isolation_policy hiç uygulanmaz ve her tenant tüm şantiyeleri görür)
 ALTER TABLE sites ENABLE ROW LEVEL SECURITY;
 
@@ -1226,6 +1249,11 @@ REVOKE UPDATE, DELETE, TRUNCATE ON vehicle_maintenance_records FROM app_user;
 -- FLEET-1408: yasal teslim tarihi geçmişi de aynı gerekçeyle append-only.
 -- vehicle_tires KASITLI OLARAK bu listede DEĞİL — mutable (diş derinliği/durum).
 REVOKE UPDATE, DELETE, TRUNCATE ON vehicle_compliance_deadlines FROM app_user;
+-- INV-1506: stok hareket geçmişi de aynı gerekçeyle append-only.
+-- inventory_items KASITLI OLARAK bu listede DEĞİL — mutable (current_stock).
+REVOKE UPDATE, DELETE, TRUNCATE ON inventory_movements FROM app_user;
+-- BILL-1704: bir faturalama döneminin ölçümü bir kez hesaplanıp kilitlenir.
+REVOKE UPDATE, DELETE, TRUNCATE ON usage_metering_records FROM app_user;
 
 -- Force RLS even for table owners
 ALTER TABLE vehicles FORCE ROW LEVEL SECURITY;
@@ -1249,9 +1277,6 @@ ALTER TABLE despatch_advice_documents_status FORCE ROW LEVEL SECURITY;
 ALTER TABLE tank_strapping_tables FORCE ROW LEVEL SECURITY;
 ALTER TABLE rfid_card_blacklist FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quotas FORCE ROW LEVEL SECURITY;
--- INV-1506: stok hareket gecmisi de ayni gerekceyle append-only.
--- inventory_items KASITLI OLARAK bu listede DEGIL -- mutable (current_stock).
-REVOKE UPDATE, DELETE, TRUNCATE ON inventory_movements FROM app_user;
 ALTER TABLE fuel_quota_history FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_intake_receipts FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_reconciliations FORCE ROW LEVEL SECURITY;
@@ -1266,7 +1291,10 @@ ALTER TABLE vehicle_fuel_limits FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_maintenance_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_compliance_deadlines FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_tires FORCE ROW LEVEL SECURITY;
+ALTER TABLE inventory_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE inventory_movements FORCE ROW LEVEL SECURITY;
 ALTER TABLE company_module_addons FORCE ROW LEVEL SECURITY;
+ALTER TABLE usage_metering_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
@@ -1291,8 +1319,6 @@ DROP POLICY IF EXISTS despatch_advice_documents_status_tenant_isolation_policy O
 DROP POLICY IF EXISTS tank_strapping_tables_tenant_isolation_policy ON tank_strapping_tables;
 DROP POLICY IF EXISTS rfid_card_blacklist_tenant_isolation_policy ON rfid_card_blacklist;
 DROP POLICY IF EXISTS fuel_quotas_tenant_isolation_policy ON fuel_quotas;
-ALTER TABLE inventory_items FORCE ROW LEVEL SECURITY;
-ALTER TABLE inventory_movements FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS fuel_quota_history_tenant_isolation_policy ON fuel_quota_history;
 DROP POLICY IF EXISTS fuel_intake_receipts_tenant_isolation_policy ON fuel_intake_receipts;
 DROP POLICY IF EXISTS stock_reconciliations_tenant_isolation_policy ON stock_reconciliations;
@@ -1307,7 +1333,10 @@ DROP POLICY IF EXISTS vehicle_fuel_limits_tenant_isolation_policy ON vehicle_fue
 DROP POLICY IF EXISTS vehicle_maintenance_records_tenant_isolation_policy ON vehicle_maintenance_records;
 DROP POLICY IF EXISTS vehicle_compliance_deadlines_tenant_isolation_policy ON vehicle_compliance_deadlines;
 DROP POLICY IF EXISTS vehicle_tires_tenant_isolation_policy ON vehicle_tires;
+DROP POLICY IF EXISTS inventory_items_tenant_isolation_policy ON inventory_items;
+DROP POLICY IF EXISTS inventory_movements_tenant_isolation_policy ON inventory_movements;
 DROP POLICY IF EXISTS company_module_addons_tenant_isolation_policy ON company_module_addons;
+DROP POLICY IF EXISTS usage_metering_records_tenant_isolation_policy ON usage_metering_records;
 DROP POLICY IF EXISTS vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_readings;
 
 -- Create Tenant Isolation Policy for vehicles
@@ -1333,8 +1362,6 @@ CREATE POLICY drivers_tenant_isolation_policy ON drivers
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
-DROP POLICY IF EXISTS inventory_items_tenant_isolation_policy ON inventory_items;
-DROP POLICY IF EXISTS inventory_movements_tenant_isolation_policy ON inventory_movements;
 
 -- Create Tenant Isolation Policy for sites
 CREATE POLICY sites_tenant_isolation_policy ON sites
@@ -1505,12 +1532,27 @@ CREATE POLICY company_module_addons_tenant_isolation_policy ON company_module_ad
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY usage_metering_records_tenant_isolation_policy ON usage_metering_records
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 CREATE POLICY vehicle_compliance_deadlines_tenant_isolation_policy ON vehicle_compliance_deadlines
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
 CREATE POLICY vehicle_tires_tenant_isolation_policy ON vehicle_tires
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY inventory_items_tenant_isolation_policy ON inventory_items
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY inventory_movements_tenant_isolation_policy ON inventory_movements
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
@@ -1547,16 +1589,6 @@ CREATE INDEX IF NOT EXISTS idx_device_claim_codes_tenant_id ON device_claim_code
 -- sıralamayı tek bir indeks taramasıyla karşılar.
 CREATE INDEX IF NOT EXISTS idx_transactions_tenant_created_at ON transactions(tenant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_tenant_site ON transactions(tenant_id, site_name);
-CREATE POLICY inventory_items_tenant_isolation_policy ON inventory_items
-    FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', true))
-    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
-
-CREATE POLICY inventory_movements_tenant_isolation_policy ON inventory_movements
-    FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', true))
-    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
-
 
 -- audit_logs: append-only ve yalnızca INSERT+SELECT yapılabilir (bkz.
 -- yukarıdaki REVOKE) — GET /audit-logs de aynı tenant+created_at DESC deseni.

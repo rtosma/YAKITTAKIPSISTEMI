@@ -9,6 +9,7 @@ import { startTheftDetectionEngine } from '../services/theftDetectionService';
 import { decodeLoRaWANPayload, CorruptedPayloadException, LoRaWANRadioMeta } from './lorawanDecoder';
 import { startUnauthorizedFlowDetectionEngine } from './unauthorizedFlowDetector';
 import { startCommandQueueEngine } from './commandQueueService';
+import { incrementTelemetryPacketCounter } from '../services/usageMeteringService';
 
 // Local Event Bus for decoupling (Prep for ARCH-102: BullMQ)
 export const ioTEventBus = new EventEmitter();
@@ -231,6 +232,10 @@ class MQTTService {
               data: parsedData,
               timestamp: new Date().toISOString()
             });
+
+            // BILL-1704: faturalama ölçümü için telemetri paket sayacı —
+            // burada hatayı yutup devam eder, ölçüm hattını asla bloklamaz.
+            void incrementTelemetryPacketCounter(tenantId);
 
             // Cihaz veri gönderiyorsa kesinlikle ONLINE'dır.
             const changed = await redisPool.setDeviceState(deviceId, 'ONLINE');

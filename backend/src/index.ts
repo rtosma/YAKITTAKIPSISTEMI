@@ -19,6 +19,7 @@ import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
 import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant } from './db/tenantDb';
 import { runLicenseExpiryWarningSweep } from './services/licenseWarningService';
+import { runUsageMeteringSweepForPreviousMonth } from './services/usageMeteringService';
 
 // NOTE: environment variables are loaded by ./bootstrap.ts (the real process
 // entry point — see package.json `dev`/`build`), BEFORE this module or any of
@@ -304,6 +305,24 @@ async function startServer(): Promise<void> {
     }
   }, LICENSE_WARNING_SWEEP_MS);
 
+  // BILL-1704 AC: "ölçüm boyutlarının dönemsel toplanması." Ticket
+  // "TimescaleDB continuous aggregates + BullMQ" öneriyor — yok;
+  // yukarıdakilerle AYNI setInterval. Günlük tur her seferinde bir önceki
+  // AYI hesaplamaya çalışır — usageMeteringService.ts'in ON CONFLICT DO
+  // NOTHING'i sayesinde ay içinde her gün tekrar denemek zararsızdır
+  // (yalnızca ayın ilk turunda gerçekten INSERT eder).
+  const USAGE_METERING_SWEEP_MS = 24 * 60 * 60 * 1000;
+  const usageMeteringSweepInterval = setInterval(async () => {
+    try {
+      const { tenantsProcessed, recordsComputed } = await runUsageMeteringSweepForPreviousMonth();
+      if (recordsComputed > 0) {
+        logger.info({ tenantsProcessed, recordsComputed }, `📊 [BILL-1704] Kullanım ölçümü turu tamamlandı (${recordsComputed}/${tenantsProcessed} firma için yeni kayıt).`);
+      }
+    } catch (err) {
+      logger.error({ err }, '🚨 [BILL-1704] Kullanım ölçümü turu başarısız.');
+    }
+  }, USAGE_METERING_SWEEP_MS);
+
   // AI-504 AC: "Mesai dışı alımlar işaretlenip bildirim üretmelidir." Ticket
   // "ARCH-102 event handler" öneriyor — yok; yukarıdakilerle AYNI setInterval.
   // Son 2 saatlik ikmalleri tarar (üst üste binme (transaction_id, anomaly_type)
@@ -434,25 +453,6 @@ async function startServer(): Promise<void> {
     }
   }, FLEET_COMPLIANCE_SWEEP_MS);
 
-  // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
-  setupGracefulShutdown(server, {
-    timeoutMs: 30000,
-    onShutdown: async () => {
-      logger.info(`🔌 [Shutdown] Eknak kaynak temizliği çalıştırılıyor...`);
-
-      clearInterval(dispenseTimeoutSweepInterval);
-      clearInterval(calibrationTimeoutSweepInterval);
-      if (weeklyAnomalySweepInterval) clearInterval(weeklyAnomalySweepInterval);
-      clearInterval(quotaResetSweepInterval);
-      clearInterval(dailyReconSweepInterval);
-      clearInterval(licenseWarningSweepInterval);
-      clearInterval(anomalySweepInterval);
-      clearInterval(alarmEscalationSweepInterval);
-      clearInterval(despatchTransmissionSweepInterval);
-      clearInterval(maintenanceReminderSweepInterval);
-      clearInterval(fleetComplianceSweepInterval);
-
-      // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
   // INV-1506 AC: "kritik stok uyarıları üretilmeli." Ticket NestJS +
   // NOTIF-1601 öneriyor — yukarıdakilerle AYNI setInterval. Kritik eşik bir
   // hareket OLMADAN da (yalnızca eşik düşürülerek) aşılabileceği için
@@ -478,6 +478,27 @@ async function startServer(): Promise<void> {
     }
   }, INVENTORY_CRITICAL_STOCK_SWEEP_MS);
 
+  // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
+  setupGracefulShutdown(server, {
+    timeoutMs: 30000,
+    onShutdown: async () => {
+      logger.info(`🔌 [Shutdown] Eknak kaynak temizliği çalıştırılıyor...`);
+
+      clearInterval(dispenseTimeoutSweepInterval);
+      clearInterval(calibrationTimeoutSweepInterval);
+      if (weeklyAnomalySweepInterval) clearInterval(weeklyAnomalySweepInterval);
+      clearInterval(quotaResetSweepInterval);
+      clearInterval(dailyReconSweepInterval);
+      clearInterval(licenseWarningSweepInterval);
+      clearInterval(usageMeteringSweepInterval);
+      clearInterval(anomalySweepInterval);
+      clearInterval(alarmEscalationSweepInterval);
+      clearInterval(despatchTransmissionSweepInterval);
+      clearInterval(maintenanceReminderSweepInterval);
+      clearInterval(fleetComplianceSweepInterval);
+      clearInterval(inventoryCriticalStockSweepInterval);
+
+      // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
       // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters
       // sıra veri kaybına yol açar.
       await mqttService.disconnect();
@@ -496,7 +517,6 @@ async function startServer(): Promise<void> {
   });
 }
 
-      clearInterval(inventoryCriticalStockSweepInterval);
 startServer().catch((err) => {
   logger.fatal({ err }, '🔥 [Bootstrap] Sunucu başlatılamadı.');
   process.exit(1);

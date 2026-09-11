@@ -32,6 +32,7 @@ import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes,
 import { isServerShuttingDown } from '../utils/shutdown';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS } from '../db/adminDb';
 import { runLicenseExpiryWarningSweep } from '../services/licenseWarningService';
+import { getUsageMeteringHistory, computeUsageMeteringForCurrentTenant } from '../services/usageMeteringService';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
@@ -922,6 +923,55 @@ router.get('/companies/me', authenticateJWT, async (req: AuthenticatedRequest, r
     if (error.message === 'COMPANY_NOT_FOUND') {
       return next(new NotFoundError('Oturum açan kullanıcının firma kaydı bulunamadı.'));
     }
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /usage-metering:
+ *   get:
+ *     summary: Kullanım/Faturalama Geçmişi (BILL-1704)
+ *     description: >
+ *       Oturum açan firmanın dönemsel (aylık) kullanım ölçümü kayıtlarını
+ *       (aktif cihaz sayısı, cihaz-gün, ikmal sayısı, telemetri paket
+ *       sayısı, üretilen e-belge sayısı) en yeniden en eskiye listeler.
+ *       Kayıtlar append-only'dir (bir dönem bir kez hesaplanır).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/usage-metering', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const limit = req.query.limit ? Number(req.query.limit) : 24;
+    const history = await getUsageMeteringHistory(limit);
+    res.json({ success: true, data: history });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /usage-metering/compute-now:
+ *   post:
+ *     summary: Bir Dönemin Kullanım Ölçümünü Hemen Hesapla (BILL-1704)
+ *     description: >
+ *       index.ts'teki günlük süpürücünün (bir önceki ay için) yaptığı işi bu
+ *       tenant için MANUEL tetikler — ops/test için, ayın bitmesini beklemeden
+ *       (`periodLabel` verilmezse bir önceki ay hesaplanır). Aynı dönem için
+ *       tekrar çağrılması güvenlidir (append-only, ON CONFLICT DO NOTHING —
+ *       zaten hesaplanmış bir dönem SESSİZCE atlanır, `data: null` döner).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/usage-metering/compute-now', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const periodLabel = typeof req.body?.periodLabel === 'string'
+      ? req.body.periodLabel
+      : new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() - 1, 1)).toISOString().slice(0, 7);
+    const record = await computeUsageMeteringForCurrentTenant(periodLabel);
+    res.json({ success: true, data: record });
+  } catch (error: any) {
     next(error);
   }
 });
