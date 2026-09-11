@@ -12,6 +12,11 @@ CREATE TABLE IF NOT EXISTS companies (
     license_status VARCHAR(16) DEFAULT 'AKTİF',
     license_expiry DATE,
     modules JSONB NOT NULL DEFAULT '{"aiAnomaly":true,"eInvoice":true,"smartWarehouse":true,"maintenanceTrack":true,"driverScore":true,"crossSiteAuth":true}'::jsonb,
+    -- BILL-1701: adlandırılmış paket kademesi (TEMEL/PROFESYONEL/KURUMSAL).
+    -- `modules` her zaman TEK doğruluk kaynağı (fiilen etkin özellikler) —
+    -- `package` yalnızca bir ETİKET + admin paket değiştirdiğinde `modules`'a
+    -- uygulanacak VARSAYILAN demet (bkz. adminDb.ts PACKAGE_MODULE_DEFAULTS).
+    package VARCHAR(32) NOT NULL DEFAULT 'TEMEL',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -21,6 +26,12 @@ ALTER TABLE companies ADD COLUMN IF NOT EXISTS city VARCHAR(128);
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS license_status VARCHAR(16) DEFAULT 'AKTİF';
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS license_expiry DATE;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS modules JSONB NOT NULL DEFAULT '{"aiAnomaly":true,"eInvoice":true,"smartWarehouse":true,"maintenanceTrack":true,"driverScore":true,"crossSiteAuth":true}'::jsonb;
+-- BILL-1701: bu ALTER'ın varsayılanı CREATE TABLE'daki 'TEMEL'DEN KASITLI
+-- FARKLI — bu satır yalnızca `package` kolonu olmadan ÖNCEDEN oluşturulmuş
+-- (dolayısıyla `modules`'u zaten yukarıdaki tam-açık demetle kurulmuş) var
+-- olan firmalarda çalışır; onları sessizce 'TEMEL' (kısıtlı varsayılan demet)
+-- olarak etiketlemek modülleri geri almadan yanıltıcı bir paket adı verirdi.
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS package VARCHAR(32) NOT NULL DEFAULT 'KURUMSAL';
 
 -- 2. Vehicles Table with Tenant ID
 CREATE TABLE IF NOT EXISTS vehicles (

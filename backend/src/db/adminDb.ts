@@ -30,6 +30,7 @@ export interface AdminCompanyProfile {
   licenseStatus: string;
   licenseExpiry: string | null;
   modules: Record<string, boolean>;
+  package: PackageTier;
   sites: AdminCompanySite[];
   activeVehiclesCount: number;
   totalFuelThisMonth: number;
@@ -43,6 +44,45 @@ const DEFAULT_MODULES = {
   driverScore: true,
   crossSiteAuth: true
 };
+
+// ============================================================================
+// BILL-1701 — Firma Paketleri ve Lisans Modeli
+// ============================================================================
+//
+// `companies.modules` (yukarıdaki DEFAULT_MODULES) TEK doğruluk kaynağıdır —
+// hangi özelliğin gerçekten etkin olduğunu belirleyen odur (bkz.
+// tenantDb.ts isTenantModuleEnabled). `package` yalnızca adlandırılmış bir
+// ETİKET + admin bir firmanın paketini DEĞİŞTİRDİĞİNDE `modules`'a
+// uygulanacak VARSAYILAN demet — paket seçmek modülleri sıfırlar, ama admin
+// aynı istekte açık `modules` de gönderirse o üzerine biner (bkz.
+// updateCompanyAdmin).
+export type PackageTier = 'TEMEL' | 'PROFESYONEL' | 'KURUMSAL';
+
+export const PACKAGE_TIERS: PackageTier[] = ['TEMEL', 'PROFESYONEL', 'KURUMSAL'];
+
+export const PACKAGE_MODULE_DEFAULTS: Record<PackageTier, Record<string, boolean>> = {
+  TEMEL: {
+    aiAnomaly: false,
+    eInvoice: false,
+    smartWarehouse: false,
+    maintenanceTrack: false,
+    driverScore: true,
+    crossSiteAuth: false
+  },
+  PROFESYONEL: {
+    aiAnomaly: true,
+    eInvoice: true,
+    smartWarehouse: false,
+    maintenanceTrack: true,
+    driverScore: true,
+    crossSiteAuth: true
+  },
+  KURUMSAL: DEFAULT_MODULES
+};
+
+function isPackageTier(value: unknown): value is PackageTier {
+  return typeof value === 'string' && (PACKAGE_TIERS as string[]).includes(value);
+}
 
 function slugifyCompanyName(name: string): string {
   return name
@@ -82,6 +122,7 @@ async function buildAdminCompanyProfile(c: any): Promise<AdminCompanyProfile> {
     licenseStatus: c.license_status || 'AKTİF',
     licenseExpiry: c.license_expiry ? new Date(c.license_expiry).toISOString().slice(0, 10) : null,
     modules: c.modules || {},
+    package: isPackageTier(c.package) ? c.package : 'TEMEL',
     sites: sitesRes.rows.map((s) => ({
       id: s.id,
       name: s.name,
@@ -96,7 +137,7 @@ async function buildAdminCompanyProfile(c: any): Promise<AdminCompanyProfile> {
 
 export async function getAllCompanies(): Promise<AdminCompanyProfile[]> {
   const companiesRes = await pool.query(
-    `SELECT id, name, tax_number, code, city, license_status, license_expiry, modules FROM companies ORDER BY name ASC`
+    `SELECT id, name, tax_number, code, city, license_status, license_expiry, modules, package FROM companies ORDER BY name ASC`
   );
 
   // Şirketler arası da bağımsız — hepsini birlikte kur (sırayla N tur yerine).
@@ -113,6 +154,7 @@ export async function createCompanyWithOwner(data: {
   name: string;
   city?: string;
   taxNumber?: string;
+  package?: PackageTier;
 }): Promise<AdminCompanyProfile> {
   const client = await pool.connect();
   try {
@@ -123,11 +165,13 @@ export async function createCompanyWithOwner(data: {
     const companyId = generateId('comp');
     const taxNumber = data.taxNumber?.trim() || '0000000000';
     const city = data.city?.trim() || 'İstanbul';
+    const packageTier: PackageTier = isPackageTier(data.package) ? data.package : 'TEMEL';
+    const initialModules = PACKAGE_MODULE_DEFAULTS[packageTier];
 
     await client.query(
-      `INSERT INTO companies (id, name, tax_number, code, city, license_status, license_expiry, modules)
-       VALUES ($1, $2, $3, $4, $5, 'AKTİF', $6, $7::jsonb)`,
-      [companyId, data.name.trim(), taxNumber, code, city, '2027-12-31', JSON.stringify(DEFAULT_MODULES)]
+      `INSERT INTO companies (id, name, tax_number, code, city, license_status, license_expiry, modules, package)
+       VALUES ($1, $2, $3, $4, $5, 'AKTİF', $6, $7::jsonb, $8)`,
+      [companyId, data.name.trim(), taxNumber, code, city, '2027-12-31', JSON.stringify(initialModules), packageTier]
     );
 
     const siteId = generateId('site');
@@ -164,7 +208,8 @@ export async function createCompanyWithOwner(data: {
       city,
       licenseStatus: 'AKTİF',
       licenseExpiry: '2027-12-31',
-      modules: DEFAULT_MODULES,
+      modules: initialModules,
+      package: packageTier,
       sites: [{ id: siteId, name: siteName, location: city, activeTanksCount: 0, activeVehiclesCount: 0 }],
       activeVehiclesCount: 0,
       totalFuelThisMonth: 0
@@ -179,14 +224,23 @@ export async function createCompanyWithOwner(data: {
 
 export async function updateCompanyAdmin(
   id: string,
-  data: { licenseStatus?: string; modules?: Partial<Record<string, boolean>> }
+  data: {
+    licenseStatus?: string;
+    licenseExpiry?: string | null;
+    package?: PackageTier;
+    modules?: Partial<Record<string, boolean>>;
+  }
 ): Promise<AdminCompanyProfile> {
   const current = await pool.query('SELECT modules FROM companies WHERE id = $1', [id]);
   if (current.rows.length === 0) throw new Error('Firma bulunamadı.');
 
-  const mergedModules = data.modules
-    ? { ...(current.rows[0].modules || {}), ...data.modules }
-    : undefined;
+  // BILL-1701: paket değişimi `modules`'u o paketin VARSAYILAN demedine
+  // sıfırlar — admin aynı istekte açık `modules` de göndermişse (ör. paketi
+  // değiştirirken tek bir özelliği manuel açık bırakmak), o üzerine biner.
+  const baseModules = isPackageTier(data.package)
+    ? PACKAGE_MODULE_DEFAULTS[data.package]
+    : current.rows[0].modules || {};
+  const mergedModules = data.package || data.modules ? { ...baseModules, ...(data.modules || {}) } : undefined;
 
   const fields: string[] = [];
   const values: any[] = [];
@@ -195,6 +249,14 @@ export async function updateCompanyAdmin(
   if (data.licenseStatus) {
     fields.push(`license_status = $${idx++}`);
     values.push(data.licenseStatus);
+  }
+  if (data.licenseExpiry !== undefined) {
+    fields.push(`license_expiry = $${idx++}`);
+    values.push(data.licenseExpiry);
+  }
+  if (isPackageTier(data.package)) {
+    fields.push(`package = $${idx++}`);
+    values.push(data.package);
   }
   if (mergedModules) {
     fields.push(`modules = $${idx++}::jsonb`);
@@ -210,6 +272,32 @@ export async function updateCompanyAdmin(
   const updated = all.find((c) => c.id === id);
   if (!updated) throw new Error('Firma bulunamadı.');
   return updated;
+}
+
+// ============================================================================
+// BILL-1701 — Lisans Uygulama (authMiddleware.ts'ten her istekte çağrılır)
+// ============================================================================
+
+export interface CompanyLicenseSnapshot {
+  licenseStatus: string;
+  licenseExpiry: string | null;
+}
+
+/**
+ * authMiddleware.ts'in lisans kapısı için hafif, tek-satırlık sorgu —
+ * getAllCompanies()/buildAdminCompanyProfile() gibi şantiye/araç/ciro
+ * join'lerini YAPMAZ (her istekte çalışacağı için önemli). `companies`
+ * tablosunun kendisi RLS'siz olduğundan (bu dosyanın başındaki not) doğrudan
+ * `pool.query` güvenli.
+ */
+export async function getCompanyLicenseSnapshot(companyId: string): Promise<CompanyLicenseSnapshot | null> {
+  const result = await pool.query('SELECT license_status, license_expiry FROM companies WHERE id = $1', [companyId]);
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  return {
+    licenseStatus: row.license_status || 'AKTİF',
+    licenseExpiry: row.license_expiry ? new Date(row.license_expiry).toISOString().slice(0, 10) : null
+  };
 }
 
 // ============================================================================
