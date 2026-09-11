@@ -4506,7 +4506,10 @@ export async function reviewAnomalyFlag(
 
 export type AlarmCategory =
   | 'THEFT' | 'CONSUMPTION_ANOMALY' | 'STOCK_RECONCILIATION' | 'OFFHOURS_DISPENSE'
-  | 'RAPID_REPEAT' | 'NEGATIVE_STOCK' | 'CALIBRATION_DRIFT' | 'MANUAL_ENTRY_RATIO' | 'OTHER';
+  | 'RAPID_REPEAT' | 'NEGATIVE_STOCK' | 'CALIBRATION_DRIFT' | 'MANUAL_ENTRY_RATIO'
+  // FUEL-406 (peer session, backend/src/iot/unauthorizedFlowDetector.ts):
+  // kartsız/yetkisiz akış tespiti — dispense oturumu olmadan pompa akışı.
+  | 'UNAUTHORIZED_FLOW' | 'OTHER';
 export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
 
@@ -5486,5 +5489,187 @@ export async function getFleetConsumptionTrend(
       if (value !== null) prevValue = value;
     }
     return { vehicleId, meterType, points };
+  });
+}
+
+// ============================================================================
+// AI-503: KM/MOTOR-SAAT BAZLI TÜKETİM ANOMALİSİ (L/100km SAPMASI)
+// ============================================================================
+
+const CONSUMPTION_ANOMALY_LOOKBACK_PERIODS = 6;
+const CONSUMPTION_ANOMALY_MIN_HISTORY = 3; // AC: yetersiz veri (<3 dönem) → anomali üretilmez.
+const CONSUMPTION_ANOMALY_ZSCORE_THRESHOLD = 2;
+const CONSUMPTION_ANOMALY_PCT_THRESHOLD = 0.25;
+
+function previousPeriodLabel(periodLabel: string, monthsBack: number): string {
+  const [y, m] = periodLabel.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m - 1 - monthsBack, 15));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function metricFor(r: VehicleConsumptionResult): number | null {
+  return r.meterType === 'KM' ? r.consumptionPer100Unit : r.consumptionPerHour;
+}
+
+export interface VehicleConsumptionAnomalyResult {
+  vehicleId: string;
+  vehiclePlate: string;
+  vehicleType: string;
+  siteName: string | null;
+  meterType: MeterType;
+  periodLabel: string;
+  currentStatus: string;
+  currentValue: number | null;
+  historyCount: number;
+  insufficientHistory: boolean;
+  historyMean: number | null;
+  historyStddev: number | null;
+  zScore: number | null;
+  deviationPct: number | null;
+  direction: 'YUKSEK' | 'DUSUK' | null;
+  anomalous: boolean;
+  peerAverage: number | null;
+  peerVehicleCount: number;
+  peerDeviationPct: number | null;
+}
+
+/**
+ * AI-503 çekirdeği — bir aracın bu dönemki L/100km (veya L/saat) değerini
+ * KENDİ geçmiş ortalamasına (z-score + %sapma) ve AYNI ARAÇ TİPİNDEKİ
+ * benzerlerine (peer, bilgi amaçlı) göre değerlendirir.
+ *
+ * Kritik Notlar:
+ *  - "Yetersiz veri (<3 dönem) olan araçlar için anomali üretilmemelidir" →
+ *    insufficientHistory=true ise anomalous HER ZAMAN false.
+ *  - "Km girişi hatalıysa anomali yanlış çıkar; RES-903 doğrulaması ön
+ *    koşuldur" → hem cari hem geçmiş dönemler yalnızca computeVehicleConsumption
+ *    HESAPLANDI (RES-903 onaylı/temiz sayaç + tutarlı kullanım) sonuçlarından
+ *    alınır; EKSIK_VERI/GECERSIZ_VERI dönemler baseline'a KATILMAZ.
+ *  - "Karşılaştırma aynı araç tipi içinde yapılmalıdır" → peer havuzu aynı
+ *    vehicle_type ile sınırlıdır.
+ */
+async function computeVehicleConsumptionAnomaly(
+  client: any,
+  vehicle: { id: string; plate: string; vehicle_type: string; meter_type: string | null; site_name: string | null },
+  periodLabel: string
+): Promise<VehicleConsumptionAnomalyResult> {
+  const current = await computeVehicleConsumption(client, vehicle, periodLabel);
+  const currentValue = metricFor(current);
+
+  const base: VehicleConsumptionAnomalyResult = {
+    vehicleId: vehicle.id, vehiclePlate: vehicle.plate, vehicleType: vehicle.vehicle_type, siteName: vehicle.site_name,
+    meterType: current.meterType, periodLabel, currentStatus: current.status, currentValue,
+    historyCount: 0, insufficientHistory: true, historyMean: null, historyStddev: null,
+    zScore: null, deviationPct: null, direction: null, anomalous: false,
+    peerAverage: null, peerVehicleCount: 0, peerDeviationPct: null
+  };
+
+  if (current.status !== 'HESAPLANDI' || currentValue === null) return base;
+
+  const history: number[] = [];
+  for (let i = 1; i <= CONSUMPTION_ANOMALY_LOOKBACK_PERIODS; i++) {
+    const label = previousPeriodLabel(periodLabel, i);
+    const past = await computeVehicleConsumption(client, vehicle, label);
+    const v = metricFor(past);
+    if (past.status === 'HESAPLANDI' && v !== null) history.push(v);
+  }
+  base.historyCount = history.length;
+  base.insufficientHistory = history.length < CONSUMPTION_ANOMALY_MIN_HISTORY;
+
+  // Peer ortalaması — bilgi amaçlı, anomalous kararını ETKİLEMEZ (AC'nin
+  // odağı "kendi geçmişi"; peer yalnızca aynı tip içinde karşılaştırma sunar).
+  const peerRes = await client.query(
+    `SELECT id, plate, vehicle_type, meter_type, site_name FROM vehicles
+      WHERE vehicle_type = $1 AND id <> $2 AND status <> 'PASİF'`,
+    [vehicle.vehicle_type, vehicle.id]
+  );
+  const peerValues: number[] = [];
+  for (const p of peerRes.rows) {
+    const pr = await computeVehicleConsumption(client, p, periodLabel);
+    const v = metricFor(pr);
+    if (pr.status === 'HESAPLANDI' && v !== null) peerValues.push(v);
+  }
+  if (peerValues.length > 0) {
+    base.peerAverage = round2(peerValues.reduce((s, x) => s + x, 0) / peerValues.length);
+    base.peerVehicleCount = peerValues.length;
+    base.peerDeviationPct = base.peerAverage !== 0 ? round2(((currentValue - base.peerAverage) / base.peerAverage) * 100) : null;
+  }
+
+  if (base.insufficientHistory) return base;
+
+  const mean = round2(history.reduce((s, x) => s + x, 0) / history.length);
+  const sd = stddev(history, mean);
+  const z = sd > 0 ? round2((currentValue - mean) / sd) : 0;
+  const deviationPct = mean !== 0 ? round2(((currentValue - mean) / mean) * 100) : 0;
+
+  base.historyMean = mean;
+  base.historyStddev = sd;
+  base.zScore = z;
+  base.deviationPct = deviationPct;
+  base.direction = currentValue >= mean ? 'YUKSEK' : 'DUSUK';
+  // Eşik: 2 standart sapma VEYA %25 sapma (Kritik Not — "öneri").
+  base.anomalous = Math.abs(z) >= CONSUMPTION_ANOMALY_ZSCORE_THRESHOLD || Math.abs(deviationPct) / 100 >= CONSUMPTION_ANOMALY_PCT_THRESHOLD;
+  return base;
+}
+
+export async function getVehicleConsumptionAnomaly(
+  vehicleId: string,
+  periodLabel: string
+): Promise<VehicleConsumptionAnomalyResult> {
+  return withTenant(async (client) => {
+    const vRes = await client.query('SELECT id, plate, vehicle_type, meter_type, site_name FROM vehicles WHERE id = $1', [vehicleId]);
+    if (vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    return computeVehicleConsumptionAnomaly(client, vRes.rows[0], periodLabel);
+  });
+}
+
+/**
+ * AI-503 — tüm aktif filo için tarar; tespit edilen anomaliler AI-507
+ * birleşik alarm yaşam döngüsüne (raiseAlarm) akar (alarmKey =
+ * CONSUMPTION_ANOMALY:<vehicleId> → aynı araç tekrar anomali verirse
+ * gruplanır, ayrı satır açmaz).
+ */
+export async function scanConsumptionAnomalies(
+  periodLabel: string
+): Promise<{ periodLabel: string; scanned: number; anomalies: number; insufficientData: number; results: VehicleConsumptionAnomalyResult[] }> {
+  return withTenant(async (client, tenantId) => {
+    const vRes = await client.query("SELECT id, plate, vehicle_type, meter_type, site_name FROM vehicles WHERE status <> 'PASİF' ORDER BY plate");
+    const results: VehicleConsumptionAnomalyResult[] = [];
+    let anomalies = 0;
+    let insufficientData = 0;
+    for (const v of vRes.rows) {
+      const r = await computeVehicleConsumptionAnomaly(client, v, periodLabel);
+      results.push(r);
+      if (r.insufficientHistory) insufficientData++;
+      if (r.anomalous) {
+        anomalies++;
+        const severity: AlarmSeverity = Math.abs(r.zScore ?? 0) >= 3 ? 'CRITICAL' : 'WARNING';
+        const unit = r.meterType === 'KM' ? 'L/100km' : 'L/saat';
+        await raiseAlarm(client, tenantId, {
+          alarmKey: `CONSUMPTION_ANOMALY:${v.id}`,
+          category: 'CONSUMPTION_ANOMALY',
+          severity,
+          title: `Anormal tüketim: ${v.plate} — ${r.currentValue} ${unit} (ortalama ${r.historyMean}, %${r.deviationPct} sapma)`,
+          siteName: v.site_name,
+          subjectType: 'VEHICLE',
+          subjectId: v.plate,
+          detail: {
+            periodLabel, meterType: r.meterType, currentValue: r.currentValue, historyMean: r.historyMean,
+            historyStddev: r.historyStddev, zScore: r.zScore, deviationPct: r.deviationPct, direction: r.direction,
+            historyCount: r.historyCount, peerAverage: r.peerAverage, peerDeviationPct: r.peerDeviationPct
+          },
+          sourceRef: { table: 'vehicle_meter_readings', vehicleId: v.id, periodLabel }
+        });
+      }
+    }
+    if (anomalies > 0) {
+      await writeAuditLog(client, {
+        action: 'CONSUMPTION_ANOMALY_SCAN',
+        targetType: 'vehicle_consumption_anomaly',
+        targetId: tenantId,
+        afterValue: { periodLabel, scanned: vRes.rows.length, anomalies, insufficientData }
+      });
+    }
+    return { periodLabel, scanned: vRes.rows.length, anomalies, insufficientData, results };
   });
 }

@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -18,6 +18,7 @@ import { validateTaxIdSchema, createRecipientSchema } from '../schemas/recipient
 import { setDeviceTankSchema, fuelStockSummaryQuerySchema } from '../schemas/fuelTypeSchema';
 import { recordMeterReadingSchema, bulkMeterReadingSchema, missingMeterQuerySchema, remindMeterSchema } from '../schemas/meterReadingSchema';
 import { fleetConsumptionQuerySchema, fleetComparisonQuerySchema, fleetTrendQuerySchema } from '../schemas/fleetConsumptionSchema';
+import { vehicleConsumptionAnomalyQuerySchema, consumptionAnomalyScanSchema } from '../schemas/consumptionAnomalySchemaFleet';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
@@ -1474,6 +1475,68 @@ router.get(
     try {
       const q = req.query as unknown as { vehicleId: string; periods: number };
       res.json({ success: true, data: await getFleetConsumptionTrend(q.vehicleId, q.periods) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fleet/consumption/anomaly:
+ *   get:
+ *     summary: Araç Tüketim Anomalisi Önizleme (AI-503)
+ *     description: >
+ *       `?vehicleId=&periodLabel=YYYY-AA`. Aracın kendi geçmişine (z-score +
+ *       %sapma) ve aynı tipteki benzerlerine (peer, bilgi amaçlı) göre
+ *       değerlendirir. Alarm ÜRETMEZ (salt önizleme) — yalnızca
+ *       POST /fleet/consumption/anomaly-scan alarm oluşturur. Geçmişi
+ *       <3 dönem olan araçlar için anomalous her zaman false (AC).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fleet/consumption/anomaly',
+  authenticateJWT,
+  authorizeRoles(...FLEET_CONSUMPTION_ROLES),
+  validateRequest({ query: vehicleConsumptionAnomalyQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { vehicleId: string; periodLabel: string };
+      res.json({ success: true, data: await getVehicleConsumptionAnomaly(q.vehicleId, q.periodLabel) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fleet/consumption/anomaly-scan:
+ *   post:
+ *     summary: Filo Geneli Tüketim Anomalisi Taraması (AI-503)
+ *     description: >
+ *       `{ periodLabel }`. Tüm aktif filoyu tarar; tespit edilen anomaliler
+ *       AI-507 birleşik alarm yaşam döngüsüne (CONSUMPTION_ANOMALY kategorisi)
+ *       akar. Yalnızca SUPER_ADMIN/COMPANY_OWNER.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/fleet/consumption/anomaly-scan',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  validateRequest({ body: consumptionAnomalyScanSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await scanConsumptionAnomalies(req.body.periodLabel);
+      const tenantId = req.user?.tenantId;
+      if (tenantId && result.anomalies > 0) {
+        try {
+          broadcastToTenant(tenantId, 'consumption-anomaly:scanned', { periodLabel: result.periodLabel, anomalies: result.anomalies });
+        } catch { /* */ }
+      }
+      res.json({ success: true, data: { periodLabel: result.periodLabel, scanned: result.scanned, anomalies: result.anomalies, insufficientData: result.insufficientData, results: result.results } });
     } catch (error: any) {
       next(error);
     }

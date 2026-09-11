@@ -288,6 +288,9 @@ jobs:
       - name: Run FLEET-1405 L/100km + L/Hour Consumption Engine Tests
         run: cd backend && npx tsx test/test_fleet1405_consumption_engine.ts
 
+      - name: Run AI-503 Km/Engine-Hour Consumption Anomaly Tests
+        run: cd backend && npx tsx test/test_ai503_consumption_anomaly_fleet.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true
