@@ -303,6 +303,12 @@ jobs:
       - name: Run FLEET-1407 Maintenance Records + Fuel Cost Correlation Tests
         run: cd backend && npx tsx test/test_fleet1407_maintenance_records.ts
 
+      - name: Run BILL-1701 Company Packages + License Model Tests
+        run: cd backend && npx tsx test/test_bill1701_packages_license.ts
+
+      - name: Run BILL-1702 Package Limits + License Expiry Warning Tests
+        run: cd backend && npx tsx test/test_bill1702_package_limits_and_expiry_warnings.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true
