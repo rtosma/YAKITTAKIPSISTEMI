@@ -318,6 +318,9 @@ jobs:
       - name: Run INV-1506 Spare Parts Inventory + Critical Stock Alert Tests
         run: cd backend && npx tsx test/test_inv1506_spare_parts_inventory.ts
 
+      - name: Run INV-1507 Lab Sample + Test Result Tracking Tests
+        run: cd backend && npx tsx test/test_inv1507_lab_sample_tracking.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

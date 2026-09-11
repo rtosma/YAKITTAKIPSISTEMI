@@ -1145,6 +1145,51 @@ ALTER TABLE despatch_advice_documents_status ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tank_strapping_tables ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rfid_card_blacklist ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quotas ENABLE ROW LEVEL SECURITY;
+-- INV-1507: şantiye laboratuvar numunesi (beton/agrega/zemin/yakıt). Mutable —
+-- BEKLIYOR → TEST_EDILDI/İPTAL durum geçişi vardır. Test SONUÇLARI
+-- (lab_test_results) KASITLI olarak AYRI ve append-only'dir (AC: "sonuç
+-- kayıtları değiştirilemez olmalı") — numunenin kendisi bir denetim kaydı
+-- DEĞİL, bir iş akışı nesnesidir.
+CREATE TABLE IF NOT EXISTS lab_samples (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    -- 'BETON' | 'AGREGA' | 'ZEMİN' | 'YAKIT' | 'DİĞER'
+    sample_type VARCHAR(32) NOT NULL,
+    site_name VARCHAR(128) NOT NULL,
+    location VARCHAR(200),
+    reference_no VARCHAR(64),
+    collected_at DATE NOT NULL,
+    -- 'BEKLIYOR' | 'TEST_EDILDI' | 'İPTAL'
+    status VARCHAR(16) NOT NULL DEFAULT 'BEKLIYOR',
+    note TEXT,
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_lab_samples_site ON lab_samples(tenant_id, site_name, collected_at DESC);
+
+-- Append-only test sonucu — AC: "sonuç kayıtları değiştirilemez olmalı,
+-- geçmiş raporlama yapılabilmeli." conformity ya doğrudan verilir (kalitatif
+-- test) ya da result_value + spec_min/spec_max'tan tenantDb.ts tarafından
+-- TÜRETİLİR (bkz. deriveLabResultConformity).
+CREATE TABLE IF NOT EXISTS lab_test_results (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    sample_id VARCHAR(64) NOT NULL,
+    test_type VARCHAR(64) NOT NULL,
+    tested_at DATE NOT NULL,
+    result_value NUMERIC(12, 4),
+    unit VARCHAR(32),
+    spec_min NUMERIC(12, 4),
+    spec_max NUMERIC(12, 4),
+    -- 'UYGUN' | 'UYGUNSUZ'
+    conformity VARCHAR(16) NOT NULL,
+    note TEXT,
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_lab_test_results_sample ON lab_test_results(tenant_id, sample_id, created_at DESC);
+
 ALTER TABLE fuel_quota_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_intake_receipts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_reconciliations ENABLE ROW LEVEL SECURITY;
@@ -1186,6 +1231,8 @@ CREATE TABLE IF NOT EXISTS sites (
 -- Enable RLS on sites (FORCE alone is a no-op without ENABLE — bu satır olmadan
 -- sites_tenant_isolation_policy hiç uygulanmaz ve her tenant tüm şantiyeleri görür)
 ALTER TABLE sites ENABLE ROW LEVEL SECURITY;
+ALTER TABLE lab_samples ENABLE ROW LEVEL SECURITY;
+ALTER TABLE lab_test_results ENABLE ROW LEVEL SECURITY;
 
 -- AUTH-203: append-only denetim izi. before_value/after_value'da parola,
 -- secret ve token ALANLARI asla ham saklanmaz — writeAuditLog() (bkz.
@@ -1280,6 +1327,9 @@ ALTER TABLE fuel_quotas FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quota_history FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_intake_receipts FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_reconciliations FORCE ROW LEVEL SECURITY;
+-- INV-1507: test sonucu bir denetim kanıtıdır — sonradan değiştirilemez.
+-- lab_samples KASITLI OLARAK bu listede DEĞİL — mutable (status geçişi).
+REVOKE UPDATE, DELETE, TRUNCATE ON lab_test_results FROM app_user;
 ALTER TABLE manual_dispense_requests FORCE ROW LEVEL SECURITY;
 ALTER TABLE site_working_hours FORCE ROW LEVEL SECURITY;
 ALTER TABLE transaction_anomaly_flags FORCE ROW LEVEL SECURITY;
@@ -1322,6 +1372,8 @@ DROP POLICY IF EXISTS fuel_quotas_tenant_isolation_policy ON fuel_quotas;
 DROP POLICY IF EXISTS fuel_quota_history_tenant_isolation_policy ON fuel_quota_history;
 DROP POLICY IF EXISTS fuel_intake_receipts_tenant_isolation_policy ON fuel_intake_receipts;
 DROP POLICY IF EXISTS stock_reconciliations_tenant_isolation_policy ON stock_reconciliations;
+ALTER TABLE lab_samples FORCE ROW LEVEL SECURITY;
+ALTER TABLE lab_test_results FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS manual_dispense_requests_tenant_isolation_policy ON manual_dispense_requests;
 DROP POLICY IF EXISTS site_working_hours_tenant_isolation_policy ON site_working_hours;
 DROP POLICY IF EXISTS transaction_anomaly_flags_tenant_isolation_policy ON transaction_anomaly_flags;
@@ -1365,6 +1417,8 @@ CREATE POLICY drivers_tenant_isolation_policy ON drivers
 
 -- Create Tenant Isolation Policy for sites
 CREATE POLICY sites_tenant_isolation_policy ON sites
+DROP POLICY IF EXISTS lab_samples_tenant_isolation_policy ON lab_samples;
+DROP POLICY IF EXISTS lab_test_results_tenant_isolation_policy ON lab_test_results;
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
@@ -1592,6 +1646,16 @@ CREATE INDEX IF NOT EXISTS idx_transactions_tenant_site ON transactions(tenant_i
 
 -- audit_logs: append-only ve yalnızca INSERT+SELECT yapılabilir (bkz.
 -- yukarıdaki REVOKE) — GET /audit-logs de aynı tenant+created_at DESC deseni.
+CREATE POLICY lab_samples_tenant_isolation_policy ON lab_samples
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY lab_test_results_tenant_isolation_policy ON lab_test_results
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_created_at ON audit_logs(tenant_id, created_at DESC);
 
 -- AUTH-201.4/TEST-1003: site_name filtresi (SITE_MANAGER kapsaması) vehicles/

@@ -5123,7 +5123,9 @@ export type AlarmCategory =
   // FLEET-1408: lastik diş derinliği yasal sınırın altında VEYA km ömrü bitti.
   | 'TIRE_REPLACEMENT_DUE'
   // INV-1506: bir envanter kaleminin stoku kritik eşiğin altına/eşitine düştü.
-  | 'INVENTORY_LOW_STOCK' | 'OTHER';
+  | 'INVENTORY_LOW_STOCK'
+  // INV-1507: bir laboratuvar test sonucu şartnameye UYGUNSUZ çıktı.
+  | 'LAB_NONCONFORMING_RESULT' | 'OTHER';
 export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
 
@@ -7032,6 +7034,238 @@ export async function runInventoryCriticalStockSweepForCurrentTenant(): Promise<
       if (result && (result.isNew || result.reopened)) alarmsRaised++;
     }
     return { scanned: items.rows.length, alarmsRaised };
+  });
+}
+
+// ============================================================================
+// INV-1507: ŞANTİYE LABORATUVAR NUMUNE + TEST SONUCU TAKİBİ
+// ============================================================================
+
+export interface LabSampleRecord {
+  id: string;
+  sampleType: string;
+  siteName: string;
+  location: string | null;
+  referenceNo: string | null;
+  collectedAt: string;
+  status: 'BEKLIYOR' | 'TEST_EDILDI' | 'İPTAL';
+  note: string | null;
+  createdBy: string;
+  createdAt: string;
+}
+
+function mapLabSampleRow(row: any): LabSampleRecord {
+  return {
+    id: row.id,
+    sampleType: row.sample_type,
+    siteName: row.site_name,
+    location: row.location,
+    referenceNo: row.reference_no,
+    collectedAt: toDateStr(row.collected_at),
+    status: row.status,
+    note: row.note,
+    createdBy: row.created_by,
+    createdAt: row.created_at
+  };
+}
+
+export async function createLabSample(
+  data: { sampleType: string; siteName: string; location?: string; referenceNo?: string; collectedAt: string; note?: string },
+  byUserId: string
+): Promise<LabSampleRecord> {
+  return withTenant(async (client, tenantId) => {
+    const id = generateId('labsmp');
+    const inserted = await client.query(
+      `INSERT INTO lab_samples (id, tenant_id, sample_type, site_name, location, reference_no, collected_at, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [id, tenantId, data.sampleType, data.siteName, data.location ?? null, data.referenceNo ?? null, data.collectedAt, data.note ?? null, byUserId]
+    );
+    await writeAuditLog(client, {
+      action: 'LAB_SAMPLE_REGISTERED',
+      targetType: 'lab_sample',
+      targetId: id,
+      afterValue: { sampleType: data.sampleType, siteName: data.siteName, collectedAt: data.collectedAt }
+    });
+    return mapLabSampleRow(inserted.rows[0]);
+  });
+}
+
+export async function getLabSamples(filter: { siteRestriction?: string; status?: string } = {}): Promise<LabSampleRecord[]> {
+  return withTenant(async (client, tenantId) => {
+    const conditions: string[] = ['tenant_id = $1'];
+    const params: any[] = [tenantId];
+    if (filter.siteRestriction) {
+      params.push(filter.siteRestriction);
+      conditions.push(`site_name = $${params.length}`);
+    }
+    if (filter.status) {
+      params.push(filter.status);
+      conditions.push(`status = $${params.length}`);
+    }
+    const res = await client.query(
+      `SELECT * FROM lab_samples WHERE ${conditions.join(' AND ')} ORDER BY collected_at DESC, created_at DESC`,
+      params
+    );
+    return res.rows.map(mapLabSampleRow);
+  });
+}
+
+export async function getLabSample(sampleId: string): Promise<LabSampleRecord> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query('SELECT * FROM lab_samples WHERE tenant_id = $1 AND id = $2', [tenantId, sampleId]);
+    if (res.rows.length === 0) throw new NotFoundError('Numune bulunamadı.', { error: 'SAMPLE_NOT_FOUND' });
+    return mapLabSampleRow(res.rows[0]);
+  });
+}
+
+export async function cancelLabSample(sampleId: string, reason: string, byUserId: string): Promise<LabSampleRecord> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query('SELECT * FROM lab_samples WHERE tenant_id = $1 AND id = $2', [tenantId, sampleId]);
+    if (res.rows.length === 0) throw new NotFoundError('Numune bulunamadı.', { error: 'SAMPLE_NOT_FOUND' });
+    if (res.rows[0].status === 'İPTAL') {
+      throw new ConflictError('Numune zaten iptal edilmiş.', { error: 'ALREADY_CANCELLED' });
+    }
+    const updated = await client.query(
+      `UPDATE lab_samples SET status = 'İPTAL', note = COALESCE(note || E'\\n', '') || $2, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 RETURNING *`,
+      [sampleId, `İptal: ${reason}`]
+    );
+    await writeAuditLog(client, {
+      action: 'LAB_SAMPLE_CANCELLED',
+      targetType: 'lab_sample',
+      targetId: sampleId,
+      afterValue: { reason }
+    });
+    return mapLabSampleRow(updated.rows[0]);
+  });
+}
+
+export interface LabTestResultRecord {
+  id: string;
+  sampleId: string;
+  testType: string;
+  testedAt: string;
+  resultValue: number | null;
+  unit: string | null;
+  specMin: number | null;
+  specMax: number | null;
+  conformity: 'UYGUN' | 'UYGUNSUZ';
+  note: string | null;
+  createdBy: string;
+  createdAt: string;
+}
+
+function mapLabTestResultRow(row: any): LabTestResultRecord {
+  return {
+    id: row.id,
+    sampleId: row.sample_id,
+    testType: row.test_type,
+    testedAt: toDateStr(row.tested_at),
+    resultValue: row.result_value !== null ? Number(row.result_value) : null,
+    unit: row.unit,
+    specMin: row.spec_min !== null ? Number(row.spec_min) : null,
+    specMax: row.spec_max !== null ? Number(row.spec_max) : null,
+    conformity: row.conformity,
+    note: row.note,
+    createdBy: row.created_by,
+    createdAt: row.created_at
+  };
+}
+
+/**
+ * `conformity` doğrudan verilmişse (kalitatif test — örn. görsel muayene)
+ * AYNEN kullanılır; verilmemişse `resultValue`'nun `specMin`/`specMax`
+ * sınırları İÇİNDE olup olmadığından TÜRETİLİR (Zod şeması bu ikisinden
+ * birinin zorunlu olmasını garanti eder — bkz. recordLabTestResultSchema).
+ */
+function deriveLabResultConformity(data: { conformity?: 'UYGUN' | 'UYGUNSUZ'; resultValue?: number; specMin?: number; specMax?: number }): 'UYGUN' | 'UYGUNSUZ' {
+  if (data.conformity) return data.conformity;
+  const v = data.resultValue!;
+  if (data.specMin !== undefined && v < data.specMin) return 'UYGUNSUZ';
+  if (data.specMax !== undefined && v > data.specMax) return 'UYGUNSUZ';
+  return 'UYGUN';
+}
+
+/**
+ * AC: "test sonuçları kaydedilebilmeli, uygunsuz sonuçlar uyarı üretmeli."
+ * Sonuç append-only'dir (asla UPDATE edilmez); numune otomatik olarak
+ * 'TEST_EDILDI' durumuna geçer. UYGUNSUZ sonuç AI-507'ye (CRITICAL —
+ * beton/zemin gibi bir numunenin şartname dışı çıkması güvenlik/yapısal
+ * risk taşıyabilir) akar.
+ */
+export async function recordLabTestResult(
+  sampleId: string,
+  data: { testType: string; testedAt: string; resultValue?: number; unit?: string; specMin?: number; specMax?: number; conformity?: 'UYGUN' | 'UYGUNSUZ'; note?: string },
+  byUserId: string
+): Promise<LabTestResultRecord> {
+  return withTenant(async (client, tenantId) => {
+    const sampleRes = await client.query('SELECT * FROM lab_samples WHERE tenant_id = $1 AND id = $2', [tenantId, sampleId]);
+    if (sampleRes.rows.length === 0) throw new NotFoundError('Numune bulunamadı.', { error: 'SAMPLE_NOT_FOUND' });
+    const sample = sampleRes.rows[0];
+    if (sample.status === 'İPTAL') {
+      throw new ConflictError('İptal edilmiş bir numuneye test sonucu eklenemez.', { error: 'SAMPLE_CANCELLED' });
+    }
+
+    const conformity = deriveLabResultConformity(data);
+    const id = generateId('labres');
+    const inserted = await client.query(
+      `INSERT INTO lab_test_results
+         (id, tenant_id, sample_id, test_type, tested_at, result_value, unit, spec_min, spec_max, conformity, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [id, tenantId, sampleId, data.testType, data.testedAt, data.resultValue ?? null, data.unit ?? null, data.specMin ?? null, data.specMax ?? null, conformity, data.note ?? null, byUserId]
+    );
+    await client.query(`UPDATE lab_samples SET status = 'TEST_EDILDI', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [sampleId]);
+    await writeAuditLog(client, {
+      action: 'LAB_TEST_RESULT_RECORDED',
+      targetType: 'lab_test_result',
+      targetId: id,
+      afterValue: { sampleId, testType: data.testType, conformity }
+    });
+
+    if (conformity === 'UYGUNSUZ') {
+      await raiseAlarm(client, tenantId, {
+        alarmKey: `lab-nonconforming:${id}`,
+        category: 'LAB_NONCONFORMING_RESULT',
+        severity: 'CRITICAL',
+        title: `${sample.sample_type} numunesi (${sample.site_name}) — '${data.testType}' testi UYGUNSUZ`,
+        siteName: sample.site_name,
+        subjectType: 'lab_sample',
+        subjectId: sampleId,
+        detail: { testType: data.testType, resultValue: data.resultValue ?? null, unit: data.unit ?? null, specMin: data.specMin ?? null, specMax: data.specMax ?? null }
+      });
+    }
+    return mapLabTestResultRow(inserted.rows[0]);
+  });
+}
+
+export async function getLabTestResults(sampleId: string): Promise<LabTestResultRecord[]> {
+  return withTenant(async (client, tenantId) => {
+    const sampleRes = await client.query('SELECT id FROM lab_samples WHERE tenant_id = $1 AND id = $2', [tenantId, sampleId]);
+    if (sampleRes.rows.length === 0) throw new NotFoundError('Numune bulunamadı.', { error: 'SAMPLE_NOT_FOUND' });
+    const res = await client.query(
+      'SELECT * FROM lab_test_results WHERE tenant_id = $1 AND sample_id = $2 ORDER BY created_at DESC',
+      [tenantId, sampleId]
+    );
+    return res.rows.map(mapLabTestResultRow);
+  });
+}
+
+/** AC: "geçmiş raporlama yapılabilmeli" — tüm UYGUNSUZ sonuçların filo/şantiye çapında listesi. */
+export async function getNonConformingLabResults(siteRestriction?: string): Promise<(LabTestResultRecord & { sampleType: string; siteName: string })[]> {
+  return withTenant(async (client, tenantId) => {
+    const params: any[] = [tenantId];
+    let where = "r.tenant_id = $1 AND r.conformity = 'UYGUNSUZ'";
+    if (siteRestriction) {
+      params.push(siteRestriction);
+      where += ` AND s.site_name = $${params.length}`;
+    }
+    const res = await client.query(
+      `SELECT r.*, s.sample_type, s.site_name FROM lab_test_results r
+         JOIN lab_samples s ON s.id = r.sample_id
+        WHERE ${where} ORDER BY r.created_at DESC`,
+      params
+    );
+    return res.rows.map((row: any) => ({ ...mapLabTestResultRow(row), sampleType: row.sample_type, siteName: row.site_name }));
   });
 }
 
