@@ -5271,3 +5271,220 @@ export async function remindMissingMeterReadings(
     return { periodLabel, remindedSites: bySite.length, bySite };
   });
 }
+
+// ============================================================================
+// FLEET-1405: L/100km VE L/MOTOR-SAAT TÜKETİM HESAP MOTORU
+// ============================================================================
+
+export interface VehicleConsumptionResult {
+  vehicleId: string;
+  vehiclePlate: string;
+  vehicleType: string;
+  siteName: string | null;
+  meterType: MeterType;
+  periodLabel: string;
+  periodStart: string;
+  periodEnd: string;
+  openingValue: number | null;
+  closingValue: number | null;
+  /** Dönemdeki sayaç artışı (km veya motor-saat). */
+  usageAmount: number | null;
+  fuelLiters: number;
+  /** meterType='KM' ise dolu, 'MOTOR_SAAT' ise null. */
+  consumptionPer100Unit: number | null;
+  /** meterType='MOTOR_SAAT' ise dolu (L/saat), 'KM' ise null. */
+  consumptionPerHour: number | null;
+  // 'HESAPLANDI' | 'EKSIK_VERI' | 'GECERSIZ_VERI'
+  status: 'HESAPLANDI' | 'EKSIK_VERI' | 'GECERSIZ_VERI';
+  excludedReason?: string;
+  /** Açılış/kapanış okumalarından biri RES-903 onaylı-şüpheli ise true — sonuç yine hesaplanır ama işaretlenir. */
+  basedOnSuspiciousReading: boolean;
+}
+
+/**
+ * FLEET-1405 çekirdeği — bir aracın bir dönemdeki L/100km (KM) veya L/saat
+ * (MOTOR_SAAT) tüketimini hesaplar.
+ *
+ * Kritik Not: "Dönem başı/sonu km eksikse hesap YAPILMAMALI; '0' veya tahmini
+ * değer üretmek raporu yanıltır." → eksik/geçersiz veri EKSIK_VERI/GECERSIZ_VERI
+ * olarak işaretlenip hesaptan (ortalamalardan) DIŞLANIR, silinmez/tahmin
+ * edilmez.
+ *   - "Dönem başı" = bu dönemden ÖNCEKİ en son okuma (bir önceki dönemin
+ *     kapanışı — sayaç değerleri kümülatiftir, her dönem sıfırlanmaz).
+ *   - "Dönem sonu" = bu dönem PENCERESİ içindeki en son GİRİLEN (created_at'e
+ *     göre — bir düzeltme aynı reading_at'i taşısa bile sonradan girilen kazanır)
+ *     okuma.
+ */
+async function computeVehicleConsumption(
+  client: any,
+  vehicle: { id: string; plate: string; vehicle_type: string; meter_type: string | null; site_name: string | null },
+  periodLabel: string
+): Promise<VehicleConsumptionResult> {
+  const meterType = resolveMeterType(vehicle.vehicle_type, vehicle.meter_type);
+  const { periodStart, periodEnd } = periodWindowFor('MONTHLY', new Date(`${periodLabel}-15T00:00:00.000Z`));
+  const base: Omit<VehicleConsumptionResult, 'status' | 'excludedReason' | 'openingValue' | 'closingValue' | 'usageAmount' | 'consumptionPer100Unit' | 'consumptionPerHour' | 'basedOnSuspiciousReading' | 'fuelLiters'> = {
+    vehicleId: vehicle.id, vehiclePlate: vehicle.plate, vehicleType: vehicle.vehicle_type, siteName: vehicle.site_name,
+    meterType, periodLabel, periodStart: periodStart.toISOString(), periodEnd: periodEnd.toISOString()
+  };
+
+  const openingRes = await client.query(
+    `SELECT reading_value, is_suspicious FROM vehicle_meter_readings
+      WHERE vehicle_id = $1 AND meter_type = $2 AND reading_at < $3
+      ORDER BY reading_at DESC, created_at DESC LIMIT 1`,
+    [vehicle.id, meterType, periodStart.toISOString()]
+  );
+  const closingRes = await client.query(
+    `SELECT reading_value, is_suspicious FROM vehicle_meter_readings
+      WHERE vehicle_id = $1 AND meter_type = $2 AND reading_at >= $3 AND reading_at < $4
+      ORDER BY created_at DESC LIMIT 1`,
+    [vehicle.id, meterType, periodStart.toISOString(), periodEnd.toISOString()]
+  );
+
+  if (openingRes.rows.length === 0 || closingRes.rows.length === 0) {
+    return {
+      ...base, openingValue: openingRes.rows[0] ? Number(openingRes.rows[0].reading_value) : null,
+      closingValue: closingRes.rows[0] ? Number(closingRes.rows[0].reading_value) : null,
+      usageAmount: null, fuelLiters: 0, consumptionPer100Unit: null, consumptionPerHour: null,
+      status: 'EKSIK_VERI', excludedReason: 'Dönem başı veya sonu sayaç okuması eksik.', basedOnSuspiciousReading: false
+    };
+  }
+
+  const opening = Number(openingRes.rows[0].reading_value);
+  const closing = Number(closingRes.rows[0].reading_value);
+  const usageAmount = round2(closing - opening);
+  const basedOnSuspiciousReading = !!openingRes.rows[0].is_suspicious || !!closingRes.rows[0].is_suspicious;
+
+  if (usageAmount <= 0) {
+    return {
+      ...base, openingValue: opening, closingValue: closing, usageAmount, fuelLiters: 0,
+      consumptionPer100Unit: null, consumptionPerHour: null, status: 'GECERSIZ_VERI',
+      excludedReason: 'Dönem sonu değeri dönem başından büyük değil (sıfır/negatif kullanım).',
+      basedOnSuspiciousReading
+    };
+  }
+
+  const fuelRes = await client.query(
+    `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS l FROM transactions
+      WHERE vehicle_plate = $1 AND created_at >= $2 AND created_at < $3`,
+    [vehicle.plate, periodStart.toISOString(), periodEnd.toISOString()]
+  );
+  const fuelLiters = round2(Number(fuelRes.rows[0].l));
+
+  return {
+    ...base,
+    openingValue: opening,
+    closingValue: closing,
+    usageAmount,
+    fuelLiters,
+    consumptionPer100Unit: meterType === 'KM' ? round2((fuelLiters / usageAmount) * 100) : null,
+    consumptionPerHour: meterType === 'MOTOR_SAAT' ? round2(fuelLiters / usageAmount) : null,
+    status: 'HESAPLANDI',
+    basedOnSuspiciousReading
+  };
+}
+
+export async function getFleetConsumptionReport(
+  periodLabel: string,
+  vehicleId?: string
+): Promise<{ periodLabel: string; computed: number; excluded: number; vehicles: VehicleConsumptionResult[] }> {
+  return withTenant(async (client) => {
+    const vRes = vehicleId
+      ? await client.query('SELECT id, plate, vehicle_type, meter_type, site_name FROM vehicles WHERE id = $1', [vehicleId])
+      : await client.query("SELECT id, plate, vehicle_type, meter_type, site_name FROM vehicles WHERE status <> 'PASİF' ORDER BY plate");
+    if (vehicleId && vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+
+    const vehicles: VehicleConsumptionResult[] = [];
+    for (const v of vRes.rows) vehicles.push(await computeVehicleConsumption(client, v, periodLabel));
+    const computed = vehicles.filter((v) => v.status === 'HESAPLANDI').length;
+    return { periodLabel, computed, excluded: vehicles.length - computed, vehicles };
+  });
+}
+
+export interface ConsumptionGroupStat {
+  group: string;
+  meterType: MeterType;
+  vehicleCount: number;
+  average: number;
+  stddev: number;
+  min: number;
+  max: number;
+}
+
+function stddev(values: number[], avg: number): number {
+  if (values.length < 2) return 0;
+  const variance = values.reduce((sum, v) => sum + (v - avg) ** 2, 0) / values.length;
+  return Math.round(Math.sqrt(variance) * 100) / 100;
+}
+
+/**
+ * FLEET-1405 AC: "Araç tipi ve şantiye bazında ortalama ve sapma hesapları."
+ * `groupBy`: 'vehicle_type' | 'site_name'. Yalnızca HESAPLANDI (geçerli veri)
+ * kayıtlar istatistiğe girer — Kritik Not gereği eksik/geçersiz dönemler
+ * ortalamayı BOZMAZ.
+ */
+export async function getFleetConsumptionComparison(
+  periodLabel: string,
+  groupBy: 'vehicle_type' | 'site_name'
+): Promise<{ periodLabel: string; groupBy: string; groups: ConsumptionGroupStat[] }> {
+  const report = await getFleetConsumptionReport(periodLabel);
+  const buckets = new Map<string, { meterType: MeterType; values: number[] }>();
+  for (const v of report.vehicles) {
+    if (v.status !== 'HESAPLANDI') continue;
+    const value = v.meterType === 'KM' ? v.consumptionPer100Unit : v.consumptionPerHour;
+    if (value === null || value === undefined) continue;
+    const key = `${groupBy === 'vehicle_type' ? v.vehicleType : (v.siteName ?? 'Tanımsız')}::${v.meterType}`;
+    if (!buckets.has(key)) buckets.set(key, { meterType: v.meterType, values: [] });
+    buckets.get(key)!.values.push(value);
+  }
+  const groups: ConsumptionGroupStat[] = [];
+  for (const [key, b] of buckets) {
+    const groupName = key.split('::')[0];
+    const avg = round2(b.values.reduce((s, x) => s + x, 0) / b.values.length);
+    groups.push({
+      group: groupName, meterType: b.meterType, vehicleCount: b.values.length,
+      average: avg, stddev: stddev(b.values, avg), min: Math.min(...b.values), max: Math.max(...b.values)
+    });
+  }
+  groups.sort((a, b) => a.group.localeCompare(b.group));
+  return { periodLabel, groupBy, groups };
+}
+
+export interface ConsumptionTrendPoint {
+  periodLabel: string;
+  status: string;
+  value: number | null;
+  changePct: number | null;
+}
+
+/** FLEET-1405 AC: "Dönem karşılaştırması ve trend." Son `periodsCount` ayın peş peşe raporu. */
+export async function getFleetConsumptionTrend(
+  vehicleId: string,
+  periodsCount: number
+): Promise<{ vehicleId: string; meterType: MeterType; points: ConsumptionTrendPoint[] }> {
+  return withTenant(async (client) => {
+    const vRes = await client.query('SELECT id, plate, vehicle_type, meter_type, site_name FROM vehicles WHERE id = $1', [vehicleId]);
+    if (vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    const vehicle = vRes.rows[0];
+    const meterType = resolveMeterType(vehicle.vehicle_type, vehicle.meter_type);
+
+    const now = new Date();
+    const labels: string[] = [];
+    for (let i = periodsCount - 1; i >= 0; i--) {
+      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 15));
+      labels.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
+    }
+
+    const points: ConsumptionTrendPoint[] = [];
+    let prevValue: number | null = null;
+    for (const label of labels) {
+      const r = await computeVehicleConsumption(client, vehicle, label);
+      const value = r.status === 'HESAPLANDI' ? (meterType === 'KM' ? r.consumptionPer100Unit : r.consumptionPerHour) : null;
+      const changePct = value !== null && prevValue !== null && prevValue !== 0
+        ? round2(((value - prevValue) / prevValue) * 100)
+        : null;
+      points.push({ periodLabel: label, status: r.status, value, changePct });
+      if (value !== null) prevValue = value;
+    }
+    return { vehicleId, meterType, points };
+  });
+}
