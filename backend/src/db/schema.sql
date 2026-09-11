@@ -411,6 +411,36 @@ CREATE TABLE IF NOT EXISTS despatch_advice_counters (
     PRIMARY KEY (tenant_id, issue_year)
 );
 
+-- COMP-602.1: e-İrsaliye entegratör iletim kuyruğu + imzalanmış çıktı arşivi.
+-- Ticket S3-uyumlu obje deposu öneriyor — bu ortamda yok; imzalanmış/XSD
+-- doğrulanmış XML çıktısı doğrudan xml_snapshot'a yazılır (belge kesildiği
+-- anki HALİYLE kalıcı arşiv — GİB denetim gereği bir kez gönderilen içerik
+-- asla değişmez). status/attempt_count/last_error/provider_reference/sent_at
+-- durum makinesi alanlarıdır ve süpürücü tarafından güncellenir; xml_snapshot
+-- ise despatch_advice_documents'taki belge no/ETTN gibi KALICI kabul edilir.
+CREATE TABLE IF NOT EXISTS despatch_advice_transmissions (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    despatch_advice_document_id VARCHAR(64) NOT NULL,
+    transaction_id VARCHAR(64) NOT NULL,
+    document_number VARCHAR(32) NOT NULL,
+    ettn UUID NOT NULL,
+    vehicle_plate VARCHAR(32) NOT NULL,
+    provider VARCHAR(32) NOT NULL,
+    -- QUEUED → SENDING → SENT | FAILED (MAX deneme aşılırsa FAILED kalıcıdır;
+    -- aksi halde başarısız denemeler QUEUED'a döner — bkz. tenantDb.ts
+    -- runDespatchAdviceTransmissionSweepForCurrentTenant).
+    status VARCHAR(16) NOT NULL DEFAULT 'QUEUED',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    provider_reference VARCHAR(128),
+    xml_snapshot TEXT NOT NULL,
+    queued_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    sent_at TIMESTAMP WITH TIME ZONE,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_despatch_advice_transmissions_doc UNIQUE (tenant_id, despatch_advice_document_id)
+);
+
 -- FUEL-403.1: tank daldırma cetveli (strapping table) VEYA silindirik tank
 -- formül konfigürasyonu. Versiyonlu/append-only — bir cetvel bir kez
 -- yazıldıktan sonra DEĞİŞTİRİLMEZ/SİLİNMEZ (app_user'dan UPDATE/DELETE/
@@ -899,6 +929,7 @@ ALTER TABLE fail_open_policies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE consumption_anomaly_reports ENABLE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_counters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_transmissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tank_strapping_tables ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rfid_card_blacklist ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quotas ENABLE ROW LEVEL SECURITY;
@@ -1012,6 +1043,7 @@ ALTER TABLE fail_open_policies FORCE ROW LEVEL SECURITY;
 ALTER TABLE consumption_anomaly_reports FORCE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_documents FORCE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_counters FORCE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_transmissions FORCE ROW LEVEL SECURITY;
 ALTER TABLE tank_strapping_tables FORCE ROW LEVEL SECURITY;
 ALTER TABLE rfid_card_blacklist FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quotas FORCE ROW LEVEL SECURITY;
@@ -1045,6 +1077,7 @@ DROP POLICY IF EXISTS fail_open_policies_tenant_isolation_policy ON fail_open_po
 DROP POLICY IF EXISTS consumption_anomaly_reports_tenant_isolation_policy ON consumption_anomaly_reports;
 DROP POLICY IF EXISTS despatch_advice_documents_tenant_isolation_policy ON despatch_advice_documents;
 DROP POLICY IF EXISTS despatch_advice_counters_tenant_isolation_policy ON despatch_advice_counters;
+DROP POLICY IF EXISTS despatch_advice_transmissions_tenant_isolation_policy ON despatch_advice_transmissions;
 DROP POLICY IF EXISTS tank_strapping_tables_tenant_isolation_policy ON tank_strapping_tables;
 DROP POLICY IF EXISTS rfid_card_blacklist_tenant_isolation_policy ON rfid_card_blacklist;
 DROP POLICY IF EXISTS fuel_quotas_tenant_isolation_policy ON fuel_quotas;
@@ -1160,6 +1193,11 @@ CREATE POLICY despatch_advice_documents_tenant_isolation_policy ON despatch_advi
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
 CREATE POLICY despatch_advice_counters_tenant_isolation_policy ON despatch_advice_counters
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY despatch_advice_transmissions_tenant_isolation_policy ON despatch_advice_transmissions
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
@@ -1298,6 +1336,8 @@ CREATE INDEX IF NOT EXISTS idx_consumption_anomaly_reports_tenant_created_at ON 
 -- bulma sorgusu (UNIQUE constraint zaten bir indeks üretiyor ama açık
 -- tutuyoruz).
 CREATE INDEX IF NOT EXISTS idx_despatch_advice_documents_tx ON despatch_advice_documents(tenant_id, transaction_id);
+-- COMP-602.1: süpürücünün "en eski QUEUED" seçimi bu birleşik indexi kullanır.
+CREATE INDEX IF NOT EXISTS idx_despatch_advice_transmissions_status ON despatch_advice_transmissions(tenant_id, status, queued_at);
 
 
 -- FUEL-403.1: "en son geçerli cetvel" sorgusu her zaman

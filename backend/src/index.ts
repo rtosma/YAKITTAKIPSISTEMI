@@ -17,7 +17,7 @@ import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
-import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant } from './db/tenantDb';
+import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant } from './db/tenantDb';
 
 // NOTE: environment variables are loaded by ./bootstrap.ts (the real process
 // entry point — see package.json `dev`/`build`), BEFORE this module or any of
@@ -339,6 +339,33 @@ async function startServer(): Promise<void> {
     }
   }, ALARM_ESCALATION_SWEEP_MS);
 
+  // COMP-602.1 AC: "gönderim sırası korunmalı, tek worker eşzamanlılığı."
+  // Ticket NestJS + BullMQ repeatable job öneriyor — yok; yukarıdaki
+  // süpürücülerle AYNI düz setInterval. 60 sn'de bir her tenant için (sırayla,
+  // aynı anda değil — bu döngü de tek worker'dır) en fazla
+  // DESPATCH_TRANSMISSION_SWEEP_BATCH_SIZE kadar QUEUED satırı sırayla
+  // entegratöre gönderir.
+  const DESPATCH_TRANSMISSION_SWEEP_MS = 60 * 1000;
+  const despatchTransmissionSweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [COMP-602.1] Tenant listesi alınamadı, bu iletim süpürme turu atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const r = await runWithTenant({ tenantId }, () => runDespatchAdviceTransmissionSweepForCurrentTenant());
+        if (r.processed > 0) {
+          logger.info({ tenantId, ...r }, `📨 [COMP-602.1] e-İrsaliye iletim süpürmesi: ${r.sent} gönderildi, ${r.failed} kalıcı hata, ${r.requeued} yeniden kuyrukta.`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [COMP-602.1] e-İrsaliye iletim süpürmesi başarısız.');
+      }
+    }
+  }, DESPATCH_TRANSMISSION_SWEEP_MS);
+
   // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
   setupGracefulShutdown(server, {
     timeoutMs: 30000,
@@ -352,6 +379,7 @@ async function startServer(): Promise<void> {
       clearInterval(dailyReconSweepInterval);
       clearInterval(anomalySweepInterval);
       clearInterval(alarmEscalationSweepInterval);
+      clearInterval(despatchTransmissionSweepInterval);
 
       // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
       // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters

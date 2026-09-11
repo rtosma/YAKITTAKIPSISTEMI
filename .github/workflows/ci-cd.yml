@@ -294,6 +294,9 @@ jobs:
       - name: Run FLEET-1406 Vehicle Fuel Limit/Quota Tests
         run: cd backend && npx tsx test/test_fleet1406_vehicle_fuel_limit.ts
 
+      - name: Run COMP-602.1 e-Invoice Integrator Adapter + Transmission Queue Tests
+        run: cd backend && npx tsx test/test_comp602_1_einvoice_integrator_queue.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

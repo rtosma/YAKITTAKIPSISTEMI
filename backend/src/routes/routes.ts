@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -20,6 +20,7 @@ import { recordMeterReadingSchema, bulkMeterReadingSchema, missingMeterQuerySche
 import { fleetConsumptionQuerySchema, fleetComparisonQuerySchema, fleetTrendQuerySchema } from '../schemas/fleetConsumptionSchema';
 import { vehicleConsumptionAnomalyQuerySchema, consumptionAnomalyScanSchema } from '../schemas/consumptionAnomalySchemaFleet';
 import { setVehicleFuelLimitSchema, temporaryFuelLimitIncreaseSchema } from '../schemas/vehicleFuelLimitSchema';
+import { enqueueDespatchAdviceTransmissionSchema, despatchAdviceTransmissionListQuerySchema } from '../schemas/despatchAdviceTransmissionSchema';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
@@ -1619,6 +1620,106 @@ router.post(
     try {
       const limit = await approveTemporaryFuelLimitIncrease(req.params.id, req.body, req.user!.userId);
       res.json({ success: true, data: limit });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+const DESPATCH_TRANSMISSION_VIEW_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+// Kuyruğu manuel süpürmek (normalde her ~1 dk'da bir otomatik çalışan
+// setInterval'ı beklemeden) idari bir eylem — AI-503'ün anomaly-scan
+// endpoint'iyle AYNI kısıtlama.
+const DESPATCH_TRANSMISSION_SWEEP_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /transactions/{id}/e-irsaliye/transmit:
+ *   post:
+ *     summary: e-İrsaliyeyi Entegratör İletim Kuyruğuna Al (COMP-602.1)
+ *     description: >
+ *       Belge no + ETTN tahsis eder (COMP-601 ile idempotent), UBL XML'ini
+ *       üretip XSD'ye karşı doğrular ve `despatch_advice_transmissions`
+ *       kuyruğuna QUEUED olarak ekler. Alıcı KAĞIT süreçteyse (COMP-605)
+ *       409 döner — elektronik iletim kuyruğa alınamaz. Aynı belge için
+ *       tekrar çağrılırsa mevcut kuyruk satırı (durumu ne olursa olsun)
+ *       döner, yeniden kuyruğa EKLENMEZ.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/transactions/:id/e-irsaliye/transmit',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_VIEW_ROLES),
+  validateRequest({ body: enqueueDespatchAdviceTransmissionSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await enqueueDespatchAdviceTransmission(req.params.id, siteScopeFor(req.user!), req.body.recipientTaxId ?? null);
+      res.json({ success: true, data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /despatch-advice-transmissions:
+ *   get:
+ *     summary: e-İrsaliye İletim Kuyruğu/Geçmişi (COMP-602.1)
+ *     description: '`?status=&transactionId=` ile filtrelenebilir. En yeni 200 kayıt.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/despatch-advice-transmissions',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_VIEW_ROLES),
+  validateRequest({ query: despatchAdviceTransmissionListQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { status?: string; transactionId?: string };
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getDespatchAdviceTransmissions(q) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/despatch-advice-transmissions/:id',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_VIEW_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getDespatchAdviceTransmission(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /despatch-advice-transmissions/sweep:
+ *   post:
+ *     summary: İletim Kuyruğunu Hemen Süpür (COMP-602.1)
+ *     description: >
+ *       Otomatik süpürücü (index.ts, her ~1 dk) zaten çalışır; bu endpoint
+ *       testler/idari müdahale için AYNI süpürmeyi hemen tetikler. Yalnızca
+ *       SUPER_ADMIN/COMPANY_OWNER.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/despatch-advice-transmissions/sweep',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_SWEEP_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await runDespatchAdviceTransmissionSweepForCurrentTenant() });
     } catch (error: any) {
       next(error);
     }

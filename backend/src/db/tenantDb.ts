@@ -29,6 +29,8 @@ import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { areFuelTypesCompatible, resolveFuelType } from '../fuel/fuelTypes';
 import { checkMeterReading, resolveMeterType, type MeterType } from '../fleet/meterValidation';
+import { generateDespatchAdviceXml } from '../compliance/despatchAdviceXmlService';
+import { getIntegratorAdapter } from '../compliance/integratorAdapter';
 
 /**
  * updateVehicle/updateTank (ve kısmen updateDriver) aynı deseni tekrarlıyordu:
@@ -2516,7 +2518,23 @@ export async function prepareDespatchAdvice(
   siteRestriction?: string,
   recipientTaxId?: string | null
 ): Promise<DespatchAdvicePreparation> {
-  return withTenant(async (client, tenantId) => {
+  return withTenant((client, tenantId) => prepareDespatchAdviceCore(client, tenantId, transactionId, siteRestriction, recipientTaxId));
+}
+
+/**
+ * `prepareDespatchAdvice`'ın çekirdeği — `client`'ı çağırandan alır. COMP-602.1
+ * bunu KENDİ withTenant transaction'ının İÇİNDEN çağırır (belge numarası
+ * tahsisi + kuyruğa alma tek bir atomik transaction'da olsun diye — AI-507'nin
+ * raiseAlarm(client, tenantId, spec) ile AYNI kompozisyon deseni).
+ */
+async function prepareDespatchAdviceCore(
+  client: any,
+  tenantId: string,
+  transactionId: string,
+  siteRestriction?: string,
+  recipientTaxId?: string | null
+): Promise<DespatchAdvicePreparation> {
+  {
     const txRes = await client.query('SELECT * FROM transactions WHERE id = $1', [transactionId]);
     if (txRes.rows.length === 0) throw new NotFoundError('İkmal kaydı bulunamadı.');
     const tx = txRes.rows[0];
@@ -2675,7 +2693,240 @@ export async function prepareDespatchAdvice(
       deliveryMode,
       recipientWarnings
     };
+  }
+}
+
+// ============================================================================
+// COMP-602.1: ENTEGRATÖR ADAPTÖR ARAYÜZÜ, İLETİM KUYRUĞU + BELGE SAKLAMA
+// ============================================================================
+
+/**
+ * COMP-602.1 AC: "sağlayıcı değişimi yalnızca adapter sınıfı değişikliğiyle
+ * olmalıdır." Ticket NestJS + BullMQ + S3 öneriyor; bu kod tabanında hiçbiri
+ * yok. Gönderim sırası SEQUENTIAL bir setInterval süpürücüsüyle (aşağıda,
+ * index.ts'teki diğer tüm süpürücülerle AYNI desen) korunur — BullMQ'nun
+ * "tek worker eşzamanlılığı" gereksinimini tek bir Node process'in doğal
+ * sıralı `for` döngüsüyle karşılıyoruz (yatay ölçeklenmiş çoklu backend
+ * instance'ı bu ortamda YOK, dolayısıyla dağıtık kilit gerekmiyor).
+ * S3-uyumlu depolama yerine imzalanmış çıktı (xml_snapshot) doğrudan bu
+ * tabloya yazılır — belge bir yasal kayıttır (GİB denetim gereği), bu yüzden
+ * bu tablo da despatch_advice_documents gibi UPDATE/DELETE'ten korunacak
+ * KALICI bir sütun (xml_snapshot) taşır; yalnızca durum makinesi alanları
+ * (status/attempt_count/last_error/provider_reference/sent_at) değişebilir.
+ */
+export interface DespatchAdviceTransmissionRecord {
+  id: string;
+  tenantId: string;
+  despatchAdviceDocumentId: string;
+  transactionId: string;
+  documentNumber: string;
+  provider: string;
+  status: 'QUEUED' | 'SENDING' | 'SENT' | 'FAILED';
+  attemptCount: number;
+  lastError: string | null;
+  providerReference: string | null;
+  queuedAt: string;
+  sentAt: string | null;
+  updatedAt: string;
+}
+
+const DESPATCH_TRANSMISSION_MAX_ATTEMPTS = 5;
+const DESPATCH_TRANSMISSION_SWEEP_BATCH_SIZE = 20;
+
+function mapDespatchTransmissionRow(row: any): DespatchAdviceTransmissionRecord {
+  return {
+    id: row.id,
+    tenantId: row.tenant_id,
+    despatchAdviceDocumentId: row.despatch_advice_document_id,
+    transactionId: row.transaction_id,
+    documentNumber: row.document_number,
+    provider: row.provider,
+    status: row.status,
+    attemptCount: row.attempt_count,
+    lastError: row.last_error,
+    providerReference: row.provider_reference,
+    queuedAt: row.queued_at,
+    sentAt: row.sent_at,
+    updatedAt: row.updated_at
+  };
+}
+
+/**
+ * e-İrsaliye'yi (idempotent şekilde) hazırlar, UBL XML'ini üretip XSD'ye karşı
+ * doğrular ve iletim kuyruğuna alır — tamamı TEK transaction'da (belge no
+ * tahsisi ile kuyruğa alma arasında yarış olmasın diye). Aynı belge için
+ * tekrar çağrılırsa (ON CONFLICT) kuyruktaki MEVCUT satır döner — yeniden
+ * kuyruğa eklenmez (COMP-603'ün konusu olan "yeniden gönderim" burada değil).
+ */
+export async function enqueueDespatchAdviceTransmission(
+  transactionId: string,
+  siteRestriction: string | undefined,
+  recipientTaxId: string | null | undefined
+): Promise<DespatchAdviceTransmissionRecord> {
+  return withTenant(async (client, tenantId) => {
+    const prep = await prepareDespatchAdviceCore(client, tenantId, transactionId, siteRestriction, recipientTaxId);
+    if (prep.deliveryMode === 'KAGIT') {
+      throw new ConflictError(
+        'Alıcı e-İrsaliye mükellefi değil (KAĞIT süreç) — elektronik iletim kuyruğuna alınamaz.',
+        { error: 'RECIPIENT_NOT_EINVOICE_OBLIGATED' }
+      );
+    }
+
+    const docRes = await client.query(
+      'SELECT id FROM despatch_advice_documents WHERE tenant_id = $1 AND transaction_id = $2',
+      [tenantId, transactionId]
+    );
+    const despatchAdviceDocumentId: string = docRes.rows[0].id;
+
+    const existing = await client.query(
+      'SELECT * FROM despatch_advice_transmissions WHERE tenant_id = $1 AND despatch_advice_document_id = $2',
+      [tenantId, despatchAdviceDocumentId]
+    );
+    if (existing.rows.length > 0) {
+      return mapDespatchTransmissionRow(existing.rows[0]);
+    }
+
+    const xml = generateDespatchAdviceXml(prep);
+    const id = generateId('dtx');
+    const inserted = await client.query(
+      `INSERT INTO despatch_advice_transmissions
+         (id, tenant_id, despatch_advice_document_id, transaction_id, document_number, ettn, vehicle_plate, provider, status, xml_snapshot)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'QUEUED', $9)
+       RETURNING *`,
+      [id, tenantId, despatchAdviceDocumentId, transactionId, prep.documentNumber, prep.ettn, prep.vehiclePlate, getIntegratorAdapter().providerName, xml]
+    );
+    await writeAuditLog(client, {
+      action: 'DESPATCH_ADVICE_TRANSMISSION_QUEUED',
+      targetType: 'despatch_advice_transmission',
+      targetId: id,
+      afterValue: { documentNumber: prep.documentNumber, transactionId }
+    });
+    return mapDespatchTransmissionRow(inserted.rows[0]);
   });
+}
+
+export async function getDespatchAdviceTransmissions(
+  filter: { status?: string; transactionId?: string } = {}
+): Promise<DespatchAdviceTransmissionRecord[]> {
+  return withTenant(async (client, tenantId) => {
+    const conditions: string[] = ['tenant_id = $1'];
+    const params: any[] = [tenantId];
+    if (filter.status) {
+      params.push(filter.status);
+      conditions.push(`status = $${params.length}`);
+    }
+    if (filter.transactionId) {
+      params.push(filter.transactionId);
+      conditions.push(`transaction_id = $${params.length}`);
+    }
+    const res = await client.query(
+      `SELECT * FROM despatch_advice_transmissions WHERE ${conditions.join(' AND ')} ORDER BY queued_at DESC LIMIT 200`,
+      params
+    );
+    return res.rows.map(mapDespatchTransmissionRow);
+  });
+}
+
+export async function getDespatchAdviceTransmission(id: string): Promise<DespatchAdviceTransmissionRecord> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query('SELECT * FROM despatch_advice_transmissions WHERE tenant_id = $1 AND id = $2', [tenantId, id]);
+    if (res.rows.length === 0) throw new NotFoundError('İletim kaydı bulunamadı.');
+    return mapDespatchTransmissionRow(res.rows[0]);
+  });
+}
+
+/**
+ * Kuyruktaki en eski QUEUED satırlardan başlayarak SIRAYLA (tek seferde bir
+ * tane, önceki bitmeden bir sonrakine geçmeden) entegratöre gönderir —
+ * "gönderim sırası korunmalı" AC'si. Bir tenant'ın süpürmesi başarısız
+ * OLMAZ; her satır kendi try/catch'i içinde işlenir (bir satırın entegratör
+ * hatası aynı turdaki diğer satırları durdurmamalı).
+ */
+export async function runDespatchAdviceTransmissionSweepForCurrentTenant(): Promise<{
+  processed: number;
+  sent: number;
+  failed: number;
+  requeued: number;
+}> {
+  const adapter = getIntegratorAdapter();
+  let processed = 0;
+  let sent = 0;
+  let failed = 0;
+  let requeued = 0;
+  // Başarısız bir satır bu turda QUEUED'a geri dönebilir (bounded retry) —
+  // AYNI çağrı içinde onu HEMEN tekrar seçip "hot loop" yapmamak için zaten
+  // denenmiş id'ler bu turda bir daha seçilmez. Her satır bir sweep
+  // çağrısında EN FAZLA BİR kez denenir; bir sonraki deneme BİR SONRAKİ
+  // (manuel veya otomatik) süpürme turunu bekler.
+  const attemptedIds: string[] = [];
+  for (let i = 0; i < DESPATCH_TRANSMISSION_SWEEP_BATCH_SIZE; i++) {
+    const outcome = await withTenant(async (client, tenantId) => {
+      const next = await client.query(
+        `SELECT * FROM despatch_advice_transmissions
+         WHERE tenant_id = $1 AND status = 'QUEUED' AND NOT (id = ANY($2::text[]))
+         ORDER BY queued_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED`,
+        [tenantId, attemptedIds]
+      );
+      if (next.rows.length === 0) return null;
+      const row = next.rows[0];
+      attemptedIds.push(row.id);
+      await client.query(`UPDATE despatch_advice_transmissions SET status = 'SENDING', updated_at = CURRENT_TIMESTAMP WHERE id = $1`, [row.id]);
+
+      let result: { success: boolean; providerReference?: string; errorMessage?: string };
+      try {
+        result = await adapter.send({
+          xml: row.xml_snapshot,
+          documentNumber: row.document_number,
+          ettn: row.ettn,
+          vehiclePlate: row.vehicle_plate
+        });
+      } catch (err: any) {
+        result = { success: false, errorMessage: err?.message ?? 'Bilinmeyen entegratör hatası.' };
+      }
+
+      if (result.success) {
+        await client.query(
+          `UPDATE despatch_advice_transmissions
+             SET status = 'SENT', sent_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+                 provider_reference = $2, attempt_count = attempt_count + 1, last_error = NULL
+           WHERE id = $1`,
+          [row.id, result.providerReference ?? null]
+        );
+        await writeAuditLog(client, {
+          action: 'DESPATCH_ADVICE_TRANSMISSION_SENT',
+          targetType: 'despatch_advice_transmission',
+          targetId: row.id,
+          afterValue: { documentNumber: row.document_number, providerReference: result.providerReference ?? null }
+        });
+        return 'sent' as const;
+      }
+
+      const newAttemptCount = row.attempt_count + 1;
+      const terminal = newAttemptCount >= DESPATCH_TRANSMISSION_MAX_ATTEMPTS;
+      await client.query(
+        `UPDATE despatch_advice_transmissions
+           SET status = $2, attempt_count = $3, last_error = $4, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [row.id, terminal ? 'FAILED' : 'QUEUED', newAttemptCount, result.errorMessage ?? 'Bilinmeyen hata']
+      );
+      if (terminal) {
+        await writeAuditLog(client, {
+          action: 'DESPATCH_ADVICE_TRANSMISSION_FAILED',
+          targetType: 'despatch_advice_transmission',
+          targetId: row.id,
+          afterValue: { documentNumber: row.document_number, attemptCount: newAttemptCount, lastError: result.errorMessage ?? null }
+        });
+        return 'failed' as const;
+      }
+      return 'requeued' as const;
+    });
+    if (outcome === null) break;
+    processed++;
+    if (outcome === 'sent') sent++;
+    else if (outcome === 'failed') failed++;
+    else requeued++;
+  }
+  return { processed, sent, failed, requeued };
 }
 
 // ============================================================================
