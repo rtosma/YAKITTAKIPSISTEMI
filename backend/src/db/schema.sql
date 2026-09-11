@@ -1074,6 +1074,53 @@ ALTER TABLE despatch_advice_counters ENABLE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_transmissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE despatch_advice_documents_status ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tank_strapping_tables ENABLE ROW LEVEL SECURITY;
+-- INV-1506: yedek parça/sarf malzeme kartı. Yakıt tanklarından (tanks)
+-- KASITLI olarak farklı bir mimari — Kritik Not (ticket): "yakıt envanteri
+-- SENSÖRLÜ, burası SENSÖRSÜZ." `current_stock` yalnızca KAYDEDİLEN
+-- hareketlerle (inventory_movements) değişir, tanks.current_level_liters
+-- gibi bir telemetri akışı yoktur.
+CREATE TABLE IF NOT EXISTS inventory_items (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    code VARCHAR(64) NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    unit VARCHAR(32) NOT NULL,
+    site_name VARCHAR(128) DEFAULT 'Gebze Ana Şantiye',
+    storage_location VARCHAR(128),
+    critical_stock_level NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    current_stock NUMERIC(12, 2) NOT NULL DEFAULT 0,
+    status VARCHAR(16) NOT NULL DEFAULT 'AKTİF',
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tenant_id, code)
+);
+
+-- Append-only hareket geçmişi — fuel_intake_receipts/transactions ile AYNI
+-- gerekçe: bir stok hareketi bir kez kaydedildikten sonra ASLA değişmez;
+-- düzeltme (AC: "envanter sayımı ve düzeltme kaydı") YENİ bir
+-- 'SAYIM_DÜZELTME' hareketiyle yapılır, geçmiş satır asla UPDATE edilmez.
+CREATE TABLE IF NOT EXISTS inventory_movements (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    item_id VARCHAR(64) NOT NULL,
+    item_code VARCHAR(64) NOT NULL,
+    -- 'GİRİŞ' | 'ÇIKIŞ' | 'SAYIM_DÜZELTME'
+    movement_type VARCHAR(16) NOT NULL,
+    -- GİRİŞ/ÇIKIŞ için her zaman POZİTİF miktar; SAYIM_DÜZELTME için İMZALI
+    -- fark (delta) — bkz. tenantDb.ts recordInventoryCount.
+    quantity NUMERIC(12, 2) NOT NULL,
+    balance_after NUMERIC(12, 2) NOT NULL,
+    -- AC: "hareketler araç/iş emirlerine bağlanabilmeli" — iş emri kavramı bu
+    -- kod tabanında yok, en yakın karşılığı FLEET-1407'nin bakım kaydıdır.
+    related_vehicle_id VARCHAR(64),
+    related_maintenance_record_id VARCHAR(64),
+    note TEXT,
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_inventory_movements_item ON inventory_movements(tenant_id, item_id, created_at DESC);
+
 ALTER TABLE rfid_card_blacklist ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quotas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quota_history ENABLE ROW LEVEL SECURITY;
@@ -1112,6 +1159,8 @@ CREATE TABLE IF NOT EXISTS sites (
 );
 
 -- Enable RLS on sites (FORCE alone is a no-op without ENABLE — bu satır olmadan
+ALTER TABLE inventory_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE inventory_movements ENABLE ROW LEVEL SECURITY;
 -- sites_tenant_isolation_policy hiç uygulanmaz ve her tenant tüm şantiyeleri görür)
 ALTER TABLE sites ENABLE ROW LEVEL SECURITY;
 
@@ -1200,6 +1249,9 @@ ALTER TABLE despatch_advice_documents_status FORCE ROW LEVEL SECURITY;
 ALTER TABLE tank_strapping_tables FORCE ROW LEVEL SECURITY;
 ALTER TABLE rfid_card_blacklist FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quotas FORCE ROW LEVEL SECURITY;
+-- INV-1506: stok hareket gecmisi de ayni gerekceyle append-only.
+-- inventory_items KASITLI OLARAK bu listede DEGIL -- mutable (current_stock).
+REVOKE UPDATE, DELETE, TRUNCATE ON inventory_movements FROM app_user;
 ALTER TABLE fuel_quota_history FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_intake_receipts FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_reconciliations FORCE ROW LEVEL SECURITY;
@@ -1239,6 +1291,8 @@ DROP POLICY IF EXISTS despatch_advice_documents_status_tenant_isolation_policy O
 DROP POLICY IF EXISTS tank_strapping_tables_tenant_isolation_policy ON tank_strapping_tables;
 DROP POLICY IF EXISTS rfid_card_blacklist_tenant_isolation_policy ON rfid_card_blacklist;
 DROP POLICY IF EXISTS fuel_quotas_tenant_isolation_policy ON fuel_quotas;
+ALTER TABLE inventory_items FORCE ROW LEVEL SECURITY;
+ALTER TABLE inventory_movements FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS fuel_quota_history_tenant_isolation_policy ON fuel_quota_history;
 DROP POLICY IF EXISTS fuel_intake_receipts_tenant_isolation_policy ON fuel_intake_receipts;
 DROP POLICY IF EXISTS stock_reconciliations_tenant_isolation_policy ON stock_reconciliations;
@@ -1279,6 +1333,8 @@ CREATE POLICY drivers_tenant_isolation_policy ON drivers
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+DROP POLICY IF EXISTS inventory_items_tenant_isolation_policy ON inventory_items;
+DROP POLICY IF EXISTS inventory_movements_tenant_isolation_policy ON inventory_movements;
 
 -- Create Tenant Isolation Policy for sites
 CREATE POLICY sites_tenant_isolation_policy ON sites
@@ -1491,6 +1547,16 @@ CREATE INDEX IF NOT EXISTS idx_device_claim_codes_tenant_id ON device_claim_code
 -- sıralamayı tek bir indeks taramasıyla karşılar.
 CREATE INDEX IF NOT EXISTS idx_transactions_tenant_created_at ON transactions(tenant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_tenant_site ON transactions(tenant_id, site_name);
+CREATE POLICY inventory_items_tenant_isolation_policy ON inventory_items
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY inventory_movements_tenant_isolation_policy ON inventory_movements
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 
 -- audit_logs: append-only ve yalnızca INSERT+SELECT yapılabilir (bkz.
 -- yukarıdaki REVOKE) — GET /audit-logs de aynı tenant+created_at DESC deseni.

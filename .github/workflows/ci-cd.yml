@@ -315,6 +315,9 @@ jobs:
       - name: Run FLEET-1408 Inspection/Exhaust/Insurance Deadlines + Tire Tracking Tests
         run: cd backend && npx tsx test/test_fleet1408_inspection_tire_tracking.ts
 
+      - name: Run INV-1506 Spare Parts Inventory + Critical Stock Alert Tests
+        run: cd backend && npx tsx test/test_inv1506_spare_parts_inventory.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

@@ -17,7 +17,7 @@ import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
-import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant } from './db/tenantDb';
+import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant } from './db/tenantDb';
 import { runLicenseExpiryWarningSweep } from './services/licenseWarningService';
 
 // NOTE: environment variables are loaded by ./bootstrap.ts (the real process
@@ -453,6 +453,31 @@ async function startServer(): Promise<void> {
       clearInterval(fleetComplianceSweepInterval);
 
       // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
+  // INV-1506 AC: "kritik stok uyarıları üretilmeli." Ticket NestJS +
+  // NOTIF-1601 öneriyor — yukarıdakilerle AYNI setInterval. Kritik eşik bir
+  // hareket OLMADAN da (yalnızca eşik düşürülerek) aşılabileceği için
+  // hareket-anındaki anlık kontrolün YANINDA günlük bir yeniden-tarama.
+  const INVENTORY_CRITICAL_STOCK_SWEEP_MS = 24 * 60 * 60 * 1000;
+  const inventoryCriticalStockSweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [INV-1506] Tenant listesi alınamadı, bu kritik stok turu atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const r = await runWithTenant({ tenantId }, () => runInventoryCriticalStockSweepForCurrentTenant());
+        if (r.alarmsRaised > 0) {
+          logger.info({ tenantId, ...r }, `📦 [INV-1506] Kritik stok taraması: ${r.alarmsRaised} yeni/tekrarlanan alarm.`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [INV-1506] Kritik stok taraması başarısız.');
+      }
+    }
+  }, INVENTORY_CRITICAL_STOCK_SWEEP_MS);
+
       // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters
       // sıra veri kaybına yol açar.
       await mqttService.disconnect();
@@ -471,6 +496,7 @@ async function startServer(): Promise<void> {
   });
 }
 
+      clearInterval(inventoryCriticalStockSweepInterval);
 startServer().catch((err) => {
   logger.fatal({ err }, '🔥 [Bootstrap] Sunucu başlatılamadı.');
   process.exit(1);

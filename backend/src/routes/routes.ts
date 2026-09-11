@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -24,6 +24,7 @@ import { enqueueDespatchAdviceTransmissionSchema, despatchAdviceTransmissionList
 import { rejectDespatchAdviceSchema, cancelDespatchAdviceSchema } from '../schemas/despatchAdviceDispositionSchema';
 import { createVehicleMaintenanceRecordSchema, totalCostOfOwnershipQuerySchema } from '../schemas/vehicleMaintenanceSchema';
 import { addVehicleComplianceDeadlineSchema, registerVehicleTireSchema, recordTireTreadDepthSchema } from '../schemas/vehicleComplianceSchema';
+import { createInventoryItemSchema, recordInventoryMovementSchema, recordInventoryCountSchema } from '../schemas/inventorySchema';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
@@ -2286,6 +2287,171 @@ router.post(
   async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       res.json({ success: true, data: await runFleetComplianceSweepForCurrentTenant() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+const INVENTORY_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const INVENTORY_SCAN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /inventory-items:
+ *   post:
+ *     summary: Malzeme Kartı Oluştur (INV-1506)
+ *     description: '`{ code, name, unit, siteName?, storageLocation?, criticalStockLevel, initialStock? }`.'
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Malzeme Kartlarını Listele (INV-1506)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/inventory-items',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  validateRequest({ body: createInventoryItemSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const item = await createInventoryItem(req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: item });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/inventory-items',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getInventoryItems(siteScopeFor(req.user!)) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/inventory-items/:id',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getInventoryItem(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /inventory-items/{id}/movements:
+ *   post:
+ *     summary: Stok Hareketi Kaydet — Giriş/Çıkış (INV-1506)
+ *     description: >
+ *       `{ movementType: 'GİRİŞ'|'ÇIKIŞ', quantity, relatedVehicleId?, relatedMaintenanceRecordId?, note? }`.
+ *       Stok kritik eşiğe düşer/altına inerse anında AI-507 (INVENTORY_LOW_STOCK) alarmı üretir.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Malzeme Kartının Hareket Geçmişi (INV-1506)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/inventory-items/:id/movements',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  validateRequest({ body: recordInventoryMovementSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const movement = await recordInventoryMovement(req.params.id, req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: movement });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/inventory-items/:id/movements',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getInventoryMovements(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /inventory-items/{id}/count:
+ *   post:
+ *     summary: Envanter Sayımı — Fark Otomatik Düzeltme Kaydı (INV-1506)
+ *     description: '`{ countedQuantity, note? }`. Fiziksel sayılan miktar girilir; fark SAYIM_DÜZELTME olarak kaydedilir.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/inventory-items/:id/count',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  validateRequest({ body: recordInventoryCountSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const movement = await recordInventoryCount(req.params.id, req.body.countedQuantity, req.body.note, req.user!.userId);
+      res.status(201).json({ success: true, data: movement });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /inventory/critical-stock:
+ *   get:
+ *     summary: Kritik Stoktaki Malzemeler (INV-1506)
+ *     security:
+ *       - bearerAuth: []
+ * /inventory/critical-stock-scan:
+ *   post:
+ *     summary: Kritik Stok Taramasını Şimdi Çalıştır (INV-1506)
+ *     description: 'Otomatik günlük süpürücü zaten çalışır; bu AI-507 alarmını hemen tetikler. Yalnızca SUPER_ADMIN/COMPANY_OWNER.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/inventory/critical-stock',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getCriticalStockItems() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/inventory/critical-stock-scan',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_SCAN_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await runInventoryCriticalStockSweepForCurrentTenant() });
     } catch (error: any) {
       next(error);
     }

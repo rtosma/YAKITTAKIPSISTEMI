@@ -5121,7 +5121,9 @@ export type AlarmCategory =
   // FLEET-1408: muayene/egzoz/sigorta son tarihine 30/15/7 gün kala/geçince.
   | 'COMPLIANCE_DEADLINE'
   // FLEET-1408: lastik diş derinliği yasal sınırın altında VEYA km ömrü bitti.
-  | 'TIRE_REPLACEMENT_DUE' | 'OTHER';
+  | 'TIRE_REPLACEMENT_DUE'
+  // INV-1506: bir envanter kaleminin stoku kritik eşiğin altına/eşitine düştü.
+  | 'INVENTORY_LOW_STOCK' | 'OTHER';
 export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
 
@@ -6771,6 +6773,265 @@ export async function runFleetComplianceSweepForCurrentTenant(): Promise<{ scann
       if (result.isNew || result.reopened) alarmsRaised++;
     }
     return { scanned: items.length, alarmsRaised };
+  });
+}
+
+// ============================================================================
+// INV-1506: YEDEK PARÇA/SARF MALZEME ENVANTERİ
+// ============================================================================
+// Kritik Not (ticket): "yakıt envanterinden (tanks) AYRI ama BENZER bir
+// mimari — sensörsüz." `current_stock` yalnızca KAYDEDİLEN hareketlerle
+// değişir; tanks.current_level_liters gibi bir telemetri akışı yoktur.
+
+export interface InventoryItemRecord {
+  id: string;
+  code: string;
+  name: string;
+  unit: string;
+  siteName: string | null;
+  storageLocation: string | null;
+  criticalStockLevel: number;
+  currentStock: number;
+  status: 'AKTİF' | 'PASİF';
+}
+
+function mapInventoryItemRow(row: any): InventoryItemRecord {
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    unit: row.unit,
+    siteName: row.site_name,
+    storageLocation: row.storage_location,
+    criticalStockLevel: Number(row.critical_stock_level),
+    currentStock: Number(row.current_stock),
+    status: row.status
+  };
+}
+
+export async function createInventoryItem(
+  data: { code: string; name: string; unit: string; siteName?: string; storageLocation?: string; criticalStockLevel: number; initialStock?: number },
+  byUserId: string
+): Promise<InventoryItemRecord> {
+  return withTenant(async (client, tenantId) => {
+    const existing = await client.query('SELECT id FROM inventory_items WHERE tenant_id = $1 AND code = $2', [tenantId, data.code]);
+    if (existing.rows.length > 0) {
+      throw new ConflictError(`'${data.code}' kodlu malzeme kartı zaten mevcut.`, { error: 'DUPLICATE_ITEM_CODE' });
+    }
+    const id = generateId('invitem');
+    const inserted = await client.query(
+      `INSERT INTO inventory_items (id, tenant_id, code, name, unit, site_name, storage_location, critical_stock_level, current_stock, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [id, tenantId, data.code, data.name, data.unit, data.siteName ?? null, data.storageLocation ?? null, data.criticalStockLevel, data.initialStock ?? 0, byUserId]
+    );
+    await writeAuditLog(client, {
+      action: 'INVENTORY_ITEM_CREATED',
+      targetType: 'inventory_item',
+      targetId: id,
+      afterValue: { code: data.code, name: data.name, criticalStockLevel: data.criticalStockLevel }
+    });
+    return mapInventoryItemRow(inserted.rows[0]);
+  });
+}
+
+export async function getInventoryItems(siteRestriction?: string): Promise<InventoryItemRecord[]> {
+  return withTenant(async (client, tenantId) => {
+    const params: any[] = [tenantId];
+    let where = 'tenant_id = $1';
+    if (siteRestriction) {
+      params.push(siteRestriction);
+      where += ` AND site_name = $${params.length}`;
+    }
+    const res = await client.query(`SELECT * FROM inventory_items WHERE ${where} ORDER BY code`, params);
+    return res.rows.map(mapInventoryItemRow);
+  });
+}
+
+export async function getInventoryItem(itemId: string): Promise<InventoryItemRecord> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query('SELECT * FROM inventory_items WHERE tenant_id = $1 AND id = $2', [tenantId, itemId]);
+    if (res.rows.length === 0) throw new NotFoundError('Envanter kalemi bulunamadı.', { error: 'ITEM_NOT_FOUND' });
+    return mapInventoryItemRow(res.rows[0]);
+  });
+}
+
+export interface InventoryMovementRecord {
+  id: string;
+  itemId: string;
+  itemCode: string;
+  movementType: 'GİRİŞ' | 'ÇIKIŞ' | 'SAYIM_DÜZELTME';
+  quantity: number;
+  balanceAfter: number;
+  relatedVehicleId: string | null;
+  relatedMaintenanceRecordId: string | null;
+  note: string | null;
+  createdBy: string;
+  createdAt: string;
+}
+
+function mapInventoryMovementRow(row: any): InventoryMovementRecord {
+  return {
+    id: row.id,
+    itemId: row.item_id,
+    itemCode: row.item_code,
+    movementType: row.movement_type,
+    quantity: Number(row.quantity),
+    balanceAfter: Number(row.balance_after),
+    relatedVehicleId: row.related_vehicle_id,
+    relatedMaintenanceRecordId: row.related_maintenance_record_id,
+    note: row.note,
+    createdBy: row.created_by,
+    createdAt: row.created_at
+  };
+}
+
+/** AC: "kritik stok uyarıları üretilmeli." Her hareket/sayımdan SONRA (aynı
+ * transaction içinde) ve ayrıca günlük süpürücüde (eşik sonradan
+ * düşürülmüş olabilir) çağrılır — FUEL-406/FLEET-1406 ile AYNI "hem anında
+ * hem periyodik" deseni. */
+async function checkAndRaiseCriticalStockAlarm(client: any, tenantId: string, item: any): Promise<RaiseAlarmResult | null> {
+  const critical = Number(item.critical_stock_level);
+  const current = Number(item.current_stock);
+  if (current > critical) return null;
+  return raiseAlarm(client, tenantId, {
+    alarmKey: `inventory-low-stock:${item.id}`,
+    category: 'INVENTORY_LOW_STOCK',
+    severity: current <= 0 ? 'CRITICAL' : 'WARNING',
+    title: `${item.name} (${item.code}) — stok kritik seviyede (${current} ${item.unit}, eşik ${critical})`,
+    siteName: item.site_name,
+    subjectType: 'inventory_item',
+    subjectId: item.id,
+    detail: { code: item.code, currentStock: current, criticalStockLevel: critical }
+  });
+}
+
+/** AC: "hareketler kaydedilebilmeli, araç/bakım kaydına bağlanabilmeli."
+ * GİRİŞ/ÇIKIŞ için miktar her zaman POZİTİF (yön movementType'tan gelir). */
+export async function recordInventoryMovement(
+  itemId: string,
+  data: { movementType: 'GİRİŞ' | 'ÇIKIŞ'; quantity: number; relatedVehicleId?: string; relatedMaintenanceRecordId?: string; note?: string },
+  byUserId: string
+): Promise<InventoryMovementRecord> {
+  return withTenant(async (client, tenantId) => {
+    const itemRes = await client.query('SELECT * FROM inventory_items WHERE tenant_id = $1 AND id = $2 FOR UPDATE', [tenantId, itemId]);
+    if (itemRes.rows.length === 0) throw new NotFoundError('Envanter kalemi bulunamadı.', { error: 'ITEM_NOT_FOUND' });
+    const item = itemRes.rows[0];
+
+    if (data.relatedVehicleId) {
+      const vRes = await client.query('SELECT id FROM vehicles WHERE id = $1', [data.relatedVehicleId]);
+      if (vRes.rows.length === 0) throw new NotFoundError('İlişkili araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    }
+    // AC: "tüketim FLEET-1407'nin bakım kaydına bağlanabilmeli."
+    if (data.relatedMaintenanceRecordId) {
+      const mRes = await client.query(
+        'SELECT id FROM vehicle_maintenance_records WHERE tenant_id = $1 AND id = $2',
+        [tenantId, data.relatedMaintenanceRecordId]
+      );
+      if (mRes.rows.length === 0) throw new NotFoundError('İlişkili bakım kaydı bulunamadı.', { error: 'MAINTENANCE_RECORD_NOT_FOUND' });
+    }
+
+    const delta = data.movementType === 'GİRİŞ' ? data.quantity : -data.quantity;
+    const newBalance = round2(Number(item.current_stock) + delta);
+    if (newBalance < 0) {
+      throw new ConflictError(
+        `Yetersiz stok — mevcut ${item.current_stock} ${item.unit}, çıkış talebi ${data.quantity} ${item.unit}.`,
+        { error: 'INSUFFICIENT_STOCK' }
+      );
+    }
+
+    const id = generateId('invmv');
+    const inserted = await client.query(
+      `INSERT INTO inventory_movements
+         (id, tenant_id, item_id, item_code, movement_type, quantity, balance_after, related_vehicle_id, related_maintenance_record_id, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [id, tenantId, itemId, item.code, data.movementType, data.quantity, newBalance, data.relatedVehicleId ?? null, data.relatedMaintenanceRecordId ?? null, data.note ?? null, byUserId]
+    );
+    const updated = await client.query(
+      'UPDATE inventory_items SET current_stock = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *',
+      [itemId, newBalance]
+    );
+    await writeAuditLog(client, {
+      action: 'INVENTORY_MOVEMENT_RECORDED',
+      targetType: 'inventory_movement',
+      targetId: id,
+      afterValue: { itemId, movementType: data.movementType, quantity: data.quantity, balanceAfter: newBalance }
+    });
+    await checkAndRaiseCriticalStockAlarm(client, tenantId, updated.rows[0]);
+    return mapInventoryMovementRow(inserted.rows[0]);
+  });
+}
+
+/**
+ * AC: "envanter sayımı ve düzeltme kaydı işlenebilmeli." Fiziksel sayımın
+ * SONUCU (mutlak/gerçek miktar) girilir; fark (delta = sayılan - mevcut)
+ * sistem tarafından hesaplanıp 'SAYIM_DÜZELTME' hareketi olarak (İMZALI
+ * delta, pozitif VEYA negatif) kaydedilir — GİRİŞ/ÇIKIŞ'ın "her zaman
+ * pozitif miktar" kuralından KASITLI olarak farklıdır.
+ */
+export async function recordInventoryCount(
+  itemId: string,
+  countedQuantity: number,
+  note: string | undefined,
+  byUserId: string
+): Promise<InventoryMovementRecord> {
+  return withTenant(async (client, tenantId) => {
+    const itemRes = await client.query('SELECT * FROM inventory_items WHERE tenant_id = $1 AND id = $2 FOR UPDATE', [tenantId, itemId]);
+    if (itemRes.rows.length === 0) throw new NotFoundError('Envanter kalemi bulunamadı.', { error: 'ITEM_NOT_FOUND' });
+    const item = itemRes.rows[0];
+    const delta = round2(countedQuantity - Number(item.current_stock));
+
+    const id = generateId('invmv');
+    const inserted = await client.query(
+      `INSERT INTO inventory_movements (id, tenant_id, item_id, item_code, movement_type, quantity, balance_after, note, created_by)
+       VALUES ($1,$2,$3,$4,'SAYIM_DÜZELTME',$5,$6,$7,$8) RETURNING *`,
+      [id, tenantId, itemId, item.code, delta, countedQuantity, note ?? null, byUserId]
+    );
+    const updated = await client.query(
+      'UPDATE inventory_items SET current_stock = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $1 RETURNING *',
+      [itemId, countedQuantity]
+    );
+    await writeAuditLog(client, {
+      action: 'INVENTORY_COUNT_RECORDED',
+      targetType: 'inventory_movement',
+      targetId: id,
+      afterValue: { itemId, countedQuantity, delta }
+    });
+    await checkAndRaiseCriticalStockAlarm(client, tenantId, updated.rows[0]);
+    return mapInventoryMovementRow(inserted.rows[0]);
+  });
+}
+
+export async function getInventoryMovements(itemId: string): Promise<InventoryMovementRecord[]> {
+  return withTenant(async (client, tenantId) => {
+    const itemRes = await client.query('SELECT id FROM inventory_items WHERE tenant_id = $1 AND id = $2', [tenantId, itemId]);
+    if (itemRes.rows.length === 0) throw new NotFoundError('Envanter kalemi bulunamadı.', { error: 'ITEM_NOT_FOUND' });
+    const res = await client.query(
+      'SELECT * FROM inventory_movements WHERE tenant_id = $1 AND item_id = $2 ORDER BY created_at DESC',
+      [tenantId, itemId]
+    );
+    return res.rows.map(mapInventoryMovementRow);
+  });
+}
+
+export async function getCriticalStockItems(): Promise<InventoryItemRecord[]> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query(
+      `SELECT * FROM inventory_items WHERE tenant_id = $1 AND status = 'AKTİF' AND current_stock <= critical_stock_level ORDER BY code`,
+      [tenantId]
+    );
+    return res.rows.map(mapInventoryItemRow);
+  });
+}
+
+export async function runInventoryCriticalStockSweepForCurrentTenant(): Promise<{ scanned: number; alarmsRaised: number }> {
+  return withTenant(async (client, tenantId) => {
+    const items = await client.query(`SELECT * FROM inventory_items WHERE tenant_id = $1 AND status = 'AKTİF'`, [tenantId]);
+    let alarmsRaised = 0;
+    for (const item of items.rows) {
+      const result = await checkAndRaiseCriticalStockAlarm(client, tenantId, item);
+      if (result && (result.isNew || result.reopened)) alarmsRaised++;
+    }
+    return { scanned: items.rows.length, alarmsRaised };
   });
 }
 
