@@ -5117,7 +5117,11 @@ export type AlarmCategory =
   // 30/15/7 gün içinde dolacak firmalara proaktif uyarı.
   | 'LICENSE_EXPIRY'
   // FLEET-1407: bir aracın bakımı süre/sayaç eşiğini geçtiğinde/yaklaştığında.
-  | 'MAINTENANCE_DUE' | 'OTHER';
+  | 'MAINTENANCE_DUE'
+  // FLEET-1408: muayene/egzoz/sigorta son tarihine 30/15/7 gün kala/geçince.
+  | 'COMPLIANCE_DEADLINE'
+  // FLEET-1408: lastik diş derinliği yasal sınırın altında VEYA km ömrü bitti.
+  | 'TIRE_REPLACEMENT_DUE' | 'OTHER';
 export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
 
@@ -6450,6 +6454,323 @@ export async function runMaintenanceReminderSweepForCurrentTenant(): Promise<{ s
       if (result.isNew || result.reopened) alarmsRaised++;
     }
     return { scanned: reminders.length, alarmsRaised };
+  });
+}
+
+// ============================================================================
+// FLEET-1408: ARAÇ MUAYENE/EGZOZ/SİGORTA + LASTİK TAKİP MERKEZİ
+// ============================================================================
+// AC: "km/motor-saat/tarih bazlı bakım planları" — bu FLEET-1407'nin
+// next_due_date/next_due_meter_value + hatırlatma mekanizmasıyla ZATEN
+// karşılanıyor; burada YENİDEN inşa edilmiyor (tekrar).
+
+const COMPLIANCE_DEADLINE_WARNING_DAYS = 30; // AC: "30/15/7 gün kala uyarı"
+const COMPLIANCE_DEADLINE_CRITICAL_DAYS = 7;
+// TR/AB yasal asgari diş derinliği (Karayolları Trafik Yönetmeliği) — bu
+// ortamda değişmeyen, gerçek bir mevzuat sabiti.
+const TIRE_MIN_LEGAL_TREAD_DEPTH_MM = 1.6;
+const TIRE_WARNING_TREAD_DEPTH_MM = 3; // yasal sınıra yaklaşırken erken uyarı.
+const TIRE_WARNING_REMAINING_KM = 2000; // AC: "lastik ömrü KM bazlı hesaplanmalı".
+
+export interface VehicleComplianceDeadlineRecord {
+  id: string;
+  vehicleId: string;
+  vehiclePlate: string;
+  deadlineType: string;
+  issuedAt: string;
+  dueDate: string;
+  referenceNo: string | null;
+  note: string | null;
+  createdBy: string;
+  createdAt: string;
+}
+
+function toDateStr(v: any): any {
+  return v instanceof Date ? v.toISOString().slice(0, 10) : v;
+}
+
+function mapComplianceDeadlineRow(row: any): VehicleComplianceDeadlineRecord {
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    vehiclePlate: row.vehicle_plate,
+    deadlineType: row.deadline_type,
+    issuedAt: toDateStr(row.issued_at),
+    dueDate: toDateStr(row.due_date),
+    referenceNo: row.reference_no,
+    note: row.note,
+    createdBy: row.created_by,
+    createdAt: row.created_at
+  };
+}
+
+export async function addVehicleComplianceDeadline(
+  vehicleId: string,
+  data: { deadlineType: string; issuedAt: string; dueDate: string; referenceNo?: string; note?: string },
+  byUserId: string
+): Promise<VehicleComplianceDeadlineRecord> {
+  return withTenant(async (client, tenantId) => {
+    const vRes = await client.query('SELECT id, plate FROM vehicles WHERE id = $1', [vehicleId]);
+    if (vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    const id = generateId('cdln');
+    const inserted = await client.query(
+      `INSERT INTO vehicle_compliance_deadlines
+         (id, tenant_id, vehicle_id, vehicle_plate, deadline_type, issued_at, due_date, reference_no, note, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [id, tenantId, vehicleId, vRes.rows[0].plate, data.deadlineType, data.issuedAt, data.dueDate, data.referenceNo ?? null, data.note ?? null, byUserId]
+    );
+    await writeAuditLog(client, {
+      action: 'VEHICLE_COMPLIANCE_DEADLINE_RECORDED',
+      targetType: 'vehicle_compliance_deadline',
+      targetId: id,
+      afterValue: { vehicleId, deadlineType: data.deadlineType, dueDate: data.dueDate }
+    });
+    return mapComplianceDeadlineRow(inserted.rows[0]);
+  });
+}
+
+export async function getVehicleComplianceDeadlines(vehicleId: string): Promise<VehicleComplianceDeadlineRecord[]> {
+  return withTenant(async (client, tenantId) => {
+    const vRes = await client.query('SELECT id FROM vehicles WHERE id = $1', [vehicleId]);
+    if (vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    const res = await client.query(
+      'SELECT * FROM vehicle_compliance_deadlines WHERE tenant_id = $1 AND vehicle_id = $2 ORDER BY created_at DESC',
+      [tenantId, vehicleId]
+    );
+    return res.rows.map(mapComplianceDeadlineRow);
+  });
+}
+
+/** Her (araç, tip) için EN SON (created_at'e göre) satır — o tipin GEÇERLİ değeri. */
+export async function getCurrentVehicleComplianceDeadlines(vehicleId: string): Promise<VehicleComplianceDeadlineRecord[]> {
+  return withTenant(async (client, tenantId) => {
+    const vRes = await client.query('SELECT id FROM vehicles WHERE id = $1', [vehicleId]);
+    if (vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    const res = await client.query(
+      `SELECT DISTINCT ON (deadline_type) * FROM vehicle_compliance_deadlines
+        WHERE tenant_id = $1 AND vehicle_id = $2 ORDER BY deadline_type, created_at DESC`,
+      [tenantId, vehicleId]
+    );
+    return res.rows.map(mapComplianceDeadlineRow);
+  });
+}
+
+export interface VehicleTireRecord {
+  id: string;
+  vehicleId: string;
+  vehiclePlate: string;
+  position: string;
+  brandModel: string | null;
+  installedAt: string;
+  installedMeterValue: number;
+  expectedLifespanKm: number;
+  treadDepthMm: number;
+  treadDepthMeasuredAt: string;
+  status: 'AKTİF' | 'DEĞİŞTİRİLDİ';
+  replacedAt: string | null;
+}
+
+function mapTireRow(row: any): VehicleTireRecord {
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    vehiclePlate: row.vehicle_plate,
+    position: row.position,
+    brandModel: row.brand_model,
+    installedAt: toDateStr(row.installed_at),
+    installedMeterValue: Number(row.installed_meter_value),
+    expectedLifespanKm: Number(row.expected_lifespan_km),
+    treadDepthMm: Number(row.tread_depth_mm),
+    treadDepthMeasuredAt: toDateStr(row.tread_depth_measured_at),
+    status: row.status,
+    replacedAt: toDateStr(row.replaced_at)
+  };
+}
+
+/**
+ * Aynı konumda (örn. 'SOL_ON') hâlâ AKTİF bir lastik varsa — yeni lastik
+ * takıldı demektir, eskisi ÖNCE 'DEĞİŞTİRİLDİ' statüsüne çekilir (schema.sql'
+ * deki kısmi UNIQUE index zaten konum başına TEK aktif satır garantiliyor).
+ */
+export async function registerVehicleTire(
+  vehicleId: string,
+  data: { position: string; brandModel?: string; installedAt: string; installedMeterValue: number; expectedLifespanKm: number; treadDepthMm: number },
+  byUserId: string
+): Promise<VehicleTireRecord> {
+  return withTenant(async (client, tenantId) => {
+    const vRes = await client.query('SELECT id, plate FROM vehicles WHERE id = $1', [vehicleId]);
+    if (vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    const plate = vRes.rows[0].plate;
+
+    await client.query(
+      `UPDATE vehicle_tires SET status = 'DEĞİŞTİRİLDİ', replaced_at = $3, updated_at = CURRENT_TIMESTAMP
+        WHERE tenant_id = $1 AND vehicle_id = $2 AND position = $4 AND status = 'AKTİF'`,
+      [tenantId, vehicleId, data.installedAt, data.position]
+    );
+
+    const id = generateId('tire');
+    const inserted = await client.query(
+      `INSERT INTO vehicle_tires
+         (id, tenant_id, vehicle_id, vehicle_plate, position, brand_model, installed_at, installed_meter_value, expected_lifespan_km, tread_depth_mm, tread_depth_measured_at, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$7,$11) RETURNING *`,
+      [id, tenantId, vehicleId, plate, data.position, data.brandModel ?? null, data.installedAt, data.installedMeterValue, data.expectedLifespanKm, data.treadDepthMm, byUserId]
+    );
+    await writeAuditLog(client, {
+      action: 'VEHICLE_TIRE_REGISTERED',
+      targetType: 'vehicle_tire',
+      targetId: id,
+      afterValue: { vehicleId, position: data.position, expectedLifespanKm: data.expectedLifespanKm }
+    });
+    return mapTireRow(inserted.rows[0]);
+  });
+}
+
+export async function getVehicleTires(vehicleId: string, includeReplaced: boolean = false): Promise<VehicleTireRecord[]> {
+  return withTenant(async (client, tenantId) => {
+    const vRes = await client.query('SELECT id FROM vehicles WHERE id = $1', [vehicleId]);
+    if (vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    const res = await client.query(
+      `SELECT * FROM vehicle_tires WHERE tenant_id = $1 AND vehicle_id = $2 ${includeReplaced ? '' : "AND status = 'AKTİF'"} ORDER BY position`,
+      [tenantId, vehicleId]
+    );
+    return res.rows.map(mapTireRow);
+  });
+}
+
+export async function recordTireTreadDepth(tireId: string, treadDepthMm: number, measuredAt: string): Promise<VehicleTireRecord> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query(
+      `UPDATE vehicle_tires SET tread_depth_mm = $3, tread_depth_measured_at = $4, updated_at = CURRENT_TIMESTAMP
+        WHERE tenant_id = $1 AND id = $2 AND status = 'AKTİF' RETURNING *`,
+      [tenantId, tireId, treadDepthMm, measuredAt]
+    );
+    if (res.rows.length === 0) throw new NotFoundError('Aktif lastik kaydı bulunamadı.', { error: 'TIRE_NOT_FOUND' });
+    await writeAuditLog(client, {
+      action: 'VEHICLE_TIRE_TREAD_DEPTH_RECORDED',
+      targetType: 'vehicle_tire',
+      targetId: tireId,
+      afterValue: { treadDepthMm, measuredAt }
+    });
+    return mapTireRow(res.rows[0]);
+  });
+}
+
+export interface VehicleTireStatus extends VehicleTireRecord {
+  currentMeterValue: number | null;
+  remainingKm: number | null;
+  severity: 'KRİTİK' | 'YAKINDA' | 'NORMAL' | 'BİLİNMİYOR';
+}
+
+/** AC: "lastik ömrü hesaplamaları KM bazlı olmalı." */
+async function computeTireStatus(client: any, tire: any): Promise<VehicleTireStatus> {
+  const readingRes = await client.query(
+    `SELECT reading_value FROM vehicle_meter_readings WHERE vehicle_id = $1 AND meter_type = 'KM' ORDER BY reading_at DESC, created_at DESC LIMIT 1`,
+    [tire.vehicle_id]
+  );
+  const currentMeterValue = readingRes.rows.length > 0 ? Number(readingRes.rows[0].reading_value) : null;
+  const remainingKm = currentMeterValue !== null
+    ? round2(Number(tire.expected_lifespan_km) - (currentMeterValue - Number(tire.installed_meter_value)))
+    : null;
+  const treadDepth = Number(tire.tread_depth_mm);
+
+  let severity: VehicleTireStatus['severity'] = 'BİLİNMİYOR';
+  if (treadDepth <= TIRE_MIN_LEGAL_TREAD_DEPTH_MM || (remainingKm !== null && remainingKm <= 0)) {
+    severity = 'KRİTİK';
+  } else if (treadDepth <= TIRE_WARNING_TREAD_DEPTH_MM || (remainingKm !== null && remainingKm <= TIRE_WARNING_REMAINING_KM)) {
+    severity = 'YAKINDA';
+  } else if (remainingKm !== null) {
+    severity = 'NORMAL';
+  }
+
+  return { ...mapTireRow(tire), currentMeterValue, remainingKm, severity };
+}
+
+export async function getVehicleTireStatus(tireId: string): Promise<VehicleTireStatus> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query('SELECT * FROM vehicle_tires WHERE tenant_id = $1 AND id = $2', [tenantId, tireId]);
+    if (res.rows.length === 0) throw new NotFoundError('Lastik kaydı bulunamadı.', { error: 'TIRE_NOT_FOUND' });
+    return computeTireStatus(client, res.rows[0]);
+  });
+}
+
+export interface FleetComplianceDashboardItem {
+  type: 'DEADLINE' | 'TIRE';
+  vehicleId: string;
+  vehiclePlate: string;
+  subKey: string;
+  label: string;
+  dueInfo: string;
+  /** AC: "geciken yükümlülükler dashboard'da KRİTİK gösterilmeli." */
+  critical: boolean;
+  severity: 'CRITICAL' | 'WARNING';
+}
+
+async function computeFleetComplianceItems(client: any, tenantId: string): Promise<FleetComplianceDashboardItem[]> {
+  const items: FleetComplianceDashboardItem[] = [];
+  const now = new Date();
+
+  const deadlinesRes = await client.query(
+    `SELECT DISTINCT ON (vehicle_id, deadline_type) * FROM vehicle_compliance_deadlines
+      WHERE tenant_id = $1 ORDER BY vehicle_id, deadline_type, created_at DESC`,
+    [tenantId]
+  );
+  for (const d of deadlinesRes.rows) {
+    const daysUntilDue = Math.ceil((new Date(d.due_date).getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+    if (daysUntilDue > COMPLIANCE_DEADLINE_WARNING_DAYS) continue;
+    const critical = daysUntilDue <= COMPLIANCE_DEADLINE_CRITICAL_DAYS;
+    items.push({
+      type: 'DEADLINE',
+      vehicleId: d.vehicle_id,
+      vehiclePlate: d.vehicle_plate,
+      subKey: d.deadline_type,
+      label: `${d.deadline_type} son tarihi`,
+      dueInfo: daysUntilDue < 0 ? `${Math.abs(daysUntilDue)} gün geçti` : `${daysUntilDue} gün kaldı`,
+      critical,
+      severity: critical ? 'CRITICAL' : 'WARNING'
+    });
+  }
+
+  const tiresRes = await client.query(`SELECT * FROM vehicle_tires WHERE tenant_id = $1 AND status = 'AKTİF'`, [tenantId]);
+  for (const t of tiresRes.rows) {
+    const status = await computeTireStatus(client, t);
+    if (status.severity === 'NORMAL' || status.severity === 'BİLİNMİYOR') continue;
+    const critical = status.severity === 'KRİTİK';
+    items.push({
+      type: 'TIRE',
+      vehicleId: t.vehicle_id,
+      vehiclePlate: t.vehicle_plate,
+      subKey: t.position,
+      label: `${t.position} lastik`,
+      dueInfo: status.remainingKm !== null ? `${status.remainingKm} km kaldı, ${status.treadDepthMm} mm diş` : `${status.treadDepthMm} mm diş`,
+      critical,
+      severity: critical ? 'CRITICAL' : 'WARNING'
+    });
+  }
+
+  return items;
+}
+
+export async function getFleetComplianceDashboard(): Promise<FleetComplianceDashboardItem[]> {
+  return withTenant((client, tenantId) => computeFleetComplianceItems(client, tenantId));
+}
+
+export async function runFleetComplianceSweepForCurrentTenant(): Promise<{ scanned: number; alarmsRaised: number }> {
+  return withTenant(async (client, tenantId) => {
+    const items = await computeFleetComplianceItems(client, tenantId);
+    let alarmsRaised = 0;
+    for (const item of items) {
+      const result = await raiseAlarm(client, tenantId, {
+        alarmKey: `${item.type === 'DEADLINE' ? 'compliance-deadline' : 'tire-replacement'}:${item.vehicleId}:${item.subKey}`,
+        category: item.type === 'DEADLINE' ? 'COMPLIANCE_DEADLINE' : 'TIRE_REPLACEMENT_DUE',
+        severity: item.severity === 'CRITICAL' ? 'CRITICAL' : 'WARNING',
+        title: `${item.vehiclePlate} — ${item.label} (${item.dueInfo})`,
+        subjectType: 'vehicle',
+        subjectId: item.vehicleId,
+        detail: { ...item }
+      });
+      if (result.isNew || result.reopened) alarmsRaised++;
+    }
+    return { scanned: items.length, alarmsRaised };
   });
 }
 

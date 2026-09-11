@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -23,12 +23,13 @@ import { setVehicleFuelLimitSchema, temporaryFuelLimitIncreaseSchema } from '../
 import { enqueueDespatchAdviceTransmissionSchema, despatchAdviceTransmissionListQuerySchema } from '../schemas/despatchAdviceTransmissionSchema';
 import { rejectDespatchAdviceSchema, cancelDespatchAdviceSchema } from '../schemas/despatchAdviceDispositionSchema';
 import { createVehicleMaintenanceRecordSchema, totalCostOfOwnershipQuerySchema } from '../schemas/vehicleMaintenanceSchema';
+import { addVehicleComplianceDeadlineSchema, registerVehicleTireSchema, recordTireTreadDepthSchema } from '../schemas/vehicleComplianceSchema';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
 import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes, normalizeRecoveryCode } from '../services/totpService';
 import { isServerShuttingDown } from '../utils/shutdown';
-import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached } from '../db/adminDb';
+import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS } from '../db/adminDb';
 import { runLicenseExpiryWarningSweep } from '../services/licenseWarningService';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
@@ -1995,6 +1996,188 @@ router.post(
   async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       res.json({ success: true, data: await runMaintenanceReminderSweepForCurrentTenant() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+const COMPLIANCE_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const COMPLIANCE_SCAN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /vehicles/{id}/compliance-deadlines:
+ *   post:
+ *     summary: Muayene/Egzoz/Sigorta Son Tarihi Ekle (FLEET-1408)
+ *     description: '`{ deadlineType, issuedAt, dueDate, referenceNo?, note? }`. Append-only — yenileme yeni kayıtla yapılır.'
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Aracın Yasal Teslim Tarihi Geçmişi (FLEET-1408)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicles/:id/compliance-deadlines',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  validateRequest({ body: addVehicleComplianceDeadlineSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await addVehicleComplianceDeadline(req.params.id, req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/vehicles/:id/compliance-deadlines',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getVehicleComplianceDeadlines(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/vehicles/:id/compliance-deadlines/current',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getCurrentVehicleComplianceDeadlines(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /vehicles/{id}/tires:
+ *   post:
+ *     summary: Lastik Kaydı/Değişimi (FLEET-1408)
+ *     description: >
+ *       `{ position, brandModel?, installedAt, installedMeterValue, expectedLifespanKm, treadDepthMm }`.
+ *       Aynı konumda aktif bir lastik varsa otomatik "DEĞİŞTİRİLDİ" işaretlenir.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Aracın Lastikleri (FLEET-1408)
+ *     description: '`?includeReplaced=true` ile değiştirilmiş lastikler de listelenir.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicles/:id/tires',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  validateRequest({ body: registerVehicleTireSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const tire = await registerVehicleTire(req.params.id, req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: tire });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/vehicles/:id/tires',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getVehicleTires(req.params.id, req.query.includeReplaced === 'true') });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /tires/{id}/tread-depth:
+ *   patch:
+ *     summary: Diş Derinliği Ölçümü Kaydet (FLEET-1408)
+ *     description: '`{ treadDepthMm, measuredAt }`. Sadece AKTİF lastikler için.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch(
+  '/tires/:id/tread-depth',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  validateRequest({ body: recordTireTreadDepthSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const tire = await recordTireTreadDepth(req.params.id, req.body.treadDepthMm, req.body.measuredAt);
+      res.json({ success: true, data: tire });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/tires/:id/status',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getVehicleTireStatus(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fleet/compliance/dashboard:
+ *   get:
+ *     summary: Filo Uygunluk Panosu (FLEET-1408)
+ *     description: 'Yaklaşan/geciken muayene-egzoz-sigorta + lastik değişimi ihtiyacı. Geciken kalemler critical:true.'
+ *     security:
+ *       - bearerAuth: []
+ * /fleet/compliance/scan:
+ *   post:
+ *     summary: Uygunluk Taramasını Şimdi Çalıştır (FLEET-1408)
+ *     description: 'Otomatik günlük süpürücü zaten çalışır; bu AI-507 alarmını hemen tetikler. Yalnızca SUPER_ADMIN/COMPANY_OWNER.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fleet/compliance/dashboard',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getFleetComplianceDashboard() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/fleet/compliance/scan',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_SCAN_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await runFleetComplianceSweepForCurrentTenant() });
     } catch (error: any) {
       next(error);
     }

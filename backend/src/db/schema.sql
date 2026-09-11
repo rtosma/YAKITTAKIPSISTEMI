@@ -986,6 +986,57 @@ CREATE TABLE IF NOT EXISTS vehicle_maintenance_records (
 );
 CREATE INDEX IF NOT EXISTS idx_vehicle_maintenance_records_vehicle ON vehicle_maintenance_records(tenant_id, vehicle_id, performed_at DESC);
 
+-- FLEET-1408: muayene/egzoz/sigorta gibi yasal teslim tarihleri. Her yenileme
+-- YENİ bir satır — vehicle_maintenance_records ile AYNI gerekçeyle APPEND-ONLY
+-- (geçmiş asla değişmez); bir (araç, tip) için GEÇERLİ olan, o ikilinin EN SON
+-- (due_date'i en büyük DEĞİL, created_at'i en yeni) satırıdır.
+CREATE TABLE IF NOT EXISTS vehicle_compliance_deadlines (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    vehicle_id VARCHAR(64) NOT NULL,
+    vehicle_plate VARCHAR(32) NOT NULL,
+    -- 'MUAYENE' | 'EGZOZ' | 'SİGORTA' | 'DİĞER'
+    deadline_type VARCHAR(32) NOT NULL,
+    issued_at DATE NOT NULL,
+    due_date DATE NOT NULL,
+    reference_no VARCHAR(64),
+    note TEXT,
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_vehicle_compliance_deadlines_vehicle ON vehicle_compliance_deadlines(tenant_id, vehicle_id, deadline_type, created_at DESC);
+
+-- FLEET-1408: lastik envanteri — km bazlı ömür + diş derinliği takibi.
+-- vehicle_maintenance_records'tan FARKLI olarak MUTABLE: takılı lastiğin
+-- diş derinliği ölçümü zamanla GÜNCELLENİR (recordTireTreadDepth); bir lastik
+-- değiştirildiğinde eski satır 'DEĞİŞTİRİLDİ' olarak KAPANIR (silinmez),
+-- yeni lastik için YENİ bir 'AKTİF' satır açılır — bu yüzden konum başına
+-- (tenant, vehicle, position) en fazla BİR 'AKTİF' satır olabilir (aşağıdaki
+-- kısmi index).
+CREATE TABLE IF NOT EXISTS vehicle_tires (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    vehicle_id VARCHAR(64) NOT NULL,
+    vehicle_plate VARCHAR(32) NOT NULL,
+    -- 'SOL_ON' | 'SAG_ON' | 'SOL_ARKA' | 'SAG_ARKA' | 'DIGER'
+    position VARCHAR(16) NOT NULL,
+    brand_model VARCHAR(128),
+    installed_at DATE NOT NULL,
+    installed_meter_value NUMERIC(12, 2) NOT NULL,
+    expected_lifespan_km NUMERIC(10, 2) NOT NULL,
+    tread_depth_mm NUMERIC(5, 2) NOT NULL,
+    tread_depth_measured_at DATE NOT NULL,
+    -- 'AKTİF' | 'DEĞİŞTİRİLDİ'
+    status VARCHAR(16) NOT NULL DEFAULT 'AKTİF',
+    replaced_at DATE,
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_vehicle_tires_vehicle ON vehicle_tires(tenant_id, vehicle_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_vehicle_tires_active_position
+    ON vehicle_tires(tenant_id, vehicle_id, position) WHERE status = 'AKTİF';
+
 -- ==============================================================================
 -- 6. Enable Row Level Security (RLS) Policies
 -- ==============================================================================
@@ -1022,6 +1073,9 @@ ALTER TABLE alarm_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE recipient_taxpayers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_fuel_limits ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_maintenance_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_compliance_deadlines ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_tires ENABLE ROW LEVEL SECURITY;
+ALTER TABLE company_module_addons ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
@@ -1105,6 +1159,9 @@ REVOKE UPDATE, DELETE, TRUNCATE ON vehicle_meter_readings FROM app_user;
 REVOKE UPDATE, DELETE, TRUNCATE ON stock_reconciliations FROM app_user;
 -- FLEET-1407: bakım kaydı bir denetim/garanti kaydıdır — sonradan değiştirilemez.
 REVOKE UPDATE, DELETE, TRUNCATE ON vehicle_maintenance_records FROM app_user;
+-- FLEET-1408: yasal teslim tarihi geçmişi de aynı gerekçeyle append-only.
+-- vehicle_tires KASITLI OLARAK bu listede DEĞİL — mutable (diş derinliği/durum).
+REVOKE UPDATE, DELETE, TRUNCATE ON vehicle_compliance_deadlines FROM app_user;
 
 -- Force RLS even for table owners
 ALTER TABLE vehicles FORCE ROW LEVEL SECURITY;
@@ -1140,6 +1197,9 @@ ALTER TABLE alarm_events FORCE ROW LEVEL SECURITY;
 ALTER TABLE recipient_taxpayers FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_fuel_limits FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_maintenance_records FORCE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_compliance_deadlines FORCE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_tires FORCE ROW LEVEL SECURITY;
+ALTER TABLE company_module_addons FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
@@ -1176,6 +1236,9 @@ DROP POLICY IF EXISTS alarm_events_tenant_isolation_policy ON alarm_events;
 DROP POLICY IF EXISTS recipient_taxpayers_tenant_isolation_policy ON recipient_taxpayers;
 DROP POLICY IF EXISTS vehicle_fuel_limits_tenant_isolation_policy ON vehicle_fuel_limits;
 DROP POLICY IF EXISTS vehicle_maintenance_records_tenant_isolation_policy ON vehicle_maintenance_records;
+DROP POLICY IF EXISTS vehicle_compliance_deadlines_tenant_isolation_policy ON vehicle_compliance_deadlines;
+DROP POLICY IF EXISTS vehicle_tires_tenant_isolation_policy ON vehicle_tires;
+DROP POLICY IF EXISTS company_module_addons_tenant_isolation_policy ON company_module_addons;
 DROP POLICY IF EXISTS vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_readings;
 
 -- Create Tenant Isolation Policy for vehicles
@@ -1362,6 +1425,21 @@ CREATE POLICY vehicle_fuel_limits_tenant_isolation_policy ON vehicle_fuel_limits
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
 CREATE POLICY vehicle_maintenance_records_tenant_isolation_policy ON vehicle_maintenance_records
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY company_module_addons_tenant_isolation_policy ON company_module_addons
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY vehicle_compliance_deadlines_tenant_isolation_policy ON vehicle_compliance_deadlines
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY vehicle_tires_tenant_isolation_policy ON vehicle_tires
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

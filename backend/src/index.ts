@@ -17,7 +17,7 @@ import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
-import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant } from './db/tenantDb';
+import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant } from './db/tenantDb';
 import { runLicenseExpiryWarningSweep } from './services/licenseWarningService';
 
 // NOTE: environment variables are loaded by ./bootstrap.ts (the real process
@@ -409,6 +409,31 @@ async function startServer(): Promise<void> {
     }
   }, MAINTENANCE_REMINDER_SWEEP_MS);
 
+  // FLEET-1408 AC: "30/15/7 gün kala uyarı, geciken KRİTİK gösterilmeli."
+  // Ticket NestJS + @nestjs/schedule + NOTIF-1601 öneriyor — yukarıdaki
+  // süpürücülerle AYNI desen: günlük tur, muayene/egzoz/sigorta + lastik
+  // durumunu tarar, AI-507'ye (COMPLIANCE_DEADLINE/TIRE_REPLACEMENT_DUE) akıtır.
+  const FLEET_COMPLIANCE_SWEEP_MS = 24 * 60 * 60 * 1000;
+  const fleetComplianceSweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [FLEET-1408] Tenant listesi alınamadı, bu uygunluk turu atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const r = await runWithTenant({ tenantId }, () => runFleetComplianceSweepForCurrentTenant());
+        if (r.alarmsRaised > 0) {
+          logger.info({ tenantId, ...r }, `📋 [FLEET-1408] Uygunluk taraması: ${r.alarmsRaised} yeni/tekrarlanan alarm.`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [FLEET-1408] Uygunluk taraması başarısız.');
+      }
+    }
+  }, FLEET_COMPLIANCE_SWEEP_MS);
+
   // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
   setupGracefulShutdown(server, {
     timeoutMs: 30000,
@@ -425,6 +450,7 @@ async function startServer(): Promise<void> {
       clearInterval(alarmEscalationSweepInterval);
       clearInterval(despatchTransmissionSweepInterval);
       clearInterval(maintenanceReminderSweepInterval);
+      clearInterval(fleetComplianceSweepInterval);
 
       // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
       // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters
