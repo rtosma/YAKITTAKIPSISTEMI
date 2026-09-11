@@ -974,7 +974,7 @@ export async function authorizeDispenseRequest(input: {
 
     // 2. Sürücüye atanmış aktif bir araç var mı?
     const vehicleRes = await client.query(
-      'SELECT plate, status, site_name, fuel_capacity_liters, fuel_type FROM vehicles WHERE assigned_driver_name = $1',
+      'SELECT id, plate, status, site_name, fuel_capacity_liters, fuel_type FROM vehicles WHERE assigned_driver_name = $1',
       [driver.name]
     );
     if (vehicleRes.rows.length === 0) {
@@ -1007,6 +1007,46 @@ export async function authorizeDispenseRequest(input: {
         throw new ConflictError(`Çapraz şantiye kotası tükenmiş.`, { error: 'QUOTA_EXHAUSTED' });
       }
       maxAllowedLiters = Math.min(maxAllowedLiters, remaining);
+    }
+
+    // 3.4 FLEET-1406 — araç bazlı dönemsel yakıt limiti. Bu, çapraz şantiye
+    // kotasından FARKLI bir kavramdır (Kritik Not) — ikisi BİRLİKTE
+    // değerlendirilir, en kısıtlayıcı olan kazanır (aşağıdaki Math.min).
+    const limitRes = await client.query(`SELECT * FROM vehicle_fuel_limits WHERE vehicle_id = $1 AND status = 'AKTİF'`, [vehicle.id]);
+    if (limitRes.rows.length > 0) {
+      const limit = limitRes.rows[0];
+      const { periodStart, periodEnd } = periodWindowFor(limit.period_type, new Date());
+      const limitConsRes = await client.query(
+        `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS c FROM transactions
+          WHERE vehicle_plate = $1 AND created_at >= $2 AND created_at < $3`,
+        [vehicle.plate, periodStart.toISOString(), periodEnd.toISOString()]
+      );
+      const consumed = Number(limitConsRes.rows[0].c);
+      const tempActive = !!(limit.temp_increase_liters && limit.temp_increase_until && new Date(limit.temp_increase_until) >= new Date());
+      const effectiveLimit = Number(limit.limit_liters) + (tempActive ? Number(limit.temp_increase_liters) : 0);
+      const limitRemaining = effectiveLimit - consumed;
+
+      if (limit.enforcement === 'REJECT') {
+        if (limitRemaining <= 0) {
+          throw new ConflictError(
+            `'${vehicle.plate}' plakalı aracın ${limit.period_type} yakıt limiti (${effectiveLimit} L) doldu.`,
+            { error: 'VEHICLE_FUEL_LIMIT_EXCEEDED', limitLiters: effectiveLimit, consumedLiters: round2(consumed) }
+          );
+        }
+        maxAllowedLiters = Math.min(maxAllowedLiters, limitRemaining);
+      } else if (limitRemaining <= 0) {
+        // 'WARN' — ikmali ENGELLEMEZ, yalnızca AI-507 birleşik alarmına düşer.
+        await raiseAlarm(client, tenantId, {
+          alarmKey: `VEHICLE_LIMIT_EXCEEDED:${vehicle.id}`,
+          category: 'VEHICLE_LIMIT_EXCEEDED',
+          severity: 'WARNING',
+          title: `Araç yakıt limiti aşıldı (uyarı modu): ${vehicle.plate} (${round2(consumed)}/${effectiveLimit} L)`,
+          siteName: vehicle.site_name,
+          subjectType: 'VEHICLE',
+          subjectId: vehicle.plate,
+          detail: { periodType: limit.period_type, limitLiters: effectiveLimit, consumedLiters: round2(consumed) }
+        });
+      }
     }
 
     // 3.5 FUEL-407 — pompa-tank eşlemesi. Bu cihaz bir tanka bağlıysa ve
@@ -4509,7 +4549,9 @@ export type AlarmCategory =
   | 'RAPID_REPEAT' | 'NEGATIVE_STOCK' | 'CALIBRATION_DRIFT' | 'MANUAL_ENTRY_RATIO'
   // FUEL-406 (peer session, backend/src/iot/unauthorizedFlowDetector.ts):
   // kartsız/yetkisiz akış tespiti — dispense oturumu olmadan pompa akışı.
-  | 'UNAUTHORIZED_FLOW' | 'OTHER';
+  | 'UNAUTHORIZED_FLOW'
+  // FLEET-1406: araç bazlı yakıt limiti 'WARN' modunda dolduğunda.
+  | 'VEHICLE_LIMIT_EXCEEDED' | 'OTHER';
 export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
 
@@ -5671,5 +5713,140 @@ export async function scanConsumptionAnomalies(
       });
     }
     return { periodLabel, scanned: vRes.rows.length, anomalies, insufficientData, results };
+  });
+}
+
+// ============================================================================
+// FLEET-1406: ARAÇ BAZLI DÖNEMSEL YAKIT LİMİTİ
+// ============================================================================
+
+const VEHICLE_LIMIT_BALANCE_CACHE_TTL_SECONDS = 5;
+
+export interface VehicleFuelLimitRecord {
+  id: string;
+  tenant_id: string;
+  vehicle_id: string;
+  vehicle_plate: string;
+  period_type: QuotaPeriodType;
+  limit_liters: string;
+  enforcement: 'REJECT' | 'WARN';
+  status: string;
+  temp_increase_liters: string | null;
+  temp_increase_until: string | null;
+  temp_increase_reason: string | null;
+  temp_increase_approved_by: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function setVehicleFuelLimit(
+  vehicleId: string,
+  data: { periodType: QuotaPeriodType; limitLiters: number; enforcement: 'REJECT' | 'WARN'; status?: string },
+  byUserId: string
+): Promise<VehicleFuelLimitRecord> {
+  return withTenant(async (client, tenantId) => {
+    const vRes = await client.query('SELECT id, plate FROM vehicles WHERE id = $1', [vehicleId]);
+    if (vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    const vehicle = vRes.rows[0];
+
+    const res = await client.query(
+      `INSERT INTO vehicle_fuel_limits (id, tenant_id, vehicle_id, vehicle_plate, period_type, limit_liters, enforcement, status, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (tenant_id, vehicle_id) DO UPDATE SET
+         period_type = EXCLUDED.period_type,
+         limit_liters = EXCLUDED.limit_liters,
+         enforcement = EXCLUDED.enforcement,
+         status = EXCLUDED.status,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [generateId('vfl'), tenantId, vehicle.id, vehicle.plate, data.periodType, data.limitLiters, data.enforcement, data.status ?? 'AKTİF', byUserId]
+    );
+    await writeAuditLog(client, {
+      action: 'VEHICLE_FUEL_LIMIT_SET',
+      targetType: 'vehicle_fuel_limit',
+      targetId: res.rows[0].id,
+      afterValue: { vehicleId: vehicle.id, plate: vehicle.plate, ...data, by: byUserId }
+    });
+    await redisPool.cacheDel(`vehicle-limit:balance:${tenantId}:${vehicleId}`);
+    return res.rows[0];
+  });
+}
+
+export interface VehicleFuelLimitBalance {
+  hasLimit: boolean;
+  limit?: VehicleFuelLimitRecord;
+  periodStart?: string;
+  periodEnd?: string;
+  consumedLiters?: number;
+  effectiveLimitLiters?: number;
+  remainingLiters?: number;
+  usagePct?: number;
+  temporaryIncreaseActive?: boolean;
+  computedAt: string;
+}
+
+/** FLEET-1406 AC: "Limit kullanım oranının panelde gösterilmesi." 5 sn cache-aside (FUEL-402.1 kota bakiyesiyle AYNI desen). */
+export async function getVehicleFuelLimitBalance(vehicleId: string): Promise<VehicleFuelLimitBalance> {
+  return withTenant(async (client, tenantId) => {
+    const cacheKey = `vehicle-limit:balance:${tenantId}:${vehicleId}`;
+    const cached = await redisPool.cacheGetJson<VehicleFuelLimitBalance>(cacheKey);
+    if (cached) return cached;
+
+    const lRes = await client.query(`SELECT * FROM vehicle_fuel_limits WHERE vehicle_id = $1`, [vehicleId]);
+    if (lRes.rows.length === 0) {
+      const result: VehicleFuelLimitBalance = { hasLimit: false, computedAt: new Date().toISOString() };
+      await redisPool.cacheSetJson(cacheKey, result, VEHICLE_LIMIT_BALANCE_CACHE_TTL_SECONDS);
+      return result;
+    }
+    const limit = lRes.rows[0] as VehicleFuelLimitRecord;
+    const { periodStart, periodEnd } = periodWindowFor(limit.period_type, new Date());
+    const consRes = await client.query(
+      `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS c FROM transactions
+        WHERE vehicle_plate = $1 AND created_at >= $2 AND created_at < $3`,
+      [limit.vehicle_plate, periodStart.toISOString(), periodEnd.toISOString()]
+    );
+    const consumedLiters = round2(Number(consRes.rows[0].c));
+    const tempActive = !!(limit.temp_increase_liters && limit.temp_increase_until && new Date(limit.temp_increase_until) >= new Date());
+    const effectiveLimitLiters = round2(Number(limit.limit_liters) + (tempActive ? Number(limit.temp_increase_liters) : 0));
+    const remainingLiters = round2(effectiveLimitLiters - consumedLiters);
+    const usagePct = effectiveLimitLiters > 0 ? round2((consumedLiters / effectiveLimitLiters) * 100) : 0;
+
+    const result: VehicleFuelLimitBalance = {
+      hasLimit: true, limit, periodStart: periodStart.toISOString(), periodEnd: periodEnd.toISOString(),
+      consumedLiters, effectiveLimitLiters, remainingLiters, usagePct, temporaryIncreaseActive: tempActive,
+      computedAt: new Date().toISOString()
+    };
+    await redisPool.cacheSetJson(cacheKey, result, VEHICLE_LIMIT_BALANCE_CACHE_TTL_SECONDS);
+    return result;
+  });
+}
+
+/**
+ * FLEET-1406 AC: "Geçici limit artışı onay ve audit gerektirmelidir." Kalıcı
+ * limit_liters'ı DEĞİŞTİRMEZ — yalnızca temp_increase_* alanlarını (süreli) ayarlar.
+ */
+export async function approveTemporaryFuelLimitIncrease(
+  vehicleId: string,
+  data: { additionalLiters: number; untilDate: string; reason: string },
+  approvedByUserId: string
+): Promise<VehicleFuelLimitRecord> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query(
+      `UPDATE vehicle_fuel_limits
+          SET temp_increase_liters = $2, temp_increase_until = $3, temp_increase_reason = $4,
+              temp_increase_approved_by = $5, updated_at = CURRENT_TIMESTAMP
+        WHERE vehicle_id = $1 RETURNING *`,
+      [vehicleId, data.additionalLiters, data.untilDate, data.reason, approvedByUserId]
+    );
+    if (res.rows.length === 0) throw new NotFoundError('Bu araç için tanımlı bir yakıt limiti yok.', { error: 'LIMIT_NOT_FOUND' });
+    await writeAuditLog(client, {
+      action: 'VEHICLE_FUEL_LIMIT_TEMP_INCREASE',
+      targetType: 'vehicle_fuel_limit',
+      targetId: res.rows[0].id,
+      afterValue: { vehicleId, additionalLiters: data.additionalLiters, untilDate: data.untilDate, reason: data.reason, approvedBy: approvedByUserId }
+    });
+    await redisPool.cacheDel(`vehicle-limit:balance:${tenantId}:${vehicleId}`);
+    return res.rows[0];
   });
 }

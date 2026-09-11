@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -19,6 +19,7 @@ import { setDeviceTankSchema, fuelStockSummaryQuerySchema } from '../schemas/fue
 import { recordMeterReadingSchema, bulkMeterReadingSchema, missingMeterQuerySchema, remindMeterSchema } from '../schemas/meterReadingSchema';
 import { fleetConsumptionQuerySchema, fleetComparisonQuerySchema, fleetTrendQuerySchema } from '../schemas/fleetConsumptionSchema';
 import { vehicleConsumptionAnomalyQuerySchema, consumptionAnomalyScanSchema } from '../schemas/consumptionAnomalySchemaFleet';
+import { setVehicleFuelLimitSchema, temporaryFuelLimitIncreaseSchema } from '../schemas/vehicleFuelLimitSchema';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
@@ -1537,6 +1538,87 @@ router.post(
         } catch { /* */ }
       }
       res.json({ success: true, data: { periodLabel: result.periodLabel, scanned: result.scanned, anomalies: result.anomalies, insufficientData: result.insufficientData, results: result.results } });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── FLEET-1406: araç bazlı dönemsel yakıt limiti ────────────────────────
+const VEHICLE_LIMIT_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+// Geçici artış onayı yalnızca üst düzey — bir SITE_MANAGER kendi koyduğu
+// limiti kendine geçici olarak artıramaz (AC: "onay" gerçek bir onay olmalı).
+const VEHICLE_LIMIT_APPROVER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /vehicles/{id}/fuel-limit:
+ *   put:
+ *     summary: Araç Yakıt Limiti Tanımla/Güncelle (FLEET-1406)
+ *     description: >
+ *       `{ periodType, limitLiters, enforcement, status? }`. `enforcement`
+ *       REJECT ise limit dolunca ikmal reddedilir/kısılır; WARN ise yalnızca
+ *       AI-507 alarmı üretilir, ikmal engellenmez. Çapraz şantiye kotasından
+ *       (FUEL-402) FARKLI bir kavramdır — ikisi birlikte değerlendirilir, en
+ *       kısıtlayıcı olan kazanır.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Araç Yakıt Limiti + Anlık Kullanım (FLEET-1406)
+ *     description: 'Limit tanımlı değilse hasLimit:false döner. 5 sn önbelleklidir.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put(
+  '/vehicles/:id/fuel-limit',
+  authenticateJWT,
+  authorizeRoles(...VEHICLE_LIMIT_MANAGER_ROLES),
+  validateRequest({ body: setVehicleFuelLimitSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const limit = await setVehicleFuelLimit(req.params.id, req.body, req.user!.userId);
+      res.json({ success: true, data: limit });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/vehicles/:id/fuel-limit',
+  authenticateJWT,
+  authorizeRoles(...VEHICLE_LIMIT_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getVehicleFuelLimitBalance(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /vehicles/{id}/fuel-limit/temporary-increase:
+ *   post:
+ *     summary: Geçici Limit Artışı — Onaylı (FLEET-1406)
+ *     description: >
+ *       `{ additionalLiters, untilDate, reason }`. Kalıcı limiti DEĞİŞTİRMEZ;
+ *       yalnızca belirtilen tarihe kadar geçerli bir ek pay tanımlar. Yalnızca
+ *       SUPER_ADMIN/COMPANY_OWNER onaylayabilir (audit'lenir — AC).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicles/:id/fuel-limit/temporary-increase',
+  authenticateJWT,
+  authorizeRoles(...VEHICLE_LIMIT_APPROVER_ROLES),
+  validateRequest({ body: temporaryFuelLimitIncreaseSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const limit = await approveTemporaryFuelLimitIncrease(req.params.id, req.body, req.user!.userId);
+      res.json({ success: true, data: limit });
     } catch (error: any) {
       next(error);
     }

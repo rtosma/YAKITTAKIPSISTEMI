@@ -851,6 +851,35 @@ CREATE TABLE IF NOT EXISTS recipient_taxpayers (
     UNIQUE (tenant_id, tax_id)
 );
 
+-- FLEET-1406: araç bazlı dönemsel (günlük/haftalık/aylık) yakıt limiti. Bu,
+-- çapraz şantiye kotasından (cross_site_permissions) VE tanımlı yakıt
+-- kotasından (fuel_quotas, FUEL-402.1) FARKLI bir kavramdır — hepsi birlikte
+-- değerlendirilir, en kısıtlayıcı olan kazanır (Kritik Not). enforcement
+-- 'REJECT' ise limit dolduğunda ikmal reddedilir/kısılır; 'WARN' ise yalnızca
+-- uyarı (AI-507 alarmı) üretilir, ikmal engellenmez. Geçici artış (onaylı,
+-- süreli) temp_increase_* alanlarında — kalıcı limit DEĞİŞMEZ.
+CREATE TABLE IF NOT EXISTS vehicle_fuel_limits (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    vehicle_id VARCHAR(64) NOT NULL,
+    vehicle_plate VARCHAR(32) NOT NULL,
+    -- 'DAILY' | 'WEEKLY' | 'MONTHLY'
+    period_type VARCHAR(16) NOT NULL DEFAULT 'MONTHLY',
+    limit_liters NUMERIC(10, 2) NOT NULL,
+    -- 'REJECT' | 'WARN'
+    enforcement VARCHAR(16) NOT NULL DEFAULT 'REJECT',
+    status VARCHAR(16) NOT NULL DEFAULT 'AKTİF',
+    -- Geçici (onaylı) limit artışı — kalıcı limit_liters'ı DEĞİŞTİRMEZ.
+    temp_increase_liters NUMERIC(10, 2),
+    temp_increase_until DATE,
+    temp_increase_reason TEXT,
+    temp_increase_approved_by VARCHAR(64),
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tenant_id, vehicle_id)
+);
+
 -- ==============================================================================
 -- 6. Enable Row Level Security (RLS) Policies
 -- ==============================================================================
@@ -883,6 +912,7 @@ ALTER TABLE user_totp ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alarms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alarm_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE recipient_taxpayers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_fuel_limits ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
@@ -995,6 +1025,7 @@ ALTER TABLE user_totp FORCE ROW LEVEL SECURITY;
 ALTER TABLE alarms FORCE ROW LEVEL SECURITY;
 ALTER TABLE alarm_events FORCE ROW LEVEL SECURITY;
 ALTER TABLE recipient_taxpayers FORCE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_fuel_limits FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
@@ -1027,6 +1058,7 @@ DROP POLICY IF EXISTS user_totp_tenant_isolation_policy ON user_totp;
 DROP POLICY IF EXISTS alarms_tenant_isolation_policy ON alarms;
 DROP POLICY IF EXISTS alarm_events_tenant_isolation_policy ON alarm_events;
 DROP POLICY IF EXISTS recipient_taxpayers_tenant_isolation_policy ON recipient_taxpayers;
+DROP POLICY IF EXISTS vehicle_fuel_limits_tenant_isolation_policy ON vehicle_fuel_limits;
 DROP POLICY IF EXISTS vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_readings;
 
 -- Create Tenant Isolation Policy for vehicles
@@ -1197,6 +1229,11 @@ CREATE POLICY recipient_taxpayers_tenant_isolation_policy ON recipient_taxpayers
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY vehicle_fuel_limits_tenant_isolation_policy ON vehicle_fuel_limits
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 CREATE POLICY vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_readings
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
@@ -1286,6 +1323,10 @@ CREATE INDEX IF NOT EXISTS idx_stock_reconciliations_tank ON stock_reconciliatio
 
 -- FLEET-1404: bir aracın en son okuması + dönem bazlı eksik-giriş sorgusu.
 CREATE INDEX IF NOT EXISTS idx_vehicle_meter_readings_lookup ON vehicle_meter_readings(tenant_id, vehicle_id, meter_type, reading_at DESC);
+
+-- FLEET-1406: aracın aktif limitini bulma + ikmal yetkilendirmesindeki
+-- dönemsel tüketim sorgusu bu desenle çalışır.
+CREATE INDEX IF NOT EXISTS idx_vehicle_fuel_limits_vehicle ON vehicle_fuel_limits(tenant_id, vehicle_id, status);
 
 -- FUEL-405: onay kuyruğu (status='ONAY_BEKLIYOR') ve şantiye bazlı manuel
 -- giriş oranı sorgusu bu desenle çalışır.
