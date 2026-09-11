@@ -7,6 +7,7 @@ import { EventEmitter } from 'events';
 import { runWithTenant } from '../context/tenantContext';
 import { startTheftDetectionEngine } from '../services/theftDetectionService';
 import { decodeLoRaWANPayload, CorruptedPayloadException, LoRaWANRadioMeta } from './lorawanDecoder';
+import { startUnauthorizedFlowDetectionEngine } from './unauthorizedFlowDetector';
 
 // Local Event Bus for decoupling (Prep for ARCH-102: BullMQ)
 export const ioTEventBus = new EventEmitter();
@@ -42,6 +43,10 @@ class MQTTService {
     // motorunu ayağa kaldır. Idempotent — reconnect'te tekrar çağrılması
     // sorun değil (bkz. theftDetectionService.ts `started` bayrağı).
     startTheftDetectionEngine();
+
+    // FUEL-406: aktif RFID oturumu olmadan akış bildiren pompaları tespit
+    // edip acil FORCE_CUTOFF gönderen motoru ayağa kaldır. Idempotent.
+    startUnauthorizedFlowDetectionEngine();
 
     logger.info(`🔌 [MQTT] Broker'a bağlanılıyor: ${this.brokerUrl}`);
 
