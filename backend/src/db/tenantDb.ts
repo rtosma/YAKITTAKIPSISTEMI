@@ -5926,29 +5926,37 @@ export interface VehicleConsumptionResult {
  *     göre — bir düzeltme aynı reading_at'i taşısa bile sonradan girilen kazanır)
  *     okuma.
  */
-async function computeVehicleConsumption(
+/**
+ * `computeVehicleConsumption`'ın (FLEET-1405) çekirdeği — takvim ayına değil,
+ * KEYFİ bir [windowStart, windowEnd) aralığına göre çalışır. FLEET-1407'nin
+ * bakım öncesi/sonrası tüketim karşılaştırması AYNI mantığı (sayaç açılış/
+ * kapanış + dönemdeki yakıt toplamı) takvim ayı hizalaması OLMADAN kullanır —
+ * bu yüzden buraya ayrıştırıldı (COMP-602.1'in deriveDespatchAdviceFields'ı
+ * ile AYNI kompozisyon deseni).
+ */
+async function computeVehicleConsumptionWindow(
   client: any,
   vehicle: { id: string; plate: string; vehicle_type: string; meter_type: string | null; site_name: string | null },
-  periodLabel: string
-): Promise<VehicleConsumptionResult> {
+  windowStart: Date,
+  windowEnd: Date
+): Promise<Omit<VehicleConsumptionResult, 'periodLabel'>> {
   const meterType = resolveMeterType(vehicle.vehicle_type, vehicle.meter_type);
-  const { periodStart, periodEnd } = periodWindowFor('MONTHLY', new Date(`${periodLabel}-15T00:00:00.000Z`));
-  const base: Omit<VehicleConsumptionResult, 'status' | 'excludedReason' | 'openingValue' | 'closingValue' | 'usageAmount' | 'consumptionPer100Unit' | 'consumptionPerHour' | 'basedOnSuspiciousReading' | 'fuelLiters'> = {
+  const base: Omit<VehicleConsumptionResult, 'periodLabel' | 'status' | 'excludedReason' | 'openingValue' | 'closingValue' | 'usageAmount' | 'consumptionPer100Unit' | 'consumptionPerHour' | 'basedOnSuspiciousReading' | 'fuelLiters'> = {
     vehicleId: vehicle.id, vehiclePlate: vehicle.plate, vehicleType: vehicle.vehicle_type, siteName: vehicle.site_name,
-    meterType, periodLabel, periodStart: periodStart.toISOString(), periodEnd: periodEnd.toISOString()
+    meterType, periodStart: windowStart.toISOString(), periodEnd: windowEnd.toISOString()
   };
 
   const openingRes = await client.query(
     `SELECT reading_value, is_suspicious FROM vehicle_meter_readings
       WHERE vehicle_id = $1 AND meter_type = $2 AND reading_at < $3
       ORDER BY reading_at DESC, created_at DESC LIMIT 1`,
-    [vehicle.id, meterType, periodStart.toISOString()]
+    [vehicle.id, meterType, windowStart.toISOString()]
   );
   const closingRes = await client.query(
     `SELECT reading_value, is_suspicious FROM vehicle_meter_readings
       WHERE vehicle_id = $1 AND meter_type = $2 AND reading_at >= $3 AND reading_at < $4
       ORDER BY created_at DESC LIMIT 1`,
-    [vehicle.id, meterType, periodStart.toISOString(), periodEnd.toISOString()]
+    [vehicle.id, meterType, windowStart.toISOString(), windowEnd.toISOString()]
   );
 
   if (openingRes.rows.length === 0 || closingRes.rows.length === 0) {
@@ -5977,7 +5985,7 @@ async function computeVehicleConsumption(
   const fuelRes = await client.query(
     `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS l FROM transactions
       WHERE vehicle_plate = $1 AND created_at >= $2 AND created_at < $3`,
-    [vehicle.plate, periodStart.toISOString(), periodEnd.toISOString()]
+    [vehicle.plate, windowStart.toISOString(), windowEnd.toISOString()]
   );
   const fuelLiters = round2(Number(fuelRes.rows[0].l));
 
@@ -5992,6 +6000,16 @@ async function computeVehicleConsumption(
     status: 'HESAPLANDI',
     basedOnSuspiciousReading
   };
+}
+
+async function computeVehicleConsumption(
+  client: any,
+  vehicle: { id: string; plate: string; vehicle_type: string; meter_type: string | null; site_name: string | null },
+  periodLabel: string
+): Promise<VehicleConsumptionResult> {
+  const { periodStart, periodEnd } = periodWindowFor('MONTHLY', new Date(`${periodLabel}-15T00:00:00.000Z`));
+  const w = await computeVehicleConsumptionWindow(client, vehicle, periodStart, periodEnd);
+  return { ...w, periodLabel };
 }
 
 export async function getFleetConsumptionReport(
@@ -6097,6 +6115,341 @@ export async function getFleetConsumptionTrend(
       if (value !== null) prevValue = value;
     }
     return { vehicleId, meterType, points };
+  });
+}
+
+// ============================================================================
+// FLEET-1407: BAKIM-SERVİS KAYDI + YAKIT MALİYETİ İLİŞKİSİ
+// ============================================================================
+
+export interface VehicleMaintenanceRecord {
+  id: string;
+  vehicleId: string;
+  vehiclePlate: string;
+  maintenanceType: string;
+  performedAt: string;
+  odometerValue: number | null;
+  costAmount: number;
+  operationsDescription: string;
+  nextDueDate: string | null;
+  nextDueMeterValue: number | null;
+  createdBy: string;
+  createdAt: string;
+}
+
+function mapMaintenanceRow(row: any): VehicleMaintenanceRecord {
+  return {
+    id: row.id,
+    vehicleId: row.vehicle_id,
+    vehiclePlate: row.vehicle_plate,
+    maintenanceType: row.maintenance_type,
+    performedAt: row.performed_at instanceof Date ? row.performed_at.toISOString().slice(0, 10) : row.performed_at,
+    odometerValue: row.odometer_value !== null ? Number(row.odometer_value) : null,
+    costAmount: Number(row.cost_amount),
+    operationsDescription: row.operations_description,
+    nextDueDate: row.next_due_date instanceof Date ? row.next_due_date.toISOString().slice(0, 10) : row.next_due_date,
+    nextDueMeterValue: row.next_due_meter_value !== null ? Number(row.next_due_meter_value) : null,
+    createdBy: row.created_by,
+    createdAt: row.created_at
+  };
+}
+
+export async function createVehicleMaintenanceRecord(
+  vehicleId: string,
+  data: {
+    maintenanceType: string;
+    performedAt: string;
+    odometerValue?: number;
+    costAmount: number;
+    operationsDescription: string;
+    nextDueDate?: string;
+    nextDueMeterValue?: number;
+  },
+  byUserId: string
+): Promise<VehicleMaintenanceRecord> {
+  return withTenant(async (client, tenantId) => {
+    const vRes = await client.query('SELECT id, plate FROM vehicles WHERE id = $1', [vehicleId]);
+    if (vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    const plate = vRes.rows[0].plate;
+    const id = generateId('maint');
+    const inserted = await client.query(
+      `INSERT INTO vehicle_maintenance_records
+         (id, tenant_id, vehicle_id, vehicle_plate, maintenance_type, performed_at, odometer_value, cost_amount, operations_description, next_due_date, next_due_meter_value, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [
+        id, tenantId, vehicleId, plate, data.maintenanceType, data.performedAt,
+        data.odometerValue ?? null, data.costAmount, data.operationsDescription,
+        data.nextDueDate ?? null, data.nextDueMeterValue ?? null, byUserId
+      ]
+    );
+    await writeAuditLog(client, {
+      action: 'VEHICLE_MAINTENANCE_RECORDED',
+      targetType: 'vehicle_maintenance_record',
+      targetId: id,
+      afterValue: { vehicleId, maintenanceType: data.maintenanceType, costAmount: data.costAmount }
+    });
+    return mapMaintenanceRow(inserted.rows[0]);
+  });
+}
+
+export async function getVehicleMaintenanceRecords(vehicleId: string): Promise<VehicleMaintenanceRecord[]> {
+  return withTenant(async (client, tenantId) => {
+    const vRes = await client.query('SELECT id FROM vehicles WHERE id = $1', [vehicleId]);
+    if (vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    const res = await client.query(
+      'SELECT * FROM vehicle_maintenance_records WHERE tenant_id = $1 AND vehicle_id = $2 ORDER BY performed_at DESC, created_at DESC',
+      [tenantId, vehicleId]
+    );
+    return res.rows.map(mapMaintenanceRow);
+  });
+}
+
+export async function getVehicleMaintenanceRecord(id: string): Promise<VehicleMaintenanceRecord> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query('SELECT * FROM vehicle_maintenance_records WHERE tenant_id = $1 AND id = $2', [tenantId, id]);
+    if (res.rows.length === 0) throw new NotFoundError('Bakım kaydı bulunamadı.');
+    return mapMaintenanceRow(res.rows[0]);
+  });
+}
+
+// AC: "bakım öncesi/sonrası tüketim farkı hesaplanmalı." Ticket kesin bir
+// pencere vermiyor — 30 gün, FLEET-1405/AI-503'ün zaten kullandığı aylık
+// dönemle tutarlı, makul bir varsayılan.
+const MAINTENANCE_IMPACT_WINDOW_DAYS = 30;
+
+export interface MaintenanceConsumptionImpact {
+  maintenanceRecordId: string;
+  vehicleId: string;
+  vehiclePlate: string;
+  meterType: MeterType;
+  windowDays: number;
+  before: { status: string; consumptionPer100Unit: number | null; consumptionPerHour: number | null; excludedReason?: string };
+  after: { status: string; consumptionPer100Unit: number | null; consumptionPerHour: number | null; excludedReason?: string };
+  changePct: number | null;
+  verdict: 'İYİLEŞTİ' | 'KÖTÜLEŞTİ' | 'DEĞİŞİM_YOK' | 'YETERSİZ_VERİ';
+}
+
+/**
+ * Bakım tarihinden ÖNCEKİ ve SONRAKİ 30'ar günlük pencerede L/100km (veya
+ * L/motor-saat) tüketimini karşılaştırır — AC: "gecikmiş bakımı olan
+ * araçların artan tüketimini SAYISAL olarak göstermek". `changePct` negatifse
+ * (tüketim düştüyse) bakım işe yaramış demektir.
+ */
+export async function getMaintenanceConsumptionImpact(maintenanceRecordId: string): Promise<MaintenanceConsumptionImpact> {
+  return withTenant(async (client, tenantId) => {
+    const mRes = await client.query('SELECT * FROM vehicle_maintenance_records WHERE tenant_id = $1 AND id = $2', [tenantId, maintenanceRecordId]);
+    if (mRes.rows.length === 0) throw new NotFoundError('Bakım kaydı bulunamadı.');
+    const m = mRes.rows[0];
+    const vRes = await client.query('SELECT id, plate, vehicle_type, meter_type, site_name FROM vehicles WHERE id = $1', [m.vehicle_id]);
+    if (vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    const vehicle = vRes.rows[0];
+    const meterType = resolveMeterType(vehicle.vehicle_type, vehicle.meter_type);
+
+    const performedAt = new Date(m.performed_at);
+    const windowMs = MAINTENANCE_IMPACT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    const beforeWindow = await computeVehicleConsumptionWindow(client, vehicle, new Date(performedAt.getTime() - windowMs), performedAt);
+    const afterWindow = await computeVehicleConsumptionWindow(client, vehicle, performedAt, new Date(performedAt.getTime() + windowMs));
+
+    const beforeValue = beforeWindow.status === 'HESAPLANDI' ? (meterType === 'KM' ? beforeWindow.consumptionPer100Unit : beforeWindow.consumptionPerHour) : null;
+    const afterValue = afterWindow.status === 'HESAPLANDI' ? (meterType === 'KM' ? afterWindow.consumptionPer100Unit : afterWindow.consumptionPerHour) : null;
+
+    let changePct: number | null = null;
+    let verdict: MaintenanceConsumptionImpact['verdict'] = 'YETERSİZ_VERİ';
+    if (beforeValue !== null && afterValue !== null && beforeValue !== 0) {
+      changePct = round2(((afterValue - beforeValue) / beforeValue) * 100);
+      if (Math.abs(changePct) < 2) verdict = 'DEĞİŞİM_YOK';
+      else verdict = changePct < 0 ? 'İYİLEŞTİ' : 'KÖTÜLEŞTİ';
+    }
+
+    return {
+      maintenanceRecordId,
+      vehicleId: vehicle.id,
+      vehiclePlate: vehicle.plate,
+      meterType,
+      windowDays: MAINTENANCE_IMPACT_WINDOW_DAYS,
+      before: { status: beforeWindow.status, consumptionPer100Unit: beforeWindow.consumptionPer100Unit, consumptionPerHour: beforeWindow.consumptionPerHour, excludedReason: beforeWindow.excludedReason },
+      after: { status: afterWindow.status, consumptionPer100Unit: afterWindow.consumptionPer100Unit, consumptionPerHour: afterWindow.consumptionPerHour, excludedReason: afterWindow.excludedReason },
+      changePct,
+      verdict
+    };
+  });
+}
+
+export interface VehicleCostOfOwnership {
+  vehicleId: string;
+  vehiclePlate: string;
+  sinceDate: string;
+  totalMaintenanceCost: number;
+  maintenanceRecordCount: number;
+  totalFuelLiters: number;
+  averageFuelUnitPrice: number | null;
+  estimatedFuelCost: number | null;
+  estimatedTotalCost: number | null;
+}
+
+/**
+ * AC: "araç başına toplam sahip olma maliyeti görünümü." `transactions`
+ * (ikmal) hiçbir zaman birim fiyat TAŞIMAZ (yalnızca litre) — bu yüzden
+ * yakıt maliyeti, `fuel_intake_receipts`'in (FUEL-408) GERÇEK alım
+ * fiyatlarından litre-ağırlıklı bir ORTALAMA birim fiyatla TAHMİN edilir
+ * (Bilinçli sapma: kesin değil, tahminidir — `estimatedFuelCost` adı
+ * bunu açıkça belirtir). Aracın şantiyesinde hiç alım kaydı yoksa
+ * tenant genelindeki ortalamaya düşülür; o da yoksa `null` döner.
+ */
+export async function getVehicleTotalCostOfOwnership(vehicleId: string, sinceDate?: string): Promise<VehicleCostOfOwnership> {
+  return withTenant(async (client, tenantId) => {
+    const vRes = await client.query('SELECT id, plate, site_name FROM vehicles WHERE id = $1', [vehicleId]);
+    if (vRes.rows.length === 0) throw new NotFoundError('Araç bulunamadı.', { error: 'VEHICLE_NOT_FOUND' });
+    const vehicle = vRes.rows[0];
+    const since = sinceDate ? new Date(`${sinceDate}T00:00:00.000Z`) : new Date(0);
+    const sinceDateStr = since.toISOString().slice(0, 10);
+
+    const maintRes = await client.query(
+      `SELECT COALESCE(SUM(cost_amount), 0)::numeric AS total, COUNT(*)::int AS cnt
+         FROM vehicle_maintenance_records WHERE tenant_id = $1 AND vehicle_id = $2 AND performed_at >= $3`,
+      [tenantId, vehicleId, sinceDateStr]
+    );
+    const totalMaintenanceCost = round2(Number(maintRes.rows[0].total));
+    const maintenanceRecordCount = maintRes.rows[0].cnt;
+
+    const fuelRes = await client.query(
+      `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS l FROM transactions WHERE vehicle_plate = $1 AND created_at >= $2`,
+      [vehicle.plate, since.toISOString()]
+    );
+    const totalFuelLiters = round2(Number(fuelRes.rows[0].l));
+
+    const sitePriceRes = await client.query(
+      `SELECT SUM(unit_price * added_liters) / NULLIF(SUM(added_liters), 0) AS avg_price
+         FROM fuel_intake_receipts WHERE tenant_id = $1 AND site_name = $2 AND unit_price IS NOT NULL`,
+      [tenantId, vehicle.site_name]
+    );
+    let averageFuelUnitPrice: number | null = sitePriceRes.rows[0].avg_price !== null ? round4(Number(sitePriceRes.rows[0].avg_price)) : null;
+    if (averageFuelUnitPrice === null) {
+      const tenantPriceRes = await client.query(
+        `SELECT SUM(unit_price * added_liters) / NULLIF(SUM(added_liters), 0) AS avg_price
+           FROM fuel_intake_receipts WHERE tenant_id = $1 AND unit_price IS NOT NULL`,
+        [tenantId]
+      );
+      averageFuelUnitPrice = tenantPriceRes.rows[0].avg_price !== null ? round4(Number(tenantPriceRes.rows[0].avg_price)) : null;
+    }
+
+    const estimatedFuelCost = averageFuelUnitPrice !== null ? round2(totalFuelLiters * averageFuelUnitPrice) : null;
+    const estimatedTotalCost = estimatedFuelCost !== null ? round2(totalMaintenanceCost + estimatedFuelCost) : null;
+
+    return {
+      vehicleId: vehicle.id,
+      vehiclePlate: vehicle.plate,
+      sinceDate: sinceDateStr,
+      totalMaintenanceCost,
+      maintenanceRecordCount,
+      totalFuelLiters,
+      averageFuelUnitPrice,
+      estimatedFuelCost,
+      estimatedTotalCost
+    };
+  });
+}
+
+// AC: "yaklaşan bakımlar için hatırlatma sistemi." Ticket NOTIF-1601 (bildirim
+// sistemi) öneriyor — bu kod tabanında yok; AI-507 birleşik alarm sistemine
+// (MAINTENANCE_DUE kategorisi) akıtılıyor, diğer tüm alarm kaynaklarıyla
+// (FUEL-409, AI-504, AI-503, FLEET-1406, ...) AYNI desen.
+const MAINTENANCE_DUE_SOON_DAYS = 7;
+const MAINTENANCE_DUE_SOON_METER_UNITS = 500; // km VEYA motor-saat — ticket sayı vermiyor, makul bir eşik.
+
+export interface MaintenanceReminder {
+  vehicleId: string;
+  vehiclePlate: string;
+  lastMaintenanceRecordId: string;
+  nextDueDate: string | null;
+  nextDueMeterValue: number | null;
+  currentMeterValue: number | null;
+  daysUntilDue: number | null;
+  meterUnitsUntilDue: number | null;
+  reason: 'TARIH_YAKLASTI' | 'TARIH_GECTI' | 'SAYAC_YAKLASTI' | 'SAYAC_GECTI';
+}
+
+async function computeMaintenanceReminders(client: any, tenantId: string): Promise<MaintenanceReminder[]> {
+  // Her araç için EN SON bakım kaydı — next_due_* alanları yalnızca ORADAN okunur.
+  const res = await client.query(
+    `SELECT DISTINCT ON (vehicle_id) id, vehicle_id, vehicle_plate, next_due_date, next_due_meter_value
+       FROM vehicle_maintenance_records
+      WHERE tenant_id = $1 AND (next_due_date IS NOT NULL OR next_due_meter_value IS NOT NULL)
+      ORDER BY vehicle_id, performed_at DESC, created_at DESC`,
+    [tenantId]
+  );
+  const reminders: MaintenanceReminder[] = [];
+  const now = new Date();
+  for (const row of res.rows) {
+    let currentMeterValue: number | null = null;
+    if (row.next_due_meter_value !== null) {
+      const vRes = await client.query('SELECT vehicle_type, meter_type FROM vehicles WHERE id = $1', [row.vehicle_id]);
+      if (vRes.rows.length > 0) {
+        const meterType = resolveMeterType(vRes.rows[0].vehicle_type, vRes.rows[0].meter_type);
+        const readingRes = await client.query(
+          'SELECT reading_value FROM vehicle_meter_readings WHERE vehicle_id = $1 AND meter_type = $2 ORDER BY reading_at DESC, created_at DESC LIMIT 1',
+          [row.vehicle_id, meterType]
+        );
+        if (readingRes.rows.length > 0) currentMeterValue = Number(readingRes.rows[0].reading_value);
+      }
+    }
+
+    let daysUntilDue: number | null = null;
+    let dateReason: 'TARIH_YAKLASTI' | 'TARIH_GECTI' | null = null;
+    if (row.next_due_date) {
+      daysUntilDue = Math.ceil((new Date(row.next_due_date).getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+      if (daysUntilDue < 0) dateReason = 'TARIH_GECTI';
+      else if (daysUntilDue <= MAINTENANCE_DUE_SOON_DAYS) dateReason = 'TARIH_YAKLASTI';
+    }
+
+    let meterUnitsUntilDue: number | null = null;
+    let meterReason: 'SAYAC_YAKLASTI' | 'SAYAC_GECTI' | null = null;
+    if (row.next_due_meter_value !== null && currentMeterValue !== null) {
+      meterUnitsUntilDue = round2(Number(row.next_due_meter_value) - currentMeterValue);
+      if (meterUnitsUntilDue < 0) meterReason = 'SAYAC_GECTI';
+      else if (meterUnitsUntilDue <= MAINTENANCE_DUE_SOON_METER_UNITS) meterReason = 'SAYAC_YAKLASTI';
+    }
+
+    const reason = dateReason === 'TARIH_GECTI' ? 'TARIH_GECTI' : meterReason === 'SAYAC_GECTI' ? 'SAYAC_GECTI' : (dateReason ?? meterReason);
+    if (!reason) continue;
+
+    reminders.push({
+      vehicleId: row.vehicle_id,
+      vehiclePlate: row.vehicle_plate,
+      lastMaintenanceRecordId: row.id,
+      nextDueDate: row.next_due_date instanceof Date ? row.next_due_date.toISOString().slice(0, 10) : row.next_due_date,
+      nextDueMeterValue: row.next_due_meter_value !== null ? Number(row.next_due_meter_value) : null,
+      currentMeterValue,
+      daysUntilDue,
+      meterUnitsUntilDue,
+      reason
+    });
+  }
+  return reminders;
+}
+
+export async function getUpcomingMaintenanceReminders(): Promise<MaintenanceReminder[]> {
+  return withTenant((client, tenantId) => computeMaintenanceReminders(client, tenantId));
+}
+
+export async function runMaintenanceReminderSweepForCurrentTenant(): Promise<{ scanned: number; alarmsRaised: number }> {
+  return withTenant(async (client, tenantId) => {
+    const reminders = await computeMaintenanceReminders(client, tenantId);
+    let alarmsRaised = 0;
+    for (const r of reminders) {
+      const overdue = r.reason === 'TARIH_GECTI' || r.reason === 'SAYAC_GECTI';
+      const result = await raiseAlarm(client, tenantId, {
+        alarmKey: `maintenance-due:${r.vehicleId}`,
+        category: 'MAINTENANCE_DUE',
+        severity: overdue ? 'CRITICAL' : 'WARNING',
+        title: `${r.vehiclePlate} — bakım ${overdue ? 'süresi geçti' : 'yaklaşıyor'} (${r.reason})`,
+        subjectType: 'vehicle',
+        subjectId: r.vehicleId,
+        detail: { ...r }
+      });
+      if (result.isNew || result.reopened) alarmsRaised++;
+    }
+    return { scanned: reminders.length, alarmsRaised };
   });
 }
 

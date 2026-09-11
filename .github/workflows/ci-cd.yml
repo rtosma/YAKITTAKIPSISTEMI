@@ -300,6 +300,9 @@ jobs:
       - name: Run COMP-603 e-Invoice Rejection/Cancellation/Resubmission Lifecycle Tests
         run: cd backend && npx tsx test/test_comp603_despatch_advice_lifecycle.ts
 
+      - name: Run FLEET-1407 Maintenance Records + Fuel Cost Correlation Tests
+        run: cd backend && npx tsx test/test_fleet1407_maintenance_records.ts
+
       - name: Dump Backend Log on Failure
         if: failure()
         run: cat /tmp/backend-ci.log || true

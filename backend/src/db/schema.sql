@@ -960,6 +960,32 @@ CREATE TABLE IF NOT EXISTS vehicle_fuel_limits (
     UNIQUE (tenant_id, vehicle_id)
 );
 
+-- FLEET-1407: bakım-servis kaydı. Geçmiş bakım kaydı bir denetim/garanti
+-- kaydıdır — fuel_intake_receipts/vehicle_meter_readings gibi APPEND-ONLY
+-- (app_user'dan UPDATE/DELETE/TRUNCATE geri alınır, aşağıda). Düzeltme
+-- gerekiyorsa yeni bir kayıt (örn. maintenance_type='DÜZELTME') eklenir.
+CREATE TABLE IF NOT EXISTS vehicle_maintenance_records (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    vehicle_id VARCHAR(64) NOT NULL,
+    vehicle_plate VARCHAR(32) NOT NULL,
+    -- 'PERİYODİK_BAKIM' | 'LASTİK' | 'YAĞ_DEĞİŞİMİ' | 'ARIZA_ONARIMI' | 'DİĞER'
+    maintenance_type VARCHAR(32) NOT NULL,
+    performed_at DATE NOT NULL,
+    -- Bakım anındaki km/motor-saat (aracın meter_type'ına göre, FLEET-1404 ile tutarlı).
+    odometer_value NUMERIC(12, 2),
+    cost_amount NUMERIC(12, 2) NOT NULL,
+    operations_description TEXT NOT NULL,
+    -- Hatırlatma sistemi için (AC): bir sonraki bakımın beklenen tarihi VE/VEYA
+    -- sayaç eşiği — ikisi de opsiyonel, ikisi de dolu olabilir (hangisi önce
+    -- gelirse bakım o zaman gerekir).
+    next_due_date DATE,
+    next_due_meter_value NUMERIC(12, 2),
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_vehicle_maintenance_records_vehicle ON vehicle_maintenance_records(tenant_id, vehicle_id, performed_at DESC);
+
 -- ==============================================================================
 -- 6. Enable Row Level Security (RLS) Policies
 -- ==============================================================================
@@ -995,6 +1021,7 @@ ALTER TABLE alarms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE alarm_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE recipient_taxpayers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_fuel_limits ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_maintenance_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings ENABLE ROW LEVEL SECURITY;
 
 -- Create app_user role for RLS enforcement (since superusers bypass RLS)
@@ -1076,6 +1103,8 @@ REVOKE UPDATE, DELETE, TRUNCATE ON fuel_intake_receipts FROM app_user;
 REVOKE UPDATE, DELETE, TRUNCATE ON vehicle_meter_readings FROM app_user;
 -- FUEL-409: mutabakat sonucu bir düzeltme kaydıdır — sonradan değiştirilemez.
 REVOKE UPDATE, DELETE, TRUNCATE ON stock_reconciliations FROM app_user;
+-- FLEET-1407: bakım kaydı bir denetim/garanti kaydıdır — sonradan değiştirilemez.
+REVOKE UPDATE, DELETE, TRUNCATE ON vehicle_maintenance_records FROM app_user;
 
 -- Force RLS even for table owners
 ALTER TABLE vehicles FORCE ROW LEVEL SECURITY;
@@ -1110,6 +1139,7 @@ ALTER TABLE alarms FORCE ROW LEVEL SECURITY;
 ALTER TABLE alarm_events FORCE ROW LEVEL SECURITY;
 ALTER TABLE recipient_taxpayers FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_fuel_limits FORCE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_maintenance_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
@@ -1145,6 +1175,7 @@ DROP POLICY IF EXISTS alarms_tenant_isolation_policy ON alarms;
 DROP POLICY IF EXISTS alarm_events_tenant_isolation_policy ON alarm_events;
 DROP POLICY IF EXISTS recipient_taxpayers_tenant_isolation_policy ON recipient_taxpayers;
 DROP POLICY IF EXISTS vehicle_fuel_limits_tenant_isolation_policy ON vehicle_fuel_limits;
+DROP POLICY IF EXISTS vehicle_maintenance_records_tenant_isolation_policy ON vehicle_maintenance_records;
 DROP POLICY IF EXISTS vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_readings;
 
 -- Create Tenant Isolation Policy for vehicles
@@ -1326,6 +1357,11 @@ CREATE POLICY recipient_taxpayers_tenant_isolation_policy ON recipient_taxpayers
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
 CREATE POLICY vehicle_fuel_limits_tenant_isolation_policy ON vehicle_fuel_limits
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY vehicle_maintenance_records_tenant_isolation_policy ON vehicle_maintenance_records
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
