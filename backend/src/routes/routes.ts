@@ -34,6 +34,8 @@ import { isServerShuttingDown } from '../utils/shutdown';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS } from '../db/adminDb';
 import { runLicenseExpiryWarningSweep } from '../services/licenseWarningService';
 import { getUsageMeteringHistory, computeUsageMeteringForCurrentTenant } from '../services/usageMeteringService';
+import { uploadVehicleDocument, getVehicleDocuments, getVehicleDocumentContent } from '../services/vehicleDocumentService';
+import { uploadVehicleDocumentSchema } from '../schemas/vehicleDocumentSchema';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
@@ -2123,6 +2125,72 @@ router.get(
 
 /**
  * @swagger
+ * /vehicles/{id}/documents:
+ *   post:
+ *     summary: Araç Belgesi Yükle (FLEET-1409)
+ *     description: >
+ *       Ruhsat/muayene raporu/egzoz raporu/sigorta poliçesi (PDF/JPG/PNG,
+ *       max 10MB, base64 gövdede). documentType MUAYENE_RAPORU/EGZOZ_RAPORU/
+ *       SIGORTA_POLICESI ise ve expiryDate verilmişse, FLEET-1408'in uyum
+ *       takvimine (vehicle_compliance_deadlines) OTOMATİK işlenir — ayrı bir
+ *       alarm mekanizması yoktur. Önceki belge SİLİNMEZ (append-only,
+ *       geçmiş belge listede kalır, yalnızca en yenisi "güncel" sayılır).
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Aracın Tüm Belgeleri (FLEET-1409)
+ *     description: 'Yalnızca metadata (dosya içeriği DAHİL DEĞİL) — her kayıt isCurrent/daysUntilExpiry/isExpired/isExpiringSoon taşır.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicles/:id/documents',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  validateRequest({ body: uploadVehicleDocumentSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const meta = await uploadVehicleDocument(req.params.id, req.body, req.user!.userId);
+      res.json({ success: true, message: 'Belge yüklendi.', data: meta });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get('/vehicles/:id/documents', authenticateJWT, authorizeRoles(...MAINTENANCE_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await getVehicleDocuments(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /vehicle-documents/{id}/content:
+ *   get:
+ *     summary: Belge Önizleme/İndirme (FLEET-1409)
+ *     description: >
+ *       Ham dosya bayt akışı (doğru Content-Type ile) — JSON değil. Her
+ *       erişim audit_logs'a VEHICLE_DOCUMENT_DOWNLOADED olarak yazılır (AC:
+ *       "indirme audit'i").
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/vehicle-documents/:id/content', authenticateJWT, authorizeRoles(...MAINTENANCE_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const doc = await getVehicleDocumentContent(req.params.id, req.user!.userId);
+    res.setHeader('Content-Type', doc.mimeType);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.fileName)}"`);
+    res.send(doc.fileContent);
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
  * /fleet/maintenance/upcoming:
  *   get:
  *     summary: Yaklaşan/Geciken Bakımlar (FLEET-1407)
@@ -2509,74 +2577,6 @@ router.post(
   }
 );
 
-/**
- * FUEL-404.1 — K-Factor Uzaktan Kalibrasyon: Komut, Ack, Geri Alma, Geçmiş.
- * Ticket'ın "Teknik Yığın"ı NestJS + IOT-305 komut kuyruğu + Drizzle
- * öneriyor — IOT-305 (genel amaçlı bir komut kuyruğu servisi) bu kod
- * tabanında hiç yok; FUEL-401'de zaten inşa edilen mqttService.publishCommand
- * (FORCE_CUTOFF için kullanılan aynı mekanizma) yeniden kullanıldı. Cihazın
- * ack/nack'ı, sync-batch/dispense-finalize ile AYNI desende bir HMAC
- * korumalı HTTP ucuna (POST /telemetry/calibration-ack) POST edilir — MQTT
- * üzerinden bir "ack topic'i" dinlemek yerine (mqttClient.ts'e yeni bir
- * abonelik + tenant/cihaz eşleştirme mantığı eklemeyi gerektirirdi, IOT-301
- * dayanıklılık testlerini de etkileme riski taşırdı).
- */
-router.post(
-  '/devices/:deviceId/calibration',
-  authenticateJWT,
-  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
-  validateRequest({ body: requestCalibrationSchema }),
-  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    try {
-      const command = await requestKFactorCalibration({
-        deviceId: req.params.deviceId,
-        newKFactor: req.body.newKFactor,
-        reason: req.body.reason,
-        referenceMeasurement: req.body.referenceMeasurement,
-        requestedByUserId: req.user!.userId
-      });
-
-      if (command.status === 'BEKLIYOR') {
-        mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
-        await markCalibrationSent(command.id);
-      }
-
-      res.json({
-        success: true,
-        message: command.status === 'IKINCI_ONAY_BEKLIYOR'
-          ? 'Değişiklik %20 eşiğini aştığından ikinci onay bekleniyor — cihaza HENÜZ gönderilmedi.'
-          : 'Kalibrasyon komutu cihaza gönderildi, ack bekleniyor.',
-        data: command
-      });
-    } catch (error: any) {
-      next(error);
-    }
-  }
-);
-
-router.post(
-  '/devices/:deviceId/calibration/:commandId/approve',
-  authenticateJWT,
-  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
-  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    try {
-      const command = await approveKFactorCalibration(req.params.commandId, req.user!.userId);
-      mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
-      await markCalibrationSent(command.id);
-      res.json({ success: true, message: 'İkinci onay verildi, kalibrasyon komutu cihaza gönderildi.', data: command });
-    } catch (error: any) {
-      next(error);
-    }
-  }
-);
-
-router.post(
-  '/devices/:deviceId/calibration/rollback',
-  authenticateJWT,
-  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
-  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    try {
-      const command = await rollbackKFactorCalibration(req.params.deviceId, req.user!.userId);
 const LAB_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
 
 /**
@@ -2723,6 +2723,74 @@ router.get(
   }
 );
 
+/**
+ * FUEL-404.1 — K-Factor Uzaktan Kalibrasyon: Komut, Ack, Geri Alma, Geçmiş.
+ * Ticket'ın "Teknik Yığın"ı NestJS + IOT-305 komut kuyruğu + Drizzle
+ * öneriyor — IOT-305 (genel amaçlı bir komut kuyruğu servisi) bu kod
+ * tabanında hiç yok; FUEL-401'de zaten inşa edilen mqttService.publishCommand
+ * (FORCE_CUTOFF için kullanılan aynı mekanizma) yeniden kullanıldı. Cihazın
+ * ack/nack'ı, sync-batch/dispense-finalize ile AYNI desende bir HMAC
+ * korumalı HTTP ucuna (POST /telemetry/calibration-ack) POST edilir — MQTT
+ * üzerinden bir "ack topic'i" dinlemek yerine (mqttClient.ts'e yeni bir
+ * abonelik + tenant/cihaz eşleştirme mantığı eklemeyi gerektirirdi, IOT-301
+ * dayanıklılık testlerini de etkileme riski taşırdı).
+ */
+router.post(
+  '/devices/:deviceId/calibration',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: requestCalibrationSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const command = await requestKFactorCalibration({
+        deviceId: req.params.deviceId,
+        newKFactor: req.body.newKFactor,
+        reason: req.body.reason,
+        referenceMeasurement: req.body.referenceMeasurement,
+        requestedByUserId: req.user!.userId
+      });
+
+      if (command.status === 'BEKLIYOR') {
+        mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
+        await markCalibrationSent(command.id);
+      }
+
+      res.json({
+        success: true,
+        message: command.status === 'IKINCI_ONAY_BEKLIYOR'
+          ? 'Değişiklik %20 eşiğini aştığından ikinci onay bekleniyor — cihaza HENÜZ gönderilmedi.'
+          : 'Kalibrasyon komutu cihaza gönderildi, ack bekleniyor.',
+        data: command
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/devices/:deviceId/calibration/:commandId/approve',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const command = await approveKFactorCalibration(req.params.commandId, req.user!.userId);
+      mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
+      await markCalibrationSent(command.id);
+      res.json({ success: true, message: 'İkinci onay verildi, kalibrasyon komutu cihaza gönderildi.', data: command });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/devices/:deviceId/calibration/rollback',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const command = await rollbackKFactorCalibration(req.params.deviceId, req.user!.userId);
       mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
       await markCalibrationSent(command.id);
       res.json({ success: true, message: 'Bir önceki onaylı kalibrasyona geri alma komutu gönderildi.', data: command });

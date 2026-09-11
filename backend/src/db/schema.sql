@@ -1074,6 +1074,30 @@ CREATE INDEX IF NOT EXISTS idx_vehicle_tires_vehicle ON vehicle_tires(tenant_id,
 CREATE UNIQUE INDEX IF NOT EXISTS uq_vehicle_tires_active_position
     ON vehicle_tires(tenant_id, vehicle_id, position) WHERE status = 'AKTİF';
 
+-- FLEET-1409: araç doküman/ruhsat arşivi. Ticket "presigned URL + obje
+-- depolama" öneriyor — bu ortamda yok (COMP-602.1'deki aynı boşluk); dosya
+-- doğrudan Postgres'te BYTEA olarak saklanıyor (10MB/PDF-JPG-PNG sınırı
+-- vehicleDocumentService.ts'te uygulanıyor). APPEND-ONLY: bir belge türü
+-- yenilendiğinde (ör. yeni ruhsat) YENİ bir satır eklenir, eskisi
+-- SİLİNMEZ/DEĞİŞTİRİLMEZ — geçmiş belgeler denetim için saklanır; "güncel"
+-- belge (vehicle_id, document_type) başına en son yüklenen olarak okunur.
+CREATE TABLE IF NOT EXISTS vehicle_documents (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    vehicle_id VARCHAR(64) NOT NULL,
+    vehicle_plate VARCHAR(32) NOT NULL,
+    -- 'RUHSAT' | 'MUAYENE_RAPORU' | 'EGZOZ_RAPORU' | 'SIGORTA_POLICESI' | 'DIGER'
+    document_type VARCHAR(32) NOT NULL,
+    file_name VARCHAR(255) NOT NULL,
+    mime_type VARCHAR(64) NOT NULL,
+    file_size_bytes INTEGER NOT NULL,
+    file_content BYTEA NOT NULL,
+    expiry_date DATE,
+    uploaded_by VARCHAR(64) NOT NULL,
+    uploaded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_vehicle_documents_vehicle ON vehicle_documents(tenant_id, vehicle_id, document_type, uploaded_at DESC);
+
 -- INV-1506: yedek parça/sarf malzeme kartı. Yakıt tanklarından (tanks)
 -- KASITLI olarak farklı bir mimari — Kritik Not (ticket): "yakıt envanteri
 -- SENSÖRLÜ, burası SENSÖRSÜZ." `current_stock` yalnızca KAYDEDİLEN
@@ -1121,30 +1145,6 @@ CREATE TABLE IF NOT EXISTS inventory_movements (
 );
 CREATE INDEX IF NOT EXISTS idx_inventory_movements_item ON inventory_movements(tenant_id, item_id, created_at DESC);
 
--- ==============================================================================
--- 6. Enable Row Level Security (RLS) Policies
--- ==============================================================================
-
--- Enable RLS on vehicles, tanks, users
-ALTER TABLE vehicles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE tanks ENABLE ROW LEVEL SECURITY;
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE drivers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE cross_site_permissions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE hardware_devices ENABLE ROW LEVEL SECURITY;
-ALTER TABLE device_claim_codes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE calibration_commands ENABLE ROW LEVEL SECURITY;
-ALTER TABLE calibration_test_intakes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE fail_open_policies ENABLE ROW LEVEL SECURITY;
-ALTER TABLE consumption_anomaly_reports ENABLE ROW LEVEL SECURITY;
-ALTER TABLE despatch_advice_documents ENABLE ROW LEVEL SECURITY;
-ALTER TABLE despatch_advice_counters ENABLE ROW LEVEL SECURITY;
-ALTER TABLE despatch_advice_transmissions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE despatch_advice_documents_status ENABLE ROW LEVEL SECURITY;
-ALTER TABLE tank_strapping_tables ENABLE ROW LEVEL SECURITY;
-ALTER TABLE rfid_card_blacklist ENABLE ROW LEVEL SECURITY;
-ALTER TABLE fuel_quotas ENABLE ROW LEVEL SECURITY;
 -- INV-1507: şantiye laboratuvar numunesi (beton/agrega/zemin/yakıt). Mutable —
 -- BEKLIYOR → TEST_EDILDI/İPTAL durum geçişi vardır. Test SONUÇLARI
 -- (lab_test_results) KASITLI olarak AYRI ve append-only'dir (AC: "sonuç
@@ -1190,6 +1190,30 @@ CREATE TABLE IF NOT EXISTS lab_test_results (
 );
 CREATE INDEX IF NOT EXISTS idx_lab_test_results_sample ON lab_test_results(tenant_id, sample_id, created_at DESC);
 
+-- ==============================================================================
+-- 6. Enable Row Level Security (RLS) Policies
+-- ==============================================================================
+
+-- Enable RLS on vehicles, tanks, users
+ALTER TABLE vehicles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tanks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE drivers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cross_site_permissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE hardware_devices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE device_claim_codes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calibration_commands ENABLE ROW LEVEL SECURITY;
+ALTER TABLE calibration_test_intakes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fail_open_policies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE consumption_anomaly_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_counters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_transmissions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE despatch_advice_documents_status ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tank_strapping_tables ENABLE ROW LEVEL SECURITY;
+ALTER TABLE rfid_card_blacklist ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fuel_quotas ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quota_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fuel_intake_receipts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stock_reconciliations ENABLE ROW LEVEL SECURITY;
@@ -1204,8 +1228,11 @@ ALTER TABLE vehicle_fuel_limits ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_maintenance_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_compliance_deadlines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_tires ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory_movements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE lab_samples ENABLE ROW LEVEL SECURITY;
+ALTER TABLE lab_test_results ENABLE ROW LEVEL SECURITY;
 ALTER TABLE company_module_addons ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usage_metering_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings ENABLE ROW LEVEL SECURITY;
@@ -1231,8 +1258,6 @@ CREATE TABLE IF NOT EXISTS sites (
 -- Enable RLS on sites (FORCE alone is a no-op without ENABLE — bu satır olmadan
 -- sites_tenant_isolation_policy hiç uygulanmaz ve her tenant tüm şantiyeleri görür)
 ALTER TABLE sites ENABLE ROW LEVEL SECURITY;
-ALTER TABLE lab_samples ENABLE ROW LEVEL SECURITY;
-ALTER TABLE lab_test_results ENABLE ROW LEVEL SECURITY;
 
 -- AUTH-203: append-only denetim izi. before_value/after_value'da parola,
 -- secret ve token ALANLARI asla ham saklanmaz — writeAuditLog() (bkz.
@@ -1296,9 +1321,15 @@ REVOKE UPDATE, DELETE, TRUNCATE ON vehicle_maintenance_records FROM app_user;
 -- FLEET-1408: yasal teslim tarihi geçmişi de aynı gerekçeyle append-only.
 -- vehicle_tires KASITLI OLARAK bu listede DEĞİL — mutable (diş derinliği/durum).
 REVOKE UPDATE, DELETE, TRUNCATE ON vehicle_compliance_deadlines FROM app_user;
+-- FLEET-1409: geçmiş belgeler denetim için saklanır, üzerine yazılmaz —
+-- bir belge türü yenilenince YENİ satır eklenir.
+REVOKE UPDATE, DELETE, TRUNCATE ON vehicle_documents FROM app_user;
 -- INV-1506: stok hareket geçmişi de aynı gerekçeyle append-only.
 -- inventory_items KASITLI OLARAK bu listede DEĞİL — mutable (current_stock).
 REVOKE UPDATE, DELETE, TRUNCATE ON inventory_movements FROM app_user;
+-- INV-1507: test sonucu bir denetim kanıtıdır — sonradan değiştirilemez.
+-- lab_samples KASITLI OLARAK bu listede DEĞİL — mutable (status geçişi).
+REVOKE UPDATE, DELETE, TRUNCATE ON lab_test_results FROM app_user;
 -- BILL-1704: bir faturalama döneminin ölçümü bir kez hesaplanıp kilitlenir.
 REVOKE UPDATE, DELETE, TRUNCATE ON usage_metering_records FROM app_user;
 
@@ -1327,9 +1358,6 @@ ALTER TABLE fuel_quotas FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_quota_history FORCE ROW LEVEL SECURITY;
 ALTER TABLE fuel_intake_receipts FORCE ROW LEVEL SECURITY;
 ALTER TABLE stock_reconciliations FORCE ROW LEVEL SECURITY;
--- INV-1507: test sonucu bir denetim kanıtıdır — sonradan değiştirilemez.
--- lab_samples KASITLI OLARAK bu listede DEĞİL — mutable (status geçişi).
-REVOKE UPDATE, DELETE, TRUNCATE ON lab_test_results FROM app_user;
 ALTER TABLE manual_dispense_requests FORCE ROW LEVEL SECURITY;
 ALTER TABLE site_working_hours FORCE ROW LEVEL SECURITY;
 ALTER TABLE transaction_anomaly_flags FORCE ROW LEVEL SECURITY;
@@ -1341,8 +1369,11 @@ ALTER TABLE vehicle_fuel_limits FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_maintenance_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_compliance_deadlines FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_tires FORCE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_documents FORCE ROW LEVEL SECURITY;
 ALTER TABLE inventory_items FORCE ROW LEVEL SECURITY;
 ALTER TABLE inventory_movements FORCE ROW LEVEL SECURITY;
+ALTER TABLE lab_samples FORCE ROW LEVEL SECURITY;
+ALTER TABLE lab_test_results FORCE ROW LEVEL SECURITY;
 ALTER TABLE company_module_addons FORCE ROW LEVEL SECURITY;
 ALTER TABLE usage_metering_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings FORCE ROW LEVEL SECURITY;
@@ -1372,8 +1403,6 @@ DROP POLICY IF EXISTS fuel_quotas_tenant_isolation_policy ON fuel_quotas;
 DROP POLICY IF EXISTS fuel_quota_history_tenant_isolation_policy ON fuel_quota_history;
 DROP POLICY IF EXISTS fuel_intake_receipts_tenant_isolation_policy ON fuel_intake_receipts;
 DROP POLICY IF EXISTS stock_reconciliations_tenant_isolation_policy ON stock_reconciliations;
-ALTER TABLE lab_samples FORCE ROW LEVEL SECURITY;
-ALTER TABLE lab_test_results FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS manual_dispense_requests_tenant_isolation_policy ON manual_dispense_requests;
 DROP POLICY IF EXISTS site_working_hours_tenant_isolation_policy ON site_working_hours;
 DROP POLICY IF EXISTS transaction_anomaly_flags_tenant_isolation_policy ON transaction_anomaly_flags;
@@ -1385,8 +1414,11 @@ DROP POLICY IF EXISTS vehicle_fuel_limits_tenant_isolation_policy ON vehicle_fue
 DROP POLICY IF EXISTS vehicle_maintenance_records_tenant_isolation_policy ON vehicle_maintenance_records;
 DROP POLICY IF EXISTS vehicle_compliance_deadlines_tenant_isolation_policy ON vehicle_compliance_deadlines;
 DROP POLICY IF EXISTS vehicle_tires_tenant_isolation_policy ON vehicle_tires;
+DROP POLICY IF EXISTS vehicle_documents_tenant_isolation_policy ON vehicle_documents;
 DROP POLICY IF EXISTS inventory_items_tenant_isolation_policy ON inventory_items;
 DROP POLICY IF EXISTS inventory_movements_tenant_isolation_policy ON inventory_movements;
+DROP POLICY IF EXISTS lab_samples_tenant_isolation_policy ON lab_samples;
+DROP POLICY IF EXISTS lab_test_results_tenant_isolation_policy ON lab_test_results;
 DROP POLICY IF EXISTS company_module_addons_tenant_isolation_policy ON company_module_addons;
 DROP POLICY IF EXISTS usage_metering_records_tenant_isolation_policy ON usage_metering_records;
 DROP POLICY IF EXISTS vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_readings;
@@ -1417,8 +1449,6 @@ CREATE POLICY drivers_tenant_isolation_policy ON drivers
 
 -- Create Tenant Isolation Policy for sites
 CREATE POLICY sites_tenant_isolation_policy ON sites
-DROP POLICY IF EXISTS lab_samples_tenant_isolation_policy ON lab_samples;
-DROP POLICY IF EXISTS lab_test_results_tenant_isolation_policy ON lab_test_results;
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
@@ -1601,12 +1631,27 @@ CREATE POLICY vehicle_tires_tenant_isolation_policy ON vehicle_tires
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY vehicle_documents_tenant_isolation_policy ON vehicle_documents
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 CREATE POLICY inventory_items_tenant_isolation_policy ON inventory_items
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
 CREATE POLICY inventory_movements_tenant_isolation_policy ON inventory_movements
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY lab_samples_tenant_isolation_policy ON lab_samples
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY lab_test_results_tenant_isolation_policy ON lab_test_results
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
@@ -1646,16 +1691,6 @@ CREATE INDEX IF NOT EXISTS idx_transactions_tenant_site ON transactions(tenant_i
 
 -- audit_logs: append-only ve yalnızca INSERT+SELECT yapılabilir (bkz.
 -- yukarıdaki REVOKE) — GET /audit-logs de aynı tenant+created_at DESC deseni.
-CREATE POLICY lab_samples_tenant_isolation_policy ON lab_samples
-    FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', true))
-    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
-
-CREATE POLICY lab_test_results_tenant_isolation_policy ON lab_test_results
-    FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', true))
-    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
-
 CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_created_at ON audit_logs(tenant_id, created_at DESC);
 
 -- AUTH-201.4/TEST-1003: site_name filtresi (SITE_MANAGER kapsaması) vehicles/

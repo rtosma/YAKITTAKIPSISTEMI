@@ -62,10 +62,11 @@ app.use(httpLoggerMiddleware);
 // IOT-303.1: varsayılan Express limiti (100kb) 1000+ kayıtlık bir sync-batch
 // isteğini (ör. 1000 kayıt ≈ 200KB) 413 ile reddediyordu — ticket'ın kendi
 // senaryosu "3 günlük kesinti ≈ 1.500 kayıt"ı NORMAL kabul ediyor, kenar
-// durum değil. 10mb, 5.000 kayıtlık (Zod'un kendi üst sınırı) bir batch için
-// bolca pay bırakıyor.
+// durum değil. FLEET-1409: 10MB'lık bir araç belgesi base64'e çevrilince
+// ~%33 şişer (≈13.3MB) — JSON gövdesi (dosya + birkaç metadata alanı) bu
+// yüzden 10mb sınırını AŞARDI, limit 15mb'a çekildi (13.3MB + pay).
 app.use(express.json({
-  limit: '10mb',
+  limit: '15mb',
   verify: (req: any, _res, buf) => {
     req.rawBody = buf;
   }
