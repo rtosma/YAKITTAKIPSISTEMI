@@ -59,22 +59,41 @@ export async function authenticateJWT(req: AuthenticatedRequest, res: Response, 
       });
     }
 
-    // BILL-1701: SUPER_ADMIN platform operatörüdür, herhangi bir tek tenant'ın
-    // lisansına bağlı DEĞİLDİR (billing'i YÖNETEN taraf kilitlenmemeli) — bkz.
-    // adminDb.ts başındaki not: `companies` RLS'siz, bu kontrol app_user
-    // transaction'ı AÇILMADAN (tenantStorage.run'dan ÖNCE) çalışır.
+    // BILL-1701/1702: SUPER_ADMIN platform operatörüdür, herhangi bir tek
+    // tenant'ın lisansına bağlı DEĞİLDİR (billing'i YÖNETEN taraf
+    // kilitlenmemeli) — bkz. adminDb.ts başındaki not: `companies` RLS'siz,
+    // bu kontrol app_user transaction'ı AÇILMADAN (tenantStorage.run'dan
+    // ÖNCE) çalışır.
+    //
+    // BILL-1702 AC: "süre dolunca kademeli kısıtlama (önce uyarı, sonra
+    // salt-okunur — ani kesinti YOK)." İki durum KASITLI farklı davranır:
+    //  - ASKIDA (admin tarafından elle askıya alınmış): sert kapı, HER şey
+    //    402 — bu bir ödeme/uyum ihlali, "kademeli" olmasının anlamı yok.
+    //  - Süresi geçmiş (license_expiry < bugün, ama hâlâ AKTİF): SALT-OKUNUR
+    //    — GET/HEAD geçer (kullanıcı verisini görmeye devam eder, "ani
+    //    kesinti" yaşamaz), yalnızca yazma metodları (POST/PUT/PATCH/DELETE)
+    //    402 alır. 30/15/7 günlük ÖNCEDEN uyarı (licenseWarningService.ts)
+    //    zaten bu noktaya gelmeden kullanıcıyı bilgilendirmiş olur — "önce
+    //    uyarı" kısmı budur.
     if (userPayload.role !== 'SUPER_ADMIN' && !LICENSE_GATE_ALLOWLIST.has(req.path)) {
       const license = await getCompanyLicenseSnapshot(userPayload.tenantId);
       if (license) {
         const isSuspended = license.licenseStatus === 'ASKIDA';
         const isExpired = !isSuspended && !!license.licenseExpiry && license.licenseExpiry < new Date().toISOString().slice(0, 10);
-        if (isSuspended || isExpired) {
+        const isReadOnlyMethod = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
+
+        if (isSuspended) {
           return res.status(402).json({
             success: false,
-            error: isSuspended ? 'LICENSE_SUSPENDED' : 'LICENSE_EXPIRED',
-            message: isSuspended
-              ? 'Firmanızın lisansı askıya alınmıştır. Lütfen yöneticinizle iletişime geçin.'
-              : `Firmanızın lisans süresi ${license.licenseExpiry} tarihinde dolmuştur. Lütfen aboneliğinizi yenileyin.`
+            error: 'LICENSE_SUSPENDED',
+            message: 'Firmanızın lisansı askıya alınmıştır. Lütfen yöneticinizle iletişime geçin.'
+          });
+        }
+        if (isExpired && !isReadOnlyMethod) {
+          return res.status(402).json({
+            success: false,
+            error: 'LICENSE_EXPIRED_READONLY',
+            message: `Firmanızın lisans süresi ${license.licenseExpiry} tarihinde dolmuştur. Hesabınız salt-okunur moddadır — yeni kayıt/değişiklik yapmak için aboneliğinizi yenileyin.`
           });
         }
       }

@@ -5112,7 +5112,12 @@ export type AlarmCategory =
   // kartsız/yetkisiz akış tespiti — dispense oturumu olmadan pompa akışı.
   | 'UNAUTHORIZED_FLOW'
   // FLEET-1406: araç bazlı yakıt limiti 'WARN' modunda dolduğunda.
-  | 'VEHICLE_LIMIT_EXCEEDED' | 'OTHER';
+  | 'VEHICLE_LIMIT_EXCEEDED'
+  // BILL-1702 (backend/src/services/licenseWarningService.ts): lisans süresi
+  // 30/15/7 gün içinde dolacak firmalara proaktif uyarı.
+  | 'LICENSE_EXPIRY'
+  // FLEET-1407: bir aracın bakımı süre/sayaç eşiğini geçtiğinde/yaklaştığında.
+  | 'MAINTENANCE_DUE' | 'OTHER';
 export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
 

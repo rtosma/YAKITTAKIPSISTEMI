@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
@@ -22,12 +22,14 @@ import { vehicleConsumptionAnomalyQuerySchema, consumptionAnomalyScanSchema } fr
 import { setVehicleFuelLimitSchema, temporaryFuelLimitIncreaseSchema } from '../schemas/vehicleFuelLimitSchema';
 import { enqueueDespatchAdviceTransmissionSchema, despatchAdviceTransmissionListQuerySchema } from '../schemas/despatchAdviceTransmissionSchema';
 import { rejectDespatchAdviceSchema, cancelDespatchAdviceSchema } from '../schemas/despatchAdviceDispositionSchema';
+import { createVehicleMaintenanceRecordSchema, totalCostOfOwnershipQuerySchema } from '../schemas/vehicleMaintenanceSchema';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
 import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes, normalizeRecoveryCode } from '../services/totpService';
 import { isServerShuttingDown } from '../utils/shutdown';
-import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog } from '../db/adminDb';
+import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached } from '../db/adminDb';
+import { runLicenseExpiryWarningSweep } from '../services/licenseWarningService';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
@@ -1095,6 +1097,14 @@ router.post(
   validateRequest({ body: createHardwareDeviceSchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
+      // BILL-1702 AC: "limit aşımında yeni kayıt engelleme."
+      const deviceLimit = await isPackageLimitReached(req.user!.tenantId, 'devices');
+      if (deviceLimit.reached) {
+        throw new ConflictError(
+          `Paket limitine ulaşıldı: cihaz sayısı (${deviceLimit.current}/${deviceLimit.limit}). Devam etmek için paketinizi yükseltin.`
+        );
+      }
+
       const { device, secret } = await createHardwareDevice(req.body);
       res.json({
         success: true,
@@ -1829,6 +1839,162 @@ router.post(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       res.json({ success: true, data: await resubmitDespatchAdvice(req.params.id, siteScopeFor(req.user!)) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+const MAINTENANCE_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const MAINTENANCE_SCAN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /vehicles/{id}/maintenance-records:
+ *   post:
+ *     summary: Bakım-Servis Kaydı Ekle (FLEET-1407)
+ *     description: '`{ maintenanceType, performedAt, odometerValue?, costAmount, operationsDescription, nextDueDate?, nextDueMeterValue? }`. Append-only — düzeltme yeni kayıtla yapılır.'
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Aracın Bakım Geçmişi (FLEET-1407)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicles/:id/maintenance-records',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  validateRequest({ body: createVehicleMaintenanceRecordSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await createVehicleMaintenanceRecord(req.params.id, req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/vehicles/:id/maintenance-records',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getVehicleMaintenanceRecords(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /vehicles/{id}/total-cost-of-ownership:
+ *   get:
+ *     summary: Araç Bazlı Toplam Sahip Olma Maliyeti (FLEET-1407)
+ *     description: >
+ *       `?sinceDate=YYYY-AA-GG` (opsiyonel). Bakım maliyeti (gerçek) + yakıt
+ *       maliyeti (fuel_intake_receipts'in litre-ağırlıklı ortalama birim
+ *       fiyatıyla TAHMİNİ — ikmal kayıtları birim fiyat taşımıyor).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/vehicles/:id/total-cost-of-ownership',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  validateRequest({ query: totalCostOfOwnershipQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { sinceDate?: string };
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getVehicleTotalCostOfOwnership(req.params.id, q.sinceDate) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /maintenance-records/{id}:
+ *   get:
+ *     summary: Tekil Bakım Kaydı (FLEET-1407)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/maintenance-records/:id',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getVehicleMaintenanceRecord(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /maintenance-records/{id}/consumption-impact:
+ *   get:
+ *     summary: Bakım Öncesi/Sonrası Tüketim Karşılaştırması (FLEET-1407)
+ *     description: 'Bakım tarihinden önceki/sonraki 30 günlük L/100km (veya L/motor-saat) karşılaştırması.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/maintenance-records/:id/consumption-impact',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getMaintenanceConsumptionImpact(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fleet/maintenance/upcoming:
+ *   get:
+ *     summary: Yaklaşan/Geciken Bakımlar (FLEET-1407)
+ *     security:
+ *       - bearerAuth: []
+ * /fleet/maintenance/reminder-scan:
+ *   post:
+ *     summary: Bakım Hatırlatma Taramasını Şimdi Çalıştır (FLEET-1407)
+ *     description: 'Otomatik günlük süpürücü zaten çalışır; bu AI-507 alarmı hemen tetikler. Yalnızca SUPER_ADMIN/COMPANY_OWNER.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fleet/maintenance/upcoming',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getUpcomingMaintenanceReminders() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/fleet/maintenance/reminder-scan',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_SCAN_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await runMaintenanceReminderSweepForCurrentTenant() });
     } catch (error: any) {
       next(error);
     }
@@ -2770,6 +2936,22 @@ router.post(
   validateRequest({ body: createSiteSchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
+      // BILL-1702 AC: "limit aşımında yeni kayıt engelleme" — bu uç hem yeni
+      // bir ŞANTİYE hem yeni bir KULLANICI (SITE_MANAGER) oluşturduğu için
+      // ikisi de kontrol edilir.
+      const siteLimit = await isPackageLimitReached(req.user!.tenantId, 'sites');
+      if (siteLimit.reached) {
+        throw new ConflictError(
+          `Paket limitine ulaşıldı: şantiye sayısı (${siteLimit.current}/${siteLimit.limit}). Devam etmek için paketinizi yükseltin.`
+        );
+      }
+      const userLimit = await isPackageLimitReached(req.user!.tenantId, 'users');
+      if (userLimit.reached) {
+        throw new ConflictError(
+          `Paket limitine ulaşıldı: kullanıcı sayısı (${userLimit.current}/${userLimit.limit}). Devam etmek için paketinizi yükseltin.`
+        );
+      }
+
       const { siteName, location } = req.body;
       const provisioned = await createSiteWithManager(siteName, location || 'Türkiye');
 
@@ -4292,6 +4474,29 @@ router.patch(
 router.post('/quotas/reset-due', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const result = await resetDueQuotasForCurrentTenant();
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/license-expiry-sweep:
+ *   post:
+ *     summary: Lisans Süresi Uyarı Turunu Şimdi Tetikle (BILL-1702)
+ *     description: >
+ *       index.ts'teki günlük otomatik süpürücünün yaptığı işi (lisansı
+ *       30/15/7 gün içinde dolacak TÜM firmalar için alarm + Socket.io
+ *       uyarısı) MANUEL tetikler — `resetDueQuotasForCurrentTenant`'ın
+ *       aksine tek bir tenant'a değil TÜM platforma bakar (SUPER_ADMIN'e
+ *       özel). Ops ekibi ve testler için — 24 saati beklemeden.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/admin/license-expiry-sweep', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const result = await runLicenseExpiryWarningSweep();
     res.json({ success: true, data: result });
   } catch (error: any) {
     next(error);

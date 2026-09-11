@@ -301,6 +301,112 @@ export async function getCompanyLicenseSnapshot(companyId: string): Promise<Comp
 }
 
 // ============================================================================
+// BILL-1702 — Şantiye/Cihaz/Kullanıcı Sayacı, Paket Limitleri, Lisans Süresi Uyarıları
+// ============================================================================
+
+export interface PackageLimits {
+  maxSites: number | null; // null = sınırsız (KURUMSAL)
+  maxDevices: number | null;
+  maxUsers: number | null;
+}
+
+export const PACKAGE_LIMITS: Record<PackageTier, PackageLimits> = {
+  TEMEL: { maxSites: 1, maxDevices: 5, maxUsers: 5 },
+  PROFESYONEL: { maxSites: 5, maxDevices: 30, maxUsers: 25 },
+  KURUMSAL: { maxSites: null, maxDevices: null, maxUsers: null }
+};
+
+export interface PackageUsage {
+  package: PackageTier;
+  limits: PackageLimits;
+  siteCount: number;
+  deviceCount: number;
+  userCount: number;
+}
+
+/**
+ * Bir firmanın şantiye/cihaz/kullanıcı SAYIMI + paketinin limitleri.
+ * `sites`/`hardware_devices`/`users` RLS'li tablolardır ama bu dosyadaki
+ * her fonksiyon gibi doğrudan `pool` (superuser) ile sorgulanır — dosyanın
+ * başındaki nottaki gerekçeyle AYNI (yalnızca SUPER_ADMIN'e özel yollardan
+ * çağrılır, routes.ts'te authorizeRoles('SUPER_ADMIN') ile kilitli).
+ */
+export async function getCompanyPackageUsage(companyId: string): Promise<PackageUsage | null> {
+  const companyRes = await pool.query('SELECT package FROM companies WHERE id = $1', [companyId]);
+  if (companyRes.rows.length === 0) return null;
+  const packageTier: PackageTier = isPackageTier(companyRes.rows[0].package) ? companyRes.rows[0].package : 'TEMEL';
+
+  const [sitesRes, devicesRes, usersRes] = await Promise.all([
+    pool.query('SELECT COUNT(*)::int AS cnt FROM sites WHERE tenant_id = $1', [companyId]),
+    pool.query('SELECT COUNT(*)::int AS cnt FROM hardware_devices WHERE tenant_id = $1', [companyId]),
+    pool.query('SELECT COUNT(*)::int AS cnt FROM users WHERE tenant_id = $1', [companyId])
+  ]);
+
+  return {
+    package: packageTier,
+    limits: PACKAGE_LIMITS[packageTier],
+    siteCount: sitesRes.rows[0].cnt,
+    deviceCount: devicesRes.rows[0].cnt,
+    userCount: usersRes.rows[0].cnt
+  };
+}
+
+export type PackageLimitResource = 'sites' | 'devices' | 'users';
+
+/**
+ * routes.ts'teki oluşturma uçlarının (POST /sites, POST /devices, ...)
+ * yeni kaydı REDDETMESİ gerekip gerekmediğini söyler — sınırsız (KURUMSAL,
+ * limit=null) paketlerde her zaman `reached:false` döner.
+ */
+export async function isPackageLimitReached(
+  companyId: string,
+  resource: PackageLimitResource
+): Promise<{ reached: boolean; limit: number | null; current: number }> {
+  const usage = await getCompanyPackageUsage(companyId);
+  if (!usage) return { reached: false, limit: null, current: 0 };
+
+  const limit =
+    resource === 'sites' ? usage.limits.maxSites : resource === 'devices' ? usage.limits.maxDevices : usage.limits.maxUsers;
+  const current = resource === 'sites' ? usage.siteCount : resource === 'devices' ? usage.deviceCount : usage.userCount;
+
+  return { reached: limit !== null && current >= limit, limit, current };
+}
+
+export interface ExpiringCompany {
+  id: string;
+  name: string;
+  licenseExpiry: string;
+  daysRemaining: number;
+}
+
+/**
+ * BILL-1702 AC: "süre bitimine 30/15/7 gün kala uyarı." ASKIDA (zaten admin
+ * tarafından askıya alınmış) firmalar hariç tutulur — onlar için zaten
+ * authMiddleware.ts'in sert kapısı devrede, ayrıca bir "yakında dolacak"
+ * uyarısı anlamsız. Süresi ZATEN geçmiş olanlar da hariç (o, bir "uyarı"
+ * değil authMiddleware.ts'in salt-okunur kısıtlamasının konusu).
+ */
+export async function getCompaniesNearingExpiry(warningWindowDays = 30): Promise<ExpiringCompany[]> {
+  const result = await pool.query(
+    `SELECT id, name, license_expiry,
+       (license_expiry - CURRENT_DATE)::int AS days_remaining
+     FROM companies
+     WHERE license_status = 'AKTİF'
+       AND license_expiry IS NOT NULL
+       AND license_expiry >= CURRENT_DATE
+       AND license_expiry <= CURRENT_DATE + $1::int
+     ORDER BY license_expiry ASC`,
+    [warningWindowDays]
+  );
+  return result.rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    licenseExpiry: new Date(r.license_expiry).toISOString().slice(0, 10),
+    daysRemaining: r.days_remaining
+  }));
+}
+
+// ============================================================================
 // AUTH-202.3 — Cihaz Kaydı Arama (Pre-Tenant-Context)
 // ============================================================================
 

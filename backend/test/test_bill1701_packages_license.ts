@@ -144,23 +144,38 @@ async function run() {
   const authMeSuspendedRes = await api('GET', '/auth/me', ownerToken);
   check('Test 5c: ASKIDA iken GET /auth/me hâlâ erişilebilir (allowlist)', authMeSuspendedRes.status === 200, `status: ${authMeSuspendedRes.status}`);
 
-  // --- Test 6: lisans AKTİF ama süresi geçmiş tarih → 402 LICENSE_EXPIRED ---
+  // --- Test 6: lisans AKTİF ama süresi geçmiş tarih → SALT-OKUNUR (BILL-1702) ---
+  // GET hâlâ çalışır ("ani kesinti YOK"), yazma (POST/PUT/PATCH/DELETE) 402 alır.
+  // (Not: BILL-1701'de bu senaryo tam blok'tu; BILL-1702 "kademeli kısıtlama"
+  // AC'siyle salt-okunur'a evrildi — bkz. authMiddleware.ts LICENSE_EXPIRED_READONLY.)
   await api('PATCH', `/companies/${companyId}`, adminToken, { licenseStatus: 'AKTİF', licenseExpiry: '2020-01-01' });
   await sleep(200);
 
-  const vehiclesExpiredRes = await api('GET', '/vehicles', ownerToken);
+  const vehiclesExpiredGetRes = await api('GET', '/vehicles', ownerToken);
   check(
-    'Test 6: Lisans süresi geçmiş (2020-01-01) iken GET /vehicles 402 LICENSE_EXPIRED döner',
-    vehiclesExpiredRes.status === 402 && vehiclesExpiredRes.data.error === 'LICENSE_EXPIRED',
-    `status: ${vehiclesExpiredRes.status}, yanıt: ${JSON.stringify(vehiclesExpiredRes.data)}`
+    'Test 6: Lisans süresi geçmiş iken GET /vehicles hâlâ 200 döner (salt-okunur, ani kesinti yok)',
+    vehiclesExpiredGetRes.status === 200,
+    `status: ${vehiclesExpiredGetRes.status}`
+  );
+  const vehiclesExpiredPostRes = await api('POST', '/vehicles', ownerToken, {});
+  check(
+    'Test 6b: Lisans süresi geçmiş iken POST /vehicles 402 LICENSE_EXPIRED_READONLY döner',
+    vehiclesExpiredPostRes.status === 402 && vehiclesExpiredPostRes.data.error === 'LICENSE_EXPIRED_READONLY',
+    `status: ${vehiclesExpiredPostRes.status}, yanıt: ${JSON.stringify(vehiclesExpiredPostRes.data)}`
   );
 
-  // --- Test 7: lisans yenilenince (gelecek tarih) erişim geri gelir ---
+  // --- Test 7: lisans yenilenince (gelecek tarih) yazma erişimi de geri gelir ---
   await api('PATCH', `/companies/${companyId}`, adminToken, { licenseStatus: 'AKTİF', licenseExpiry: '2099-12-31' });
   await sleep(200);
 
   const vehiclesRestoredRes = await api('GET', '/vehicles', ownerToken);
-  check('Test 7: Lisans yenilenince (2099-12-31) GET /vehicles tekrar 200 döner', vehiclesRestoredRes.status === 200, `status: ${vehiclesRestoredRes.status}`);
+  check('Test 7: Lisans yenilenince GET /vehicles tekrar 200 döner', vehiclesRestoredRes.status === 200, `status: ${vehiclesRestoredRes.status}`);
+  const vehiclesRestoredPostRes = await api('POST', '/vehicles', ownerToken, {});
+  check(
+    'Test 7b: Lisans yenilenince salt-okunur kısıtlaması kalktı (POST artık 402 değil — 400/422 doğrulama hatası dönebilir, ama LICENSE_EXPIRED_READONLY DEĞİL)',
+    vehiclesRestoredPostRes.status !== 402 || vehiclesRestoredPostRes.data.error !== 'LICENSE_EXPIRED_READONLY',
+    `status: ${vehiclesRestoredPostRes.status}, yanıt: ${JSON.stringify(vehiclesRestoredPostRes.data)}`
+  );
 
   console.log('===========================================================');
   console.log(`📊 TEST SONUÇLARI: ${passed} / ${total} TEST BAŞARILI`);

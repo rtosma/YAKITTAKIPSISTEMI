@@ -17,7 +17,8 @@ import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
-import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant } from './db/tenantDb';
+import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant } from './db/tenantDb';
+import { runLicenseExpiryWarningSweep } from './services/licenseWarningService';
 
 // NOTE: environment variables are loaded by ./bootstrap.ts (the real process
 // entry point — see package.json `dev`/`build`), BEFORE this module or any of
@@ -286,6 +287,23 @@ async function startServer(): Promise<void> {
     }
   }, DAILY_RECON_SWEEP_MS);
 
+  // BILL-1702 AC: "süre bitimine 30/15/7 gün kala uyarı." Ticket "NOTIF-1601"
+  // (ayrı bildirim servisi) öneriyor — yok; yukarıdakilerle AYNI setInterval.
+  // Gün granülaritesinde bir eşik olduğu için günlük bir tur yeterli
+  // (mantığın kendisi licenseWarningService.ts'te — `POST
+  // /admin/license-expiry-sweep` ile de manuel/anlık tetiklenebilir).
+  const LICENSE_WARNING_SWEEP_MS = 24 * 60 * 60 * 1000;
+  const licenseWarningSweepInterval = setInterval(async () => {
+    try {
+      const { checked, warned } = await runLicenseExpiryWarningSweep();
+      if (warned > 0) {
+        logger.info({ checked, warned }, `⏳ [BILL-1702] Lisans süresi uyarı turu tamamlandı (${warned}/${checked} firma uyarıldı).`);
+      }
+    } catch (err) {
+      logger.error({ err }, '🚨 [BILL-1702] Lisans süresi uyarı turu başarısız.');
+    }
+  }, LICENSE_WARNING_SWEEP_MS);
+
   // AI-504 AC: "Mesai dışı alımlar işaretlenip bildirim üretmelidir." Ticket
   // "ARCH-102 event handler" öneriyor — yok; yukarıdakilerle AYNI setInterval.
   // Son 2 saatlik ikmalleri tarar (üst üste binme (transaction_id, anomaly_type)
@@ -366,6 +384,31 @@ async function startServer(): Promise<void> {
     }
   }, DESPATCH_TRANSMISSION_SWEEP_MS);
 
+  // FLEET-1407 AC: "yaklaşan bakımlar için hatırlatma sistemi." Ticket
+  // NOTIF-1601 öneriyor — yok; yukarıdaki süpürücülerle AYNI setInterval.
+  // Günlük bir tur, tarih/sayaç eşiğine yaklaşan/geçen araçlar için AI-507
+  // birleşik alarm sistemine (MAINTENANCE_DUE) düşer.
+  const MAINTENANCE_REMINDER_SWEEP_MS = 24 * 60 * 60 * 1000;
+  const maintenanceReminderSweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [FLEET-1407] Tenant listesi alınamadı, bu bakım hatırlatma turu atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const r = await runWithTenant({ tenantId }, () => runMaintenanceReminderSweepForCurrentTenant());
+        if (r.alarmsRaised > 0) {
+          logger.info({ tenantId, ...r }, `🔧 [FLEET-1407] Bakım hatırlatma taraması: ${r.alarmsRaised} yeni/tekrarlanan alarm.`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [FLEET-1407] Bakım hatırlatma taraması başarısız.');
+      }
+    }
+  }, MAINTENANCE_REMINDER_SWEEP_MS);
+
   // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
   setupGracefulShutdown(server, {
     timeoutMs: 30000,
@@ -377,9 +420,11 @@ async function startServer(): Promise<void> {
       if (weeklyAnomalySweepInterval) clearInterval(weeklyAnomalySweepInterval);
       clearInterval(quotaResetSweepInterval);
       clearInterval(dailyReconSweepInterval);
+      clearInterval(licenseWarningSweepInterval);
       clearInterval(anomalySweepInterval);
       clearInterval(alarmEscalationSweepInterval);
       clearInterval(despatchTransmissionSweepInterval);
+      clearInterval(maintenanceReminderSweepInterval);
 
       // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
       // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters
