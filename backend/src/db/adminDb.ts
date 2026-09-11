@@ -84,6 +84,12 @@ function isPackageTier(value: unknown): value is PackageTier {
   return typeof value === 'string' && (PACKAGE_TIERS as string[]).includes(value);
 }
 
+export const MODULE_NAMES = Object.keys(DEFAULT_MODULES) as Array<keyof typeof DEFAULT_MODULES>;
+
+function isModuleName(value: unknown): value is string {
+  return typeof value === 'string' && (MODULE_NAMES as string[]).includes(value);
+}
+
 function slugifyCompanyName(name: string): string {
   return name
     .toLowerCase()
@@ -222,6 +228,34 @@ export async function createCompanyWithOwner(data: {
   }
 }
 
+/**
+ * BILL-1703: `getTenantStore()`'a bağımlı `writeAuditLog` (utils/auditLog.ts)
+ * burada kullanılamaz — bu dosyadaki fonksiyonlar tenant context AÇMADAN
+ * (SUPER_ADMIN'in KENDİ tenant'ıyla değil, HEDEF firmayla) çalışır. Aynı
+ * gerekçeyle zaten var olan `insertAuthAuditLog` (AUTH-207) ile AYNI desen,
+ * ama target_type sabit kodlu olmadığından genel amaçlı.
+ */
+async function insertCompanyAuditLog(
+  tenantId: string,
+  actorUserId: string,
+  action: string,
+  targetType: string,
+  targetId: string,
+  beforeValue: Record<string, unknown> | null,
+  afterValue: Record<string, unknown> | null
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO audit_logs (id, tenant_id, user_id, action, target_type, target_id, before_value, after_value)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
+    [generateId('audit'), tenantId, actorUserId, action, targetType, targetId, JSON.stringify(beforeValue), JSON.stringify(afterValue)]
+  );
+}
+
+async function getCompanyModuleAddonNames(tenantId: string): Promise<string[]> {
+  const res = await pool.query('SELECT module_name FROM company_module_addons WHERE tenant_id = $1', [tenantId]);
+  return res.rows.map((r) => r.module_name);
+}
+
 export async function updateCompanyAdmin(
   id: string,
   data: {
@@ -229,17 +263,27 @@ export async function updateCompanyAdmin(
     licenseExpiry?: string | null;
     package?: PackageTier;
     modules?: Partial<Record<string, boolean>>;
-  }
+  },
+  actorUserId: string
 ): Promise<AdminCompanyProfile> {
-  const current = await pool.query('SELECT modules FROM companies WHERE id = $1', [id]);
+  const current = await pool.query('SELECT license_status, license_expiry, package, modules FROM companies WHERE id = $1', [id]);
   if (current.rows.length === 0) throw new Error('Firma bulunamadı.');
+  const before = current.rows[0];
 
   // BILL-1701: paket değişimi `modules`'u o paketin VARSAYILAN demedine
   // sıfırlar — admin aynı istekte açık `modules` de göndermişse (ör. paketi
   // değiştirirken tek bir özelliği manuel açık bırakmak), o üzerine biner.
-  const baseModules = isPackageTier(data.package)
-    ? PACKAGE_MODULE_DEFAULTS[data.package]
-    : current.rows[0].modules || {};
+  // BILL-1703: ek modül satın alımları (company_module_addons) paket
+  // değişiminden ETKİLENMEMELİ — paket varsayılanlarının HEMEN üstüne,
+  // admin'in açık `modules`'undan ÖNCE uygulanır (admin yine de bilerek
+  // bir addon'u bu istekte kapatmak isterse en son o kazanır).
+  let baseModules = isPackageTier(data.package) ? PACKAGE_MODULE_DEFAULTS[data.package] : before.modules || {};
+  if (isPackageTier(data.package)) {
+    const addonNames = await getCompanyModuleAddonNames(id);
+    if (addonNames.length > 0) {
+      baseModules = { ...baseModules, ...Object.fromEntries(addonNames.map((m) => [m, true])) };
+    }
+  }
   const mergedModules = data.package || data.modules ? { ...baseModules, ...(data.modules || {}) } : undefined;
 
   const fields: string[] = [];
@@ -268,10 +312,126 @@ export async function updateCompanyAdmin(
   values.push(id);
   await pool.query(`UPDATE companies SET ${fields.join(', ')} WHERE id = $${idx}`, values);
 
+  // BILL-1703 AC: "manuel modül aktivasyonlarının audit'lenmesi" — bu uç
+  // (PATCH /companies/:id) şimdiye kadar HİÇ audit_logs'a yazmıyordu.
+  await insertCompanyAuditLog(id, actorUserId, 'COMPANY_ADMIN_UPDATE', 'company', id, before, {
+    licenseStatus: data.licenseStatus ?? before.license_status,
+    licenseExpiry: data.licenseExpiry !== undefined ? data.licenseExpiry : before.license_expiry,
+    package: isPackageTier(data.package) ? data.package : before.package,
+    modules: mergedModules ?? before.modules
+  });
+
   const all = await getAllCompanies();
   const updated = all.find((c) => c.id === id);
   if (!updated) throw new Error('Firma bulunamadı.');
   return updated;
+}
+
+// ============================================================================
+// BILL-1703 — Ek Modül Satın Alımları (Paket Bağımsız, Kalıcı)
+// ============================================================================
+
+export interface CompanyModuleAddon {
+  moduleName: string;
+  addedAt: string;
+  addedBy: string;
+}
+
+export async function getCompanyModuleAddons(tenantId: string): Promise<CompanyModuleAddon[]> {
+  const res = await pool.query(
+    'SELECT module_name, added_at, added_by FROM company_module_addons WHERE tenant_id = $1 ORDER BY added_at ASC',
+    [tenantId]
+  );
+  return res.rows.map((r) => ({ moduleName: r.module_name, addedAt: r.added_at, addedBy: r.added_by }));
+}
+
+/**
+ * Bir modülü firmanın PAKETİNDEN bağımsız olarak kalıcı şekilde açar —
+ * hemen `companies.modules`'a da yazılır (etkisi ANINDA başlar), VE
+ * company_module_addons'a kaydedilir (paket değiştiğinde/yeniden
+ * uygulandığında kaybolmasın diye, bkz. updateCompanyAdmin/reapplyPackageDefaults).
+ */
+export async function addCompanyModuleAddon(tenantId: string, moduleName: string, actorUserId: string): Promise<void> {
+  if (!isModuleName(moduleName)) throw new Error(`Geçersiz modül adı: ${moduleName}`);
+  const companyRes = await pool.query('SELECT modules FROM companies WHERE id = $1', [tenantId]);
+  if (companyRes.rows.length === 0) throw new Error('Firma bulunamadı.');
+
+  await pool.query(
+    `INSERT INTO company_module_addons (tenant_id, module_name, added_by) VALUES ($1, $2, $3)
+     ON CONFLICT (tenant_id, module_name) DO NOTHING`,
+    [tenantId, moduleName, actorUserId]
+  );
+  const beforeModules = companyRes.rows[0].modules || {};
+  const afterModules = { ...beforeModules, [moduleName]: true };
+  await pool.query('UPDATE companies SET modules = $1::jsonb WHERE id = $2', [JSON.stringify(afterModules), tenantId]);
+
+  await insertCompanyAuditLog(tenantId, actorUserId, 'MODULE_ADDON_GRANTED', 'company_module_addon', moduleName, { modules: beforeModules }, { modules: afterModules });
+}
+
+/**
+ * Ek modülü kaldırır — `companies.modules`'daki değeri KÖRÜ KÖRÜNE false
+ * yapmaz, firmanın PAKETİNİN o modül için varsayılanına DÖNDÜRÜR (paket zaten
+ * o modülü içeriyorsa addon'u kaldırmak erişimi KESMEMELİ).
+ */
+export async function removeCompanyModuleAddon(tenantId: string, moduleName: string, actorUserId: string): Promise<void> {
+  const companyRes = await pool.query('SELECT package, modules FROM companies WHERE id = $1', [tenantId]);
+  if (companyRes.rows.length === 0) throw new Error('Firma bulunamadı.');
+  const packageTier: PackageTier = isPackageTier(companyRes.rows[0].package) ? companyRes.rows[0].package : 'TEMEL';
+
+  const deleteRes = await pool.query('DELETE FROM company_module_addons WHERE tenant_id = $1 AND module_name = $2', [tenantId, moduleName]);
+  if (deleteRes.rowCount === 0) return; // zaten addon değildi — no-op
+
+  const beforeModules = companyRes.rows[0].modules || {};
+  const afterModules = { ...beforeModules, [moduleName]: PACKAGE_MODULE_DEFAULTS[packageTier][moduleName] ?? false };
+  await pool.query('UPDATE companies SET modules = $1::jsonb WHERE id = $2', [JSON.stringify(afterModules), tenantId]);
+
+  await insertCompanyAuditLog(tenantId, actorUserId, 'MODULE_ADDON_REVOKED', 'company_module_addon', moduleName, { modules: beforeModules }, { modules: afterModules });
+}
+
+// ============================================================================
+// BILL-1703 — Paket Varsayılanlarının Mevcut Firmalara Kontrollü Yayılması
+// ============================================================================
+
+export interface PackageReapplyResult {
+  companyId: string;
+  companyName: string;
+  changed: boolean;
+  before: Record<string, boolean>;
+  after: Record<string, boolean>;
+}
+
+/**
+ * Bir paket tanımı (PACKAGE_MODULE_DEFAULTS) DEĞİŞTİĞİNDE (kod değişikliği,
+ * deploy), o paketteki firmalar OTOMATİK/sessizce güncellenmez — BILL-1702
+ * AC'sindeki "ani kesinti yok" ilkesiyle aynı ruh: SUPER_ADMIN bu fonksiyonu
+ * BİLEREK/açıkça tetiklemeli (routes.ts'te ayrı bir uç). Her firma için
+ * `modules = { ...PAKET_VARSAYILANI, ...ekModülAddonları }` olarak YENİDEN
+ * kurulur — addon'lar HER ZAMAN hayatta kalır, ama daha önce elle yapılmış
+ * (addon olmayan) ad-hoc `modules` override'ları bu işlemde KASITLI olarak
+ * silinir (paket tanımının otoritesini geri kazanması budur).
+ */
+export async function reapplyPackageDefaults(packageTier: PackageTier, actorUserId: string): Promise<PackageReapplyResult[]> {
+  const companiesRes = await pool.query('SELECT id, name, modules FROM companies WHERE package = $1', [packageTier]);
+  const results: PackageReapplyResult[] = [];
+
+  for (const row of companiesRes.rows) {
+    const addonNames = await getCompanyModuleAddonNames(row.id);
+    const newModules = {
+      ...PACKAGE_MODULE_DEFAULTS[packageTier],
+      ...Object.fromEntries(addonNames.map((m) => [m, true]))
+    };
+    const beforeModules = row.modules || {};
+    const changed = JSON.stringify(beforeModules) !== JSON.stringify(newModules);
+
+    if (changed) {
+      await pool.query('UPDATE companies SET modules = $1::jsonb WHERE id = $2', [JSON.stringify(newModules), row.id]);
+      await insertCompanyAuditLog(row.id, actorUserId, 'PACKAGE_DEFAULTS_REAPPLIED', 'company', row.id, { modules: beforeModules }, { modules: newModules });
+    }
+
+    results.push({ companyId: row.id, companyName: row.name, changed, before: beforeModules, after: newModules });
+  }
+
+  return results;
 }
 
 // ============================================================================

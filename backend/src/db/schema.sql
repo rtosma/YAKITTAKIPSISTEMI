@@ -33,6 +33,21 @@ ALTER TABLE companies ADD COLUMN IF NOT EXISTS modules JSONB NOT NULL DEFAULT '{
 -- olarak etiketlemek modülleri geri almadan yanıltıcı bir paket adı verirdi.
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS package VARCHAR(32) NOT NULL DEFAULT 'KURUMSAL';
 
+-- BILL-1703: bir firmaya PAKETİNİN dışında, tek tek "satın alınmış" ek
+-- modüller. companies.modules (paket temelli, admin paket değiştirince
+-- SIFIRLANIR — bkz. adminDb.ts updateCompanyAdmin) ile KASITLI olarak AYRI:
+-- burası bir eklentinin NEDEN etkin olduğunun kalıcı kaydı — paket
+-- değiştiğinde/paket varsayılanları yeniden uygulandığında (reapplyPackageDefaults)
+-- buradaki satırlar `companies.modules`'a HER ZAMAN true olarak yeniden
+-- uygulanır, yani ek modül satın alımı paket değişikliğinden ETKİLENMEZ.
+CREATE TABLE IF NOT EXISTS company_module_addons (
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    module_name VARCHAR(64) NOT NULL,
+    added_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    added_by VARCHAR(64) NOT NULL,
+    PRIMARY KEY (tenant_id, module_name)
+);
+
 -- 2. Vehicles Table with Tenant ID
 CREATE TABLE IF NOT EXISTS vehicles (
     id VARCHAR(64) PRIMARY KEY,

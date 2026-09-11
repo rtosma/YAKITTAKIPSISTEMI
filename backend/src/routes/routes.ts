@@ -38,7 +38,7 @@ import { createTankSchema, updateTankSchema } from '../schemas/tankSchema';
 import { dispenseRequestSchema, transactionQuerySchema, transactionExportQuerySchema, syncBatchSchema } from '../schemas/transactionSchema';
 import { dispenseRequestAuthSchema, dispenseHeartbeatSchema, dispenseFinalizeSchema } from '../schemas/dispenseSessionSchema';
 import { createCrossSitePermissionSchema, updateCrossSitePermissionStatusSchema } from '../schemas/crossSiteSchema';
-import { createCompanySchema, updateCompanySchema } from '../schemas/companySchema';
+import { createCompanySchema, updateCompanySchema, moduleAddonSchema } from '../schemas/companySchema';
 import { loginSchema, changePasswordSchema, forgotPasswordSchema, resetPasswordSchema } from '../schemas/authSchema';
 import { config } from '../config/env';
 import { requestPasswordReset, finalizePasswordReset } from '../services/passwordResetService';
@@ -1001,13 +1001,121 @@ router.patch(
   validateRequest({ body: updateCompanySchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const updated = await updateCompanyAdmin(req.params.id, req.body);
+      const updated = await updateCompanyAdmin(req.params.id, req.body, req.user!.userId);
       res.json({ success: true, message: 'Firma güncellendi.', data: updated });
     } catch (error: any) {
       next(error);
     }
   }
 );
+
+/**
+ * @swagger
+ * /companies/{id}/module-addons:
+ *   get:
+ *     summary: Firmanın Ek Modül Satın Alımları (BILL-1703, Süper Admin)
+ *     description: >
+ *       Firmanın PAKETİNDEN bağımsız, tek tek açılmış (satın alınmış) ek
+ *       modülleri listeler — paket değişse/yeniden uygulansa bile kaybolmaz.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/companies/:id/module-addons', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const addons = await getCompanyModuleAddons(req.params.id);
+    res.json({ success: true, data: addons });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /companies/{id}/module-addons:
+ *   post:
+ *     summary: Ek Modül Satın Alımı Ekle (BILL-1703, Süper Admin)
+ *     description: >
+ *       Bir modülü firmanın paketinden bağımsız olarak kalıcı şekilde açar
+ *       (etkisi anında başlar) ve audit_logs'a MODULE_ADDON_GRANTED olarak yazar.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/companies/:id/module-addons',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  validateRequest({ body: moduleAddonSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await addCompanyModuleAddon(req.params.id, req.body.moduleName, req.user!.userId);
+      const addons = await getCompanyModuleAddons(req.params.id);
+      res.json({ success: true, message: 'Ek modül eklendi.', data: addons });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /companies/{id}/module-addons/{moduleName}:
+ *   delete:
+ *     summary: Ek Modül Satın Alımını Kaldır (BILL-1703, Süper Admin)
+ *     description: >
+ *       Ek modülü kaldırır — firmanın paketi o modülü zaten içeriyorsa erişim
+ *       KESİLMEZ, yalnızca paketin varsayılan değerine döner. audit_logs'a
+ *       MODULE_ADDON_REVOKED olarak yazar.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete('/companies/:id/module-addons/:moduleName', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    await removeCompanyModuleAddon(req.params.id, req.params.moduleName, req.user!.userId);
+    const addons = await getCompanyModuleAddons(req.params.id);
+    res.json({ success: true, message: 'Ek modül kaldırıldı.', data: addons });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/package-defaults/{package}/reapply:
+ *   post:
+ *     summary: Paket Varsayılanlarını Mevcut Firmalara Yeniden Uygula (BILL-1703, Süper Admin)
+ *     description: >
+ *       Bir paket tanımı (kodda) DEĞİŞTİĞİNDE o paketteki TÜM firmalara
+ *       OTOMATİK yansımaz — bu uç, SUPER_ADMIN'in bilerek tetiklediği
+ *       KONTROLLÜ bir yayılım. Her firma için modules = paket varsayılanı +
+ *       ek modül satın alımları (addon'lar hep korunur) olarak yeniden
+ *       kurulur; daha önceki ad-hoc (addon olmayan) manuel override'lar
+ *       KASITLI olarak silinir. Her değişen firma için audit_logs'a
+ *       PACKAGE_DEFAULTS_REAPPLIED yazılır.
+ *     parameters:
+ *       - in: path
+ *         name: package
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [TEMEL, PROFESYONEL, KURUMSAL]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/admin/package-defaults/:package/reapply', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const packageTier = req.params.package;
+    if (!(PACKAGE_TIERS as string[]).includes(packageTier)) {
+      throw new BadRequestError(`Geçersiz paket: ${packageTier}. Geçerli değerler: ${PACKAGE_TIERS.join(', ')}`);
+    }
+    const results = await reapplyPackageDefaults(packageTier as (typeof PACKAGE_TIERS)[number], req.user!.userId);
+    res.json({
+      success: true,
+      data: { packageTier, companiesChecked: results.length, companiesChanged: results.filter((r) => r.changed).length, results }
+    });
+  } catch (error: any) {
+    next(error);
+  }
+});
 
 /**
  * @swagger

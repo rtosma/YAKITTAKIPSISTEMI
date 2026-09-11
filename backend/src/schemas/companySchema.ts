@@ -27,5 +27,10 @@ export const updateCompanySchema = z.object({
   }).optional()
 });
 
+// BILL-1703: ek modül satın alımı — yalnızca bilinen 6 modül adından biri.
+export const moduleAddonSchema = z.object({
+  moduleName: z.enum(['aiAnomaly', 'eInvoice', 'smartWarehouse', 'maintenanceTrack', 'driverScore', 'crossSiteAuth'])
+});
+
 export type CreateCompanyDTO = z.infer<typeof createCompanySchema>;
 export type UpdateCompanyDTO = z.infer<typeof updateCompanySchema>;
