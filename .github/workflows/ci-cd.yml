@@ -230,6 +230,14 @@ jobs:
       - name: "TEST_PLAN §0.1: Test Edilmemiş Uç Kapsama Testleri (GAP-1/GAP-2)"
         run: cd backend && npx tsx test/test_gap_untested_endpoints.ts
 
+      # TEST_PLAN.md §2.2 — mevcut 59 testin HEPSİ istekleri sırayla atıyordu;
+      # sıralı bir test, FOR UPDATE kilitlerini tamamen kaldırsanız bile geçer.
+      # Bu test eşzamanlı yük üretip kaybolan güncelleme (lost update) ve stok
+      # aşımı oluşup oluşmadığını sınar. Doğrulandı: kilitler kaldırıldığında
+      # 10 testten 5'i kırılıyor.
+      - name: "TEST_PLAN §2.2: Eşzamanlılık / Race Condition Testleri"
+        run: cd backend && npx tsx test/test_race_conditions.ts
+
       - name: Run FUEL-401 RFID Dispense Session State Machine Tests
         run: cd backend && npx tsx test/test_fuel401_dispense_session.ts
 

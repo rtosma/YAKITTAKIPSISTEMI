@@ -1,3 +1,4 @@
+import Redis from 'ioredis';
 import { Client } from 'pg';
 
 /**
@@ -75,7 +76,29 @@ async function call(
   return { status: res.status, body };
 }
 
+const redis = new Redis({
+  host: process.env.REDIS_HOST || 'localhost',
+  port: parseInt(process.env.REDIS_PORT || '6379', 10)
+});
+
+/**
+ * loginRateLimiter IP bazlıdır (10 deneme / 15 dk) ve TÜM testler CI'da aynı
+ * IP'den gelir. Bu dosya 5 farklı rol için giriş yaptığından, temizlik
+ * yapılmazsa hem kendi son testlerini hem de paketteki SONRAKİ test
+ * dosyalarını 429'a düşürüp yanlış başarısızlık üretir (canlı gözlemlendi:
+ * temizlik eklenmeden önce test_auth201 ve test_195 bu yüzden kırılıyordu).
+ */
+async function resetLoginRateLimit(): Promise<void> {
+  try {
+    const keys = await redis.keys('rl:auth-login:*');
+    if (keys.length > 0) await redis.del(...keys);
+  } catch {
+    // Redis erişilemezse test yine de denesin — fail-fast noktası değil.
+  }
+}
+
 async function login(username: string): Promise<string> {
+  await resetLoginRateLimit();
   const res = await fetch(`${API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -284,6 +307,7 @@ async function run() {
   console.log(`SONUÇ: ${passed}/${total} test geçti.`);
   console.log('===========================================================');
 
+  await redis.quit(); // açık bağlantı kalırsa süreç sonlanmaz
   if (passed !== total) process.exit(1);
 }
 

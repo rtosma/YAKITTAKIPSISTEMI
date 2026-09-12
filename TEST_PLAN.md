@@ -30,9 +30,10 @@ olarak karşılaştırıldı (path prefix eşleştirmesi — parametre içeren y
 endpoint en az bir testte geçiyor.** Gerçekten hiç test edilmeyen yalnızca 2
 endpoint bulundu:
 
-- [ ] **`GET /tenant-info`** — düşük risk (DB'ye dokunmuyor, yalnızca
-      AsyncLocalStorage debug çıktısı döner) ama hiç smoke testi bile yok.
-- [ ] **`GET /policies/fail-open/offline-ratio-alerts`** — orta risk:
+- [x] **`GET /tenant-info`** — ✅ test edildi VE kimlik doğrulaması eklendi
+      (ayrıntı: §2.2 GAP-2). Tarama sırasında auth`suz olduğu bulundu.
+- [x] **`GET /policies/fail-open/offline-ratio-alerts`** — ✅ test edildi
+      (ayrıntı: §2.2 GAP-1). Orta risk:
       `HARDWARE_DEVICE_MANAGER_ROLES` ile korunan, `getOfflineDispenseRatioAlerts()`
       çağıran bir RBAC'lı okuma ucu, **hiç test edilmemiş**. FUEL-410
       fail-open politika motorunun bir parçası; hem RBAC hem tenant-scoping
@@ -65,6 +66,32 @@ boşluklar **route sayısında değil**, aşağıdaki bölümlerde detaylandır�
       eklendi" değil, "kontrolün çalıştığı doğrulandı" ölçütünü kullanır.
       (Bu yüzden eklenen üç guard'ın da negatif testi yapıldı: kasıtlı bir
       ihlalde gerçekten exit 1 döndükleri doğrulandı.)
+
+### 0.3 Test Aşamasında Öğrenilen Ortam/Süreç Dersleri
+
+- [x] **Test paketi SIRAYLA koşarken login rate-limit'i yanlış başarısızlık
+      üretiyor.** `loginRateLimiter` IP bazlı (10 deneme / 15 dk) ve tüm
+      testler aynı IP'den geliyor. Yeni yazılan iki test (5 + 1 giriş)
+      limiti tüketince `test_auth201` ve `test_195_tenant_isolation`
+      kırıldı — oysa ikisi de TEK BAŞINA %100 geçiyordu. Bu, testin değil
+      ORTAMIN hatası; mevcut testlerin (`test_fuel410`, `test_arch108`)
+      kullandığı "girişten önce `rl:auth-login:*` anahtarlarını sil"
+      deseni yeni testlere de eklendi. **KURAL: giriş yapan her yeni test
+      bu temizliği yapmalıdır.**
+- [x] **Sıfırdan `docker compose up` bu makinede şema yüklemiyor.**
+      Postgres init script'leri (`docker-entrypoint-initdb.d`) konteynerdeki
+      `postgres` kullanıcısı (uid 70) olarak çalışır; ancak
+      `/sgoinfre/iekmen` dizini `drwx------` (700) olduğu için bind-mount'lu
+      `schema.sql` okunamıyor → `psql: Permission denied` → şema hiç
+      yüklenmiyor → backend `relation "hardware_devices" does not exist`
+      ile restart döngüsüne giriyor. Bu ORTAMA ÖZGÜ bir izin sorunu
+      (CI'da oluşmaz), projenin hatası değil. Geçici çözüm (ev dizini
+      iznini değiştirmeden): şema ve seed'i stdin ile yükle —
+      `docker exec -i yakittakip_postgres psql -U postgres -d yakittakip_db \
+        -v ON_ERROR_STOP=1 < backend/src/db/schema.sql` (sonra seed dosyası).
+      Kalıcı çözüm isteniyorsa `chmod o+x /sgoinfre/iekmen` yeterlidir
+      (dizin listelemeyi açmaz, yalnızca geçiş izni verir) — bu bir
+      kullanıcı kararı olduğu için uygulanmadı.
 
 ---
 
@@ -143,13 +170,24 @@ listesine ekliyoruz:
       eklendiği anda `tenantId`/`userId`/`traceId`/`ipAddress` sızardı.
       Kimlik doğrulaması arkasına alındı (kaldırılmadı — tanılama değeri
       var ve artık DOLU context döndürüyor). Test 15-17 ile kilitlendi.
-- [ ] **Race condition / eşzamanlılık testleri** — şu an yok. Örnekler:
-      - Aynı tank üzerinde eşzamanlı 2 ikmal isteği → stok negatife düşmemeli
-        (mevcut `FOR UPDATE` kilit deseni doğrulanmalı).
-      - Aynı kotaya eşzamanlı 2 düşüm isteği → kota limitinin altına
-        inilmemeli.
-      - `tenant_deletion_approvals`'a eşzamanlı 2. onay yarışı → composite
-        PK'nın gerçekten çakışmayı engellediği doğrulanmalı.
+- [x] **Race condition / eşzamanlılık testleri** — ✅ TAMAMLANDI
+      (`test/test_race_conditions.ts`, 10/10). Mevcut 59 testin HEPSİ
+      istekleri SIRAYLA atıyordu; sıralı bir test, `FOR UPDATE` kilitlerini
+      tamamen kaldırsanız bile geçer. Kapsanan:
+      - Envanter: eşzamanlı 2 çıkış (7+7 > stok 10) → tam biri 409;
+        6 eşzamanlı çıkış (6×3, stok 10) → tam 3'ü kabul; stok asla negatif.
+      - **Lost-update kanıtı:** eşzamanlı hareketlerin `balance_after`
+        değerleri benzersiz bir zincir oluşturuyor (10→7→4→1). İki
+        transaction aynı değeri okuyup üzerine yazsaydı aynı `balance_after`
+        yazılırdı.
+      - Tank: 8 eşzamanlı ikmal → hepsi işlendi, seviye tam 8×10 düştü,
+        yazılan ikmal kayıtlarının toplamı tanktan düşenle mutabık.
+      **Mutation ile doğrulandı:** `recordInventoryMovement`'taki
+      `FOR UPDATE` kaldırılıp backend yeniden derlendiğinde 10 testten 5'i
+      kırıldı (tank testleri geçmeye devam etti — onların kilidi yerindeydi),
+      ardından kod geri yüklendi. Yani testler gerçekten kilitleri ölçüyor.
+- [ ] Kota ve `tenant_deletion_approvals` eşzamanlılığı — aynı desenle
+      eklenecek (bu turda envanter + tank kapsandı).
 - [ ] **Pagination/filtreleme sınır-durum testleri** — `limit=0`,
       negatif `offset`, var olmayan `sort` alanı, çok büyük `limit` (DoS
       potansiyeli) gibi durumlar sistematik olarak taranmamış; mevcut
@@ -413,7 +451,7 @@ Test aşamasına geçildiğinde önerilen sıra (yüksek etki / düşük efor ö
 2. **P1 — Orta efor, yüksek değer:**
    - [x] ✅ Frontend Vitest+RTL kurulumu + AppContext/api.ts testleri
          (bölüm 3.1-3.2) — **24 test**, 6 mutasyonla doğrulandı.
-   - [ ] Race-condition testleri (bölüm 2.2).
+   - [x] ✅ Race-condition testleri (bölüm 2.2) — 10 test, mutation ile doğrulandı.
    - [ ] CSP header tespiti + öneri (bölüm 5.1).
    - [ ] Rol bazlı UI koşulları + form doğrulama testleri (bölüm 3.2'nin
          kalan maddeleri).
