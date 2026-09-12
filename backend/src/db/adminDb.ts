@@ -2,7 +2,8 @@ import { pool } from './postgresPool';
 import { hashPassword } from '../utils/password';
 import { generateId } from '../utils/id';
 import { encryptDeviceSecret, generateDeviceSecret } from '../utils/hardwareSecretCrypto';
-import { ForbiddenError, ConflictError } from '../utils/errors';
+import { ForbiddenError, ConflictError, NotFoundError } from '../utils/errors';
+import { encryptTenantExport } from '../utils/tenantExportCrypto';
 
 /**
  * SUPER_ADMIN'e özel, tek bir tenant'a kısıtlı OLMAYAN sorgular. Diğer
@@ -441,6 +442,10 @@ export async function reapplyPackageDefaults(packageTier: PackageTier, actorUser
 export interface CompanyLicenseSnapshot {
   licenseStatus: string;
   licenseExpiry: string | null;
+  // ARCH-108: BILL-1701/1702'nin lisans kapısıyla AYNI tek sorguya eklendi
+  // (authMiddleware zaten her istekte bunu çekiyor — ayrı bir round-trip
+  // gerekmesin). 'AKTİF' | 'DONDURULDU' | 'SILME_BEKLIYOR'.
+  accountStatus: string;
 }
 
 /**
@@ -451,12 +456,13 @@ export interface CompanyLicenseSnapshot {
  * `pool.query` güvenli.
  */
 export async function getCompanyLicenseSnapshot(companyId: string): Promise<CompanyLicenseSnapshot | null> {
-  const result = await pool.query('SELECT license_status, license_expiry FROM companies WHERE id = $1', [companyId]);
+  const result = await pool.query('SELECT license_status, license_expiry, account_status FROM companies WHERE id = $1', [companyId]);
   if (result.rows.length === 0) return null;
   const row = result.rows[0];
   return {
     licenseStatus: row.license_status || 'AKTİF',
-    licenseExpiry: row.license_expiry ? new Date(row.license_expiry).toISOString().slice(0, 10) : null
+    licenseExpiry: row.license_expiry ? new Date(row.license_expiry).toISOString().slice(0, 10) : null,
+    accountStatus: row.account_status || 'AKTİF'
   };
 }
 
@@ -895,4 +901,205 @@ export async function insertAuthAuditLog(
      VALUES ($1, $2, $3, $4, 'user_totp', $5, $6)`,
     [generateId('audit'), tenantId, actorUserId, action, targetId, JSON.stringify(detail)]
   );
+}
+
+// ============================================================================
+// ARCH-108 — TENANT DONDURMA, KALICI SİLME + ŞİFRELİ VERİ DIŞA AKTARIMI
+// ============================================================================
+// BILL-1701/1702'nin `license_status` ('ASKIDA') alanından KASITLI olarak
+// AYRI: o fatura/ödeme ihlali (geri döndürülebilir, çoğu zaman otomatik),
+// bu ise SUPER_ADMIN'in BİLEREK tetikledigi hesap yaşam döngüsü kararı
+// (müşteri ayrılışı/fesih). authMiddleware.ts'te AYRI bir kontrol noktası.
+
+const TENANT_DELETION_WAITING_PERIOD_DAYS = 30;
+const TENANT_DELETION_REQUIRED_APPROVALS = 2;
+
+export interface TenantLifecycleStatus {
+  accountStatus: 'AKTİF' | 'DONDURULDU' | 'SILME_BEKLIYOR';
+  frozenAt: string | null;
+  frozenBy: string | null;
+  frozenReason: string | null;
+  deletionScheduledAt: string | null;
+  deletionRequestedBy: string | null;
+  deletionReason: string | null;
+  deletionEligibleAt: string | null;
+  approvalsCount: number;
+  approvedBy: string[];
+}
+
+async function getCompanyLifecycleRow(tenantId: string): Promise<any> {
+  const res = await pool.query(
+    `SELECT id, name, account_status, frozen_at, frozen_by, frozen_reason,
+            deletion_scheduled_at, deletion_requested_by, deletion_reason
+       FROM companies WHERE id = $1`,
+    [tenantId]
+  );
+  if (res.rows.length === 0) throw new NotFoundError('Firma bulunamadı.', { error: 'COMPANY_NOT_FOUND' });
+  return res.rows[0];
+}
+
+export async function getTenantLifecycleStatus(tenantId: string): Promise<TenantLifecycleStatus> {
+  const row = await getCompanyLifecycleRow(tenantId);
+  const approvals = await pool.query(
+    'SELECT approved_by FROM tenant_deletion_approvals WHERE tenant_id = $1 ORDER BY approved_at',
+    [tenantId]
+  );
+  const approvedBy: string[] = approvals.rows.map((r: any) => r.approved_by);
+  const deletionEligibleAt = row.deletion_scheduled_at
+    ? new Date(new Date(row.deletion_scheduled_at).getTime() + TENANT_DELETION_WAITING_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString()
+    : null;
+  return {
+    accountStatus: row.account_status,
+    frozenAt: row.frozen_at,
+    frozenBy: row.frozen_by,
+    frozenReason: row.frozen_reason,
+    deletionScheduledAt: row.deletion_scheduled_at,
+    deletionRequestedBy: row.deletion_requested_by,
+    deletionReason: row.deletion_reason,
+    deletionEligibleAt,
+    approvalsCount: approvedBy.length,
+    approvedBy
+  };
+}
+
+/**
+ * AC: "Tenant dondurma: girişi engeller, cihazları salt-okunur yapar, veriyi
+ * korur." Giriş engeli authMiddleware.ts + /auth/login'de (account_status
+ * okunarak) uygulanır; bu fonksiyon yalnızca durumu değiştirir — hiçbir
+ * satır silinmez/değiştirilmez.
+ */
+export async function freezeCompany(tenantId: string, reason: string, actorUserId: string): Promise<void> {
+  const row = await getCompanyLifecycleRow(tenantId);
+  if (row.account_status === 'DONDURULDU') {
+    throw new ConflictError('Firma zaten dondurulmuş.', { error: 'ALREADY_FROZEN' });
+  }
+  await pool.query(
+    `UPDATE companies SET account_status = 'DONDURULDU', frozen_at = CURRENT_TIMESTAMP, frozen_by = $2, frozen_reason = $3 WHERE id = $1`,
+    [tenantId, actorUserId, reason]
+  );
+  await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_FROZEN', 'company', tenantId, { accountStatus: row.account_status }, { reason });
+}
+
+export async function unfreezeCompany(tenantId: string, actorUserId: string): Promise<void> {
+  const row = await getCompanyLifecycleRow(tenantId);
+  if (row.account_status !== 'DONDURULDU') {
+    throw new ConflictError('Firma dondurulmuş durumda değil.', { error: 'NOT_FROZEN' });
+  }
+  await pool.query(
+    `UPDATE companies SET account_status = 'AKTİF', frozen_at = NULL, frozen_by = NULL, frozen_reason = NULL WHERE id = $1`,
+    [tenantId]
+  );
+  await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_UNFROZEN', 'company', tenantId, { accountStatus: 'DONDURULDU' }, { accountStatus: 'AKTİF' });
+}
+
+/**
+ * AC: "aşamalı silme: 30 günlük bekleme süresiyle soft-delete, sonra kalıcı
+ * kaldırma." Planlama, firmayı da DONDURUR (giriş engellenir — silinmek
+ * üzere olan bir hesapta yeni veri üretilmemeli).
+ */
+export async function scheduleTenantDeletion(tenantId: string, reason: string, actorUserId: string): Promise<void> {
+  const row = await getCompanyLifecycleRow(tenantId);
+  if (row.account_status === 'SILME_BEKLIYOR') {
+    throw new ConflictError('Bu firma için silme zaten planlanmış.', { error: 'ALREADY_SCHEDULED' });
+  }
+  await pool.query(
+    `UPDATE companies SET account_status = 'SILME_BEKLIYOR', deletion_scheduled_at = CURRENT_TIMESTAMP,
+        deletion_requested_by = $2, deletion_reason = $3 WHERE id = $1`,
+    [tenantId, actorUserId, reason]
+  );
+  await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_DELETION_SCHEDULED', 'company', tenantId, { accountStatus: row.account_status }, { reason });
+}
+
+export async function cancelTenantDeletion(tenantId: string, actorUserId: string): Promise<void> {
+  const row = await getCompanyLifecycleRow(tenantId);
+  if (row.account_status !== 'SILME_BEKLIYOR') {
+    throw new ConflictError('Bu firma için planlanmış bir silme yok.', { error: 'NOT_SCHEDULED' });
+  }
+  await pool.query(
+    `UPDATE companies SET account_status = 'AKTİF', deletion_scheduled_at = NULL,
+        deletion_requested_by = NULL, deletion_reason = NULL WHERE id = $1`,
+    [tenantId]
+  );
+  await pool.query('DELETE FROM tenant_deletion_approvals WHERE tenant_id = $1', [tenantId]);
+  await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_DELETION_CANCELLED', 'company', tenantId, { accountStatus: 'SILME_BEKLIYOR' }, { accountStatus: 'AKTİF' });
+}
+
+export interface DeletionApprovalResult {
+  executed: boolean;
+  approvalsCount: number;
+  approvedBy: string[];
+}
+
+/**
+ * AC: "kalıcı silme İKİ FARKLI SUPER_ADMIN onayı olmadan gerçekleşemez."
+ * (tenant_id, approved_by) PRIMARY KEY'i AYNI admin'in iki kez "onayladım"
+ * diyerek sayacı kendi başına ikiye çıkarmasını veritabanı seviyesinde
+ * engeller. İkinci FARKLI onay geldiğinde silme AYNI çağrıda gerçekleşir.
+ */
+export async function approveTenantDeletion(tenantId: string, actorUserId: string): Promise<DeletionApprovalResult> {
+  const row = await getCompanyLifecycleRow(tenantId);
+  if (row.account_status !== 'SILME_BEKLIYOR') {
+    throw new ConflictError('Bu firma için planlanmış bir silme yok.', { error: 'NOT_SCHEDULED' });
+  }
+  const scheduledAt = new Date(row.deletion_scheduled_at);
+  const eligibleAt = new Date(scheduledAt.getTime() + TENANT_DELETION_WAITING_PERIOD_DAYS * 24 * 60 * 60 * 1000);
+  if (new Date() < eligibleAt) {
+    throw new ConflictError(
+      `30 günlük bekleme süresi ${eligibleAt.toISOString().slice(0, 10)} tarihine kadar dolmadı.`,
+      { error: 'WAITING_PERIOD_NOT_ELAPSED', eligibleAt: eligibleAt.toISOString() }
+    );
+  }
+
+  await pool.query(
+    'INSERT INTO tenant_deletion_approvals (tenant_id, approved_by) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+    [tenantId, actorUserId]
+  );
+  const approvals = await pool.query('SELECT approved_by FROM tenant_deletion_approvals WHERE tenant_id = $1 ORDER BY approved_at', [tenantId]);
+  const approvedBy: string[] = approvals.rows.map((r: any) => r.approved_by);
+
+  await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_DELETION_APPROVED', 'company', tenantId, null, { approvalsCount: approvedBy.length });
+
+  if (approvedBy.length >= TENANT_DELETION_REQUIRED_APPROVALS) {
+    // Kalıcı silme kaydı ÖNCE (companies'e FK'sı YOK — cascade'den bağımsız
+    // hayatta kalır), asıl silme (ON DELETE CASCADE ile TÜM tenant verisi) SONRA.
+    await pool.query(
+      `INSERT INTO platform_audit_log (id, deleted_tenant_id, tenant_name, action, actor_user_id, detail)
+       VALUES ($1, $2, $3, 'TENANT_PERMANENTLY_DELETED', $4, $5::jsonb)`,
+      [generateId('paudit'), tenantId, row.name, actorUserId, JSON.stringify({ approvedBy, deletionReason: row.deletion_reason })]
+    );
+    await pool.query('DELETE FROM companies WHERE id = $1', [tenantId]);
+    return { executed: true, approvalsCount: approvedBy.length, approvedBy };
+  }
+  return { executed: false, approvalsCount: approvedBy.length, approvedBy };
+}
+
+/**
+ * AC: "eksiksiz veri dışa aktarımı — tüm tablolar, e-belgeler, telemetri."
+ * `information_schema`'dan tenant_id kolonlu TÜM tabloları ÇALIŞMA ZAMANINDA
+ * keşfeder (sabit bir tablo listesi YOK) — yeni bir tenant tablosu eklendiğinde
+ * bu fonksiyon OTOMATİK olarak onu da kapsar, ayrıca güncellenmesi gerekmez.
+ * Sonuç AES-256-GCM ile şifrelenir (ticket'ın "şifreli arşiv" AC'si).
+ */
+export async function exportTenantDataEncrypted(tenantId: string): Promise<Buffer> {
+  const companyRes = await pool.query('SELECT * FROM companies WHERE id = $1', [tenantId]);
+  if (companyRes.rows.length === 0) throw new NotFoundError('Firma bulunamadı.', { error: 'COMPANY_NOT_FOUND' });
+
+  const tablesRes = await pool.query(
+    `SELECT DISTINCT table_name FROM information_schema.columns
+      WHERE table_schema = 'public' AND column_name = 'tenant_id'
+      ORDER BY table_name`
+  );
+
+  const exportData: Record<string, any> = {
+    exportedAt: new Date().toISOString(),
+    company: companyRes.rows[0]
+  };
+  for (const { table_name: tableName } of tablesRes.rows) {
+    // tableName information_schema'dan geliyor (kullanıcı girdisi DEĞİL) —
+    // SQL injection riski yok, ama yine de tanımlayıcı olarak çift tırnaklandı.
+    const rows = await pool.query(`SELECT * FROM "${tableName}" WHERE tenant_id = $1`, [tenantId]);
+    exportData[tableName] = rows.rows;
+  }
+
+  return encryptTenantExport(JSON.stringify(exportData));
 }

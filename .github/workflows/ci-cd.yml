@@ -32,6 +32,7 @@ jobs:
       HW_SECRET_ESP32_FLOW_ISR: ci_only_unused
       TRANSACTION_HASH_SECRET: ci_only_unused
       HW_SECRET_ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      TENANT_EXPORT_ENCRYPTION_KEY: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
     steps:
       - name: Checkout Repository
@@ -97,6 +98,7 @@ jobs:
       # bkz. config/env.ts'in regex doğrulaması) — diğer ci_only_* değerleri
       # gibi rastgele bir metin OLAMAZ.
       HW_SECRET_ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      TENANT_EXPORT_ENCRYPTION_KEY: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
       # IOT-302.1: sunucu ve test_iot302_1 AYNI token'ı görmeli (test webhook'a
       # bu token'la POST atıyor). Job seviyesinde tanımlı → hem "Start Backend
       # Server" hem test adımları görür.
@@ -323,6 +325,19 @@ jobs:
 
       - name: Run INV-1507 Lab Sample + Test Result Tracking Tests
         run: cd backend && npx tsx test/test_inv1507_lab_sample_tracking.ts
+
+      # ARCH-108: bu job backend'i nginx'siz, DOĞRUDAN bootstrap.ts ile 5000
+      # portunda başlatıyor (BILL-1701/1702/1703, FLEET-1409, HR-1801
+      # testlerinin AKSİNE bu test API_URL'i hardcode ETMİYOR — env'den
+      # override edilebiliyor, varsayılanı yerel geliştirme nginx'i 3000).
+      # Redis rate-limit sıfırlaması `docker exec yakittakip_redis` DENER
+      # ama bu job'ta o container YOK (services: bloğu kullanıyor) — bu
+      # yüzden CI'da sessizce no-op olur; test'in kendi login çağrı sayısı
+      # (~9) tek başına 10/15dk limitinin altında kalacak şekilde tasarlandı.
+      - name: Run ARCH-108 Tenant Freeze/Delete/Export Lifecycle Tests
+        run: cd backend && npx tsx test/test_arch108_tenant_lifecycle.ts
+        env:
+          API_URL: http://localhost:5000/api/v1
 
       - name: Dump Backend Log on Failure
         if: failure()

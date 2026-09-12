@@ -26,12 +26,13 @@ import { createVehicleMaintenanceRecordSchema, totalCostOfOwnershipQuerySchema }
 import { addVehicleComplianceDeadlineSchema, registerVehicleTireSchema, recordTireTreadDepthSchema } from '../schemas/vehicleComplianceSchema';
 import { createInventoryItemSchema, recordInventoryMovementSchema, recordInventoryCountSchema } from '../schemas/inventorySchema';
 import { createLabSampleSchema, cancelLabSampleSchema, recordLabTestResultSchema } from '../schemas/labSampleSchema';
+import { tenantLifecycleReasonSchema } from '../schemas/tenantLifecycleSchema';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
 import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes, normalizeRecoveryCode } from '../services/totpService';
 import { isServerShuttingDown } from '../utils/shutdown';
-import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS } from '../db/adminDb';
+import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS, getCompanyLicenseSnapshot, getTenantLifecycleStatus, freezeCompany, unfreezeCompany, scheduleTenantDeletion, cancelTenantDeletion, approveTenantDeletion, exportTenantDataEncrypted } from '../db/adminDb';
 import { runLicenseExpiryWarningSweep } from '../services/licenseWarningService';
 import { getUsageMeteringHistory, computeUsageMeteringForCurrentTenant } from '../services/usageMeteringService';
 import { uploadVehicleDocument, getVehicleDocuments, getVehicleDocumentContent } from '../services/vehicleDocumentService';
@@ -252,6 +253,24 @@ router.post(
       // yöneticisinden yeni bir şantiye/hesap oluşturulmasını istemelidir
       // (henüz kendi kendine "yeni geçici parola iste" ucu yok).
       if (dbUser.must_change_password && dbUser.temp_password_expires_at && new Date(dbUser.temp_password_expires_at) < new Date()) {
+      // ARCH-108 AC: "dondurulmuş tenant'ların kullanıcıları KİMLİK
+      // DOĞRULAYAMAMALI" — authMiddleware.ts'teki kontrol yalnızca ZATEN
+      // var olan bir access token'ı reddeder; buradaki kontrol olmasa
+      // dondurulmuş bir tenant'ın kullanıcısı YENİ bir token alıp o kontrolü
+      // (LICENSE_GATE_ALLOWLIST'teki /auth/me gibi uçlar hariç) atlayamasa
+      // bile en azından YENİ oturum açabilirdi — bu ikisi tamamlayıcıdır.
+      // SUPER_ADMIN muaf (authMiddleware'deki AYNI gerekçe).
+      if (dbUser.role !== 'SUPER_ADMIN') {
+        const license = await getCompanyLicenseSnapshot(dbUser.tenant_id);
+        if (license && (license.accountStatus === 'DONDURULDU' || license.accountStatus === 'SILME_BEKLIYOR')) {
+          return res.status(403).json({
+            success: false,
+            error: license.accountStatus === 'DONDURULDU' ? 'TENANT_FROZEN' : 'TENANT_PENDING_DELETION',
+            message: 'Firmanızın hesabı dondurulmuştur. Giriş için platform yöneticinizle iletişime geçin.'
+          });
+        }
+      }
+
         return res.status(401).json({
           success: false,
           error: 'TEMP_PASSWORD_EXPIRED',
@@ -1177,6 +1196,148 @@ router.post('/admin/package-defaults/:package/reapply', authenticateJWT, authori
  *   get:
  *     summary: Kayıtlı IoT Donanımları (Süper Admin)
  *     description: >
+/**
+ * @swagger
+ * /admin/companies/{id}/lifecycle:
+ *   get:
+ *     summary: Tenant Yaşam Döngüsü Durumu (ARCH-108, Süper Admin)
+ *     description: 'account_status (AKTİF/DONDURULDU/SILME_BEKLIYOR) + silme onay sayacı.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/admin/companies/:id/lifecycle', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: await getTenantLifecycleStatus(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/companies/{id}/freeze:
+ *   post:
+ *     summary: Tenant'ı Dondur (ARCH-108, Süper Admin)
+ *     description: '`{ reason }`. Girişi engeller, veriyi KORUR (hiçbir satır silinmez/değiştirilmez).'
+ *     security:
+ *       - bearerAuth: []
+ * /admin/companies/{id}/unfreeze:
+ *   post:
+ *     summary: Dondurmayı Kaldır (ARCH-108, Süper Admin)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/admin/companies/:id/freeze',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  validateRequest({ body: tenantLifecycleReasonSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await freezeCompany(req.params.id, req.body.reason, req.user!.userId);
+      res.json({ success: true, data: await getTenantLifecycleStatus(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post('/admin/companies/:id/unfreeze', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    await unfreezeCompany(req.params.id, req.user!.userId);
+    res.json({ success: true, data: await getTenantLifecycleStatus(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/companies/{id}/schedule-deletion:
+ *   post:
+ *     summary: Kalıcı Silmeyi Planla (ARCH-108, Süper Admin)
+ *     description: >
+ *       `{ reason }`. Firmayı DONDURUR + 30 günlük bekleme süresini başlatır.
+ *       Süre dolmadan `approve-deletion` çağrıları reddedilir.
+ *     security:
+ *       - bearerAuth: []
+ * /admin/companies/{id}/cancel-deletion:
+ *   post:
+ *     summary: Planlanmış Silmeyi İptal Et (ARCH-108, Süper Admin)
+ *     description: 'Firma AKTİF''e döner, toplanan onaylar silinir.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/admin/companies/:id/schedule-deletion',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  validateRequest({ body: tenantLifecycleReasonSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await scheduleTenantDeletion(req.params.id, req.body.reason, req.user!.userId);
+      res.json({ success: true, data: await getTenantLifecycleStatus(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post('/admin/companies/:id/cancel-deletion', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    await cancelTenantDeletion(req.params.id, req.user!.userId);
+    res.json({ success: true, data: await getTenantLifecycleStatus(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/companies/{id}/approve-deletion:
+ *   post:
+ *     summary: Kalıcı Silmeyi Onayla — İki Farklı Süper Admin Gerekir (ARCH-108)
+ *     description: >
+ *       30 günlük bekleme süresi dolmadan reddedilir. Aynı SUPER_ADMIN'in
+ *       ikinci çağrısı sayacı artırmaz (idempotent) — GERÇEKTEN farklı bir
+ *       SUPER_ADMIN onaylayınca (`approvalsCount>=2`) firma VE tüm verisi
+ *       AYNI çağrıda kalıcı olarak silinir (`executed:true`).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/admin/companies/:id/approve-deletion', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await approveTenantDeletion(req.params.id, req.user!.userId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/companies/{id}/export:
+ *   get:
+ *     summary: Şifreli Tenant Veri Dışa Aktarımı (ARCH-108, Süper Admin)
+ *     description: >
+ *       Tenant'a ait TÜM tablolardaki (information_schema'dan tenant_id
+ *       kolonuna göre ÇALIŞMA ZAMANINDA keşfedilir — sabit liste yok) satırları
+ *       tek bir JSON belgesinde toplayıp AES-256-GCM ile şifreler, ikili
+ *       (application/octet-stream) olarak indirir.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/admin/companies/:id/export', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const encrypted = await exportTenantDataEncrypted(req.params.id);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="tenant-export-${req.params.id}-${new Date().toISOString().slice(0, 10)}.bin"`);
+    res.send(encrypted);
+  } catch (error: any) {
+    next(error);
+  }
+});
+
  *       HMAC-SHA256 ile kayıtlı ESP32/debimetre cihazlarını, Redis'teki
  *       gerçek son bilinen bağlantı durumuyla (MQTT LWT/veri akışından)
  *       birlikte listeler. Hiç bağlanmamış bir cihaz OFFLINE görünür —

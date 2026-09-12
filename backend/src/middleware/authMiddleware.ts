@@ -96,6 +96,21 @@ export async function authenticateJWT(req: AuthenticatedRequest, res: Response, 
             message: `Firmanızın lisans süresi ${license.licenseExpiry} tarihinde dolmuştur. Hesabınız salt-okunur moddadır — yeni kayıt/değişiklik yapmak için aboneliğinizi yenileyin.`
           });
         }
+
+        // ARCH-108: BILL-1701/1702'nin lisans (ödeme) kapısından KASITLI
+        // olarak AYRI — SUPER_ADMIN'in bilerek tetiklediği hesap yaşam
+        // döngüsü kararı (müşteri ayrılışı/fesih). AC: "girişi engeller,
+        // veri KORUNUR" — bu yüzden salt-okunur bir ara hâl YOK, hem
+        // DONDURULDU hem SILME_BEKLIYOR TÜM istekleri (zaten geçerli bir
+        // access token'la gelmiş olsalar bile) sert kapıyla reddeder; login
+        // ucundaki AYNI kontrol (routes.ts) fresh token alınmasını da engeller.
+        if (license.accountStatus === 'DONDURULDU' || license.accountStatus === 'SILME_BEKLIYOR') {
+          return res.status(403).json({
+            success: false,
+            error: license.accountStatus === 'DONDURULDU' ? 'TENANT_FROZEN' : 'TENANT_PENDING_DELETION',
+            message: 'Firmanızın hesabı dondurulmuştur. Erişim için platform yöneticinizle iletişime geçin.'
+          });
+        }
       }
     }
 

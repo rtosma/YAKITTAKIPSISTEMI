@@ -33,6 +33,51 @@ ALTER TABLE companies ADD COLUMN IF NOT EXISTS modules JSONB NOT NULL DEFAULT '{
 -- olarak etiketlemek modülleri geri almadan yanıltıcı bir paket adı verirdi.
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS package VARCHAR(32) NOT NULL DEFAULT 'KURUMSAL';
 
+-- ARCH-108: tenant yaşam döngüsü — dondurma (giriş engellenir, veri KORUNUR)
+-- ve kalıcı silme (30 gün bekleme + iki farklı SUPER_ADMIN onayı). Bu,
+-- license_status/BILL-1702'nin ('ASKIDA') KASITLI olarak AYRI bir kavramdır:
+-- biri fatura/ödeme ihlali (geri döndürülebilir, otomatik), diğeri hesap
+-- yaşam döngüsü (SUPER_ADMIN'in bilerek tetiklediği, müşteri ayrılışı/fesih
+-- sonrası bir işlem) — bkz. authMiddleware.ts'teki ayrı kontrol.
+-- 'AKTİF' | 'DONDURULDU' | 'SILME_BEKLIYOR'
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS account_status VARCHAR(20) NOT NULL DEFAULT 'AKTİF';
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS frozen_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS frozen_by VARCHAR(64);
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS frozen_reason TEXT;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS deletion_scheduled_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS deletion_requested_by VARCHAR(64);
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS deletion_reason TEXT;
+
+-- ARCH-108: kalıcı silme için TOPLANAN onaylar. AC: "iki farklı SUPER_ADMIN
+-- onayı olmadan silme gerçekleşemez" — (tenant_id, approved_by) PRIMARY KEY
+-- olduğundan AYNI admin iki kez onaylayıp sayacı kendi başına ikiye
+-- çıkaramaz (ON CONFLICT DO NOTHING ile idempotent).
+CREATE TABLE IF NOT EXISTS tenant_deletion_approvals (
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    approved_by VARCHAR(64) NOT NULL,
+    approved_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (tenant_id, approved_by)
+);
+
+-- ARCH-108: kalıcı silme, `companies` satırını (ve ON DELETE CASCADE ile
+-- TÜM tenant verisini) siler — bu yüzden olayın KENDİSİ audit_logs'a
+-- YAZILAMAZ (audit_logs.tenant_id de AYNI CASCADE'e bağımlı, silinen
+-- tenant'la BİRLİKTE giderdi; bir silme kaydının silinmesi denetim gereğiyle
+-- çelişir). Bu tablo KASITLI OLARAK `companies`'e FK DEĞİL — sildiği
+-- tenant'tan bağımsız, kalıcı olarak hayatta kalır. `deleted_tenant_id`
+-- adı (`tenant_id` DEĞİL) bilerek seçildi: check-rls-coverage.mjs'in
+-- tenant_id sütunlu her tabloda RLS arayan taramasını YANLIŞLIKLA
+-- tetiklemesin — bu satırlar zaten SUPER_ADMIN'e özel, RLS'siz.
+CREATE TABLE IF NOT EXISTS platform_audit_log (
+    id VARCHAR(64) PRIMARY KEY,
+    deleted_tenant_id VARCHAR(64) NOT NULL,
+    tenant_name VARCHAR(255),
+    action VARCHAR(64) NOT NULL,
+    actor_user_id VARCHAR(64) NOT NULL,
+    detail JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- BILL-1703: bir firmaya PAKETİNİN dışında, tek tek "satın alınmış" ek
 -- modüller. companies.modules (paket temelli, admin paket değiştirince
 -- SIFIRLANIR — bkz. adminDb.ts updateCompanyAdmin) ile KASITLI olarak AYRI:
@@ -1283,6 +1328,7 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO app_user;
 -- AUTH-203 AC: "audit_logs üzerinde UPDATE/DELETE veritabanı düzeyinde
 -- reddedilmelidir." Yukarıdaki GRANT ALL bunu da kapsadığı için burada,
 -- SONRASINDA açıkça geri alınıyor — app_user yalnızca INSERT + SELECT
+ALTER TABLE tenant_deletion_approvals ENABLE ROW LEVEL SECURITY;
 -- yapabilir, tablo gerçekten append-only olur (uygulama kodundaki bir hata
 -- ya da ele geçirilmiş bir bağlantı bile kaydı değiştiremez/silemez).
 -- TRUNCATE de dahil: DELETE'in tek tek satır silmesinden farklı bir
@@ -1426,6 +1472,7 @@ DROP POLICY IF EXISTS vehicle_meter_readings_tenant_isolation_policy ON vehicle_
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
     FOR ALL
+ALTER TABLE tenant_deletion_approvals FORCE ROW LEVEL SECURITY;
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
@@ -1473,6 +1520,7 @@ CREATE POLICY audit_logs_tenant_isolation_policy ON audit_logs
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+DROP POLICY IF EXISTS tenant_deletion_approvals_tenant_isolation_policy ON tenant_deletion_approvals;
 
 -- Create Tenant Isolation Policy for hardware_devices — bu politika yalnızca
 -- provisioning/rotasyon/bloke etme gibi TENANT İÇİ (withTenant() üzerinden
@@ -1669,6 +1717,11 @@ CREATE POLICY vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_re
 -- hiçbir tabloda indeks YOKTU — yalnızca PRIMARY KEY (id) indeksliydi. Şu anki
 -- veri hacminde (düzinelerce satır) bu görünmüyor (Postgres zaten Seq Scan'i
 -- tercih ediyor), ama transactions/audit_logs gibi sürekli büyüyen tablolar
+CREATE POLICY tenant_deletion_approvals_tenant_isolation_policy ON tenant_deletion_approvals
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- üretimde on binlerce/yüz binlerce satıra ulaştığında HER istekte (RLS
 -- politikası aracılığıyla, uygulama kodu hiç WHERE tenant_id yazmasa bile)
 -- tam tablo taraması yapılır. CREATE INDEX salt-ekleyici bir işlem olduğundan

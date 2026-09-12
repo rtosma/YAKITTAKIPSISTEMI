@@ -81,6 +81,15 @@ const envSchema = z.object({
   HW_SECRET_ENCRYPTION_KEY: z.string({ message: 'HW_SECRET_ENCRYPTION_KEY tanımlı değil.' })
     .regex(/^[0-9a-fA-F]{64}$/, 'HW_SECRET_ENCRYPTION_KEY tam olarak 64 hex karakter (32 bayt) olmalıdır (öneri: openssl rand -hex 32).'),
 
+  // ARCH-108: tenant veri dışa aktarım arşivini (companies dahil TÜM tenant
+  // tablolarının JSON dökümü) AES-256-GCM ile şifrelemek için kullanılan
+  // pepper — HW_SECRET_ENCRYPTION_KEY'in YENİDEN kullanılması BİLİNÇLİ OLARAK
+  // tercih edilmedi (cihaz sırları ile bir müşterinin TÜM verisi farklı
+  // tehdit modelleri — biri sızarsa diğerini tehlikeye atmamalı, hardware
+  // secret crypto ile AYNI gerekçe).
+  TENANT_EXPORT_ENCRYPTION_KEY: z.string({ message: 'TENANT_EXPORT_ENCRYPTION_KEY tanımlı değil.' })
+    .regex(/^[0-9a-fA-F]{64}$/, 'TENANT_EXPORT_ENCRYPTION_KEY tam olarak 64 hex karakter (32 bayt) olmalıdır (öneri: openssl rand -hex 32).'),
+
   // AI-502: yukarıdaki sırların aksine BİLEREK opsiyonel — bu özellik
   // (Gemini ile tüketim anomali analizi) yapılandırılmamışsa uygulamanın
   // TAMAMI ayağa kalkmayı reddetmemeli, yalnızca consumptionAnomalyService.ts
@@ -153,7 +162,7 @@ function loadConfig(): AppConfig {
     const stillPlaceholder = ([
       'JWT_SECRET', 'JWT_REFRESH_SECRET', 'MQTT_PASSWORD',
       'HW_SECRET_ESP32_PUMP_01', 'HW_SECRET_ESP32_TANK_01', 'HW_SECRET_ESP32_FLOW_ISR', // gitleaks:allow
-      'TRANSACTION_HASH_SECRET', 'HW_SECRET_ENCRYPTION_KEY'
+      'TRANSACTION_HASH_SECRET', 'HW_SECRET_ENCRYPTION_KEY', 'TENANT_EXPORT_ENCRYPTION_KEY'
     ] as const).filter((key) => KNOWN_PLACEHOLDER_VALUES.has(data[key]));
 
     if (stillPlaceholder.length > 0) {
