@@ -1385,6 +1385,27 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO app_user;
 -- da geri alınıyor.
 REVOKE UPDATE, DELETE, TRUNCATE ON audit_logs FROM app_user;
 
+-- TEST_PLAN.md §4 — platform_audit_log, audit_logs ile AYNI korumayı hak
+-- ediyordu ama gözden kaçmıştı (ARCH-108'de eklenirken REVOKE yazılmamış).
+-- Burası tenant DONDURMA/KALICI SİLME gibi geri alınamaz platform
+-- kararlarının tek kalıcı kaydı — yani audit_logs'tan bile DAHA kritik.
+-- RLS'i YOK (tenant'a ait değil, platform seviyesi bir tablo), dolayısıyla
+-- tek savunması bu yetki kısıtlamasıydı; o da eksikti: app_user tabloyu
+-- UPDATE/DELETE/TRUNCATE edebiliyordu. Kod tabanında tabloya YALNIZCA
+-- adminDb.ts INSERT yapıyor (o da superuser bağlantısıyla), yani bu geri
+-- alma hiçbir mevcut akışı etkilemiyor.
+REVOKE UPDATE, DELETE, TRUNCATE ON platform_audit_log FROM app_user;
+
+-- TEST_PLAN.md §4 — `companies` de RLS'siz (platform seviyesi tablo) ve
+-- app_user'ın üzerinde INSERT/UPDATE/DELETE/TRUNCATE yetkisi vardı; oysa
+-- app_user bu tabloya HİÇ YAZMIYOR — tenantDb.ts yalnızca 3 yerde ve daima
+-- `WHERE id = $1` ile OKUYOR (lisans/modül/firma bilgisi). Firma oluşturma,
+-- güncelleme ve silme tamamen adminDb.ts'ten (SUPER_ADMIN + superuser
+-- bağlantısı) yapılıyor. SELECT ve REFERENCES bırakılıyor: okuma gerçekten
+-- gerekli, REFERENCES ise diğer tabloların companies(id)'ye verdiği
+-- foreign key'ler için şart.
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON companies FROM app_user;
+
 -- FUEL-404.1 AC: "Kalibrasyon geçmişi silinemez olmalıdır." audit_logs'tan
 -- FARKLI OLARAK burada UPDATE geri alınMIYOR — bir komutun status'u
 -- (BEKLIYOR→ONAYLANDI/REDDEDILDI/ZAMAN_ASIMI) MEŞRU bir yaşam döngüsü

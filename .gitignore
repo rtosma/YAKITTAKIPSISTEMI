@@ -38,3 +38,8 @@ pgdata/
 # Playwright E2E çıktıları (ekran görüntüsü/trace — commit edilmez)
 frontend/test-results/
 frontend/playwright-report/
+
+# NFS geçici dosyaları (silinmiş ama hâlâ açık olan dosyaların kalıntısı —
+# bu proje NFS üzerinde barındığı için oluşuyor, versiyonlanmamalı)
+.nfs*
+**/.nfs*

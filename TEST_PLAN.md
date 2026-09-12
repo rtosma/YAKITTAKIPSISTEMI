@@ -358,7 +358,23 @@ Kapsam ilkesi: E2E yalnızca birim testin YAKALAYAMADIĞI şeyler için.
       gerçek iki tenant arasında çapraz okuma/yazma denemesi yapıyor.
       Korunacak; **her yeni tablo eklendiğinde bu testin de o tabloyu
       kapsayacak şekilde genişletilmesi** süreç kuralı olarak eklenmeli.
-- [ ] **`platform_audit_log` ve diğer RLS'siz sistem tabloları** — bunların
+- [x] ✅ **`platform_audit_log` ve diğer RLS'siz sistem tabloları — TAMAMLANDI,
+      GERÇEK BULGU ÇIKTI.** Şemadaki 48 tablonun 46'sı RLS'li; RLS'i bilinçli
+      olarak olmayan 2 tablo `companies` ve `platform_audit_log`. Bu ikisinde
+      tek savunma app_user YETKİLERİ — ve ikisi de fazla genişti:
+      app_user her ikisinde de UPDATE/DELETE/TRUNCATE yapabiliyordu.
+      `platform_audit_log` (tenant dondurma/kalıcı silme kayıtları), audit_logs
+      ile AYNI append-only korumasını hak ediyordu ama ARCH-108'de eklenirken
+      REVOKE yazılmamıştı — yani denetim günlüğü silinebilir/tahrif edilebilirdi.
+      Düzeltildi: platform_audit_log'tan UPDATE/DELETE/TRUNCATE, companies'ten
+      INSERT/UPDATE/DELETE/TRUNCATE geri alındı (SELECT + REFERENCES kaldı:
+      app_user companies'i 3 yerde ve daima `WHERE id = $1` ile OKUYOR,
+      hiç yazmıyor — firma yönetimi tamamen adminDb.ts/SUPER_ADMIN'de).
+      `test/test_db_privileges.ts` (12/12) şemadaki REVOKE satırına bakmakla
+      yetinmiyor: app_user rolüne geçip yazmayı DENİYOR ve reddedildiğini
+      doğruluyor. Regresyon: BILL-1701 13/13, ARCH-108 17/17 (hiçbir akış
+      kırılmadı — firma oluşturma/lisans yönetimi superuser üzerinden).
+- [ ] (kalan) diğer RLS'siz sistem tabloları — bunların
       GERÇEKTEN yalnızca SUPER_ADMIN/sistem tarafından erişilebildiği (uygulama
       katmanında, RLS olmadığı için) ayrı bir testle doğrulanmalı — RLS'siz
       bir tablo, uygulama kodu değişirse sessizce sızdırabilir.

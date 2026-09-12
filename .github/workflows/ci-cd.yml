@@ -251,6 +251,13 @@ jobs:
       - name: "TEST_PLAN §5.1/§5.2: Güvenlik Başlıkları + CORS Davranışı"
         run: cd backend && npx tsx test/test_security_headers_cors.ts
 
+      # TEST_PLAN.md §4 — RLS'i BİLİNÇLİ olarak olmayan 2 tablonun
+      # (companies, platform_audit_log) tek savunması app_user yetkileri.
+      # Bu test şemadaki REVOKE satırına bakmakla yetinmez; app_user rolüne
+      # geçip yazmayı DENER ve reddedildiğini doğrular.
+      - name: "TEST_PLAN §4: RLS'siz Tabloların DB Yetki Korumaları"
+        run: cd backend && npx tsx test/test_db_privileges.ts
+
       - name: Run FUEL-401 RFID Dispense Session State Machine Tests
         run: cd backend && npx tsx test/test_fuel401_dispense_session.ts
 
