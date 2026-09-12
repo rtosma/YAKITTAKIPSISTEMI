@@ -153,6 +153,11 @@ services:
       # (tanımsızsa POST /lorawan/uplink tüm çağrıları 503 ile reddeder).
       LORAWAN_WEBHOOK_TOKEN: ${LORAWAN_WEBHOOK_TOKEN:-}
       TOTP_ENFORCED: ${TOTP_ENFORCED:-false}
+      # TEST_PLAN §5.2: CORS allowlist. BOŞ = CORS tamamen kapalı
+      # (same-origin) — nginx SPA'yı ve /api'yi aynı origin'den sunduğu için
+      # normal kurulumda boş kalır; yalnızca API'ye BAŞKA bir origin'den
+      # erişilecekse doldurulur.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
     # OPS-1102: host'a sabit "5000:5000" port yayını kasıtlı olarak KALDIRILDI.
     # 1) frontend/nginx.conf zaten backend'e dahili yakit_network üzerinden
     #    hostname ile (http://backend:5000) erişiyor — dışarıdan doğrudan

@@ -244,6 +244,13 @@ jobs:
       - name: "TEST_PLAN §2.2: Eşzamanlılık / Race Condition Testleri"
         run: cd backend && npx tsx test/test_race_conditions.ts
 
+      # TEST_PLAN.md §5.1/§5.2 — çalışan sunucunun GERÇEKTEN ne döndürdüğü
+      # (X-Powered-By sızıntısı, CORS'un yabancı origin'e kapalı olması).
+      # nginx'e bağlı 4 test CI'da otomatik ATLANIR (burada nginx yok);
+      # o katman scripts/check-security-headers.mjs ile statik denetleniyor.
+      - name: "TEST_PLAN §5.1/§5.2: Güvenlik Başlıkları + CORS Davranışı"
+        run: cd backend && npx tsx test/test_security_headers_cors.ts
+
       - name: Run FUEL-401 RFID Dispense Session State Machine Tests
         run: cd backend && npx tsx test/test_fuel401_dispense_session.ts
 

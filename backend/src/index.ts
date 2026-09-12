@@ -40,7 +40,24 @@ const PORT = config.PORT;
 // hangi CVE'leri denemeli). Kapatmanın hiçbir işlevsel maliyeti yok.
 app.disable('x-powered-by');
 
-app.use(cors());
+// TEST_PLAN.md §5.2 — CORS artık VARSAYILAN OLARAK KAPALI.
+// Eskiden `app.use(cors())` çağrılıyordu; bu, her yanıta
+// `Access-Control-Allow-Origin: *` ekleyip API'yi her origin'e açıyordu.
+// Gerekli değildi: nginx SPA'yı ve /api'yi aynı origin'den sunuyor, frontend
+// göreli yol (`/api/v1`) kullanıyor, saha cihazları ise tarayıcı olmadığı
+// için CORS'a tabi değil. Artık yalnızca CORS_ALLOWED_ORIGINS ile AÇIKÇA
+// izin verilen origin'ler geçer (bkz. config/env.ts).
+const corsAllowedOrigins = (config.CORS_ALLOWED_ORIGINS ?? '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+if (corsAllowedOrigins.length > 0) {
+  app.use(cors({ origin: corsAllowedOrigins, credentials: true }));
+  logger.info({ corsAllowedOrigins }, '🌐 [CORS] Yalnızca tanımlı origin listesine izin veriliyor.');
+} else {
+  logger.info('🌐 [CORS] Kapalı (same-origin). Gerekirse CORS_ALLOWED_ORIGINS ile açın.');
+}
 
 // Graceful Shutdown Check Middleware (returns 503 Service Unavailable if shutting down)
 // RES-906 Kritik Not 3: liveness ve legacy /health bu 503'ten MUAF — süreç

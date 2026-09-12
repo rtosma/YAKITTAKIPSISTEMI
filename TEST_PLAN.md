@@ -396,17 +396,17 @@ Her madde için: **zaten kapsanan mı, yoksa yeni mi.**
       **AÇIK KALAN:** CORS `*` — düzeltmek production domain bilgisi
       gerektiriyor, kullanıcı kararına bırakıldı (bkz. §5.2).
 
-- [ ] **CORS politikası daraltılmalı (§5.2 — AÇIK BULGU):** backend
-      `app.use(cors())` varsayılanla çalışıyor, yani
-      `Access-Control-Allow-Origin: *`. Frontend API'yi göreli yolla
-      (`/api/v1`) çağırdığı ve nginx hem SPA'yı hem API'yi aynı origin'den
-      sunduğu için CORS'a pratikte HİÇ ihtiyaç yok görünüyor. Bearer token
-      kullanıldığından `*` ile credential gönderilemez (tarayıcı engeller),
-      bu yüzden CSRF riski düşük — ama yine de gereksiz geniş bir yüzey.
-      DÜZELTİLMEDİ çünkü production domain(ler)i bilinmiyor ve yanlış bir
-      kısıtlama uygulamayı kırar; karar kullanıcıya ait:
-      (a) tamamen kaldır (same-origin yeterliyse), (b) env'den okunan bir
-      allowlist (`CORS_ALLOWED_ORIGINS`) ile daralt.
+- [x] ✅ **CORS politikası daraltıldı (§5.2) — TAMAMLANDI.** Tespit: backend
+      `app.use(cors())` varsayılanıyla çalışıyordu, yani
+      `Access-Control-Allow-Origin: *` — HER origin API'ye istek atabiliyordu.
+      Çözüm: env tabanlı allowlist (`CORS_ALLOWED_ORIGINS`, virgülle ayrılmış).
+      **Varsayılan artık CORS TAMAMEN KAPALI** (same-origin): değişken boşsa
+      cors ara katmanı hiç eklenmiyor. Gerekçe: nginx SPA'yı ve /api'yi aynı
+      origin'den sunuyor, frontend göreli yol kullanıyor, saha cihazları
+      (ESP32/LoRaWAN) tarayıcı olmadığı için CORS'a zaten tabi değil.
+      Canlı doğrulandı: yabancı Origin'e (ve OPTIONS preflight'ına) artık
+      izin verilmiyor; frontend akışı (login + yetkili istek + SPA/bundle)
+      kırılmadı. `test_security_headers_cors.ts` ile kilitlendi.
 - [ ] **Secrets taraması genişletme** — `gitleaks` mevcut commit geçmişini
       tarıyor; `.gitleaks.toml` allowlist'inin gereğinden geniş olmadığı
       (yanlışlıkla gerçek bir secret'ı maskelemediği) elle bir kez gözden

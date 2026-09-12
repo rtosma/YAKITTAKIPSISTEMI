@@ -113,7 +113,20 @@ const envSchema = z.object({
   // hesapları ve mevcut entegrasyon test paketi kilitlenirdi. 2FA'yı kendi
   // isteğiyle KURAN her kullanıcı, bu bayraktan bağımsız olarak her girişte
   // kod ister (opt-in geri alınamaz gevşeklikle çelişmesin).
-  TOTP_ENFORCED: z.string().optional().default('false').transform((v) => v === 'true' || v === '1')
+  TOTP_ENFORCED: z.string().optional().default('false').transform((v) => v === 'true' || v === '1'),
+
+  // TEST_PLAN.md §5.2 — CORS allowlist (virgülle ayrılmış origin listesi).
+  // Önceden `app.use(cors())` varsayılanıyla çalışılıyordu, yani
+  // `Access-Control-Allow-Origin: *` — HER origin API'ye istek atabiliyordu.
+  // Pratikte buna hiç gerek yok: nginx hem SPA'yı hem /api'yi AYNI origin'den
+  // sunuyor ve frontend API'yi göreli yolla (`/api/v1`) çağırıyor; saha
+  // cihazları (ESP32/LoRaWAN) ise tarayıcı olmadığı için CORS'a zaten tabi
+  // değil. Bu yüzden VARSAYILAN artık "CORS tamamen kapalı" (same-origin):
+  // değişken tanımsız/boşsa cors ara katmanı HİÇ eklenmez.
+  // Farklı bir origin'den (ayrı domain'de barındırılan panel, mobil web,
+  // staging) erişim gerekirse buraya açıkça yazılır:
+  //   CORS_ALLOWED_ORIGINS=https://panel.ornek.com,https://staging.ornek.com
+  CORS_ALLOWED_ORIGINS: z.string().optional()
 });
 
 type EnvShape = z.infer<typeof envSchema>;
