@@ -86,6 +86,13 @@ jobs:
       - name: "GÜVENLİK: Bağımlılık Zafiyet Denetimi (npm audit, GHSA allowlist)"
         run: node scripts/check-dependency-audit.mjs
 
+      # TEST_PLAN.md §3 — frontend'in ilk otomatik testleri. Kapsam bilinçli
+      # olarak dar: oturum zinciri (401 → sessiz token yenileme → otomatik
+      # çıkış). Backend'den farklı olarak bunlar gerçek servis GEREKTİRMEZ
+      # (jsdom + mock fetch), bu yüzden hızlı `quality-and-tests` işinde.
+      - name: "TEST_PLAN §3: Frontend Birim Testleri (Vitest)"
+        run: cd frontend && npm run test
+
       - name: Run RES-902 Exception Filter & Logging Tests
         run: cd backend && npx tsx test/test_res902.ts
 

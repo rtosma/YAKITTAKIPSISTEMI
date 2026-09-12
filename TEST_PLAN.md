@@ -210,20 +210,39 @@ girdiğini baştan netleştirmeli:
 Frontend'de HİÇ test yok. Sıfırdan, hafif bir kurulumla başlanacak.
 
 ### 3.1 Kurulum (tek seferlik, düşük karmaşıklık)
-- [ ] `vitest` + `@testing-library/react` + `@testing-library/jest-dom`
-      eklenecek (Vite zaten kurulu olduğundan ek config neredeyse sıfır).
-- [ ] `@playwright/test` eklenecek — yalnızca **kritik E2E akışları** için
+- [x] ✅ TAMAMLANDI — `vitest` + `@testing-library/react` + `jest-dom` +
+      `user-event` + `jsdom` kuruldu; `vitest.config.ts` (ayrı dosya: prod
+      vite config'i saf kalsın diye) + `src/test/setup.ts` (her test öncesi
+      localStorage temizliği — token sızıntısı false-positive üretmesin).
+      `npm run test` / `test:watch` script'leri eklendi, CI'a bağlandı.
+      **Yeni bağımlılıklar hiç yeni zafiyet getirmedi** (dependency-audit
+      guard'ı otomatik doğruladı) ve prod build bozulmadı (4.19s, exit 0).
+- [ ] `@playwright/test` — yalnızca **kritik E2E akışları** için
       (aşağıda 3.3), sayfa başına test YAZILMAYACAK.
-- [ ] `package.json`'a `"test": "vitest run"`, `"test:e2e": "playwright test"`
-      script'leri eklenecek. Root `package.json`'daki `lint` script'i
-      genişletilmeyecek — testler ayrı script.
 
 ### 3.2 Component/Unit Testleri (Vitest + RTL)
-- [ ] `AppContext.tsx` — login/logout/token-refresh state geçişleri
-      (localStorage yazma/okuma/temizleme, 401 sonrası otomatik logout).
-- [ ] `utils/api.ts` — axios interceptor'ın 401'de refresh-token akışını
-      tetiklediği, refresh de başarısız olursa kullanıcının login'e
-      yönlendirildiği.
+- [x] ✅ `utils/api.ts` — **17 test**. 401 → sessiz yenileme → oturum düşürme
+      zincirinin TÜM yolları: token'sız 401 oturumu düşürmez (giriş öncesi
+      çağrılar), refresh token yok / sunucu reddetti / ağ koptu / yanıtta
+      accessToken yok, başarısız yenileme sonrası eski token'lar bozulmaz,
+      **eşzamanlı iki 401 TEK yenileme çağrısını paylaşır** (aksi hâlde
+      refresh-token rotasyonu "token reuse" sayılıp tüm oturumları iptal
+      ettirirdi).
+- [x] ✅ `AppContext.tsx` — **7 test**. Giriş (iki token da saklanır, rol
+      JWT'den gelir, başarısız girişte token yazılmaz, sunucu erişilemezse
+      çökmez), çıkış (kimlik bilgileri gerçekten silinir), UNAUTHORIZED
+      olayında otomatik çıkış, provider söküldüğünde dinleyici sızıntısı yok.
+      **Bulgu:** `logoutCompany()` içindeki `YAKIT_IS_AUTH`/`COMPANY_IDX`/
+      `SITE_FILTER` için `removeItem` çağrıları fiilen ETKİSİZ — state'i
+      izleyen `useEffect`'ler değeri hemen geri yazıyor. Güvenlik açığı
+      değil (okuma tarafı `=== 'true'` karşılaştırdığı için `'false'` da
+      "giriş yok" demek) ama kafa karıştırıcı ölü kod; temizliği ayrı bir
+      iş olarak bırakıldı (AppContext ~1200 satır, test aşamasında
+      dokunmak gereksiz risk).
+- [x] **Testlerin kendisi doğrulandı (mutation testing):** api.ts'te 3,
+      AppContext'te 3 olmak üzere 6 kasıtlı mutasyon uygulandı; her biri
+      TAM olarak hedeflediği testi kırdı. Yani testler sahte güvence
+      vermiyor (§0.2'deki "var olması ≠ çalışıyor olması" dersi).
 - [ ] Rol bazlı UI koşulları — `customer`/`developer`/`santiye` sayfa
       gruplarının doğru role'e göre render edildiği/gizlendiği (backend
       RBAC'ın frontend yansıması — burada bir tutarsızlık olursa kullanıcı
@@ -392,9 +411,12 @@ Test aşamasına geçildiğinde önerilen sıra (yüksek etki / düşük efor ö
    1 kritik CI arızası, 1 kimlik doğrulama boşluğu ve 1 test kırılganlığı
    giderildi.
 2. **P1 — Orta efor, yüksek değer:**
-   - Frontend Vitest+RTL kurulumu + AppContext/api.ts testleri (bölüm 3.1-3.2).
-   - Race-condition testleri (bölüm 2.2).
-   - CSP header tespiti + öneri (bölüm 5.1).
+   - [x] ✅ Frontend Vitest+RTL kurulumu + AppContext/api.ts testleri
+         (bölüm 3.1-3.2) — **24 test**, 6 mutasyonla doğrulandı.
+   - [ ] Race-condition testleri (bölüm 2.2).
+   - [ ] CSP header tespiti + öneri (bölüm 5.1).
+   - [ ] Rol bazlı UI koşulları + form doğrulama testleri (bölüm 3.2'nin
+         kalan maddeleri).
 3. **P2 — Daha büyük efor:**
    - Playwright E2E kritik akışlar (bölüm 3.3).
    - Pagination/idempotency sistematik taraması (bölüm 2.2).
