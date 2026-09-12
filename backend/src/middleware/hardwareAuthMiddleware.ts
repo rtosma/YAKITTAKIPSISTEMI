@@ -4,6 +4,7 @@ import { redisPool } from '../db/redisPool';
 import { getHardwareDeviceByDeviceId } from '../db/adminDb';
 import { decryptDeviceSecret } from '../utils/hardwareSecretCrypto';
 import { logger } from '../utils/logger';
+import { ServiceUnavailableError } from '../utils/errors';
 
 // AUTH-202.2 — 30sn'lik timestamp penceresinden BÜYÜK olmalı (ticket notu):
 // bir nonce, kabul edilebilir en eski paketten bile daha uzun süre Redis'te
@@ -181,7 +182,24 @@ export const hardwareAuthMiddleware = async (req: Request, res: Response, next: 
     // gibi göstermesini) önler. SET ... NX atomik olduğundan iki eşzamanlı
     // istek aynı nonce'u asla ikisi de "yeni" olarak kazanamaz.
     const nonceKey = `hw-nonce:${deviceId}:${nonceHeader}`;
-    const nonceSetResult = await redisPool.client.set(nonceKey, '1', 'PX', NONCE_TTL_MS, 'NX');
+    let nonceSetResult: string | null;
+    try {
+      nonceSetResult = await redisPool.client.set(nonceKey, '1', 'PX', NONCE_TTL_MS, 'NX');
+    } catch (redisErr) {
+      // RES-905: nonce/replay koruması BİLİNÇLİ olarak fail-CLOSED kalır —
+      // Redis erişilemiyor diye bu kontrolü atlarsak yakalanmış geçerli bir
+      // paketin tekrar oynatılmasına (replay attack) kapı açmış oluruz, ki bu
+      // rateLimiter/accountLockout'taki fail-open kararlarından TAMAMEN
+      // farklı bir risk sınıfı (kimlik doğrulama bypass'ı, DoS değil). Tek
+      // iyileştirme: cihaza/operatöre "kalıcı imza hatası" değil, ayırt
+      // edilebilir bir "şu an geçici olarak kullanılamıyor, tekrar dene"
+      // sinyali (503) döndürmek — mevcut kod bunu ayrım yapmadan genel
+      // globalErrorHandler'ın opak 500'üne düşürüyordu.
+      await recordRejection(deviceId, 'NONCE_STORE_UNAVAILABLE');
+      throw new ServiceUnavailableError(
+        'Donanım kimlik doğrulama servisi (nonce deposu) şu anda geçici olarak kullanılamıyor. Lütfen kısa süre sonra tekrar deneyin.'
+      );
+    }
     if (nonceSetResult !== 'OK') {
       await recordRejection(deviceId, 'NONCE_REUSED');
       return reject(res, 401, 'NONCE_REUSED', 'Bu nonce bu cihaz için daha önce kullanılmış. Replay Saldırısı Engellendi.');

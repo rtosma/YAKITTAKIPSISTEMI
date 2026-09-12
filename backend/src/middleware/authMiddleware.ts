@@ -37,10 +37,28 @@ export async function authenticateJWT(req: AuthenticatedRequest, res: Response, 
 
   const token = authHeader.substring(7);
 
+  // RES-905: token doğrulaması KENDİ try/catch'inde — yalnızca BURADA
+  // (imza/format/süre) başarısız olursa gerçekten "geçersiz token" denebilir.
+  // Öncesinde tüm akış tek bir try/catch altındaydı; bu da aşağıdaki
+  // isSessionDenied/getCompanyLicenseSnapshot çağrılarından biri geçici bir
+  // Redis/Postgres kesintisiyle hata fırlattığında GEÇERLİ bir token'ın bile
+  // "Oturum süreniz doldu" diye yanlışlıkla reddedilmesine yol açıyordu —
+  // kullanıcı aslında dışarı atılmamıştı, sunucu tarafında geçici bir
+  // altyapı sorunu vardı, ama yanıt bunu "tekrar giriş yap" gibi gösteriyordu.
+  let userPayload: JwtUserPayload;
   try {
-    const userPayload = verifyAccessToken(token);
-    req.user = userPayload;
+    userPayload = verifyAccessToken(token);
+  } catch {
+    return res.status(401).json({
+      success: false,
+      error: 'INVALID_TOKEN',
+      message: 'Oturum süreniz doldu veya geçersiz token. Lütfen tekrar giriş yapınız.'
+    });
+  }
 
+  req.user = userPayload;
+
+  try {
     // AUTH-208: uzaktan kapatılan bir oturumun access token'ı 15 dk daha
     // geçerli kalmasın — deny-list'te ise hemen reddet.
     if (userPayload.sid && (await isSessionDenied(userPayload.sid))) {
@@ -124,11 +142,12 @@ export async function authenticateJWT(req: AuthenticatedRequest, res: Response, 
     // Run within request-scoped tenant context for RLS isolation
     tenantStorage.run(store, () => next());
   } catch (err: any) {
-    return res.status(401).json({
-      success: false,
-      error: 'INVALID_TOKEN',
-      message: 'Oturum süreniz doldu veya geçersiz token. Lütfen tekrar giriş yapınız.'
-    });
+    // RES-905: bu blok artık YALNIZCA token doğrulaması SONRASI adımlarda
+    // (deny-list/lisans kontrolü) oluşan beklenmeyen hataları yakalıyor —
+    // bunlar bir "geçersiz token" değil, muhtemelen geçici bir Redis/Postgres
+    // sorunu. next(err) ile globalErrorHandler'a devredilir: temiz, doğru
+    // durum koduna sahip bir yanıt döner ("oturumunuz sona erdi" yalanı yok).
+    next(err);
   }
 }
 

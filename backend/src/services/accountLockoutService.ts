@@ -46,11 +46,24 @@ export interface LockoutStatus {
 
 /** Girişten ÖNCE çağrılır — hesap kilitliyse Argon2'nin CPU maliyetine hiç girmeden 423 döndürülebilir. */
 export async function checkLockout(username: string): Promise<LockoutStatus> {
-  const ttl = await redisPool.client.ttl(lockKey(username));
-  if (ttl > 0) {
-    return { locked: true, remainingSeconds: ttl };
+  try {
+    const ttl = await redisPool.client.ttl(lockKey(username));
+    if (ttl > 0) {
+      return { locked: true, remainingSeconds: ttl };
+    }
+    return { locked: false };
+  } catch (err) {
+    // RES-905: Redis erişilemezse fail-open — tokenService.ts'teki
+    // isSessionDenied ile AYNI karar. Aksi halde bir Redis kesintisi TÜM
+    // /auth/login ucunu (yeni oturum açmak isteyen HERKESİ) kilitlerdi.
+    // Argon2id maliyeti + loginRateLimiter (IP bazlı, o da fail-open, bkz.
+    // rateLimitMiddleware.ts) hâlâ devrede — bu yüzden brute-force koruması
+    // sıfırlanmıyor, yalnızca bu İKİNCİ (kullanıcı-adı bazlı) katman geçici
+    // olarak devre dışı kalıyor. error seviyesinde loglanır ki bir kesinti
+    // izlenebilir/alarm üretebilir olsun.
+    logger.error({ err, username }, '🚨 [AUTH-209] Redis erişilemedi — hesap kilidi kontrolü atlanıyor (fail-open).');
+    return { locked: false };
   }
-  return { locked: false };
 }
 
 /**
@@ -59,34 +72,51 @@ export async function checkLockout(username: string): Promise<LockoutStatus> {
  * kilitler ve alarm seviyesinde loglar.
  */
 export async function recordFailedLogin(username: string): Promise<LockoutStatus> {
-  const key = failKey(username);
-  const count = await redisPool.client.incr(key);
-  if (count === 1) {
-    await redisPool.client.expire(key, FAILURE_WINDOW_SECONDS);
-  }
+  try {
+    const key = failKey(username);
+    const count = await redisPool.client.incr(key);
+    if (count === 1) {
+      await redisPool.client.expire(key, FAILURE_WINDOW_SECONDS);
+    }
 
-  if (count < MAX_FAILED_ATTEMPTS) {
+    if (count < MAX_FAILED_ATTEMPTS) {
+      return { locked: false };
+    }
+
+    const strikes = await redisPool.client.incr(strikesKey(username));
+    if (strikes === 1) {
+      await redisPool.client.expire(strikesKey(username), STRIKES_TTL_SECONDS);
+    }
+    const durationSeconds = Math.min(BASE_LOCKOUT_SECONDS * 2 ** (strikes - 1), MAX_LOCKOUT_SECONDS);
+
+    await redisPool.client.set(lockKey(username), '1', 'EX', durationSeconds);
+    await redisPool.client.del(key); // kilit süresi korumayı üstlendiği için sayaca artık gerek yok
+
+    logger.error(
+      { username, strikes, durationSeconds },
+      `🚨 [AUTH-209] ALARM: '${username}' hesabı ${MAX_FAILED_ATTEMPTS} ardışık hatalı denemeden sonra ${durationSeconds}sn kilitlendi (${strikes}. kilitlenme).`
+    );
+
+    return { locked: true, remainingSeconds: durationSeconds };
+  } catch (err) {
+    // RES-905: bkz. checkLockout — Redis kesintisinde sayaç tutulamıyor,
+    // ama bu bir DoS/kilit açığı değil: aynı hatalı deneme bir sonraki
+    // istekte (Redis döndüğünde) sayılmaya devam eder, yalnızca kesinti
+    // penceresindeki denemeler sayılmıyor.
+    logger.error({ err, username }, '🚨 [AUTH-209] Redis erişilemedi — başarısız deneme sayaçlanamadı (fail-open).');
     return { locked: false };
   }
-
-  const strikes = await redisPool.client.incr(strikesKey(username));
-  if (strikes === 1) {
-    await redisPool.client.expire(strikesKey(username), STRIKES_TTL_SECONDS);
-  }
-  const durationSeconds = Math.min(BASE_LOCKOUT_SECONDS * 2 ** (strikes - 1), MAX_LOCKOUT_SECONDS);
-
-  await redisPool.client.set(lockKey(username), '1', 'EX', durationSeconds);
-  await redisPool.client.del(key); // kilit süresi korumayı üstlendiği için sayaca artık gerek yok
-
-  logger.error(
-    { username, strikes, durationSeconds },
-    `🚨 [AUTH-209] ALARM: '${username}' hesabı ${MAX_FAILED_ATTEMPTS} ardışık hatalı denemeden sonra ${durationSeconds}sn kilitlendi (${strikes}. kilitlenme).`
-  );
-
-  return { locked: true, remainingSeconds: durationSeconds };
 }
 
 /** Başarılı bir girişten sonra çağrılır — birikmiş başarısız deneme sayacını temizler. */
 export async function clearFailedLogins(username: string): Promise<void> {
-  await redisPool.client.del(failKey(username));
+  try {
+    await redisPool.client.del(failKey(username));
+  } catch (err) {
+    // RES-905: temizlenemeyen bir sayaç güvenlik açığı DEĞİL (olsa olsa TTL'i
+    // dolana kadar bir sonraki hatalı denemeyi biraz daha erken kilitler) —
+    // bu yüzden başarılı girişi bir Redis kesintisi yüzünden ASLA
+    // engellemiyoruz, yalnızca logluyoruz.
+    logger.warn({ err, username }, '⚠️ [AUTH-209] Redis erişilemedi — başarısız deneme sayacı temizlenemedi.');
+  }
 }
