@@ -174,6 +174,53 @@ CREATE TABLE IF NOT EXISTS drivers (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- HR-1801: personel kaydı + izin hakları. `drivers` tablosundan KASITLI
+-- olarak AYRI — personel şoför olmayabilir (şantiye şefi, operatör vb.);
+-- şoför olan bir personel `driver_id` ile drivers'a bağlanır (çakışma
+-- tespiti için: bu personel izindeyken atanmış olduğu bir araç var mı).
+CREATE TABLE IF NOT EXISTS personnel (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    full_name VARCHAR(128) NOT NULL,
+    tc_no VARCHAR(11),
+    role_title VARCHAR(64) NOT NULL DEFAULT 'DİĞER', -- 'ŞOFÖR' | 'ŞANTİYE_ŞEFİ' | 'OPERATÖR' | 'DİĞER'
+    site_name VARCHAR(128),
+    driver_id VARCHAR(64) REFERENCES drivers(id) ON DELETE SET NULL,
+    annual_leave_entitlement_days NUMERIC(5,1) NOT NULL DEFAULT 14,
+    hire_date DATE,
+    status VARCHAR(16) NOT NULL DEFAULT 'AKTİF', -- 'AKTİF' | 'PASİF'
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- HR-1801: izin talebi — İKİ AŞAMALI onay akışı (AC: "şantiye müdürü →
+-- firma yöneticisi"). manual_dispense_requests/fuel_quotas ile AYNI desen:
+-- bir durum makinesi olduğu için (diğer yeni tablolarımın çoğunun aksine)
+-- APPEND-ONLY DEĞİL, app_user'dan UPDATE/DELETE REVOKE EDİLMEMİŞTİR.
+-- Durumlar: TALEP_EDILDI → SAHA_ONAYLANDI (SITE_MANAGER) → ONAYLANDI
+-- (COMPANY_OWNER; TALEP_EDILDI'den de kısayoldan onaylayabilir, üst rol) |
+-- REDDEDILDI (her iki aşamada da) | IPTAL_EDILDI (talep sahibi, karar
+-- verilmeden önce).
+CREATE TABLE IF NOT EXISTS leave_requests (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    personnel_id VARCHAR(64) NOT NULL REFERENCES personnel(id) ON DELETE CASCADE,
+    leave_type VARCHAR(16) NOT NULL, -- 'YILLIK' | 'MAZERET' | 'ÜCRETSİZ'
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    day_count NUMERIC(5,1) NOT NULL,
+    reason TEXT,
+    status VARCHAR(16) NOT NULL DEFAULT 'TALEP_EDILDI',
+    requested_by VARCHAR(64) NOT NULL,
+    site_approved_by VARCHAR(64),
+    site_approved_at TIMESTAMP WITH TIME ZONE,
+    company_approved_by VARCHAR(64),
+    company_approved_at TIMESTAMP WITH TIME ZONE,
+    rejection_reason TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_leave_requests_personnel ON leave_requests(tenant_id, personnel_id, start_date DESC);
+CREATE INDEX IF NOT EXISTS idx_leave_requests_status ON leave_requests(tenant_id, status);
+
 -- 3b. Fuel Transactions Table (İkmal Kayıtları)
 -- Site/vehicle/driver/tank are stored as plain descriptive strings (matching
 -- the existing site_name pattern on vehicles/tanks/drivers) rather than FKs,
@@ -1274,11 +1321,14 @@ ALTER TABLE vehicle_maintenance_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_compliance_deadlines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_tires ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE personnel ENABLE ROW LEVEL SECURITY;
+ALTER TABLE leave_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory_movements ENABLE ROW LEVEL SECURITY;
 ALTER TABLE lab_samples ENABLE ROW LEVEL SECURITY;
 ALTER TABLE lab_test_results ENABLE ROW LEVEL SECURITY;
 ALTER TABLE company_module_addons ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tenant_deletion_approvals ENABLE ROW LEVEL SECURITY;
 ALTER TABLE usage_metering_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings ENABLE ROW LEVEL SECURITY;
 
@@ -1328,7 +1378,6 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO app_user;
 -- AUTH-203 AC: "audit_logs üzerinde UPDATE/DELETE veritabanı düzeyinde
 -- reddedilmelidir." Yukarıdaki GRANT ALL bunu da kapsadığı için burada,
 -- SONRASINDA açıkça geri alınıyor — app_user yalnızca INSERT + SELECT
-ALTER TABLE tenant_deletion_approvals ENABLE ROW LEVEL SECURITY;
 -- yapabilir, tablo gerçekten append-only olur (uygulama kodundaki bir hata
 -- ya da ele geçirilmiş bir bağlantı bile kaydı değiştiremez/silemez).
 -- TRUNCATE de dahil: DELETE'in tek tek satır silmesinden farklı bir
@@ -1416,11 +1465,14 @@ ALTER TABLE vehicle_maintenance_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_compliance_deadlines FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_tires FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_documents FORCE ROW LEVEL SECURITY;
+ALTER TABLE personnel FORCE ROW LEVEL SECURITY;
+ALTER TABLE leave_requests FORCE ROW LEVEL SECURITY;
 ALTER TABLE inventory_items FORCE ROW LEVEL SECURITY;
 ALTER TABLE inventory_movements FORCE ROW LEVEL SECURITY;
 ALTER TABLE lab_samples FORCE ROW LEVEL SECURITY;
 ALTER TABLE lab_test_results FORCE ROW LEVEL SECURITY;
 ALTER TABLE company_module_addons FORCE ROW LEVEL SECURITY;
+ALTER TABLE tenant_deletion_approvals FORCE ROW LEVEL SECURITY;
 ALTER TABLE usage_metering_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings FORCE ROW LEVEL SECURITY;
 
@@ -1461,18 +1513,20 @@ DROP POLICY IF EXISTS vehicle_maintenance_records_tenant_isolation_policy ON veh
 DROP POLICY IF EXISTS vehicle_compliance_deadlines_tenant_isolation_policy ON vehicle_compliance_deadlines;
 DROP POLICY IF EXISTS vehicle_tires_tenant_isolation_policy ON vehicle_tires;
 DROP POLICY IF EXISTS vehicle_documents_tenant_isolation_policy ON vehicle_documents;
+DROP POLICY IF EXISTS personnel_tenant_isolation_policy ON personnel;
+DROP POLICY IF EXISTS leave_requests_tenant_isolation_policy ON leave_requests;
 DROP POLICY IF EXISTS inventory_items_tenant_isolation_policy ON inventory_items;
 DROP POLICY IF EXISTS inventory_movements_tenant_isolation_policy ON inventory_movements;
 DROP POLICY IF EXISTS lab_samples_tenant_isolation_policy ON lab_samples;
 DROP POLICY IF EXISTS lab_test_results_tenant_isolation_policy ON lab_test_results;
 DROP POLICY IF EXISTS company_module_addons_tenant_isolation_policy ON company_module_addons;
+DROP POLICY IF EXISTS tenant_deletion_approvals_tenant_isolation_policy ON tenant_deletion_approvals;
 DROP POLICY IF EXISTS usage_metering_records_tenant_isolation_policy ON usage_metering_records;
 DROP POLICY IF EXISTS vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_readings;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
     FOR ALL
-ALTER TABLE tenant_deletion_approvals FORCE ROW LEVEL SECURITY;
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
@@ -1520,7 +1574,6 @@ CREATE POLICY audit_logs_tenant_isolation_policy ON audit_logs
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
-DROP POLICY IF EXISTS tenant_deletion_approvals_tenant_isolation_policy ON tenant_deletion_approvals;
 
 -- Create Tenant Isolation Policy for hardware_devices — bu politika yalnızca
 -- provisioning/rotasyon/bloke etme gibi TENANT İÇİ (withTenant() üzerinden
@@ -1664,6 +1717,11 @@ CREATE POLICY company_module_addons_tenant_isolation_policy ON company_module_ad
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+CREATE POLICY tenant_deletion_approvals_tenant_isolation_policy ON tenant_deletion_approvals
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 CREATE POLICY usage_metering_records_tenant_isolation_policy ON usage_metering_records
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
@@ -1680,6 +1738,16 @@ CREATE POLICY vehicle_tires_tenant_isolation_policy ON vehicle_tires
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
 CREATE POLICY vehicle_documents_tenant_isolation_policy ON vehicle_documents
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY personnel_tenant_isolation_policy ON personnel
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY leave_requests_tenant_isolation_policy ON leave_requests
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
@@ -1717,11 +1785,6 @@ CREATE POLICY vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_re
 -- hiçbir tabloda indeks YOKTU — yalnızca PRIMARY KEY (id) indeksliydi. Şu anki
 -- veri hacminde (düzinelerce satır) bu görünmüyor (Postgres zaten Seq Scan'i
 -- tercih ediyor), ama transactions/audit_logs gibi sürekli büyüyen tablolar
-CREATE POLICY tenant_deletion_approvals_tenant_isolation_policy ON tenant_deletion_approvals
-    FOR ALL
-    USING (tenant_id = current_setting('app.current_tenant_id', true))
-    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
-
 -- üretimde on binlerce/yüz binlerce satıra ulaştığında HER istekte (RLS
 -- politikası aracılığıyla, uygulama kodu hiç WHERE tenant_id yazmasa bile)
 -- tam tablo taraması yapılır. CREATE INDEX salt-ekleyici bir işlem olduğundan

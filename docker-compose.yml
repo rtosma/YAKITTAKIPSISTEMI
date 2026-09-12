@@ -143,6 +143,8 @@ services:
       TRANSACTION_HASH_SECRET: ${TRANSACTION_HASH_SECRET:?TRANSACTION_HASH_SECRET .env dosyasında tanımlanmalıdır}
       # AUTH-202.3: hardware_devices.encrypted_secret AES-256-GCM anahtarı.
       HW_SECRET_ENCRYPTION_KEY: ${HW_SECRET_ENCRYPTION_KEY:?HW_SECRET_ENCRYPTION_KEY .env dosyasında tanımlanmalıdır}
+      # ARCH-108: tenant veri dışa aktarım arşivi AES-256-GCM anahtarı.
+      TENANT_EXPORT_ENCRYPTION_KEY: ${TENANT_EXPORT_ENCRYPTION_KEY:?TENANT_EXPORT_ENCRYPTION_KEY .env dosyasında tanımlanmalıdır}
       # AI-502: yukarıdakilerin AKSİNE zorunlu DEĞİL (`:-` boş varsayılan) —
       # tanımsızsa özellik nazikçe 503 döner, uygulamanın geri kalanı normal
       # çalışır (bkz. config/env.ts, consumptionAnomalyService.ts).

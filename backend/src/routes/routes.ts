@@ -36,6 +36,12 @@ import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHard
 import { runLicenseExpiryWarningSweep } from '../services/licenseWarningService';
 import { getUsageMeteringHistory, computeUsageMeteringForCurrentTenant } from '../services/usageMeteringService';
 import { uploadVehicleDocument, getVehicleDocuments, getVehicleDocumentContent } from '../services/vehicleDocumentService';
+import {
+  createPersonnel, getPersonnelList, getPersonnel, createLeaveRequest, getLeaveRequestsForPersonnel, getLeaveBalance,
+  getLeaveCalendar, getPendingLeaveApprovals, approveLeaveRequestAsSiteManager, approveLeaveRequestAsCompanyOwner,
+  rejectLeaveRequest, cancelLeaveRequest
+} from '../services/personnelLeaveService';
+import { createPersonnelSchema, createLeaveRequestSchema, rejectLeaveRequestSchema } from '../schemas/personnelLeaveSchema';
 import { uploadVehicleDocumentSchema } from '../schemas/vehicleDocumentSchema';
 import { validateRequest } from '../middleware/validateMiddleware';
 import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
@@ -247,12 +253,6 @@ router.post(
 
       await clearFailedLogins(lowerUser);
 
-      // AUTH-204: geçici parola 72 saat sonra geçersiz olur (bkz.
-      // db/tenantDb.ts createSiteWithManager) — parola doğru olsa bile süresi
-      // dolmuş bir geçici parolayla giriş reddedilir; kullanıcı şirket
-      // yöneticisinden yeni bir şantiye/hesap oluşturulmasını istemelidir
-      // (henüz kendi kendine "yeni geçici parola iste" ucu yok).
-      if (dbUser.must_change_password && dbUser.temp_password_expires_at && new Date(dbUser.temp_password_expires_at) < new Date()) {
       // ARCH-108 AC: "dondurulmuş tenant'ların kullanıcıları KİMLİK
       // DOĞRULAYAMAMALI" — authMiddleware.ts'teki kontrol yalnızca ZATEN
       // var olan bir access token'ı reddeder; buradaki kontrol olmasa
@@ -271,6 +271,12 @@ router.post(
         }
       }
 
+      // AUTH-204: geçici parola 72 saat sonra geçersiz olur (bkz.
+      // db/tenantDb.ts createSiteWithManager) — parola doğru olsa bile süresi
+      // dolmuş bir geçici parolayla giriş reddedilir; kullanıcı şirket
+      // yöneticisinden yeni bir şantiye/hesap oluşturulmasını istemelidir
+      // (henüz kendi kendine "yeni geçici parola iste" ucu yok).
+      if (dbUser.must_change_password && dbUser.temp_password_expires_at && new Date(dbUser.temp_password_expires_at) < new Date()) {
         return res.status(401).json({
           success: false,
           error: 'TEMP_PASSWORD_EXPIRED',
@@ -1192,12 +1198,6 @@ router.post('/admin/package-defaults/:package/reapply', authenticateJWT, authori
 
 /**
  * @swagger
- * /devices:
- *   get:
- *     summary: Kayıtlı IoT Donanımları (Süper Admin)
- *     description: >
-/**
- * @swagger
  * /admin/companies/{id}/lifecycle:
  *   get:
  *     summary: Tenant Yaşam Döngüsü Durumu (ARCH-108, Süper Admin)
@@ -1338,6 +1338,12 @@ router.get('/admin/companies/:id/export', authenticateJWT, authorizeRoles('SUPER
   }
 });
 
+/**
+ * @swagger
+ * /devices:
+ *   get:
+ *     summary: Kayıtlı IoT Donanımları (Süper Admin)
+ *     description: >
  *       HMAC-SHA256 ile kayıtlı ESP32/debimetre cihazlarını, Redis'teki
  *       gerçek son bilinen bağlantı durumuyla (MQTT LWT/veri akışından)
  *       birlikte listeler. Hiç bağlanmamış bir cihaz OFFLINE görünür —
@@ -2345,6 +2351,191 @@ router.get('/vehicle-documents/:id/content', authenticateJWT, authorizeRoles(...
     res.setHeader('Content-Type', doc.mimeType);
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.fileName)}"`);
     res.send(doc.fileContent);
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+// ============================================================================
+// HR-1801: PERSONEL İZİN TAKİP MODÜLÜ
+// ============================================================================
+const HR_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /personnel:
+ *   post:
+ *     summary: Personel Kaydı Oluştur (HR-1801)
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Personel Listesi (HR-1801)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/personnel', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), validateRequest({ body: createPersonnelSchema }), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, message: 'Personel kaydedildi.', data: await createPersonnel(req.body, req.user!.userId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.get('/personnel', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await getPersonnelList() });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.get('/personnel/:id', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await getPersonnel(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /personnel/{id}/leave-requests:
+ *   post:
+ *     summary: İzin Talebi Oluştur (HR-1801)
+ *     description: >
+ *       AC: "çakışma tespiti" — aynı personelin bekleyen/onaylı başka bir
+ *       izniyle tarih aralığı örtüşüyorsa 409 ile reddedilir. Yanıt ayrıca
+ *       personel bir şoförse (driver_id) o an bir araca atanmış mı
+ *       (`vehicleAssignmentConflict`, bilgilendirici — engelleyici DEĞİL)
+ *       bilgisini taşır.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Personelin İzin Geçmişi (HR-1801)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/personnel/:id/leave-requests',
+  authenticateJWT,
+  authorizeRoles(...HR_MANAGER_ROLES),
+  validateRequest({ body: createLeaveRequestSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await createLeaveRequest(req.params.id, req.body, req.user!.userId);
+      res.json({ success: true, message: 'İzin talebi oluşturuldu.', data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+router.get('/personnel/:id/leave-requests', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await getLeaveRequestsForPersonnel(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /personnel/{id}/leave-balance:
+ *   get:
+ *     summary: İzin Bakiyesi (HR-1801)
+ *     parameters:
+ *       - in: query
+ *         name: year
+ *         schema:
+ *           type: integer
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/personnel/:id/leave-balance', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const year = req.query.year ? Number(req.query.year) : new Date().getUTCFullYear();
+    res.json({ success: true, data: await getLeaveBalance(req.params.id, year) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /leave-requests/pending:
+ *   get:
+ *     summary: Bekleyen Onaylar (HR-1801)
+ *     description: >
+ *       NOTIF-1601 (bildirim servisi) bu kod tabanında yok — bu uç onun
+ *       yerine geçer. SITE_MANAGER: TALEP_EDILDI. COMPANY_OWNER/SUPER_ADMIN:
+ *       TALEP_EDILDI (kısayoldan onaylayabilir) + SAHA_ONAYLANDI.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/leave-requests/pending', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await getPendingLeaveApprovals(req.user!.role) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /leave-calendar:
+ *   get:
+ *     summary: İzin Takvimi (HR-1801)
+ *     parameters:
+ *       - in: query
+ *         name: startDate
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: endDate
+ *         required: true
+ *         schema:
+ *           type: string
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/leave-calendar', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
+    if (!startDate || !endDate) throw new BadRequestError('startDate ve endDate zorunludur.');
+    res.json({ success: true, data: await getLeaveCalendar(startDate, endDate) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.post('/leave-requests/:id/approve-site', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'SITE_MANAGER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, message: 'Saha onayı verildi.', data: await approveLeaveRequestAsSiteManager(req.params.id, req.user!.userId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.post('/leave-requests/:id/approve-company', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, message: 'Firma onayı verildi.', data: await approveLeaveRequestAsCompanyOwner(req.params.id, req.user!.userId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.post(
+  '/leave-requests/:id/reject',
+  authenticateJWT,
+  authorizeRoles(...HR_MANAGER_ROLES),
+  validateRequest({ body: rejectLeaveRequestSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, message: 'İzin talebi reddedildi.', data: await rejectLeaveRequest(req.params.id, req.body.rejectionReason, req.user!.userId) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+router.post('/leave-requests/:id/cancel', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, message: 'İzin talebi iptal edildi.', data: await cancelLeaveRequest(req.params.id, req.user!.userId) });
   } catch (error: any) {
     next(error);
   }

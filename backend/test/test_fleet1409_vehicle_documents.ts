@@ -16,7 +16,10 @@
  * Not: tek kullanımlık test firması + aracı, mevcut seed verisine dokunulmaz.
  */
 
-const API_URL = 'http://localhost:3000/api/v1';
+// CI'da (auth-integration-test job) backend nginx OLMADAN doğrudan 5000
+// portunda ayağa kalkar — bu yüzden localde varsayılan (3000, nginx proxy)
+// env ile override edilebilir olmalı (bkz. ci-cd.yml API_URL).
+const API_URL = process.env.API_URL || 'http://localhost:3000/api/v1';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
