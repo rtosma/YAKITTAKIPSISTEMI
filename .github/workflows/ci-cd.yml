@@ -86,6 +86,12 @@ jobs:
       - name: "GÜVENLİK: Bağımlılık Zafiyet Denetimi (npm audit, GHSA allowlist)"
         run: node scripts/check-dependency-audit.mjs
 
+      # TEST_PLAN.md §5.1 — CSP + diğer güvenlik başlıkları. Statik denetim:
+      # CI'da nginx YOK (backend çıplak çalışıyor), bu yüzden canlı curl
+      # testi burada çalışamaz; yapılandırmanın kendisi denetleniyor.
+      - name: "GÜVENLİK: Güvenlik Yanıt Başlıkları (CSP) Denetimi"
+        run: node scripts/check-security-headers.mjs
+
       # TEST_PLAN.md §3 — frontend'in ilk otomatik testleri. Kapsam bilinçli
       # olarak dar: oturum zinciri (401 → sessiz token yenileme → otomatik
       # çıkış). Backend'den farklı olarak bunlar gerçek servis GEREKTİRMEZ

@@ -34,6 +34,12 @@ registerProcessExceptionHandlers();
 const app = express();
 const PORT = config.PORT;
 
+// TEST_PLAN.md §5.1 (OWASP A05 — Security Misconfiguration): Express
+// varsayılan olarak her yanıta `X-Powered-By: Express` ekler. Tek başına bir
+// açık değil ama saldırgana bedava parmak izi verir (hangi yığın, dolayısıyla
+// hangi CVE'leri denemeli). Kapatmanın hiçbir işlevsel maliyeti yok.
+app.disable('x-powered-by');
+
 app.use(cors());
 
 // Graceful Shutdown Check Middleware (returns 503 Service Unavailable if shutting down)

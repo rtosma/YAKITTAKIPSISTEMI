@@ -380,13 +380,33 @@ Her madde için: **zaten kapsanan mı, yoksa yeni mi.**
 | **A10 SSRF** | Dış URL'e istek atan tek nokta Google Gemini API (sabit endpoint) — kullanıcı girdisiyle URL oluşturan bir nokta YOK. Düşük risk, **yeni:** bunu doğrulayan tek bir grep taraması (kod incelemesi, otomatik test gerekmez). |
 
 ### 5.1 Ek Güvenlik Test Kalemleri
-- [ ] **CSP header kontrolü** — frontend `index.html`/nginx yanıtlarında bir
-      Content-Security-Policy header'ı var mı? Şu an muhtemelen YOK — eklenip
-      eklenmeyeceği ayrı bir karar, ama en azından mevcut durumun test/rapor
-      ile belgelenmesi bu planın parçası.
-  - [ ] Sonuç bulunduğunda: header yoksa, en azından `default-src 'self'`
-        gibi minimal bir politika önerisi hazırlanacak (uygulama KARARI
-        kullanıcıya bırakılır, burada yalnızca tespit ve öneri).
+- [x] ✅ **CSP header kontrolü — TAMAMLANDI ve EKLENDİ.** Tespit: CSP HİÇ YOKTU.
+      Ayrıca 2 bulgu daha: `X-Powered-By: Express` açıktı (yığın parmak izi)
+      ve CORS tamamen açıktı (`Access-Control-Allow-Origin: *`).
+      Yapılanlar: (1) nginx'e CSP eklendi — her direktif ÖLÇÜLEREK seçildi:
+      build çıktısında inline script OLMADIĞI doğrulandığı için
+      `script-src 'self'` (unsafe-inline YOK); `style-src 'unsafe-inline'`
+      React style={{}} + Google Fonts için; `img-src data: blob:` base64
+      doküman önizleme + URL.createObjectURL için; `connect-src ws: wss:`
+      Socket.io için. (2) `app.disable('x-powered-by')` eklendi.
+      (3) `scripts/check-security-headers.mjs` guard'ı — CSP'nin silinmesini
+      VE script-src'ye 'unsafe-inline' eklenerek etkisizleştirilmesini
+      engelliyor (3 negatif testle doğrulandı). Canlı doğrulandı: başlıklar
+      dönüyor, uygulama (HTML+JS bundle+API) çalışmaya devam ediyor.
+      **AÇIK KALAN:** CORS `*` — düzeltmek production domain bilgisi
+      gerektiriyor, kullanıcı kararına bırakıldı (bkz. §5.2).
+
+- [ ] **CORS politikası daraltılmalı (§5.2 — AÇIK BULGU):** backend
+      `app.use(cors())` varsayılanla çalışıyor, yani
+      `Access-Control-Allow-Origin: *`. Frontend API'yi göreli yolla
+      (`/api/v1`) çağırdığı ve nginx hem SPA'yı hem API'yi aynı origin'den
+      sunduğu için CORS'a pratikte HİÇ ihtiyaç yok görünüyor. Bearer token
+      kullanıldığından `*` ile credential gönderilemez (tarayıcı engeller),
+      bu yüzden CSRF riski düşük — ama yine de gereksiz geniş bir yüzey.
+      DÜZELTİLMEDİ çünkü production domain(ler)i bilinmiyor ve yanlış bir
+      kısıtlama uygulamayı kırar; karar kullanıcıya ait:
+      (a) tamamen kaldır (same-origin yeterliyse), (b) env'den okunan bir
+      allowlist (`CORS_ALLOWED_ORIGINS`) ile daralt.
 - [ ] **Secrets taraması genişletme** — `gitleaks` mevcut commit geçmişini
       tarıyor; `.gitleaks.toml` allowlist'inin gereğinden geniş olmadığı
       (yanlışlıkla gerçek bir secret'ı maskelemediği) elle bir kez gözden
