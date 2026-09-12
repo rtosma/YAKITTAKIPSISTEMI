@@ -255,8 +255,10 @@ Frontend'de HİÇ test yok. Sıfırdan, hafif bir kurulumla başlanacak.
       `npm run test` / `test:watch` script'leri eklendi, CI'a bağlandı.
       **Yeni bağımlılıklar hiç yeni zafiyet getirmedi** (dependency-audit
       guard'ı otomatik doğruladı) ve prod build bozulmadı (4.19s, exit 0).
-- [ ] `@playwright/test` — yalnızca **kritik E2E akışları** için
-      (aşağıda 3.3), sayfa başına test YAZILMAYACAK.
+- [x] ✅ `@playwright/test` + chromium kuruldu; `playwright.config.ts`
+      (workers:1 — paralel girişler hesap kilitleme/rate limit tetikler),
+      `npm run test:e2e`. CI'a BAĞLANMADI: docker-compose yığını gerekiyor
+      (test_res905/test_iot301 ile aynı gerekçe, bkz. §0.3).
 
 ### 3.2 Component/Unit Testleri (Vitest + RTL)
 - [x] ✅ `utils/api.ts` — **17 test**. 401 → sessiz yenileme → oturum düşürme
@@ -290,7 +292,24 @@ Frontend'de HİÇ test yok. Sıfırdan, hafif bir kurulumla başlanacak.
 - [ ] Kritik hesaplama/gösterim bileşenleri (ör. kota bakiyesi, tank
       doluluk yüzdesi, TCO özet kartı) — yanlış birim/yuvarlama riski.
 
-### 3.3 E2E Testleri (Playwright — YALNIZCA kritik akışlar, ~8-10 senaryo)
+### 3.3 E2E Testleri (Playwright — YALNIZCA kritik akışlar)
+
+**İLK TUR TAMAMLANDI** — `frontend/e2e/security-and-auth.spec.ts` (5/5).
+Kapsam ilkesi: E2E yalnızca birim testin YAKALAYAMADIĞI şeyler için.
+- [x] ✅ **CSP gerçek tarayıcıda ihlal üretmiyor** — en değerli test. jsdom
+      CSP'yi yok sayar, `curl -I` yalnızca başlığın döndüğünü gösterir;
+      tarayıcının script/style/font'u GERÇEKTEN yükleyebildiğini sadece bu
+      doğrular. Fazla katı bir CSP uygulamayı sessizce beyaz ekrana çevirir.
+      **Mutation ile doğrulandı:** style-src'den 'unsafe-inline' kaldırılıp
+      frontend yeniden derlendiğinde 2 test kırıldı, geri alınınca 5/5 döndü.
+- [x] ✅ CSP başlığı tarayıcıya ulaşıyor + script-src gevşetilmemiş
+- [x] ✅ Yanlış şifre → panele geçilmiyor, token YAZILMIYOR
+- [x] ✅ Doğru giriş → panele yönlendirme + iki token da saklanıyor +
+      panelde CSP ihlali yok (connect-src yanlış olsaydı API çağrıları
+      burada patlardı)
+- [x] ✅ Token olmadan korumalı sayfaya erişilemiyor (route guard)
+
+**Sonraki tur (yapılacak):**
 - [ ] Login → dashboard → logout (üç farklı rol: SUPER_ADMIN, COMPANY_OWNER,
       SITE_MANAGER/PUMP_OPERATOR).
 - [ ] Yanlış şifre → hata mesajı → hesap kilitleme sonrası 423 mesajının

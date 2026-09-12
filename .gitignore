@@ -34,3 +34,7 @@ pgdata/
 
 # Claude Code local (personal) settings — not shared with the team
 .claude/settings.local.json
+
+# Playwright E2E çıktıları (ekran görüntüsü/trace — commit edilmez)
+frontend/test-results/
+frontend/playwright-report/
