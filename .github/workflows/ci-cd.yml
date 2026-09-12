@@ -68,6 +68,24 @@ jobs:
       - name: "ARCH-110: .env.example ↔ Config Şeması Senkron Kontrolü"
         run: node scripts/check-env-example-sync.mjs
 
+      # TEST_PLAN.md §6 — geçersiz bir workflow dosyası CI'ı "kırmızı" değil
+      # "yok" yapar (GitHub hiçbir job çalıştırmaz, hiçbir uyarı görünmez).
+      # Bu gerçekten yaşandı: 151881b ile giren tırnaksız "OPS-1105:" başlığı
+      # dosyayı geçersiz YAML yaptı. Bir daha sessizce olmasın diye kilitli.
+      - name: "GÜVENLİK: Workflow YAML Geçerlilik Denetimi"
+        run: node scripts/check-workflow-yaml.mjs
+
+      # TEST_PLAN.md §3.4 — frontend'de ESLint yok; XSS/kod-enjeksiyon sink'leri
+      # ve xlsx'in (bilinen HIGH zafiyetli) parse yolu mekanik olarak yasak.
+      - name: "GÜVENLİK: Frontend XSS / Tehlikeli Desen Denetimi"
+        run: node scripts/check-frontend-security.mjs
+
+      # TEST_PLAN.md §2.2 — Trivy YALNIZCA imaj/OS paketlerini tarıyor;
+      # node_modules içindeki JS bağımlılık zafiyetleri bu adımla kapsanır.
+      # GHSA bazlı allowlist: bilinmeyen HER yeni advisory build'i kırar.
+      - name: "GÜVENLİK: Bağımlılık Zafiyet Denetimi (npm audit, GHSA allowlist)"
+        run: node scripts/check-dependency-audit.mjs
+
       - name: Run RES-902 Exception Filter & Logging Tests
         run: cd backend && npx tsx test/test_res902.ts
 
@@ -197,6 +215,13 @@ jobs:
 
       - name: Run TEST-1003 Tenant Isolation Leak Tests
         run: cd backend && npx tsx test/test_195_tenant_isolation.ts
+
+      # TEST_PLAN.md §0.1 — route/test kapsama taraması sonucu hiç test
+      # edilmediği bulunan 2 uç (offline-ratio-alerts RBAC + tenant izolasyonu,
+      # tenant-info kimlik doğrulaması). Bu adım CI'daki çıplak backend'e
+      # (port 5000) bağlanır — nginx YOK, bu yüzden API_URL override YOK.
+      - name: "TEST_PLAN §0.1: Test Edilmemiş Uç Kapsama Testleri (GAP-1/GAP-2)"
+        run: cd backend && npx tsx test/test_gap_untested_endpoints.ts
 
       - name: Run FUEL-401 RFID Dispense Session State Machine Tests
         run: cd backend && npx tsx test/test_fuel401_dispense_session.ts
@@ -357,7 +382,11 @@ jobs:
         run: cat /tmp/backend-ci.log || true
 
   secret-scan:
-    name: 🔑 OPS-1105: Gitleaks Secret Taraması
+    # DİKKAT: bu satırdaki iki nokta üst üste ("OPS-1105:") YAML'da bir mapping
+    # ayırıcısı olarak yorumlanır — tırnaksız bırakılırsa TÜM workflow dosyası
+    # geçersiz hale gelir ve GitHub Actions hiçbir job'ı çalıştırmaz (sessiz
+    # başarısızlık). Bkz. scripts/check-workflow-yaml.mjs.
+    name: "🔑 OPS-1105: Gitleaks Secret Taraması"
     runs-on: ubuntu-latest
     # Diğer job'lardan bağımsız — build/test beklemeden hemen çalışabilir.
     # AC: "Repoda hiçbir gerçek secret bulunmamalı ve tarama CI'da çalışmalıdır."

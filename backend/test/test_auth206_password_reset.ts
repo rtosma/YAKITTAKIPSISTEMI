@@ -20,8 +20,6 @@ import { requestPasswordReset } from '../src/services/passwordResetService';
 const API_URL = 'http://localhost:5000/api/v1';
 const USER = 'orman-santiye';
 const NEW_PW = 'YeniGucluSifre_2026';
-// '123456' düz metninin seed'deki Argon2id hash'i (seed_mock_data.sql).
-const SEED_HASH_123456 = '$argon2id$v=19$m=65536,p=1,t=3$08Vstd8iW8mXbMgeAz8jbA$zca8rRtma2jMjEfCh9tonOGuV3lnBq3DMN6bUHCw+BU';
 
 const redis = new Redis({ host: process.env.REDIS_HOST || 'localhost', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
 
@@ -68,6 +66,27 @@ async function run() {
   };
 
   const GENERIC_MSG = 'Eğer bu kullanıcı adı sistemde kayıtlıysa, şifre sıfırlama talimatları ilgili kanaldan iletilmiştir.';
+
+  // TEST_PLAN.md §2.2 (test veri hijyeni): parola hash'i ESKİDEN sabit kodlu
+  // bir seed değerinden geri yazılıyordu — seed hash'i değişirse (parola
+  // politikası/algoritma güncellemesi) test, kobay kullanıcıyı SESSİZCE
+  // yanlış bir parolaya geri döndürür ve '123456' ile giren diğer TÜM
+  // testleri kırardı. Artık test, bozduğu değerin kendisini ölçüp geri
+  // yazıyor: sabit kodlu hash'e bağımlılık YOK.
+  const originalHashRows = await (async () => {
+    const c = pg();
+    await c.connect();
+    try {
+      const r = await c.query('SELECT password_hash FROM users WHERE username = $1', [USER]);
+      return r.rows;
+    } finally {
+      await c.end();
+    }
+  })();
+  if (originalHashRows.length === 0) {
+    throw new Error(`Kobay kullanıcı '${USER}' veritabanında bulunamadı — seed eksik.`);
+  }
+  const originalHash: string = originalHashRows[0].password_hash;
 
   try {
     // Test 1: forgot-password — var olan kullanıcı → 200 + jenerik mesaj
@@ -134,12 +153,13 @@ async function run() {
       `1.=${rl1.status}, 2.=${rl2.status}/${rl2.body.error}`);
 
   } finally {
-    // Parolayı seed değerine geri yaz — başka testler '123456' ile giriyor.
+    // Parolayı testin BAŞINDA ölçülen değerine geri yaz — başka testler
+    // bu kullanıcıyla '123456' ile giriyor (bkz. yukarıdaki originalHash notu).
     const client = pg();
     await client.connect();
     await client.query(
       `UPDATE users SET password_hash = $2, must_change_password = FALSE, temp_password_expires_at = NULL WHERE username = $1`,
-      [USER, SEED_HASH_123456]
+      [USER, originalHash]
     );
     await client.end();
     await clearRateLimits();

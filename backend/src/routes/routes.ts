@@ -173,8 +173,18 @@ router.get('/health/ready', async (_req: Request, res: Response, next: NextFunct
 /**
  * GET /api/v1/tenant-info
  * Returns AsyncLocalStorage context state for current request
+ *
+ * TEST_PLAN.md §0.1 (GAP-2): Bu uç KİMLİK DOĞRULAMASIZ açıktı. Sızdırdığı bir
+ * veri yoktu (context yalnızca authenticateJWT içinde tenantStorage.run ile
+ * kurulduğundan, kimlik doğrulamasız çağrıda `context` zaten undefined
+ * dönüyordu) — ama bu, güvenliğin kodun BAŞKA bir yerindeki bir tesadüfe
+ * bağlı olması demekti: tenant context'ini authenticateJWT'den ÖNCE dolduran
+ * bir ara katman (ör. traceId/IP) eklendiği anda bu uç sessizce bir bilgi
+ * ifşası hâline gelirdi. Tanılama amaçlı bir uç olduğu için kaldırılmadı,
+ * kimlik doğrulaması arkasına alındı — böylece hem güvenli oldu hem de
+ * GERÇEKTEN işe yarar hâle geldi (artık dolu bir context döndürüyor).
  */
-router.get('/tenant-info', (_req: Request, res: Response) => {
+router.get('/tenant-info', authenticateJWT, (_req: Request, res: Response) => {
   const store = getTenantStore();
   res.json({
     success: true,
