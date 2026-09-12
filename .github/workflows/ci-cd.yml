@@ -307,18 +307,26 @@ jobs:
 
       - name: Run BILL-1701 Company Packages + License Model Tests
         run: cd backend && npx tsx test/test_bill1701_packages_license.ts
+        env:
+          API_URL: http://localhost:5000/api/v1
 
       - name: Run BILL-1702 Package Limits + License Expiry Warning Tests
         run: cd backend && npx tsx test/test_bill1702_package_limits_and_expiry_warnings.ts
+        env:
+          API_URL: http://localhost:5000/api/v1
 
       - name: Run BILL-1703 Module Add-on Sales + Controlled Package Reapply Tests
         run: cd backend && npx tsx test/test_bill1703_module_addons_and_reapply.ts
+        env:
+          API_URL: http://localhost:5000/api/v1
 
       - name: Run FLEET-1408 Inspection/Exhaust/Insurance Deadlines + Tire Tracking Tests
         run: cd backend && npx tsx test/test_fleet1408_inspection_tire_tracking.ts
 
       - name: Run FLEET-1409 Vehicle Document Archive + Expiry Warning Tests
         run: cd backend && npx tsx test/test_fleet1409_vehicle_documents.ts
+        env:
+          API_URL: http://localhost:5000/api/v1
 
       - name: Run INV-1506 Spare Parts Inventory + Critical Stock Alert Tests
         run: cd backend && npx tsx test/test_inv1506_spare_parts_inventory.ts
@@ -336,6 +344,11 @@ jobs:
       # (~9) tek başına 10/15dk limitinin altında kalacak şekilde tasarlandı.
       - name: Run ARCH-108 Tenant Freeze/Delete/Export Lifecycle Tests
         run: cd backend && npx tsx test/test_arch108_tenant_lifecycle.ts
+        env:
+          API_URL: http://localhost:5000/api/v1
+
+      - name: Run HR-1801 Personnel Leave Tracking Tests
+        run: cd backend && npx tsx test/test_hr1801_personnel_leave.ts
         env:
           API_URL: http://localhost:5000/api/v1
 
