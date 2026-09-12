@@ -1,6 +1,7 @@
 import mqtt from 'mqtt';
 import { io as socketIoClient, Socket } from 'socket.io-client';
 import Redis from 'ioredis';
+import { resetLoginRateLimit } from './helpers/loginRateLimit';
 
 /**
  * AI-501 — Pompa Debisi vs. Tank Ultrasonik Düşüş Korelasyonu (Hırsızlık Motoru)
@@ -38,6 +39,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function login(username: string): Promise<string> {
+  await resetLoginRateLimit(); // TEST_PLAN §0.3 — paket içi 429 kırılmalarını önler
   const res = await fetch(`${API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

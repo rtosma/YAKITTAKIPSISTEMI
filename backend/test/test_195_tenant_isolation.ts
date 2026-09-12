@@ -17,6 +17,7 @@
  * doğrulandı ama gerçek bir istemci bağlantısıyla test edilmedi.
  */
 import { Pool } from 'pg';
+import { resetLoginRateLimit } from './helpers/loginRateLimit';
 
 const API_URL = 'http://localhost:5000/api/v1';
 const pgPool = new Pool({
@@ -41,6 +42,7 @@ async function call(method: string, path: string, opts: { token?: string; body?:
 }
 
 async function login(username: string): Promise<{ token: string; tenantId: string }> {
+  await resetLoginRateLimit(); // TEST_PLAN §0.3 — paket içi 429 kırılmalarını önler
   const res = await call('POST', '/auth/login', { body: { username, password: '123456' } });
   if (res.status !== 200) throw new Error(`Ön koşul: ${username} ile giriş başarısız (HTTP ${res.status})`);
   return { token: res.body.accessToken, tenantId: res.body.user.tenantId };

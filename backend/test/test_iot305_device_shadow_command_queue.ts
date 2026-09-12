@@ -1,5 +1,6 @@
 import mqtt from 'mqtt';
 import { execFileSync } from 'child_process';
+import { resetLoginRateLimit } from './helpers/loginRateLimit';
 
 /**
  * IOT-305 — Cihaz Shadow ve Uzaktan Komut Kuyruğu (ack/timeout/retry) uçtan
@@ -65,6 +66,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function login(username: string): Promise<string> {
+  await resetLoginRateLimit(); // TEST_PLAN §0.3 — paket içi 429 kırılmalarını önler
   const res = await fetch(`${API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

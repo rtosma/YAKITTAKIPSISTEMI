@@ -1,3 +1,4 @@
+import { resetLoginRateLimit } from './helpers/loginRateLimit';
 import http from 'http';
 
 function postJson(path: string, headers: any, body: any): Promise<{ status: number; data: any }> {
@@ -48,6 +49,11 @@ function getJson(path: string, headers?: any): Promise<{ status: number; data: a
 
 async function verifyAuth201() {
   console.log('📋 [AUTH-201] KAPSAMLI ENTEGRASYON VE GÜVENLİK TESTİ BAŞLIYOR...\n');
+
+  // TEST_PLAN §0.3: bu dosyanın login helper'ı yok (inline postJson), bu yüzden
+  // temizlik test BAŞINDA bir kez yapılıyor — 8 testin toplam giriş sayısı
+  // limitin (10/15dk) altında kaldığı için bu yeterli.
+  await resetLoginRateLimit();
 
   let allPassed = true;
 

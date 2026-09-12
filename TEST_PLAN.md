@@ -76,8 +76,18 @@ boşluklar **route sayısında değil**, aşağıdaki bölümlerde detaylandır�
       kırıldı — oysa ikisi de TEK BAŞINA %100 geçiyordu. Bu, testin değil
       ORTAMIN hatası; mevcut testlerin (`test_fuel410`, `test_arch108`)
       kullandığı "girişten önce `rl:auth-login:*` anahtarlarını sil"
-      deseni yeni testlere de eklendi. **KURAL: giriş yapan her yeni test
-      bu temizliği yapmalıdır.**
+      deseni yeni testlere de eklendi.
+      **SİSTEMİK ÇÖZÜM (tamamlandı):** Ölçüm, 52 login yapan test dosyasından
+      40'ının zaten temizlik yaptığını, 12'sinin yapmadığını gösterdi —
+      yani desen zaten yerleşikti, eksik kalmıştı. Ortak yardımcı
+      (`test/helpers/loginRateLimit.ts`) oluşturulup 12 dosyanın hepsine
+      eklendi. Kural artık MEKANİK: `scripts/check-test-rate-limit-hygiene.mjs`
+      `/auth/login` çağıran ama temizlik yapmayan her dosyada CI'ı kırar
+      (negatif testle doğrulandı). Ardışık koşuda 9 test dosyası (daha önce
+      429 ile kırılanlar dahil) art arda geçti.
+      **NEDEN rate limiter'ı test ortamında kapatmadık:** o zaman
+      production'da aktif bir güvenlik kontrolü test ortamında hiç
+      çalışmaz, testlerin ürettiği güvence gerçeği yansıtmazdı.
 - [x] **Sıfırdan `docker compose up` bu makinede şema yüklemiyor.**
       Postgres init script'leri (`docker-entrypoint-initdb.d`) konteynerdeki
       `postgres` kullanıcısı (uid 70) olarak çalışır; ancak

@@ -92,6 +92,12 @@ jobs:
       - name: "GÜVENLİK: Güvenlik Yanıt Başlıkları (CSP) Denetimi"
         run: node scripts/check-security-headers.mjs
 
+      # TEST_PLAN.md §0.3 — login rate-limit (10/15dk, IP bazlı) test paketi
+      # içinde tükenince SONRAKİ testler 429 alıp yanlışlıkla kırılıyor.
+      # Bu guard, giriş yapan her testin temizlik yapmasını zorunlu kılar.
+      - name: "TEST HİJYENİ: Login Rate-Limit Temizliği Denetimi"
+        run: node scripts/check-test-rate-limit-hygiene.mjs
+
       # TEST_PLAN.md §3 — frontend'in ilk otomatik testleri. Kapsam bilinçli
       # olarak dar: oturum zinciri (401 → sessiz token yenileme → otomatik
       # çıkış). Backend'den farklı olarak bunlar gerçek servis GEREKTİRMEZ

@@ -23,6 +23,8 @@
  * (seed firmaları KURUMSAL, bkz. BILL-1701 backfill notu)).
  */
 
+import { resetLoginRateLimit } from './helpers/loginRateLimit';
+
 // CI'da (auth-integration-test job) backend nginx OLMADAN doğrudan 5000
 // portunda ayağa kalkar — bu yüzden localde varsayılan (3000, nginx proxy)
 // env ile override edilebilir olmalı (bkz. ci-cd.yml API_URL).
@@ -33,6 +35,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function login(username: string): Promise<string> {
+  await resetLoginRateLimit(); // TEST_PLAN §0.3 — paket içi 429 kırılmalarını önler
   const res = await fetch(`${API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

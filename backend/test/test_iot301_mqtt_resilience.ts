@@ -1,6 +1,7 @@
 import mqtt from 'mqtt';
 import { io as socketIoClient, Socket } from 'socket.io-client';
 import Redis from 'ioredis';
+import { resetLoginRateLimit } from './helpers/loginRateLimit';
 
 /**
  * IOT-301.1/IOT-301.2 — MQTT bağlantı sağlamlığı + cihaz presence testi.
@@ -37,6 +38,7 @@ async function call(method: string, path: string, token?: string): Promise<any> 
 }
 
 async function login(username: string): Promise<string> {
+  await resetLoginRateLimit(); // TEST_PLAN §0.3 — paket içi 429 kırılmalarını önler
   const res = await fetch(`${API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

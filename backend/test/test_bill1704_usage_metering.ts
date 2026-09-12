@@ -1,4 +1,5 @@
 import mqtt from 'mqtt';
+import { resetLoginRateLimit } from './helpers/loginRateLimit';
 
 /**
  * BILL-1704 — Kullanım Ölçümü (Metering) ve Faturalama Verisi uçtan uca
@@ -27,6 +28,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function login(username: string): Promise<string> {
+  await resetLoginRateLimit(); // TEST_PLAN §0.3 — paket içi 429 kırılmalarını önler
   const res = await fetch(`${API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
