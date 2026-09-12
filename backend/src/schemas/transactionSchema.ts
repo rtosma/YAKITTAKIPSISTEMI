@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { TURKISH_PLATE_REGEX } from './vehicleSchema';
+import { isoDateString } from './common/dateString';
 
 /**
  * POST /api/v1/dispense — bir ikmal (fuel dispense) kaydı oluşturur.
@@ -38,8 +39,8 @@ export const transactionQuerySchema = z.object({
     .int().positive().default(1),
   pageSize: z.coerce.number({ message: 'Sayfa boyutu geçerli bir sayı olmalıdır.' })
     .int().positive().max(100, 'Sayfa boyutu en fazla 100 olabilir.').default(10),
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Başlangıç tarihi YYYY-AA-GG formatında olmalıdır.').optional(),
-  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Bitiş tarihi YYYY-AA-GG formatında olmalıdır.').optional(),
+  startDate: isoDateString('Başlangıç tarihi YYYY-AA-GG formatında olmalıdır.').optional(),
+  endDate: isoDateString('Bitiş tarihi YYYY-AA-GG formatında olmalıdır.').optional(),
   siteName: z.string().min(1).optional(),
   driverName: z.string().min(1).optional(),
   pumpStatus: z.enum(['TAMAMLANTI', 'DURDURULDU', 'ANOMALİ']).optional(),

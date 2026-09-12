@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isoDateString } from './common/dateString';
 
 /**
  * FUEL-408 — tank dolum (alım irsaliyesi) girişi.
@@ -17,7 +18,7 @@ export const createFuelIntakeSchema = z
   .object({
     supplierName: z.string().min(1, 'supplierName zorunludur.').max(160),
     waybillNo: z.string().min(1, 'waybillNo zorunludur.').max(64),
-    deliveryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'deliveryDate YYYY-AA-GG olmalıdır.'),
+    deliveryDate: isoDateString('deliveryDate YYYY-AA-GG olmalıdır.'),
     declaredLiters: z.coerce.number({ message: 'declaredLiters zorunludur.' }).positive().max(1_000_000),
     tankerPlate: z.string().min(1).max(32).optional(),
     unitPrice: z.coerce.number().nonnegative().max(1_000_000).optional(),
@@ -44,7 +45,7 @@ export type CreateFuelIntakeDTO = z.infer<typeof createFuelIntakeSchema>;
 export const listFuelIntakeQuerySchema = z.object({
   tankId: z.string().min(1).max(64).optional(),
   status: z.enum(['KAYITLI', 'EKSİK_TESLİMAT_UYARISI']).optional(),
-  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'from YYYY-AA-GG olmalıdır.').optional(),
-  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'to YYYY-AA-GG olmalıdır.').optional()
+  from: isoDateString('from YYYY-AA-GG olmalıdır.').optional(),
+  to: isoDateString('to YYYY-AA-GG olmalıdır.').optional()
 });
 export type ListFuelIntakeQueryDTO = z.infer<typeof listFuelIntakeQuerySchema>;

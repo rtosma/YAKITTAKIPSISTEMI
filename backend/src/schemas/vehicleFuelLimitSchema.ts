@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isoDateString } from './common/dateString';
 
 /**
  * FLEET-1406 — araç bazlı dönemsel yakıt limiti istek şemaları.
@@ -16,7 +17,7 @@ export type SetVehicleFuelLimitDTO = z.infer<typeof setVehicleFuelLimitSchema>;
 
 export const temporaryFuelLimitIncreaseSchema = z.object({
   additionalLiters: z.coerce.number({ message: 'additionalLiters zorunludur.' }).positive().max(1_000_000),
-  untilDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'untilDate YYYY-AA-GG olmalıdır.'),
+  untilDate: isoDateString('untilDate YYYY-AA-GG olmalıdır.'),
   reason: z.string().min(5, 'reason en az 5 karakter olmalıdır.').max(1000)
 });
 export type TemporaryFuelLimitIncreaseDTO = z.infer<typeof temporaryFuelLimitIncreaseSchema>;

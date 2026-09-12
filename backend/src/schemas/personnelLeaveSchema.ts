@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isoDateString } from './common/dateString';
 
 export const createPersonnelSchema = z.object({
   fullName: z.string({ message: 'fullName zorunludur.' }).min(2, 'Ad Soyad en az 2 karakter olmalıdır.'),
@@ -7,13 +8,13 @@ export const createPersonnelSchema = z.object({
   siteName: z.string().optional(),
   driverId: z.string().optional(),
   annualLeaveEntitlementDays: z.number().positive().optional(),
-  hireDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'hireDate YYYY-MM-DD biçiminde olmalıdır.').optional()
+  hireDate: isoDateString('hireDate YYYY-MM-DD biçiminde olmalıdır.').optional()
 });
 
 export const createLeaveRequestSchema = z.object({
   leaveType: z.enum(['YILLIK', 'MAZERET', 'ÜCRETSİZ'], { message: 'leaveType YILLIK/MAZERET/ÜCRETSİZ olmalıdır.' }),
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'startDate YYYY-MM-DD biçiminde olmalıdır.'),
-  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'endDate YYYY-MM-DD biçiminde olmalıdır.'),
+  startDate: isoDateString('startDate YYYY-MM-DD biçiminde olmalıdır.'),
+  endDate: isoDateString('endDate YYYY-MM-DD biçiminde olmalıdır.'),
   reason: z.string().max(1000).optional()
 });
 

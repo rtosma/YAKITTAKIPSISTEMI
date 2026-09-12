@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isoDateString } from './common/dateString';
 
 /**
  * FLEET-1409 — araç doküman/ruhsat arşivi. Dosya, JSON gövdesinde base64
@@ -16,7 +17,7 @@ export const uploadVehicleDocumentSchema = z.object({
     message: 'mimeType application/pdf, image/jpeg veya image/png olmalıdır.'
   }),
   fileContentBase64: z.string({ message: 'fileContentBase64 zorunludur.' }).min(1),
-  expiryDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'expiryDate YYYY-MM-DD biçiminde olmalıdır.').optional()
+  expiryDate: isoDateString('expiryDate YYYY-MM-DD biçiminde olmalıdır.').optional()
 });
 
 export type UploadVehicleDocumentDTO = z.infer<typeof uploadVehicleDocumentSchema>;

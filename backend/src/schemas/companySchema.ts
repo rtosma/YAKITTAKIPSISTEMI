@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isoDateString } from './common/dateString';
 
 // BILL-1701: adlandırılmış paket kademesi (bkz. adminDb.ts PACKAGE_MODULE_DEFAULTS).
 const packageTierSchema = z.enum(['TEMEL', 'PROFESYONEL', 'KURUMSAL']);
@@ -15,7 +16,7 @@ export const updateCompanySchema = z.object({
   // BILL-1701: lisansın sona erdiği tarih — geçmişte bir tarih olması
   // BİLİNÇLİ olarak reddedilmiyor (SUPER_ADMIN'in "süresi dolmuş" durumu
   // test etmek/simüle etmek için geçmiş bir tarih girmesi geçerli bir kullanım).
-  licenseExpiry: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Lisans bitiş tarihi YYYY-MM-DD biçiminde olmalıdır.').nullable().optional(),
+  licenseExpiry: isoDateString('Lisans bitiş tarihi YYYY-MM-DD biçiminde olmalıdır.').nullable().optional(),
   package: packageTierSchema.optional(),
   modules: z.object({
     aiAnomaly: z.boolean().optional(),

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isoDateString } from './common/dateString';
 
 /**
  * FUEL-409 — teorik vs fiziksel stok mutabakatı.
@@ -36,7 +37,7 @@ export type CreateReconciliationDTO = z.infer<typeof createReconciliationSchema>
 export const listReconciliationQuerySchema = z.object({
   tankId: z.string().min(1).max(64).optional(),
   status: z.enum(['NORMAL', 'MUTABAKAT_ALARMI']).optional(),
-  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'from YYYY-AA-GG olmalıdır.').optional(),
-  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'to YYYY-AA-GG olmalıdır.').optional()
+  from: isoDateString('from YYYY-AA-GG olmalıdır.').optional(),
+  to: isoDateString('to YYYY-AA-GG olmalıdır.').optional()
 });
 export type ListReconciliationQueryDTO = z.infer<typeof listReconciliationQuerySchema>;

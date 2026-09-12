@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isoDateString } from './common/dateString';
 
 /**
  * FUEL-402.1 — yakıt kotası tanımı. Kapsam alanları (vehiclePlate/siteName)
@@ -10,8 +11,8 @@ export const createQuotaSchema = z.object({
   periodType: z.enum(['DAILY', 'WEEKLY', 'MONTHLY', 'ONE_TIME'], { message: 'periodType DAILY/WEEKLY/MONTHLY/ONE_TIME olmalıdır.' }),
   limitLiters: z.coerce.number({ message: 'limitLiters zorunludur.' }).positive().max(10_000_000),
   carryoverPolicy: z.enum(['NONE', 'FULL', 'CAPPED']).default('NONE'),
-  validFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'validFrom YYYY-AA-GG olmalıdır.').optional(),
-  validUntil: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'validUntil YYYY-AA-GG olmalıdır.').optional()
+  validFrom: isoDateString('validFrom YYYY-AA-GG olmalıdır.').optional(),
+  validUntil: isoDateString('validUntil YYYY-AA-GG olmalıdır.').optional()
 });
 export type CreateQuotaDTO = z.infer<typeof createQuotaSchema>;
 

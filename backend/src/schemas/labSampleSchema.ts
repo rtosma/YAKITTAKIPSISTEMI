@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isoDateString } from './common/dateString';
 
 /**
  * INV-1507 — şantiye laboratuvar numunesi + test sonucu.
@@ -10,7 +11,7 @@ export const createLabSampleSchema = z.object({
   siteName: z.string().trim().min(1, 'siteName zorunludur.').max(128),
   location: z.string().trim().max(200).optional(),
   referenceNo: z.string().trim().max(64).optional(),
-  collectedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'collectedAt YYYY-AA-GG olmalıdır.'),
+  collectedAt: isoDateString('collectedAt YYYY-AA-GG olmalıdır.'),
   note: z.string().trim().max(1000).optional()
 });
 export type CreateLabSampleDTO = z.infer<typeof createLabSampleSchema>;
@@ -28,7 +29,7 @@ export type CancelLabSampleDTO = z.infer<typeof cancelLabSampleSchema>;
 export const recordLabTestResultSchema = z
   .object({
     testType: z.string().trim().min(1, 'testType zorunludur.').max(64),
-    testedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'testedAt YYYY-AA-GG olmalıdır.'),
+    testedAt: isoDateString('testedAt YYYY-AA-GG olmalıdır.'),
     resultValue: z.coerce.number().optional(),
     unit: z.string().trim().max(32).optional(),
     specMin: z.coerce.number().optional(),

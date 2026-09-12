@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { TURKISH_PLATE_REGEX } from './vehicleSchema';
+import { isoDateString } from './common/dateString';
 
 export const createCrossSitePermissionSchema = z.object({
   vehiclePlate: z.string({ message: 'Araç plakası zorunludur.' })
@@ -9,8 +10,7 @@ export const createCrossSitePermissionSchema = z.object({
   targetSite: z.string({ message: 'İkmal alınacak şantiye zorunludur.' }).min(1),
   allowedLiters: z.coerce.number({ message: 'İzin verilen miktar zorunludur.' })
     .positive('İzin verilen miktar 0\'dan büyük olmalıdır.'),
-  expiryDate: z.string({ message: 'Son geçerlilik tarihi zorunludur.' })
-    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Tarih YYYY-MM-DD formatında olmalıdır.')
+  expiryDate: isoDateString('Tarih YYYY-MM-DD formatında olmalıdır.')
 });
 
 export const updateCrossSitePermissionStatusSchema = z.object({

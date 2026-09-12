@@ -264,6 +264,12 @@ jobs:
       - name: "TEST_PLAN §4: RLS'siz Tabloların DB Yetki Korumaları"
         run: cd backend && npx tsx test/test_db_privileges.ts
 
+      # TEST_PLAN.md §2.2 — sınır/kötü niyetli girdi taraması: devasa sayfa
+      # boyutu (DoS yüzeyi), negatif/tip uyumsuz sayfalama, takvimde olmayan
+      # tarihler (500 üretiyordu — düzeltildi) ve SQL enjeksiyon denemeleri.
+      - name: "TEST_PLAN §2.2: Sayfalama Sınırları + Girdi Güvenliği"
+        run: cd backend && npx tsx test/test_input_boundaries.ts
+
       - name: Run FUEL-401 RFID Dispense Session State Machine Tests
         run: cd backend && npx tsx test/test_fuel401_dispense_session.ts
 

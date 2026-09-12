@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isoDateString } from './common/dateString';
 
 /**
  * AI-504 — mesai dışı / kısa aralıklı mükerrer alım tespiti.
@@ -32,8 +33,8 @@ export const listAnomalyFlagQuerySchema = z.object({
   type: z.enum(['MESAI_DISI', 'KISA_ARALIK_MUKERRER']).optional(),
   status: z.enum(['ACIK', 'INCELENDI', 'MUAF']).optional(),
   siteName: z.string().min(1).max(128).optional(),
-  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'from YYYY-AA-GG olmalıdır.').optional(),
-  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'to YYYY-AA-GG olmalıdır.').optional()
+  from: isoDateString('from YYYY-AA-GG olmalıdır.').optional(),
+  to: isoDateString('to YYYY-AA-GG olmalıdır.').optional()
 });
 export type ListAnomalyFlagQueryDTO = z.infer<typeof listAnomalyFlagQuerySchema>;
 

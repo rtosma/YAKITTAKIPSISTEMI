@@ -198,10 +198,28 @@ listesine ekliyoruz:
       ardından kod geri yüklendi. Yani testler gerçekten kilitleri ölçüyor.
 - [ ] Kota ve `tenant_deletion_approvals` eşzamanlılığı — aynı desenle
       eklenecek (bu turda envanter + tank kapsandı).
-- [ ] **Pagination/filtreleme sınır-durum testleri** — `limit=0`,
-      negatif `offset`, var olmayan `sort` alanı, çok büyük `limit` (DoS
-      potansiyeli) gibi durumlar sistematik olarak taranmamış; mevcut
-      testler çoğunlukla "mutlu yol" senaryosunu kapsıyor.
+- [x] ✅ **Sayfalama/filtre sınır-durumları + girdi güvenliği — TAMAMLANDI,
+      GERÇEK BUG BULUNDU.** (`test/test_input_boundaries.ts`, 22/22)
+      Kapsanan: devasa pageSize (100000 → 400, DoS yüzeyi kapalı), sınırın
+      1 üstü ve tam kendisi (off-by-one yok), negatif/sıfır/ondalıklı/metin
+      sayfalama, bilinmeyen enum, aşırı uzun arama metni, 4 farklı SQL
+      enjeksiyon denemesi (hiçbiri 500 üretmiyor — yani girdi sorguya ham
+      gömülmüyor; tablo sonrasında sağlam), varsayılanlar, çok uzak sayfa.
+
+      **BULGU:** `startDate=2026-13-45` HTTP **500** döndürüyordu. Şemalar
+      tarihleri yalnızca BİÇİM regex'iyle doğruluyordu, takvim geçerliliğini
+      değil — geçersiz tarih Postgres'e gidip "date/time field value out of
+      range" ile patlıyordu. Bilgi sızıntısı YOK (globalErrorHandler jenerik
+      mesaj + traceId döndürüyor) ama üç zararı var: istemci hatası sunucu
+      hatası gibi görünüyor (izleme gürültüsü), kullanıcı hatasını
+      anlayamıyor, her istek stack trace'li log üretiyor.
+      **Kapsam tek bir alan değildi:** 16 şema dosyasındaki **28 tarih
+      alanının TAMAMI** aynı durumdaydı.
+      **Çözüm:** `src/schemas/common/dateString.ts` ortak doğrulayıcısı
+      (round-trip parse: 2026-02-30 ve 2026-02-29 red, 2024-02-29 kabul).
+      28 alanın hepsi buna taşındı — 28 tekrarlanan regex tek yere indi.
+      Regresyon: tarih kullanan 10 modül (quota, fleet1406/1407/1408/1409,
+      hr1801, inv1507, fuel408/409, bill1701) = 124 test, hepsi geçti.
 - [ ] **İdempotency/duplicate-request taraması** — `(device_id,
       localSequenceId)` gibi var olan desenler dışında, para/stok etkileyen
       TÜM POST uçlarının bir envanteri çıkarılıp hangilerinin idempotency
