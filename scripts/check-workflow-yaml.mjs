@@ -36,6 +36,7 @@ import path from 'node:path';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, '..');
 const WORKFLOW_DIR = path.join(REPO_ROOT, '.github', 'workflows');
+const COMPOSE_FILE = path.join(REPO_ROOT, 'docker-compose.yml');
 
 if (!existsSync(WORKFLOW_DIR)) {
   console.log('[check-workflow-yaml] .github/workflows yok — atlanıyor.');
@@ -212,6 +213,28 @@ function structuralChecks(file, content) {
         });
       }
     });
+  }
+
+  // 5) Workflow içinde üretilen .env, docker-compose.yml'in `${VAR:?}` ile
+  //    ZORUNLU tuttuğu her değişkeni içermeli. Gerçek olay: ARCH-108
+  //    TENANT_EXPORT_ENCRYPTION_KEY'i compose'da zorunlu yaptı, load-test
+  //    job'ının .env'ine eklenmedi → `docker compose up` daha başlamadan
+  //    düşüyordu (job yalnızca manuel tetiklendiği için kimse görmedi).
+  if (existsSync(COMPOSE_FILE)) {
+    const required = [...new Set([...readFileSync(COMPOSE_FILE, 'utf8').matchAll(/\$\{([A-Z0-9_]+):\?/g)].map((m) => m[1]))];
+    const heredoc = /cat > \.env << ?'?EOF'?\n([\s\S]*?)\n\s*EOF/g;
+    for (const m of content.matchAll(heredoc)) {
+      const defined = new Set([...m[1].matchAll(/^\s*([A-Z0-9_]+)=/gm)].map((d) => d[1]));
+      const missing = required.filter((v) => !defined.has(v));
+      if (missing.length) {
+        found.push({
+          line: content.slice(0, m.index).split('\n').length,
+          rule: 'compose-required-env-missing',
+          text: `.env heredoc: ${missing.join(', ')}`,
+          hint: "docker-compose.yml bu değişkenleri `${VAR:?}` ile zorunlu tutuyor — .env'e ekleyin, yoksa `docker compose up` başlamadan düşer."
+        });
+      }
+    }
   }
 
   return found;

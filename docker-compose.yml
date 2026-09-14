@@ -50,7 +50,16 @@ services:
     # (varsayılan: 60 sn'de 10000 / 300 sn'de 100 / 1 saatte 1 yazım) son
     # ~1 saate kadar yazımı kaybettirebilir → tüm kullanıcılar toplu logout.
     # everysec fsync ile kayıp en fazla ~1 sn'ye iner.
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    #
+    # Bellek: önceden maxmemory=0 (sınırsız) — Redis konteyner/host OOM ile
+    # öldürülene kadar büyürdü. Tavan konuldu; politika BİLEREK noeviction:
+    # Redis oturum deny-list'i, hesap kilitleri ve rate-limit sayaçlarını
+    # tutuyor — allkeys-lru gibi bir tahliye, iptal edilmiş token'ı geri
+    # açabilir ya da brute-force kilidini silebilirdi. Tavana ulaşınca yazmalar
+    # reddedilir: /auth/login parola doğrulamadan 503 döner (fail-closed, bkz.
+    # accountLockoutService.checkLockout + test_redis_memory_pressure.ts).
+    # Mevcut kullanım ~2-3 MB, anahtarların neredeyse tamamı TTL'li.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
     volumes:
       - redisdata:/data
     healthcheck:

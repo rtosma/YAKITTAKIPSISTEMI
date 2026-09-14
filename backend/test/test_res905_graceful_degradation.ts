@@ -182,11 +182,17 @@ async function run() {
     // Argon2id doğrulamasını geçip generateRefreshToken'a (Redis'e YAZMASI
     // ZORUNLU — iptal edilebilir bir oturum kurmadan giriş TAMAMLANAMAZ,
     // bu KASITLI fail-closed bir sınır) kadar ilerlesin.
+    // Giriş zaten tamamlanamadığı için checkLockout artık parola doğrulamadan
+    // ÖNCE 503 döner: önceden doğru parola 500, yanlış parola 401 dönüyordu
+    // (kilit + IP limiti de fail-open) → kesinti boyunca sınırsız deneme ve
+    // "500 = doğru parola" kâhini. Doğru/yanlış parola artık ayırt edilemez.
     const loginDuringOutage = await login('admin');
+    const wrongDuringOutage = await call('POST', '/auth/login', { body: { username: 'admin', password: 'yanlis-parola' } });
     check(
-      'Test 4: Kesinti sırasında YENİ giriş (geçerli şifreyle) temiz biçimde 500 döner — asılı kalmaz, "yanlış şifre" YALANI söylemez',
-      loginDuringOutage.status === 500,
-      `status=${loginDuringOutage.status}, error=${loginDuringOutage.body?.error}`
+      'Test 4: Kesinti sırasında giriş 503 AUTH_STORE_UNAVAILABLE — asılı kalmaz, doğru/yanlış parola AYIRT EDİLEMEZ',
+      loginDuringOutage.status === 503 && wrongDuringOutage.status === 503 &&
+        loginDuringOutage.body?.details?.error === 'AUTH_STORE_UNAVAILABLE' && wrongDuringOutage.body?.details?.error === 'AUTH_STORE_UNAVAILABLE',
+      `doğru=${loginDuringOutage.status}/${loginDuringOutage.body?.details?.error}, yanlış=${wrongDuringOutage.status}/${wrongDuringOutage.body?.details?.error}`
     );
 
     const meDuringOutage = await call('GET', '/companies/me', { token: preOutageToken });

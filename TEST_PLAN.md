@@ -653,14 +653,53 @@ Kapsam ilkesi: E2E yalnızca birim testin YAKALAYAMADIĞI şeyler için.
       **KURAL (gelecek şema değişiklikleri için):** eski replika yeni şemayla
       birkaç saniye birlikte çalıştığından değişiklikler additive/geriye
       uyumlu olmalı — kolon silme/yeniden adlandırma iki aşamalı yapılmalı.
-- [ ] **Yedekleme/geri yükleme tatbikatı** — `redisdata`/Postgres volume'larının
-      gerçek bir `pg_dump`/`pg_restore` döngüsünden geçirilip veri
-      bütünlüğünün korunduğu en az bir kez elle doğrulanmalı (otomasyon
-      şart değil, ama en az bir tatbikat planlanmalı).
-- [ ] **İndeks/performans regresyonu** — `pg_stat_statements` ile en sık
-      çalışan sorguların (dashboard, telemetri ingest) `EXPLAIN ANALYZE`
-      çıktısı bir kez alınıp temel bir referans olarak saklanmalı; gelecekte
-      "neden yavaşladı" sorusuna hızlı cevap için.
+- [x] ✅ **Yedekleme/geri yükleme tatbikatı — YAPILDI, PROSEDÜR TUZAĞI BULUNDU.**
+      Canlı DB `pg_dump -Fc` (476 KB, 0,19 sn) ile alınıp ağsız, BOŞ bir
+      `postgres:16-alpine` kümesine geri yüklendi; kaynak ve hedefin parmak izi
+      karşılaştırıldı (tablo satır sayıları, RLS ENABLE/FORCE, politika
+      metinleri, `app_user` yetkileri — REVOKE'lar dahil —, indeksler, FK
+      tanımları, trigger'lar, fonksiyonlar).
+      - **Yalnızca dump (roller yok):** `pg_restore` ilk `GRANT … TO app_user`
+        satırında düşer (`role "app_user" does not exist`); hata atlanırsa
+        286 satırlık fark — tüm app_user yetkileri eksik, uygulama `SET ROLE`
+        adımında çalışamaz. `app_user` küme seviyesinde bir rol, `pg_dump`
+        onu DÖKMEZ.
+      - **Önce `pg_dumpall --roles-only`, sonra dump:** exit 0, **0 fark**;
+        hedefte app_user olarak yabancı tenant satırı görünmüyor (RLS çalışıyor).
+      **Prosedür:** `pg_dumpall -U postgres --roles-only > roles.sql` +
+      `pg_dump -U postgres -d yakittakip_db -Fc > db.dump`; geri yüklemede
+      önce `psql < roles.sql`, sonra `pg_restore -d yakittakip_db
+      --exit-on-error`. (Alternatif: geri yükleme sonrası `schema.sql`'i
+      yeniden uygulamak rolü ve yetkileri kurar — deploy script'i bunu zaten
+      yapıyor.) Redis (`redisdata`, AOF) yedeği kaybedilirse: tüm refresh
+      token'lar düşer (herkes yeniden giriş yapar) ve oturum deny-list'i
+      boşalır — uzaktan kapatılmış bir oturumun access token'ı en fazla
+      15 dk daha geçerli olur.
+- [x] ✅ **İndeks/performans referansı — ALINDI, 1 İYİLEŞTİRME.** Yerel veri
+      çok küçük (transactions 152 satır) olduğu için planlar anlamsızdı; bu
+      yüzden camsa'ya geri alınan bir transaction içinde 200 bin işlem
+      (12 ay, 300 plaka, 3 şantiye) üretilip `app_user` + RLS altında
+      `EXPLAIN (ANALYZE, BUFFERS)` alındı (iz bırakmadı, doğrulandı):
+
+      | Sorgu | Plan | Süre |
+      |---|---|---|
+      | İşlem listesi 1. sayfa | idx_transactions_tenant_created_at | 0,13 ms |
+      | OFFSET 10000 | aynı indeks (doğrusal) | 4,6 ms |
+      | İkmal yolu: plaka + ay toplamı (FLEET-1406) | bitmap + 7,5k satır filtre | 2,1 ms → **0,12 ms** |
+      | Tank + gün toplamı (mutabakat) | indeks | 0,46 ms |
+      | Şantiye filtreli sayım | bitmap, 66k satır | 10,7 ms |
+      | Araç TCO: plaka + 365 gün | paralel sıralı tarama | 18,2 ms → **0,9 ms** |
+
+      RLS koşulu (`tenant_id::text = current_setting(...)`) indeksleri
+      kullanabiliyor (doğrulandı). Her ikmalde çalışan plaka+dönem toplamı
+      için `idx_transactions_tenant_plate_created` eklendi (1M satırda kurulum
+      1,2 sn — deploy'un tek-transaction şema adımında yazmalar bu kadar
+      bekler). İndekssiz FK taraması: `personnel`'de PK dışında HİÇ indeks
+      yoktu → `tenant_id` ve `driver_id` indeksleri eklendi. Bilinçli
+      bırakılanlar: `leave_requests.personnel_id` (bileşik indeks var),
+      `user_totp.tenant_id` (kullanıcı başına tek satır). schema.sql iki kez
+      uygulandı (idempotent, exit 0). Derin OFFSET ve şantiye sayımı veriyle
+      doğrusal büyür; keyset sayfalama zaten mevcut (FE-802).
 
 ---
 
@@ -869,10 +908,23 @@ Her madde için: **zaten kapsanan mı, yoksa yeni mi.**
 - [ ] `deploy-zero-downtime` job'ının GERÇEKTEN sıfır kesinti sağladığı —
       dağıtım sırasında sürekli health-check atan bir arka plan script'iyle
       (zaten `scripts/zero-downtime-deploy.sh` var) bir kez canlı doğrulama.
-- [ ] CI'daki `test/*.ts` çağrılarının HEPSİNİN `API_URL`/port tutarlılığı
-      (tam yerel regresyonda 6 test `localhost:3000` varsayılanı yüzünden
-      ECONNREFUSED verdi; CI env'iyle 6/6 geçti — CI doğru, yerel komut
-      belgelendi)
+- [x] ✅ CI'daki `test/*.ts` çağrılarının `API_URL`/port tutarlılığı — CI
+      doğruydu (3000 varsayılanlı 6 CI testinin hepsinde adım env'i vardı) ve
+      yanlış port sessiz değil ECONNREFUSED ile gürültülü patlıyor; bu yüzden
+      guard yerine sadeleştirildi: 7 testin varsayılanı diğer 58 testle aynı
+      `localhost:5000` yapıldı, CI'daki 6 `API_URL` override'ı silindi; 7'si de
+      override'sız geçti. Bilinçli olarak 3000'de (nginx) kalanlar: `docker`
+      CLI'ı çağırdıkları için host'tan çalışmak ZORUNDA olan RES-905, IOT-305,
+      FUEL-406 (host'tan backend 5000 yayında değil — ilk denemede bu ikisi de
+      değiştirilmişti, host koşusunda bozulduğu görülüp geri alındı: 9/9, 4/4)
+      ve nginx başlıklarını test eden security-headers.
+- [x] ✅ **TEST-1002 yük testi job'u ARCH-108'den beri BAŞLAYAMIYORDU.**
+      `docker-compose.yml` `TENANT_EXPORT_ENCRYPTION_KEY`'i `${…:?}` ile zorunlu
+      tutuyor; job'un ürettiği `.env`'de yoktu → `docker compose config` exit 1
+      (job yalnızca manuel tetiklendiği için görülmedi). Eklendi (doğrulandı:
+      exit 0) + `check-workflow-yaml.mjs` `compose-required-env-missing`
+      kuralı: workflow'da üretilen her `.env` heredoc'u compose'un zorunlu
+      değişkenlerini içermeli (değişken silinince yakaladı).
       (önceki oturumlarda bulunup düzeltilen 3000↔5000 karışıklığı) — yeni
       bir test dosyası eklendiğinde bunun bir PR checklist maddesi olarak
       hatırlatılması (bu dokümanın kendisi bu hatırlatıcı).
@@ -881,15 +933,51 @@ Her madde için: **zaten kapsanan mı, yoksa yeni mi.**
 
 ## 7. Performans / Yük Test Planı
 
-- [ ] Mevcut `TEST-1002` (k6, 100 pompa @ 1000 rps, P95<200ms, event-loop
-      lag<50ms) — düzenli aralıklarla (ör. her büyük özellik grubu sonrası)
-      manuel tetiklenerek regresyon kontrolü.
-- [ ] **Yeni:** Postgres connection-pool doygunluğu senaryosu — eşzamanlı
-      istek sayısı `pool.max`'ı aştığında sistemin KUYRUKLANIP nazikçe
-      yavaşladığı, ÇÖKMEDIĞI doğrulanacak (RES-905'in DB tarafı tamamlayıcısı).
-- [ ] **Yeni:** Redis bellek baskısı senaryosu — `maxmemory-policy`
-      ayarlanmamışsa (mevcut `docker-compose.yml`'de kontrol edilecek) OOM
-      riski var mı diye bir kez incelenecek.
+- [x] ✅ `TEST-1002` regresyonu (bu oturumun trust proxy, havuz zaman
+      aşımları, fail-closed login değişikliklerinden SONRA), tam AC profili
+      yerelde: 1000 rps × 90 sn, 300 cihaz → **PASS** — 90.001 istek, HTTP P95
+      **2,25 ms** (önceki koşu 3,32 ms), hata oranı %0,22 (eşik %1; önceki
+      %0,27 — cihaz başına 5/sn limitine yakın rastgele dağılımdan gelen 429
+      patlamaları), event loop p99 **4,08 ms**. Smoke profili de PASS. Test
+      cihazları `cleanup-devices.mjs` ile temizlendi (300 → 0). CI job'unun
+      kendisi başlayamıyordu — bkz. §6.
+- [x] ✅ **Postgres havuz doygunluğu — GERÇEK AÇIK: TENANT'LAR ARASI DoS.**
+      Havuz `max: 10`, `connectionTimeoutMillis` yok (sonsuz bekleme), DB'de
+      `lock_timeout`/`statement_timeout`/`idle_in_transaction_session_timeout`
+      yok. Tatbikat (`test_db_pool_saturation.ts`): bir bağlantı camsa'daki bir
+      tank satırını 12 sn kilitli tutarken o tanka 14 eşzamanlı ikmal → hepsi
+      havuzdan bağlantı alıp kilidi SÜRESİZ bekledi; **kilitle hiçbir ilgisi
+      olmayan kusak'ın `GET /vehicles` isteği 8 sn'de yanıt ALAMADI** (tek
+      tenant'taki bir asılı transaction tüm platformu durdurur); 14 ikmalin
+      14'ü kilit kalkınca 12 sn sonra tamamlandı. Düzeltme (`postgresPool.ts`):
+      `lock_timeout 5s`, `connectionTimeoutMillis 10s`, `statement_timeout 60s`,
+      `idle_in_transaction_session_timeout 60s`; errorHandler 55P03/57014/havuz
+      zaman aşımını 500 yerine yeniden denenebilir **503 `DB_BUSY`**'ye çevirir.
+      Sonuç: kusak isteği ~5 sn'de 200; kilidi bekleyen ≥10 ikmal kilit
+      kalkmadan 503; stok/işlem sayısı yalnızca başarılı isteklerle tutarlı;
+      sonrasında ikmal 200 ve `/health/ready` 200. (İlk test sürümü, havuzdan
+      geç bağlantı alıp kilidi 5 sn'den kısa bekleyen bir isteğin meşru 200'ünü
+      hata sayıyordu — değişmezler düzeltildi.) Tam regresyon zaman aşımlarıyla
+      yeşil (yarış/despatch advisory lock/dışa aktarma dahil).
+- [x] ✅ **Redis bellek baskısı — GERÇEK AÇIK: PAROLA KÂHİNİ.** Redis
+      `maxmemory 0` (sınırsız) + `noeviction`. Tatbikat: maxmemory kullanımın
+      altına çekildi (noeviction → yazmalar "OOM", okumalar çalışır): yanlış
+      parolayla 12 deneme 12×401 — **hesap kilidi VE IP rate limit sessizce
+      kalktı** (normalde 4×401, 423, …, 429); **doğru parola 500** (refresh
+      token yazılamıyor). Yani RES-905'in fail-open kararı hiçbir meşru girişi
+      kurtarmıyor (giriş zaten tamamlanamıyor — RES-905 testi de bunu "kasıtlı
+      fail-closed sınır" diye belgeliyordu), yalnızca saldırgana sınırsız
+      deneme + "500 = doğru parola" kâhini veriyordu. Gerçek Redis kesintisinde
+      de aynı. Düzeltme: `checkLockout` TTL okuması + zararsız yazmayı tek
+      MULTI'de yapar, yazılamıyorsa parola doğrulamadan **503
+      `AUTH_STORE_UNAVAILABLE`**; login rotası hataları artık globalErrorHandler'a
+      verir (önceden Redis hatası dahil her şey 500 "Veritabanı bağlantı
+      hatası" diye yanlış raporlanıyordu). docker-compose'a `--maxmemory 256mb
+      --maxmemory-policy noeviction` (tahliye BİLEREK yok: deny-list/kilit
+      anahtarları silinirse iptal edilmiş token açılır/brute-force kilidi düşer).
+      Kilitler: `test_redis_memory_pressure.ts` (eski kodla 2 FAIL: 7×401,
+      doğru=500/yanlış=401), RES-905 gerçek kesinti testi 11/11 (Test 4 artık
+      doğru/yanlış parolayı ayırt edilemez 503 bekliyor).
 
 ---
 

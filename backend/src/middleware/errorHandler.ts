@@ -111,6 +111,21 @@ export const globalErrorHandler = (
     return;
   }
 
+  // Veritabanı meşgul: kilit bekleme (55P03 lock_not_available), sorgu zaman
+  // aşımı (57014 query_canceled) ya da havuzdan bağlantı alınamaması. Bunlar
+  // kalıcı bir sunucu hatası değil, yeniden denenebilir geçici yoğunluk —
+  // istemci 500 yerine 503 alır (bkz. postgresPool.ts zaman aşımları).
+  if (err?.code === '55P03' || err?.code === '57014' || /timeout exceeded when trying to connect/i.test(String(err?.message))) {
+    logger.warn({ err, traceId, tenantId, userId, path: req.originalUrl, method: req.method }, '[DB_BUSY] Veritabanı geçici olarak meşgul.');
+    res.status(503).json({
+      success: false,
+      traceId,
+      error: 'DB_BUSY',
+      message: 'Sistem şu anda yoğun. Lütfen birkaç saniye sonra tekrar deneyin.'
+    });
+    return;
+  }
+
   // Handle Unhandled Unexpected 500 Internal Server Errors
   logger.error({
     err,

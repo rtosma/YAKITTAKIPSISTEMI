@@ -24,7 +24,7 @@ import { execSync } from 'node:child_process';
 // 3000 kullandığı port — bu ayrı, önceden var olan bir tutarsızlık, bkz.
 // bu commit'in mesajındaki not). API_URL bu yüzden env'den override
 // edilebilir; CI adımı 5000'i geçer, yerel varsayılan nginx'in 3000'idir.
-const API_URL = process.env.API_URL || 'http://localhost:3000/api/v1';
+const API_URL = process.env.API_URL || 'http://localhost:5000/api/v1';
 
 function pg(): Client {
   return new Client({

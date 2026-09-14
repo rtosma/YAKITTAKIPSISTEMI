@@ -13,8 +13,10 @@ import { logger } from '../utils/logger';
  * Redis      | cache-aside (cacheGetJson/Set/Del)        | FAIL-OPEN: null/no-op, DB'ye düşer (yukarıda)
  * Redis      | isSessionDenied (tokenService.ts)         | FAIL-OPEN: erken uzaktan-çıkış kontrolü atlanır,
  *            |                                            | access token kendi 15dk süresiyle sınırlı kalır
- * Redis      | checkLockout/recordFailedLogin            | FAIL-OPEN: kullanıcı-adı bazlı brute-force kilidi
- *            | (accountLockoutService.ts)                | geçici devre dışı — Argon2id + IP rate limit sürer
+ * Redis      | checkLockout (accountLockoutService.ts)   | FAIL-CLOSED (/auth/login 503): Redis'e yazılamıyorsa parola
+ *            |                                            | doğrulanmaz. Fail-open iken giriş zaten 500 veriyordu
+ *            |                                            | (refresh token yazılamaz) ve kilit + IP limiti düşüp
+ *            |                                            | "500 = doğru parola" kâhini doğuyordu (tatbikatla ölçüldü)
  * Redis      | loginRateLimiter ve diğer 6 RedisStore     | FAIL-OPEN (passOnStoreError:true): limitleme
  *            | limiter (rateLimitMiddleware.ts)          | geçici devre dışı, uç ÇALIŞMAYA devam eder
  * Redis      | hardwareAuthMiddleware nonce/replay kontrolü| FAIL-CLOSED (bilinçli): kimlik doğrulama/replay

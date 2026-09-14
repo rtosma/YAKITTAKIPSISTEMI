@@ -18,7 +18,7 @@ import { resetLoginRateLimit } from './helpers/loginRateLimit';
  * Not: tek kullanımlık test firması, mevcut seed firmalarına dokunulmaz.
  */
 
-const API_URL = 'http://localhost:3000/api/v1';
+const API_URL = process.env.API_URL || 'http://localhost:5000/api/v1';
 const MQTT_URL = process.env.MQTT_URL_TEST || 'mqtt://localhost:1883';
 const MQTT_USERNAME = process.env.MQTT_USERNAME || '';
 const MQTT_PASSWORD = process.env.MQTT_PASSWORD || '';

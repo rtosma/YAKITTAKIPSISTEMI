@@ -1,7 +1,7 @@
 /**
  * BILL-1702 — Şantiye/Cihaz/Kullanıcı Paket Limitleri ve Lisans Süresi
  * Uyarıları uçtan uca testi. BILL-1701'in devamı, gerçek HTTP uçları
- * üzerinden (nginx proxy, localhost:3000).
+ * üzerinden (varsayılan doğrudan backend localhost:5000; API_URL ile nginx'e yöneltilebilir).
  *
  * Kapsanan davranış:
  *  - TEMEL paketin şantiye/cihaz limiti aşılınca yeni kayıt 409 ile
@@ -20,7 +20,7 @@ import { resetLoginRateLimit } from './helpers/loginRateLimit';
 // CI'da (auth-integration-test job) backend nginx OLMADAN doğrudan 5000
 // portunda ayağa kalkar — bu yüzden localde varsayılan (3000, nginx proxy)
 // env ile override edilebilir olmalı (bkz. ci-cd.yml API_URL).
-const API_URL = process.env.API_URL || 'http://localhost:3000/api/v1';
+const API_URL = process.env.API_URL || 'http://localhost:5000/api/v1';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

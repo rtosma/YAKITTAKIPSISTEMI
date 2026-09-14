@@ -1,7 +1,7 @@
 /**
  * BILL-1703 — Modül Bazlı Feature-Flag Satış Eşlemesi uçtan uca testi.
  * BILL-1701/1702'nin devamı, gerçek HTTP uçları üzerinden (nginx proxy,
- * localhost:3000).
+ * localhost:5000; API_URL ile değiştirilebilir).
  *
  * Kapsanan davranış:
  *  - Ek modül satın alımı (company_module_addons) paketten bağımsız olarak
@@ -28,7 +28,7 @@ import { resetLoginRateLimit } from './helpers/loginRateLimit';
 // CI'da (auth-integration-test job) backend nginx OLMADAN doğrudan 5000
 // portunda ayağa kalkar — bu yüzden localde varsayılan (3000, nginx proxy)
 // env ile override edilebilir olmalı (bkz. ci-cd.yml API_URL).
-const API_URL = process.env.API_URL || 'http://localhost:3000/api/v1';
+const API_URL = process.env.API_URL || 'http://localhost:5000/api/v1';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

@@ -210,7 +210,7 @@ router.post(
   '/auth/login',
   loginRateLimiter,
   validateRequest({ body: loginSchema }),
-  async (req: Request, res: Response) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const { username, password } = req.body;
     const lowerUser = username.trim().toLowerCase();
 
@@ -353,12 +353,10 @@ router.post(
         }
       });
     } catch (err: any) {
-      logger.error({ err }, 'Login DB Error');
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: 'Veritabanı bağlantı hatası oluştu.'
-      });
+      // Diğer uçlarla aynı: globalErrorHandler durum kodunu korur (ör. Redis
+      // yazamıyorsa checkLockout'un 503'ü). Önceden HER hata — Redis dahil —
+      // 500 "Veritabanı bağlantı hatası" olarak yanlış raporlanıyordu.
+      next(err);
     }
   }
 );

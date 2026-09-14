@@ -1,6 +1,6 @@
 /**
  * HR-1801 — Personel İzin Takip Modülü uçtan uca testi. Gerçek HTTP uçları
- * üzerinden (nginx proxy, localhost:3000).
+ * üzerinden (varsayılan doğrudan backend localhost:5000; API_URL ile nginx'e yöneltilebilir).
  *
  * Kapsanan davranış:
  *  - İki aşamalı onay akışı: TALEP_EDILDI → (SITE_MANAGER) SAHA_ONAYLANDI →
@@ -22,7 +22,7 @@ import { resetLoginRateLimit } from './helpers/loginRateLimit';
 // CI'da (auth-integration-test job) backend nginx OLMADAN doğrudan 5000
 // portunda ayağa kalkar — bu yüzden localde varsayılan (3000, nginx proxy)
 // env ile override edilebilir olmalı (bkz. ci-cd.yml API_URL).
-const API_URL = process.env.API_URL || 'http://localhost:3000/api/v1';
+const API_URL = process.env.API_URL || 'http://localhost:5000/api/v1';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

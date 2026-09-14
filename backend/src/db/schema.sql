@@ -219,6 +219,11 @@ CREATE TABLE IF NOT EXISTS leave_requests (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_leave_requests_personnel ON leave_requests(tenant_id, personnel_id, start_date DESC);
+-- personnel'de hiç indeks yoktu (yalnızca PK): her RLS'li personel sorgusu ve
+-- tenant silme CASCADE'i tam tablo taraması; driver_id FK'si (ON DELETE SET
+-- NULL) de şoför silinirken tam tarama yapıyordu.
+CREATE INDEX IF NOT EXISTS idx_personnel_tenant_id ON personnel(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_personnel_driver_id ON personnel(driver_id);
 CREATE INDEX IF NOT EXISTS idx_leave_requests_status ON leave_requests(tenant_id, status);
 
 -- 3b. Fuel Transactions Table (İkmal Kayıtları)
@@ -1825,6 +1830,14 @@ CREATE INDEX IF NOT EXISTS idx_device_claim_codes_tenant_id ON device_claim_code
 -- sıralamayı tek bir indeks taramasıyla karşılar.
 CREATE INDEX IF NOT EXISTS idx_transactions_tenant_created_at ON transactions(tenant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_transactions_tenant_site ON transactions(tenant_id, site_name);
+-- Araç bazlı dönem toplamları: HER ikmalde çalışan araç yakıt limiti kontrolü
+-- (FLEET-1406), limit bakiyesi ve TCO `WHERE vehicle_plate = $1 AND
+-- created_at >= $2 [AND < $3]`. Yalnızca (tenant_id, created_at) varken
+-- 200k satırlık tenant'ta ölçüldü (EXPLAIN ANALYZE, TEST_PLAN §4): ay toplamı
+-- 7,5k satır filtreleyip 2,1 ms, 365 günlük TCO paralel sıralı tarama 18 ms;
+-- bu indeksle 0,12 ms / 0,9 ms. 1M satırda kurulum ~1,2 sn (deploy'un
+-- tek-transaction şema adımında yazmalar bu kadar bekler).
+CREATE INDEX IF NOT EXISTS idx_transactions_tenant_plate_created ON transactions(tenant_id, vehicle_plate, created_at);
 
 -- audit_logs: append-only ve yalnızca INSERT+SELECT yapılabilir (bkz.
 -- yukarıdaki REVOKE) — GET /audit-logs de aynı tenant+created_at DESC deseni.

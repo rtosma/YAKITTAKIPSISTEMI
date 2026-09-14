@@ -1,7 +1,7 @@
 /**
  * BILL-1701 — Firma Paketleri ve Lisans Modeli uçtan uca testi. Gerçek
  * Docker Compose (backend + Postgres) üzerinden, gerçek HTTP istekleriyle
- * (nginx proxy, localhost:3000) — DB'ye doğrudan bağlanmaya gerek yok, her
+ * (varsayılan doğrudan backend localhost:5000; API_URL ile nginx'e yöneltilebilir) — DB'ye doğrudan bağlanmaya gerek yok, her
  * şey `/api/v1` uçları üzerinden gözlemleniyor.
  *
  * Kapsanan davranış:
@@ -26,7 +26,7 @@ import { resetLoginRateLimit } from './helpers/loginRateLimit';
 // CI'da (auth-integration-test job) backend nginx OLMADAN doğrudan 5000
 // portunda ayağa kalkar — bu yüzden localde varsayılan (3000, nginx proxy)
 // env ile override edilebilir olmalı (bkz. ci-cd.yml API_URL).
-const API_URL = process.env.API_URL || 'http://localhost:3000/api/v1';
+const API_URL = process.env.API_URL || 'http://localhost:5000/api/v1';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

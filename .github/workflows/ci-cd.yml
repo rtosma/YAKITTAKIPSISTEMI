@@ -326,6 +326,16 @@ jobs:
       - name: "TEST_PLAN §2.2: Araç Plakası Tenant İçinde Tekil"
         run: cd backend && npx tsx test/test_vehicle_plate_uniqueness.ts
 
+      # TEST_PLAN §7 — Redis yazmaları reddettiğinde (noeviction + maxmemory
+      # dolu) login fail-closed 503: kilit/IP limiti düşmüşken parola kâhini yok.
+      - name: "TEST_PLAN §7: Redis Bellek Baskısı — Giriş Korumaları"
+        run: cd backend && npx tsx test/test_redis_memory_pressure.ts
+
+      # TEST_PLAN §7 — tek tenant'ın kilit beklemeleri havuzu doldurunca diğer
+      # tenant'lar süresiz beklemez (lock_timeout + havuz bekleme sınırı → 503).
+      - name: "TEST_PLAN §7: Postgres Havuz Doygunluğu"
+        run: cd backend && npx tsx test/test_db_pool_saturation.ts
+
       - name: Run FUEL-401 RFID Dispense Session State Machine Tests
         run: cd backend && npx tsx test/test_fuel401_dispense_session.ts
 
@@ -435,26 +445,18 @@ jobs:
 
       - name: Run BILL-1701 Company Packages + License Model Tests
         run: cd backend && npx tsx test/test_bill1701_packages_license.ts
-        env:
-          API_URL: http://localhost:5000/api/v1
 
       - name: Run BILL-1702 Package Limits + License Expiry Warning Tests
         run: cd backend && npx tsx test/test_bill1702_package_limits_and_expiry_warnings.ts
-        env:
-          API_URL: http://localhost:5000/api/v1
 
       - name: Run BILL-1703 Module Add-on Sales + Controlled Package Reapply Tests
         run: cd backend && npx tsx test/test_bill1703_module_addons_and_reapply.ts
-        env:
-          API_URL: http://localhost:5000/api/v1
 
       - name: Run FLEET-1408 Inspection/Exhaust/Insurance Deadlines + Tire Tracking Tests
         run: cd backend && npx tsx test/test_fleet1408_inspection_tire_tracking.ts
 
       - name: Run FLEET-1409 Vehicle Document Archive + Expiry Warning Tests
         run: cd backend && npx tsx test/test_fleet1409_vehicle_documents.ts
-        env:
-          API_URL: http://localhost:5000/api/v1
 
       - name: Run INV-1506 Spare Parts Inventory + Critical Stock Alert Tests
         run: cd backend && npx tsx test/test_inv1506_spare_parts_inventory.ts
@@ -463,22 +465,17 @@ jobs:
         run: cd backend && npx tsx test/test_inv1507_lab_sample_tracking.ts
 
       # ARCH-108: bu job backend'i nginx'siz, DOĞRUDAN bootstrap.ts ile 5000
-      # portunda başlatıyor (BILL-1701/1702/1703, FLEET-1409, HR-1801
-      # testlerinin AKSİNE bu test API_URL'i hardcode ETMİYOR — env'den
-      # override edilebiliyor, varsayılanı yerel geliştirme nginx'i 3000).
+      # portunda başlatıyor — tüm testlerin varsayılan API_URL'i de 5000
+      # (önceden 6 test 3000'e bakıp adım bazında override gerektiriyordu).
       # Redis rate-limit sıfırlaması `docker exec yakittakip_redis` DENER
       # ama bu job'ta o container YOK (services: bloğu kullanıyor) — bu
       # yüzden CI'da sessizce no-op olur; test'in kendi login çağrı sayısı
       # (~9) tek başına 10/15dk limitinin altında kalacak şekilde tasarlandı.
       - name: Run ARCH-108 Tenant Freeze/Delete/Export Lifecycle Tests
         run: cd backend && npx tsx test/test_arch108_tenant_lifecycle.ts
-        env:
-          API_URL: http://localhost:5000/api/v1
 
       - name: Run HR-1801 Personnel Leave Tracking Tests
         run: cd backend && npx tsx test/test_hr1801_personnel_leave.ts
-        env:
-          API_URL: http://localhost:5000/api/v1
 
       - name: Dump Backend Log on Failure
         if: failure()
@@ -759,6 +756,7 @@ jobs:
           HW_SECRET_ESP32_FLOW_ISR=ci_only_hw_secret_flow_${{ github.run_id }}
           TRANSACTION_HASH_SECRET=ci_only_tx_hash_${{ github.run_id }}
           HW_SECRET_ENCRYPTION_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          TENANT_EXPORT_ENCRYPTION_KEY=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
           EOF
 
       - name: Start Full Docker Compose Stack

@@ -1,5 +1,6 @@
 import { redisPool } from '../db/redisPool';
 import { logger } from '../utils/logger';
+import { ServiceUnavailableError } from '../utils/errors';
 
 /**
  * AUTH-209 — hesap bazlı brute-force kilitleme.
@@ -28,6 +29,9 @@ const MAX_LOCKOUT_SECONDS = 4 * 60 * 60;
 // Kaç kez üst üste kilitlendiğini (strike) hatırlama penceresi — üstel süre
 // bu pencere içindeki kilitlenme sayısına göre büyür.
 const STRIKES_TTL_SECONDS = 24 * 60 * 60;
+// checkLockout'un yazılabilirlik yoklaması için tek, sabit anahtar (kullanıcı
+// başına anahtar üretip belleği büyütmemek için).
+const WRITE_PROBE_KEY = 'login-store-write-probe';
 
 function failKey(username: string): string {
   return `login-fail:${username}`;
@@ -44,26 +48,36 @@ export interface LockoutStatus {
   remainingSeconds?: number;
 }
 
-/** Girişten ÖNCE çağrılır — hesap kilitliyse Argon2'nin CPU maliyetine hiç girmeden 423 döndürülebilir. */
+/**
+ * Girişten ÖNCE çağrılır — hesap kilitliyse Argon2'nin CPU maliyetine hiç girmeden 423 döndürülebilir.
+ *
+ * FAIL-CLOSED (önceden fail-open idi): Redis'e YAZILAMIYORSA parola HİÇ
+ * doğrulanmadan 503 fırlatılır. Tatbikatla ölçüldü (TEST_PLAN §7): Redis
+ * yazmaları reddettiğinde (kesinti ya da noeviction + maxmemory dolu) hem bu
+ * kilit hem IP rate limiter'ı (passOnStoreError) sessizce devre dışı kalıyor,
+ * doğru parola ise refresh token yazılamadığı için 500 dönüyordu — yani
+ * fail-open hiçbir meşru girişi KURTARMIYOR, yalnızca saldırgana sınırsız
+ * deneme + "500 = doğru parola" kâhini veriyordu. TTL okuması ve zararsız bir
+ * yazma TEK MULTI'de: okumaların çalışıp yazmaların reddedildiği bellek-dolu
+ * durum da burada yakalanır.
+ */
 export async function checkLockout(username: string): Promise<LockoutStatus> {
+  let results: [Error | null, unknown][] | null;
   try {
-    const ttl = await redisPool.client.ttl(lockKey(username));
-    if (ttl > 0) {
-      return { locked: true, remainingSeconds: ttl };
-    }
-    return { locked: false };
+    results = await redisPool.client.multi().ttl(lockKey(username)).set(WRITE_PROBE_KEY, '1', 'EX', 60).exec();
   } catch (err) {
-    // RES-905: Redis erişilemezse fail-open — tokenService.ts'teki
-    // isSessionDenied ile AYNI karar. Aksi halde bir Redis kesintisi TÜM
-    // /auth/login ucunu (yeni oturum açmak isteyen HERKESİ) kilitlerdi.
-    // Argon2id maliyeti + loginRateLimiter (IP bazlı, o da fail-open, bkz.
-    // rateLimitMiddleware.ts) hâlâ devrede — bu yüzden brute-force koruması
-    // sıfırlanmıyor, yalnızca bu İKİNCİ (kullanıcı-adı bazlı) katman geçici
-    // olarak devre dışı kalıyor. error seviyesinde loglanır ki bir kesinti
-    // izlenebilir/alarm üretebilir olsun.
-    logger.error({ err, username }, '🚨 [AUTH-209] Redis erişilemedi — hesap kilidi kontrolü atlanıyor (fail-open).');
-    return { locked: false };
+    results = null;
+    logger.error({ err, username }, '🚨 [AUTH-209] Redis erişilemedi — giriş fail-closed (503).');
   }
+  const failed = !results || results.some(([err]) => err);
+  if (failed) {
+    if (results) logger.error({ username, errors: results.map(([e]) => e?.message) }, '🚨 [AUTH-209] Redis yazmayı reddetti (bellek dolu?) — giriş fail-closed (503).');
+    throw new ServiceUnavailableError('Giriş servisi geçici olarak kullanılamıyor. Lütfen birkaç dakika sonra tekrar deneyin.', {
+      error: 'AUTH_STORE_UNAVAILABLE'
+    });
+  }
+  const ttl = Number(results![0][1]);
+  return ttl > 0 ? { locked: true, remainingSeconds: ttl } : { locked: false };
 }
 
 /**
@@ -99,10 +113,8 @@ export async function recordFailedLogin(username: string): Promise<LockoutStatus
 
     return { locked: true, remainingSeconds: durationSeconds };
   } catch (err) {
-    // RES-905: bkz. checkLockout — Redis kesintisinde sayaç tutulamıyor,
-    // ama bu bir DoS/kilit açığı değil: aynı hatalı deneme bir sonraki
-    // istekte (Redis döndüğünde) sayılmaya devam eder, yalnızca kesinti
-    // penceresindeki denemeler sayılmıyor.
+    // checkLockout az önce yazılabilirliği doğruladı; buraya yalnızca o iki
+    // çağrı arasındaki dar pencerede oluşan bir kesintiyle düşülür.
     logger.error({ err, username }, '🚨 [AUTH-209] Redis erişilemedi — başarısız deneme sayaçlanamadı (fail-open).');
     return { locked: false };
   }
