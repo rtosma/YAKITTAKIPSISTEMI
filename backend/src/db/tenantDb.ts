@@ -4002,6 +4002,35 @@ export async function recordFuelIntake(
     const capacity = Number(tank.capacity_liters);
     const levelBeforeActual = Number(tank.current_level_liters);
 
+    // TEST_PLAN.md §2.2 (idempotency) — aynı tedarikçinin aynı irsaliyesi AYNI
+    // tanka ikinci kez girilemez. Önceden hiçbir kontrol yoktu: çift tıklama,
+    // ağ zaman aşımı sonrası tekrar gönderme ya da kasıtlı mükerrer giriş,
+    // stoğu İKİ KEZ artırıyordu (canlı ölçüldü: 5.000 L'lik irsaliye iki kez →
+    // tank 1.000'den 11.000'e). Bu hayali stok, FUEL-409 mutabakatında gerçek
+    // bir kaybı (hırsızlığı) "fazlalık" ile örtebilir.
+    // Kapsam BİLİNÇLİ olarak tank başına: tek bir tanker teslimatı tek irsaliyeyle
+    // İKİ FARKLI tanka bölünebilir — bu meşru olduğu için engellenmiyor.
+    // Tedarikçi adı serbest metin (INV-1502 tedarikçi kartı yok), bu yüzden
+    // büyük/küçük harf ve baş/son boşluk farkı aynı tedarikçi sayılıyor.
+    // Yarış güvenliği: kontrol yukarıdaki tank FOR UPDATE kilidinin ARDINDAN
+    // yapılıyor — aynı tanka eşzamanlı iki dolum sıraya girer, ikincisi ilkinin
+    // kaydını görür. (Unique index yerine uygulama kontrolü: mevcut verideki
+    // olası geçmiş mükerrer kayıtlar deploy'daki şema uygulamasını kırmasın.)
+    const duplicateRes = await client.query(
+      `SELECT id, created_at FROM fuel_intake_receipts
+        WHERE tenant_id = $1 AND tank_id = $2
+          AND lower(btrim(supplier_name)) = lower(btrim($3))
+          AND btrim(waybill_no) = btrim($4)
+        LIMIT 1`,
+      [tenantId, tankId, data.supplierName, data.waybillNo]
+    );
+    if (duplicateRes.rows.length > 0) {
+      throw new ConflictError(
+        `'${data.waybillNo.trim()}' numaralı irsaliye bu tedarikçi için bu tanka zaten kaydedilmiş — stok ikinci kez artırılmadı.`,
+        { error: 'DUPLICATE_WAYBILL', existingReceiptId: duplicateRes.rows[0].id }
+      );
+    }
+
     // level_before: çağıran bir "dolum öncesi" ölçüm beyan ettiyse onu SAKLA
     // (irsaliye/tutanak değeri), ama stok hesabı her zaman tankın GERÇEK
     // mevcut seviyesinden (levelBeforeActual) yürür.

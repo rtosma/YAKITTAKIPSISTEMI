@@ -294,6 +294,19 @@ jobs:
       - name: "TEST_PLAN §2.2: Sayfalama Sınırları + Girdi Güvenliği"
         run: cd backend && npx tsx test/test_input_boundaries.ts
 
+      # TEST_PLAN.md §2.2 — aynı irsaliye aynı tanka iki kez girildiğinde stok
+      # iki kez artıyordu (hayali stok, hırsızlığı örtebilir). Eşzamanlı çift
+      # gönderim ve meşru bölünmüş teslimat senaryoları dahil.
+      - name: "TEST_PLAN §2.2: Idempotency — Mükerrer Yakıt Alım İrsaliyesi"
+        run: cd backend && npx tsx test/test_idempotency_fuel_intake.ts
+
+      # TEST_PLAN.md §5 — `trust proxy` yokken nginx arkasındaki tüm istemciler
+      # tek IP görünüyor, login rate limiter platform geneli tek kova oluyordu
+      # (10 istekle herkesin girişi kilitlenebiliyordu). CI'da nginx yok; test
+      # X-Forwarded-For ile proxy'nin eklediği istemci IP'sini simüle eder.
+      - name: "TEST_PLAN §5: Proxy Arkasında Kişi Başı Login Rate Limit"
+        run: cd backend && npx tsx test/test_trust_proxy_rate_limit.ts
+
       - name: Run FUEL-401 RFID Dispense Session State Machine Tests
         run: cd backend && npx tsx test/test_fuel401_dispense_session.ts
 

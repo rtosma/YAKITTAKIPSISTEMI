@@ -40,6 +40,31 @@ const PORT = config.PORT;
 // hangi CVE'leri denemeli). Kapatmanın hiçbir işlevsel maliyeti yok.
 app.disable('x-powered-by');
 
+// TEST_PLAN.md §5 (OWASP A04/A07) — Express önündeki TEK reverse proxy'ye güven.
+//
+// BULGU (canlı kanıtlandı): bu ayar yoktu. Tüm tarayıcı trafiği nginx
+// üzerinden geldiği için Express her isteğin IP'sini NGINX KONTEYNERİNİN IP'si
+// sanıyordu (`rl:auth-login:172.18.0.5`). Sonuç: IP bazlı rate limiter'lar
+// kişi başına değil PLATFORM GENELİNDE tek bir kova gibi çalışıyordu.
+// Ölçülen etki: 172.18.0.8'deki bir "saldırgan" kimlik bilgisi olmadan 10 istek
+// attı; 172.18.0.7'deki meşru kullanıcı doğru şifreyle 429 aldı — yani 15
+// dakikada 10 istekle HERKESİN girişi kilitlenebiliyordu. Aynı sebeple audit
+// log / oturum kayıtlarındaki IP'ler de hep nginx'i gösteriyordu.
+//
+// Neden `1` (sayı) ve 'loopback, uniquelocal' gibi bir aralık DEĞİL: dağıtım
+// topolojisi tam olarak tek atlama (istemci → nginx → backend). nginx
+// `$proxy_add_x_forwarded_for` ile gerçek `$remote_addr`'i listenin SONUNA
+// ekliyor; `trust proxy = 1` Express'in yalnızca bu son girdiyi almasını sağlar,
+// istemcinin kendi gönderdiği sahte X-Forwarded-For girdileri (listenin
+// solunda kalır) YOK SAYILIR. Aralık tabanlı güven ise özel ağdaki bir
+// istemcinin sahte başlıkla limiti atlatmasına izin verirdi.
+//
+// ÖNKOŞUL: backend'in portu dışarıya YAYINLANMAMALI (OPS-1102 bunu zaten
+// kaldırdı) — doğrudan erişilebilen bir backend'de istemci X-Forwarded-For'u
+// kendisi yazıp her istekte "farklı IP" olarak görünebilir. Araya ikinci bir
+// proxy (ör. bulut load balancer) eklenirse bu sayı 2 olmalıdır.
+app.set('trust proxy', 1);
+
 // TEST_PLAN.md §5.2 — CORS artık VARSAYILAN OLARAK KAPALI.
 // Eskiden `app.use(cors())` çağrılıyordu; bu, her yanıta
 // `Access-Control-Allow-Origin: *` ekleyip API'yi her origin'e açıyordu.

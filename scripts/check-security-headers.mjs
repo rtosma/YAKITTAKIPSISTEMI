@@ -87,6 +87,28 @@ if (!existsSync(BACKEND_INDEX)) {
   problems.push({ where: 'backend/src/index.ts', msg: 'Dosya bulunamadı.' });
 } else {
   const src = readFileSync(BACKEND_INDEX, 'utf-8');
+  // TEST_PLAN §5 — `trust proxy` tam olarak 1 olmalı. Yoksa (canlı kanıtlandı)
+  // nginx arkasındaki TÜM istemciler tek IP görünür ve login rate limiter
+  // platform genelinde tek kova olur: 10 istekle herkesin girişi kilitlenir.
+  // `true` ya da daha büyük bir sayı ise istemci X-Forwarded-For'a sahte IP
+  // ekleyerek limiti atlatabilir (mutasyonla kanıtlandı: trust proxy=2 → bypass).
+  const trustProxyMatch = /app\s*\.\s*set\s*\(\s*['"]trust proxy['"]\s*,\s*([^)]+)\)/i.exec(src);
+  if (!trustProxyMatch) {
+    problems.push({
+      where: 'backend/src/index.ts',
+      msg:
+        "app.set('trust proxy', 1) yok — nginx arkasında tüm istemciler nginx'in IP'si " +
+        'olarak görünür, IP bazlı rate limiter platform geneli tek kovaya dönüşür (hesap kilidi DoS).'
+    });
+  } else if (trustProxyMatch[1].trim() !== '1') {
+    problems.push({
+      where: 'backend/src/index.ts',
+      msg:
+        `trust proxy değeri '${trustProxyMatch[1].trim()}' — dağıtım tek atlamalı (nginx → backend), ` +
+        'değer 1 olmalı. Daha fazla güven, sahte X-Forwarded-For ile rate limit bypass\'ına izin verir.'
+    });
+  }
+
   const hasDisable = /app\s*\.\s*disable\s*\(\s*['"]x-powered-by['"]\s*\)/i.test(src);
   if (!hasDisable) {
     problems.push({
