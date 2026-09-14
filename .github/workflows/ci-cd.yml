@@ -369,6 +369,12 @@ jobs:
       - name: Run REP-701 Stream Excel Export Tests
         run: cd backend && npx tsx test/test_rep701_transaction_export.ts
 
+      # REP-703 (#166) — ortak rapor çatısı: rol bazlı katalog, filtre
+      # whitelist'i (SQL injection dahil), sayfalama, tenant izolasyonu,
+      # CSV/PDF export ve PDF satır sınırı.
+      - name: Run REP-703 Common Report Framework Tests
+        run: cd backend && npx tsx test/test_rep703_report_framework.ts
+
       # AI-502: bu job'ta GEMINI_API_KEY kasıtlı olarak SET EDİLMİYOR — test
       # dosyası bunun (bu sandbox'ta da gerçek olan) "yapılandırılmamış"
       # durumunu doğruluyor; asıl AI çıktı-doğrulama mantığı ise Gemini'ye

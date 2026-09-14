@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/bootstrap.ts",
     "start": "node dist/server.cjs",
-    "build": "esbuild src/bootstrap.ts --bundle --platform=node --target=node20 --format=cjs --external:argon2 --external:pg-native --external:swagger-ui-express --external:swagger-jsdoc --external:libxmljs2 --outfile=dist/server.cjs",
+    "build": "esbuild src/bootstrap.ts --bundle --platform=node --target=node20 --format=cjs --external:argon2 --external:pg-native --external:swagger-ui-express --external:swagger-jsdoc --external:libxmljs2 --external:pdfkit --outfile=dist/server.cjs",
     "seed": "tsx src/db/seed.ts",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist"
@@ -23,6 +23,7 @@
     "jsonwebtoken": "^9.0.3",
     "libxmljs2": "^0.37.0",
     "mqtt": "^5.15.2",
+    "pdfkit": "^0.20.2",
     "pg": "^8.23.0",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
@@ -39,6 +40,7 @@
     "@types/ioredis": "^4.28.10",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.14.0",
+    "@types/pdfkit": "^0.17.6",
     "@types/pg": "^8.23.1",
     "@types/pino-http": "^5.8.4",
     "@types/swagger-jsdoc": "^6.0.4",

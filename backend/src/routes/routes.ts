@@ -2,6 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
 import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant, createLabSample, getLabSamples, getLabSample, cancelLabSample, recordLabTestResult, getLabTestResults, getNonConformingLabResults } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
+import { getReportDefinition, listReportsForRole, runReport, streamReportToCsv, streamReportToPdf, ReportQueryParams } from '../reports';
+import { reportRunQuerySchema, reportExportQuerySchema, reportIdParamsSchema } from '../schemas/reportSchema';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
 import { generateDespatchAdviceXml } from '../compliance/despatchAdviceXmlService';
@@ -5240,6 +5242,140 @@ router.get(
       // Header'lar zaten gönderilmişse (stream başlamışsa) Express'in
       // varsayılan hata middleware'i devreye giremez — bağlantıyı olduğu
       // gibi keserek yarım/bozuk bir .xlsx indirmeyi önlüyoruz.
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+      next(error);
+    }
+  }
+);
+
+// ── REP-703: Ortak rapor çatısı ──────────────────────────────────────────
+// Katalog + jenerik çalıştırma/export uçları. Her yeni rapor
+// `reports/definitions/`e bir tanım eklenerek üretilir — buradaki üç rota
+// TÜM raporlar için ortak ve DEĞİŞMEZ; bkz. reports/reportEngine.ts.
+
+/**
+ * @swagger
+ * /reports:
+ *   get:
+ *     summary: Rapor Kataloğu (REP-703)
+ *     description: Oturum açan kullanıcının ROLÜNE göre görebileceği raporların listesi.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Kullanıcının erişebileceği rapor tanımları.
+ */
+router.get('/reports', authenticateJWT, (req: AuthenticatedRequest, res: Response) => {
+  res.json({ success: true, data: listReportsForRole(req.user!.role) });
+});
+
+/**
+ * @swagger
+ * /reports/{reportId}:
+ *   get:
+ *     summary: Bir Raporu Filtre + Sayfalamayla Çalıştır (REP-703)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: reportId
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer }
+ *     responses:
+ *       200:
+ *         description: Sayfalanmış rapor sonucu + toplamlar.
+ *       403:
+ *         description: Kullanıcının rolü bu raporu görüntüleyemez.
+ *       404:
+ *         description: Bilinmeyen rapor id'si.
+ */
+router.get(
+  '/reports/:reportId',
+  authenticateJWT,
+  validateRequest({ params: reportIdParamsSchema, query: reportRunQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const def = getReportDefinition(req.params.reportId);
+      if (!def) throw new NotFoundError('Rapor bulunamadı.', { error: 'REPORT_NOT_FOUND' });
+      if (!def.allowedRoles.includes(req.user!.role)) {
+        throw new ForbiddenError('Bu raporu görüntüleme yetkiniz yok.', { error: 'REPORT_FORBIDDEN' });
+      }
+
+      const result = await runReport(def, req.query as ReportQueryParams, siteScopeFor(req.user!));
+      res.json({
+        success: true,
+        data: result.data,
+        pagination: { page: result.page, pageSize: result.pageSize, totalCount: result.totalCount, totalPages: result.totalPages },
+        aggregates: result.aggregates
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /reports/{reportId}/export:
+ *   get:
+ *     summary: Bir Raporu CSV/PDF Olarak Dışa Aktar (REP-703)
+ *     description: >
+ *       Sayfalama YOKTUR — filtreye uyan TÜM kayıtlar akışla indirilir.
+ *       PDF, kuyruksuz bir süreçte CPU'yu bloklamamak için satır sayısı
+ *       sınırlıdır (varsayılan 2000); üzerindeki raporlar 400 ile reddedilir
+ *       ve CSV'ye yönlendirilir.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: reportId
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: format
+ *         required: true
+ *         schema: { type: string, enum: [csv, pdf] }
+ *     responses:
+ *       200:
+ *         description: CSV ya da PDF dosyası stream olarak döner.
+ *       400:
+ *         description: PDF için satır sayısı sınırı aşıldı.
+ *       403:
+ *         description: Kullanıcının rolü bu raporu görüntüleyemez.
+ *       404:
+ *         description: Bilinmeyen rapor id'si.
+ */
+router.get(
+  '/reports/:reportId/export',
+  authenticateJWT,
+  validateRequest({ params: reportIdParamsSchema, query: reportExportQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const def = getReportDefinition(req.params.reportId);
+      if (!def) throw new NotFoundError('Rapor bulunamadı.', { error: 'REPORT_NOT_FOUND' });
+      if (!def.allowedRoles.includes(req.user!.role)) {
+        throw new ForbiddenError('Bu raporu görüntüleme yetkiniz yok.', { error: 'REPORT_FORBIDDEN' });
+      }
+
+      const { format, ...query } = req.query as unknown as ReportQueryParams & { format: 'csv' | 'pdf' };
+      if (format === 'csv') {
+        await streamReportToCsv(res, def, query, siteScopeFor(req.user!));
+      } else {
+        await streamReportToPdf(res, def, query, siteScopeFor(req.user!));
+      }
+    } catch (error: any) {
+      // /transactions/export ile AYNI gerekçe: stream başladıktan sonra
+      // (başlıklar gönderildikten sonra) bir hata olursa Express'in
+      // varsayılan hata middleware'i devreye giremez.
       if (res.headersSent) {
         res.destroy();
         return;
