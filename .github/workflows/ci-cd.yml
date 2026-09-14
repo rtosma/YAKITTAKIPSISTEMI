@@ -75,6 +75,13 @@ jobs:
       - name: "GÜVENLİK: Workflow YAML Geçerlilik Denetimi"
         run: node scripts/check-workflow-yaml.mjs
 
+      # TEST_PLAN.md §0.2 — YAML sözdizimi geçerli olup ANLAMSAL olarak geçersiz
+      # bir workflow da hiç çalışmaz (gerçek olay: job-level if içinde secrets).
+      # actionlint GitHub Actions ifadelerini, bağlam kullanımını ve run
+      # bloklarını (shellcheck) denetler. İmaj sürümü sabitlendi (latest değil).
+      - name: "GÜVENLİK: Workflow Anlamsal Denetimi (actionlint)"
+        run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12 -color
+
       # TEST_PLAN.md §3.4 — frontend'de ESLint yok; XSS/kod-enjeksiyon sink'leri
       # ve xlsx'in (bilinen HIGH zafiyetli) parse yolu mekanik olarak yasak.
       - name: "GÜVENLİK: Frontend XSS / Tehlikeli Desen Denetimi"
@@ -179,8 +186,25 @@ jobs:
 
       - name: Apply Database Schema & Seed Data
         run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -d yakittakip_db -f backend/src/db/schema.sql
-          PGPASSWORD=postgres psql -h localhost -U postgres -d yakittakip_db -f backend/src/db/seed_mock_data.sql
+          # TEST_PLAN.md §4 — ON_ERROR_STOP=1 ŞART: olmadan psql bozuk bir SQL
+          # ifadesinde bile exit 0 döner (canlı doğrulandı). Yani schema.sql'deki
+          # bir CREATE POLICY/REVOKE hata verse CI YEŞİL kalırdı; statik RLS
+          # guard'ı (check-rls-coverage.mjs) dosya METNİNE baktığı için bunu da
+          # göremezdi — politika dosyada var, veritabanında yok.
+          PGPASSWORD=postgres psql -h localhost -U postgres -d yakittakip_db -v ON_ERROR_STOP=1 -f backend/src/db/schema.sql
+          PGPASSWORD=postgres psql -h localhost -U postgres -d yakittakip_db -v ON_ERROR_STOP=1 -f backend/src/db/seed_mock_data.sql
+
+      # TEST_PLAN.md §4 — projede migration aracı YOK: schema.sql yalnızca boş bir
+      # veritabanında (docker-entrypoint-initdb.d) uygulanıyor. Mevcut bir DB'ye
+      # (production) bir şema/güvenlik düzeltmesi ulaştırmanın tek güvenli yolu
+      # schema.sql'i YENİDEN çalıştırmak — bu da ancak dosya idempotent kaldıkça
+      # güvenli. Bu adım onu kilitliyor: dolu DB'ye ikinci kez uygulanamayan bir
+      # ifade (IF NOT EXISTS unutulmuş CREATE, korumasız CREATE POLICY...) CI'ı kırar.
+      - name: "TEST_PLAN §4: schema.sql + seed İdempotentlik (ikinci uygulama)"
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d yakittakip_db -v ON_ERROR_STOP=1 -q -f backend/src/db/schema.sql
+          PGPASSWORD=postgres psql -h localhost -U postgres -d yakittakip_db -v ON_ERROR_STOP=1 -q -f backend/src/db/seed_mock_data.sql
+          echo "schema.sql ve seed dolu bir veritabanına hatasız yeniden uygulandı."
 
       - name: Start Backend Server (background)
         run: |
@@ -585,13 +609,23 @@ jobs:
     name: 🚀 Sıfır Kesintili Dağıtım (yalnızca main/master push, DEPLOY_HOST tanımlıysa)
     needs: [quality-and-tests, auth-integration-test, build-bundle, docker-security-scan]
     runs-on: ubuntu-latest
+    # TEST_PLAN.md §0.2 — `secrets` bağlamı job seviyesindeki `if:` içinde
+    # KULLANILAMAZ (izinli bağlamlar: github, inputs, needs, vars). Önceden
+    # burada `secrets.DEPLOY_HOST != ''` vardı; bu YAML sözdizimi hatası değil
+    # ANLAMSAL bir hata olduğu için PyYAML/js-yaml geçiriyor, ama GitHub
+    # workflow'u yüklerken tüm dosyayı "Invalid workflow file" diye reddeder
+    # (actionlint: context "secrets" is not allowed here). GitHub'ın önerdiği
+    # desen: secret'ı job env'ine al, koşulu ADIM seviyesinde env ile kontrol et.
+    # Davranış aynı: DEPLOY_HOST tanımsızsa dağıtım adımı atlanır.
     if: >-
       github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') &&
-      secrets.DEPLOY_HOST != ''
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
 
     steps:
       - name: Deploy via SSH (git pull + zero-downtime-deploy.sh)
+        if: env.DEPLOY_HOST != ''
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -606,8 +640,16 @@ jobs:
             git reset --hard "origin/${{ github.ref_name }}"
             chmod +x scripts/zero-downtime-deploy.sh
             ./scripts/zero-downtime-deploy.sh
-            # Diğer servisler (nginx statik dosyaları, postgres şeması vb.)
-            # zero-downtime gerektirmeyen normal bir 'up -d --build' ile.
+            # Frontend (nginx statik dosyaları) zero-downtime gerektirmediği için
+            # normal bir 'up -d --build' ile.
+            # DİKKAT (TEST_PLAN §4): bu komut postgres ŞEMASINI UYGULAMAZ. Projede
+            # migration aracı yok; schema.sql yalnızca BOŞ bir volume'da
+            # (docker-entrypoint-initdb.d) çalışır. Mevcut production DB'sine
+            # schema.sql değişiklikleri (ör. REVOKE güvenlik düzeltmeleri) bu
+            # akışla ULAŞMAZ. schema.sql idempotent olduğu (CI'da kilitli) için
+            # elle uygulanabilir:
+            #   docker compose exec -T postgres psql -U postgres -d yakittakip_db \
+            #     -v ON_ERROR_STOP=1 < backend/src/db/schema.sql
             docker compose up -d --build frontend
 
   load-test:
@@ -653,8 +695,9 @@ jobs:
 
       - name: Apply Database Schema & Seed Data
         run: |
-          docker compose exec -T postgres psql -U postgres -d yakittakip_db < backend/src/db/schema.sql
-          docker compose exec -T postgres psql -U postgres -d yakittakip_db < backend/src/db/seed_mock_data.sql
+          # ON_ERROR_STOP=1: olmadan bozuk SQL'de de exit 0 döner (TEST_PLAN §4).
+          docker compose exec -T postgres psql -U postgres -d yakittakip_db -v ON_ERROR_STOP=1 < backend/src/db/schema.sql
+          docker compose exec -T postgres psql -U postgres -d yakittakip_db -v ON_ERROR_STOP=1 < backend/src/db/seed_mock_data.sql
 
       - name: Run TEST-1002 Full AC Load Test (100 pompa @ 1000 rps, 90s)
         run: |

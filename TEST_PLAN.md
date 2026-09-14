@@ -67,6 +67,36 @@ boşluklar **route sayısında değil**, aşağıdaki bölümlerde detaylandır�
       (Bu yüzden eklenen üç guard'ın da negatif testi yapıldı: kasıtlı bir
       ihlalde gerçekten exit 1 döndükleri doğrulandı.)
 
+- [x] **🚨 DÜZELTME — YAML onarımı CI'ı TEK BAŞINA geri getirmemişti.**
+      Yukarıdaki düzeltmeden sonra "CI artık çalışıyor" denmişti; bu iddia
+      eksik doğrulamaya dayanıyordu (yalnızca YAML SÖZDİZİMİ kontrol
+      edilmişti). `actionlint` ile ANLAMSAL tarama ikinci bir hata buldu:
+      `2c0d539` (2026-09-04, OPS-1102) deploy job'ının `if:` koşuluna
+      `secrets.DEPLOY_HOST != ''` koymuştu. `secrets` bağlamı `if:` içinde
+      KULLANILAMAZ (izinli: github, inputs, needs, vars) — bu YAML olarak
+      geçerli olduğu için PyYAML/js-yaml geçiriyor, ama GitHub workflow'u
+      yüklerken tüm dosyayı reddeder. Yani CI büyük olasılıkla bu commit'ten
+      beri de çalışmıyordu.
+      Düzeltildi (secret job `env`'ine alındı, koşul adım seviyesinde
+      `env.DEPLOY_HOST` ile — davranış aynı). actionlint üç workflow
+      dosyasında sıfır bulguya indi. Kalıcı kilit: (1) `check-workflow-yaml.mjs`
+      `if:` içinde `secrets.` görürse CI'ı kırar (negatif testle doğrulandı),
+      (2) CI'a pinlenmiş `rhysd/actionlint:1.7.12` adımı eklendi.
+      **DERS (§0.2'nin devamı):** "doğrulandı" demeden önce doğrulamanın
+      KAPSAMI sorulmalı — sözdizimi kontrolü, anlamsal geçerliliği kanıtlamaz.
+      **Son teyit hâlâ GitHub'da:** push sonrası Actions sekmesinde bir
+      workflow run'ının gerçekten başladığı görülmeli.
+
+- [x] **CI'da şema uygulaması SQL hatalarını sessizce yutuyordu.** CI
+      `schema.sql`'i `psql -f` ile `ON_ERROR_STOP` OLMADAN uyguluyordu. Canlı
+      doğrulandı: bozuk bir SQL ifadesinde `psql` **exit 0** dönüyor
+      (`ON_ERROR_STOP=1` ile exit 3). Yani `schema.sql`'deki bir
+      `CREATE POLICY`/`REVOKE` hata verse CI yeşil kalırdı; statik RLS guard'ı
+      dosya METNİNE baktığı için bunu göremezdi — politika dosyada var,
+      veritabanında yok. Repodaki 4 çağrının hepsine `ON_ERROR_STOP=1`
+      eklendi; `check-workflow-yaml.mjs` artık bunu zorunlu tutuyor
+      (negatif testle doğrulandı).
+
 ### 0.3 Test Aşamasında Öğrenilen Ortam/Süreç Dersleri
 
 - [x] **Test paketi SIRAYLA koşarken login rate-limit'i yanlış başarısızlık
@@ -409,11 +439,31 @@ Kapsam ilkesi: E2E yalnızca birim testin YAKALAYAMADIĞI şeyler için.
 - [ ] **Foreign key / cascade davranışı** — özellikle `tenant_deletion_approvals`
       gibi CASCADE'li tabloların, bir tenant silindiğinde GERÇEKTEN tüm
       bağımlı satırları temizlediği (yetim kayıt kalmadığı) doğrulanmalı.
-- [ ] **Migration/şema değişikliği güvenliği** — bu projede ayrı bir migration
-      aracı yok (`schema.sql` doğrudan uygulanıyor); üretim ortamına
-      GEÇİŞ senaryosu (var olan veriyle yeni kolon/tablo eklemenin veri
-      kaybına yol açmadığı) için bir "staging'de schema.sql'i mevcut
-      snapshot üzerine uygula" tatbikatı planlanmalı.
+- [x] **Migration/şema değişikliği güvenliği — İNCELENDİ, GERÇEK BOŞLUK.**
+      Tespit (canlı gözlemle): yerel stack farklı/eski bir volume ile yeniden
+      başladığında, `schema.sql`'e eklenmiş `REVOKE` güvenlik düzeltmelerinin
+      o veritabanında OLMADIĞI görüldü (`test_db_privileges` 5/12'ye düştü —
+      yani test, düzeltmenin DB'ye ulaşmadığını doğru şekilde yakaladı).
+      Kök neden: projede migration mekanizması YOK. `schema.sql` imaja
+      kopyalanıyor ama hiçbir kod okumuyor; yalnızca BOŞ bir volume'da
+      `docker-entrypoint-initdb.d` ile çalışıyor. CI her seferinde taze DB
+      kurduğu için testler geçiyor — ama **mevcut bir veritabanına
+      (production dahil) schema.sql'e eklenen hiçbir değişiklik ulaşmıyor.**
+      Deploy job'ındaki "postgres şeması ... up -d --build ile" yorumu da bu
+      yanlış varsayımı belgeliyordu (yorum düzeltildi).
+      **İyi haber — yeniden uygulanabilirlik doğrulandı:** `schema.sql` dolu
+      bir DB'ye (69 kullanıcı / 38 firma) transaction + ROLLBACK ile dry-run
+      edildi: sıfır hata, iz bırakmadı. Seed de idempotent (6 INSERT'in 6'sı
+      `ON CONFLICT`). Ardından gerçek uygulama → `test_db_privileges` 12/12.
+      **Kilit:** CI'a "schema.sql + seed ikinci uygulama" adımı eklendi —
+      idempotent olmayan bir ifade eklenirse CI kırılır (mutation ile
+      doğrulandı: `CREATE TABLE companies` eklenince exit 3, DB değişmedi).
+- [ ] **AÇIK KARAR (kullanıcıya soruldu):** production deploy'unda şemanın
+      otomatik uygulanması. Seçenekler: (a) `zero-downtime-deploy.sh` yeni
+      replika başlamadan önce `psql -v ON_ERROR_STOP=1 < schema.sql` çalıştırsın
+      (şema idempotent + değişiklikler şimdiye kadar geriye uyumlu/additive),
+      (b) elle uygulama prosedürü olarak belgelensin (şu anki durum, deploy
+      yorumuna eklendi).
 - [ ] **Yedekleme/geri yükleme tatbikatı** — `redisdata`/Postgres volume'larının
       gerçek bir `pg_dump`/`pg_restore` döngüsünden geçirilip veri
       bütünlüğünün korunduğu en az bir kez elle doğrulanmalı (otomasyon

@@ -99,6 +99,51 @@ function structuralChecks(file, content) {
       }
     }
 
+    // 1b) SQL dosyası uygulayan psql çağrısında ON_ERROR_STOP yoksa, bozuk bir
+    //     ifadede bile exit 0 döner (canlı doğrulandı) → schema.sql'deki bir
+    //     CREATE POLICY/REVOKE hatası CI'da SESSİZCE yutulur. Yorum satırları hariç.
+    const trimmedLine = line.trim();
+    if (
+      !trimmedLine.startsWith('#') &&
+      /\bpsql\b/.test(line) &&
+      /(\s-f\s|\s<\s)/.test(line) &&
+      !/ON_ERROR_STOP=1/.test(line)
+    ) {
+      found.push({
+        line: lineNo,
+        rule: 'psql-without-on-error-stop',
+        text: trimmedLine,
+        hint: "psql'e `-v ON_ERROR_STOP=1` ekleyin — aksi halde SQL hatası exit 0 ile sessizce geçer."
+      });
+    }
+
+    // 1c) `if:` ifadesinde `secrets.` — YAML olarak GEÇERLİ ama GitHub
+    //     açısından ANLAMSAL hata: secrets bağlamı if koşullarında
+    //     kullanılamaz ve tüm workflow "Invalid workflow file" diye reddedilir.
+    //     Gerçek olay: 2c0d539 (OPS-1102) deploy job'ında bunu yaptı; YAML
+    //     düzeltmesinden sonra bile CI bu yüzden yüklenmiyordu. `if: >-` gibi
+    //     çok satırlı ifadelerin devam satırları da taranır.
+    if (/^\s*(-\s+)?if:/.test(line) && !trimmedLine.startsWith('#')) {
+      const ifIndent = line.search(/\S/);
+      const exprLines = [line];
+      for (let j = idx + 1; j < lines.length; j++) {
+        const next = lines[j];
+        if (next.trim() === '') break;
+        if (next.search(/\S/) <= ifIndent) break;
+        exprLines.push(next);
+      }
+      if (exprLines.some((l) => /\bsecrets\./.test(l) && !l.trim().startsWith('#'))) {
+        found.push({
+          line: lineNo,
+          rule: 'secrets-in-if-expression',
+          text: exprLines.map((l) => l.trim()).join(' '),
+          hint:
+            "if: koşullarında `secrets` kullanılamaz. Secret'ı job/step `env:` altına alıp " +
+            "`if: env.X != ''` ile kontrol edin."
+        });
+      }
+    }
+
     // 2) Girinti için sekme karakteri — YAML spec'inde kesinlikle yasak.
     if (/^\t| \t/.test(line)) {
       found.push({
