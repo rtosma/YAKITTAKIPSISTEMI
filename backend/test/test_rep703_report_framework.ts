@@ -182,6 +182,34 @@ async function run() {
     // ── Test 16: admin (SUPER_ADMIN) her iki raporu da kullanabilir ──
     const adminRun = await getJson('/reports/rep-722?pageSize=1', admin);
     check('Test 16: SUPER_ADMIN rep-722\'yi çalıştırabilir (200)', adminRun.status === 200, `status=${adminRun.status}`);
+
+    // ── Test 17-18: sıralama — whitelist'li sortBy/sortDir + geçersiz sortBy fallback ──
+    const sortedAsc = await getJson(`/reports/rep-711?vehiclePlate=${encodeURIComponent(MARKER_PLATE)}&sortBy=amount_liters&sortDir=asc`, owner);
+    const amounts = sortedAsc.body.data.map((r: any) => Number(r.amount_liters));
+    check('Test 17: sortBy=amount_liters&sortDir=asc GERÇEKTEN artan sırada döner (varsayılan created_at DESC değil)',
+      sortedAsc.body.sort?.column === 'amount_liters' && sortedAsc.body.sort?.direction === 'ASC' &&
+        amounts.every((v: number, i: number) => i === 0 || amounts[i - 1] <= v),
+      `sort=${JSON.stringify(sortedAsc.body.sort)}, amounts=${JSON.stringify(amounts)}`);
+
+    const invalidSort = await getJson(`/reports/rep-711?vehiclePlate=${encodeURIComponent(MARKER_PLATE)}&sortBy=hash_signature`, owner);
+    check('Test 18: rapor tanımında olmayan bir sortBy (hash_signature, tabloda gerçekten var) sessizce defaultSort\'a düşer',
+      invalidSort.status === 200 && invalidSort.body.sort?.column === 'created_at' && invalidSort.body.sort?.direction === 'DESC',
+      `sort=${JSON.stringify(invalidSort.body.sort)}`);
+
+    // PDF-özgü regresyon testleri (Türkçe font gömme, aynı süreçte ardışık
+    // istekler, sayfa sayısı doğruluğu) BİLEREK bu dosyada DEĞİL —
+    // test_rep703_pdf_regression.ts'te, KENDİ başına. Sebep: bu üç kontrol
+    // BURAYA (17 test SONRASINA, aynı süreç/dosyada) eklendiğinde, altta
+    // yatan gerçek bug'lar (mutasyonla kanıtlandı: font kaydı ENOENT'i,
+    // sayfa ikiye katlanması) sunucuda hâlâ AKTİF olsa da testler yeşil
+    // kalıyordu — 3 bağımsız yöntemle (curl, docker exec wget, ayrı bir
+    // node script'i) sunucunun GERÇEKTEN bozuk davrandığı doğrulanmasına
+    // KARŞIN. Kök neden tespit edilemedi (muhtemelen Node/undici fetch
+    // bağlantı havuzunun bu dosyada BİRİKEN ~20+ önceki isteğiyle bir
+    // etkileşimi) — ama AYNI kontroller KENDİ dosyalarında (sıfır önceki
+    // istek) HER SEFERİNDE güvenilir biçimde doğru/yanlışı yakalıyor. Testin
+    // KENDİSİNİN sessizce yanlış geçmesi, hiç test olmamasından DAHA
+    // KÖTÜdür — bu yüzden buradan çıkarıldı.
   } finally {
     await db.query('DELETE FROM transactions WHERE id LIKE $1', [`tx-rep703-${RUN}-%`]);
     await db.end();

@@ -78,6 +78,10 @@ COPY --chown=node:node src/routes ./src/routes
 # vendored UBL 2.1 XSD dosyalarını process.cwd()'ye göre okur — src/routes
 # ile AYNI gerekçeyle burada AYRICA kopyalanması gerekiyor.
 COPY --chown=node:node src/compliance ./src/compliance
+# REP-703: pdfExport.ts, bundle'a GÖMÜLEMEYEN (JS/TS değil) vendored Roboto
+# .woff dosyalarını (Türkçe karakterler için — bkz. o dosyadaki yorum)
+# AYNI process.cwd() deseniyle okur.
+COPY --chown=node:node src/reports/assets ./src/reports/assets
 
 # Switch to unprivileged non-root user
 USER node

@@ -58,6 +58,8 @@ export interface ReportRunResult {
   totalCount: number;
   totalPages: number;
   aggregates: Record<string, number>;
+  /** İstemcinin `sortBy`/`sortDir`'i geçerliyse uygulanan, değilse `defaultSort`'a düşen GERÇEK sıralama. */
+  sort: { column: string; direction: 'ASC' | 'DESC' };
 }
 
 export interface ReportDefinition {

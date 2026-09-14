@@ -5290,6 +5290,13 @@ router.get('/reports', authenticateJWT, (req: AuthenticatedRequest, res: Respons
  *       - in: query
  *         name: pageSize
  *         schema: { type: integer }
+ *       - in: query
+ *         name: sortBy
+ *         description: Raporun kolonlarından biri (geçersizse/eksikse raporun varsayılan sıralamasına düşer).
+ *         schema: { type: string }
+ *       - in: query
+ *         name: sortDir
+ *         schema: { type: string, enum: [asc, desc] }
  *     responses:
  *       200:
  *         description: Sayfalanmış rapor sonucu + toplamlar.
@@ -5315,7 +5322,8 @@ router.get(
         success: true,
         data: result.data,
         pagination: { page: result.page, pageSize: result.pageSize, totalCount: result.totalCount, totalPages: result.totalPages },
-        aggregates: result.aggregates
+        aggregates: result.aggregates,
+        sort: result.sort
       });
     } catch (error: any) {
       next(error);

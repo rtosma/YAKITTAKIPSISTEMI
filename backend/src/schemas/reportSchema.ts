@@ -14,7 +14,12 @@ import { z } from 'zod';
 export const reportRunQuerySchema = z
   .object({
     page: z.coerce.number({ message: 'Sayfa numarası geçerli bir sayı olmalıdır.' }).int().positive().default(1),
-    pageSize: z.coerce.number({ message: 'Sayfa boyutu geçerli bir sayı olmalıdır.' }).int().positive().max(100, 'Sayfa boyutu en fazla 100 olabilir.').default(20)
+    pageSize: z.coerce.number({ message: 'Sayfa boyutu geçerli bir sayı olmalıdır.' }).int().positive().max(100, 'Sayfa boyutu en fazla 100 olabilir.').default(20),
+    // Asıl güvenlik sınırı reportEngine.ts'teki whitelist'tir (sortBy, o
+    // raporun GERÇEK bir sütun anahtarı DEĞİLSE sessizce defaultSort'a
+    // düşer) — burada yalnızca biçim (uzunluk/değer kümesi) sınırlanıyor.
+    sortBy: z.string().max(64).optional(),
+    sortDir: z.enum(['asc', 'desc', 'ASC', 'DESC']).optional()
   })
   .catchall(z.string().max(200).optional());
 

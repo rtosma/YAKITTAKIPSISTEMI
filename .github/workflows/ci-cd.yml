@@ -375,6 +375,15 @@ jobs:
       - name: Run REP-703 Common Report Framework Tests
         run: cd backend && npx tsx test/test_rep703_report_framework.ts
 
+      # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
+      # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte
+      # ardışık istekler, sayfa sayısı) BİLEREK ayrı bir dosyada — o dosyanın
+      # başındaki not, bu üçünün test_rep703_report_framework.ts'in İÇİNDE
+      # (17 test sonrasına eklenince) sessizce yanlış geçtiğini, KENDİ
+      # dosyalarında ise güvenilir olduğunu açıklıyor.
+      - name: Run REP-703 PDF Export Regression Tests
+        run: cd backend && npx tsx test/test_rep703_pdf_regression.ts
+
       # AI-502: bu job'ta GEMINI_API_KEY kasıtlı olarak SET EDİLMİYOR — test
       # dosyası bunun (bu sandbox'ta da gerçek olan) "yapılandırılmamış"
       # durumunu doğruluyor; asıl AI çıktı-doğrulama mantığı ise Gemini'ye

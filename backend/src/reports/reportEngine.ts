@@ -101,6 +101,32 @@ function parsePagination(query: ReportQueryParams): { page: number; pageSize: nu
   };
 }
 
+/**
+ * AC: "Sunucu taraflı sayfalama VE sıralama" — istemci `sortBy`/`sortDir`
+ * gönderebilir, ama `sortBy` yalnızca `def.columns`'ta GERÇEKTEN var olan bir
+ * anahtarsa kabul edilir (aynı whitelist disiplini: sütun adı asla doğrudan
+ * istemciden SQL'e gitmez). Geçersiz/eksik bir değer sessizce
+ * `def.defaultSort`'a düşer — 400 ile reddetmek yerine (bu, tek bir yanlış
+ * yazılmış sort parametresiyle tüm listeyi kırmaktan daha kullanıcı dostu).
+ *
+ * BİLİNÇLİ SAPMA: export (CSV/PDF) akışı bu sıralamayı KULLANMAZ, her zaman
+ * `def.defaultSort` ile sabit kalır — keyset export'un doğruluğu (bkz.
+ * streamReportExport) `id` ile tekilleştirilmiş TEK bir kararlı sıralama
+ * sütununa dayanır; istemcinin ekran sıralamasını export'a taşımak bu
+ * garantiyi (ve büyük export'larda O(sayfa) maliyetini) bozardı. Bu, rapor/
+ * export araçlarında yaygın bir tercihtir (ekranda sıralı, dışa aktarımda
+ * kanonik sıra).
+ */
+function resolveSort(def: ReportDefinition, query: ReportQueryParams): { column: string; direction: 'ASC' | 'DESC' } {
+  const requestedColumn = typeof query.sortBy === 'string' ? query.sortBy : undefined;
+  const column = requestedColumn && def.columns.some((c) => c.key === requestedColumn) ? requestedColumn : def.defaultSort.column;
+
+  const requestedDir = typeof query.sortDir === 'string' ? query.sortDir.toUpperCase() : undefined;
+  const direction: 'ASC' | 'DESC' = requestedDir === 'ASC' || requestedDir === 'DESC' ? requestedDir : def.defaultSort.direction;
+
+  return { column, direction };
+}
+
 async function runAggregates(client: PoolClient, def: ReportDefinition, whereClause: string, params: unknown[]): Promise<{ totalCount: number; aggregates: Record<string, number> }> {
   const selectParts = ['COUNT(*)::int AS __count'];
   for (const agg of def.aggregates ?? []) {
@@ -115,10 +141,11 @@ async function runAggregates(client: PoolClient, def: ReportDefinition, whereCla
   return { totalCount: row.__count ?? 0, aggregates };
 }
 
-/** AC: "Sunucu taraflı sayfalama" — tek rapor tanımından tek çağrıyla çalışır. */
+/** AC: "Sunucu taraflı sayfalama ve sıralama" — tek rapor tanımından tek çağrıyla çalışır. */
 export async function runReport(def: ReportDefinition, query: ReportQueryParams, siteScope?: string): Promise<ReportRunResult> {
   const { page, pageSize } = parsePagination(query);
   const { whereClause, params } = buildWhereClause(def, query, siteScope);
+  const sort = resolveSort(def, query);
   const columnList = def.columns.map((c) => c.key).join(', ');
 
   return withTenant(async (client) => {
@@ -127,7 +154,7 @@ export async function runReport(def: ReportDefinition, query: ReportQueryParams,
     const offset = (page - 1) * pageSize;
     const dataParams = [...params, pageSize, offset];
     const dataResult = await client.query(
-      `SELECT ${columnList} FROM ${def.table} ${whereClause} ORDER BY ${def.defaultSort.column} ${def.defaultSort.direction} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      `SELECT ${columnList} FROM ${def.table} ${whereClause} ORDER BY ${sort.column} ${sort.direction} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       dataParams
     );
 
@@ -137,7 +164,8 @@ export async function runReport(def: ReportDefinition, query: ReportQueryParams,
       pageSize,
       totalCount,
       totalPages: Math.max(1, Math.ceil(totalCount / pageSize)),
-      aggregates
+      aggregates,
+      sort
     };
   });
 }
