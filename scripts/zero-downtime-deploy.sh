@@ -12,6 +12,8 @@ set -euo pipefail
 # zamanlamasına güvenmeden:
 #
 #   1. Yeni backend imajı derlenir.
+#   1b. Veritabanı şeması (schema.sql) tek transaction'da uygulanır — hata
+#      olursa deploy HİÇBİR konteynere dokunmadan durur (bkz. adım 2/8).
 #   2. Mevcut (eski, sağlıklı, hâlâ trafik alan) konteyner YENİDEN
 #      OLUŞTURULMADAN backend servisi 2 repliğe çıkarılır (--no-recreate) —
 #      ikinci replika sıfırdan oluşturulduğu için yeni imajı kullanır.
@@ -79,7 +81,7 @@ write_upstream_target() {
 }
 
 # --- 1/7 — Yeni imajı derle -------------------------------------------------
-log "1/7 — Yeni backend imajı derleniyor..."
+log "1/8 — Yeni backend imajı derleniyor..."
 docker compose build "$SERVICE"
 
 # --- 2/7 — Tek bir eski replikanın çalıştığını doğrula ----------------------
@@ -95,8 +97,41 @@ fi
 readonly OLD_ID="${OLD_IDS[0]}"
 log "    Eski (hâlâ trafik alan) konteyner: ${OLD_ID:0:12}"
 
+# --- 2b — Veritabanı şemasını uygula (TEST_PLAN.md §4) ----------------------
+# Projede migration aracı YOK: schema.sql yalnızca BOŞ bir volume'da
+# (docker-entrypoint-initdb.d) çalışır. Bu adım olmadan schema.sql'e eklenen
+# hiçbir değişiklik — güvenlik düzeltmeleri (REVOKE) dahil — mevcut production
+# veritabanına ULAŞMAZ (gerçekten yaşandı: yetki düzeltmeleri repoda vardı,
+# çalışan DB'de yoktu).
+#
+# Neden BURADA (yeni replika eklenmeden ÖNCE): şema hata verirse henüz hiçbir
+# konteynere dokunulmamıştır — deploy durur, eski replika trafiği almaya
+# devam eder, kesinti YOK. Yeni kod ise başladığında şemanın hazır olduğuna
+# güvenebilir.
+#
+# Neden güvenli:
+#   - schema.sql idempotent (IF NOT EXISTS / DO blokları); CI'daki "ikinci
+#     uygulama" adımı bunu her commit'te doğruluyor.
+#   - -1 (tek transaction): ya TAMAMI uygulanır ya HİÇBİRİ — yarım kalmış bir
+#     şema oluşmaz. schema.sql'de transaction dışı DDL (CONCURRENTLY vb.) yok.
+#   - ON_ERROR_STOP=1: olmadan psql bozuk SQL'de de exit 0 döner.
+#   - Değişiklikler şimdiye kadar additive/geriye uyumlu: eski replika yeni
+#     şemayla çalışmaya devam edebilir (bu, gelecekteki şema değişiklikleri
+#     için de korunması gereken bir KURALDIR — kolon silme/yeniden adlandırma
+#     iki aşamalı yapılmalı).
+#   - Kimlik bilgileri konteynerin kendi POSTGRES_USER/POSTGRES_DB ortam
+#     değişkenlerinden okunuyor; script'te sabit kodlu değer yok.
+# seed_mock_data.sql BİLİNÇLİ olarak UYGULANMIYOR — demo verisi production'a girmemeli.
+log "2/8 — Veritabanı şeması uygulanıyor (idempotent, tek transaction)..."
+readonly SCHEMA_FILE="backend/src/db/schema.sql"
+[ -f "$SCHEMA_FILE" ] || fail "$SCHEMA_FILE bulunamadı — repo kökünden çalıştırın."
+if ! docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -q -1' < "$SCHEMA_FILE"; then
+  fail "Şema uygulanamadı — transaction geri alındı, veritabanı DEĞİŞMEDİ. Yeni replika eklenmedi; eski konteyner hâlâ trafik alıyor, kesinti YOK."
+fi
+log "    Şema güncel."
+
 # --- 3/7 — İkinci (yeni) repliği ekle, eskiyi YENİDEN OLUŞTURMA -------------
-log "2/7 — Yeni replika ekleniyor (eski konteyner ayakta, trafik almaya devam ediyor)..."
+log "3/8 — Yeni replika ekleniyor (eski konteyner ayakta, trafik almaya devam ediyor)..."
 docker compose up -d --no-deps --scale "${SERVICE}=2" --no-recreate "$SERVICE"
 
 NEW_ID=""
@@ -111,7 +146,7 @@ NEW_NAME=$(docker inspect --format='{{.Name}}' "$NEW_ID" | sed 's#^/##')
 log "    Yeni konteyner: ${NEW_ID:0:12} ($NEW_NAME)"
 
 # --- 4/7 — Yeni repliğin healthcheck'i "healthy" olana kadar bekle ---------
-log "3/7 — Yeni replikanın sağlık kontrolü bekleniyor (en fazla ${HEALTH_TIMEOUT_SECONDS}sn)..."
+log "4/8 — Yeni replikanın sağlık kontrolü bekleniyor (en fazla ${HEALTH_TIMEOUT_SECONDS}sn)..."
 elapsed=0
 while true; do
   health_status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$NEW_ID" 2>/dev/null || echo "unknown")
@@ -138,7 +173,7 @@ while true; do
 done
 
 # --- 5/7 — ATOMİK KESME: nginx'i doğrudan YENİ repliğe yönlendir -----------
-log "4/7 — nginx trafiği ATOMİK olarak yeni repliğe kesiliyor (${NEW_NAME})..."
+log "5/8 — nginx trafiği ATOMİK olarak yeni repliğe kesiliyor (${NEW_NAME})..."
 write_upstream_target "server ${NEW_NAME}:5000;"
 reload_nginx
 log "    Kesme tamamlandı — tüm YENİ istekler artık ${NEW_NAME}'e gidiyor."
@@ -156,13 +191,13 @@ log "    Kesme tamamlandı — tüm YENİ istekler artık ${NEW_NAME}'e gidiyor.
 sleep 3
 
 # --- 6/7 — Artık trafik almayan eski repliği durdur/kaldır ------------------
-log "5/7 — Eski konteyner durduruluyor (devam eden istekler OPS-1101 graceful shutdown ile tamamlanıyor): ${OLD_ID:0:12}"
+log "6/8 — Eski konteyner durduruluyor (devam eden istekler OPS-1101 graceful shutdown ile tamamlanıyor): ${OLD_ID:0:12}"
 docker stop "$OLD_ID" >/dev/null
 docker rm "$OLD_ID" >/dev/null
 
 # --- 7/7 — Durağan hedefe geri dön ------------------------------------------
-log "6/7 — nginx hedefi durağan Compose takma adına döndürülüyor..."
+log "7/8 — nginx hedefi durağan Compose takma adına döndürülüyor..."
 write_upstream_target "$UPSTREAM_STATIC_TARGET"
 reload_nginx
 
-log "7/7 — Tamamlandı: '$SERVICE' sıfır kesintiyle güncellendi. Ayakta kalan konteyner: ${NEW_NAME} (${NEW_ID:0:12})"
+log "8/8 — Tamamlandı: '$SERVICE' sıfır kesintiyle güncellendi. Ayakta kalan konteyner: ${NEW_NAME} (${NEW_ID:0:12})"

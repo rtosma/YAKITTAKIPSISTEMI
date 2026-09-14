@@ -458,12 +458,24 @@ Kapsam ilkesi: E2E yalnızca birim testin YAKALAYAMADIĞI şeyler için.
       **Kilit:** CI'a "schema.sql + seed ikinci uygulama" adımı eklendi —
       idempotent olmayan bir ifade eklenirse CI kırılır (mutation ile
       doğrulandı: `CREATE TABLE companies` eklenince exit 3, DB değişmedi).
-- [ ] **AÇIK KARAR (kullanıcıya soruldu):** production deploy'unda şemanın
-      otomatik uygulanması. Seçenekler: (a) `zero-downtime-deploy.sh` yeni
-      replika başlamadan önce `psql -v ON_ERROR_STOP=1 < schema.sql` çalıştırsın
-      (şema idempotent + değişiklikler şimdiye kadar geriye uyumlu/additive),
-      (b) elle uygulama prosedürü olarak belgelensin (şu anki durum, deploy
-      yorumuna eklendi).
+- [x] ✅ **Production deploy'unda şema otomatik uygulanıyor (kullanıcı kararı:
+      deploy script).** `zero-downtime-deploy.sh` yeni adım 2/8: replika
+      topolojisi doğrulandıktan sonra, yeni replika eklenmeden ÖNCE
+      `psql -v ON_ERROR_STOP=1 -1 < schema.sql` (tek transaction — ya hep ya
+      hiç; transaction dışı DDL olmadığı doğrulandı). Seed BİLİNÇLİ olarak
+      uygulanmıyor. Script GERÇEK koşularla test edildi:
+      - **Başarısızlık yolu:** schema.sql geçici olarak bozuldu (önce canary
+        tablo, sonra hatalı SQL) → deploy exit 1, canary tablo OLUŞMADI
+        (transaction geri alındı), aynı tek eski konteyner yerinde kaldı.
+      - **Başarı yolu:** deploy boyunca sürekli `/health` → 121 istek,
+        **0 başarısız**; konteyner değişti, nginx hedefi durağana döndü.
+      - **Asıl senaryo (uçtan uca):** DB "eski production" durumuna getirildi
+        (düzeltme öncesi yetkiler) → `test_db_privileges` 5/12 → deploy →
+        **12/12**. Güvenlik düzeltmesi deploy ile production'a ulaşıyor.
+      - `shellcheck` temiz, `bash -n` temiz.
+      **KURAL (gelecek şema değişiklikleri için):** eski replika yeni şemayla
+      birkaç saniye birlikte çalıştığından değişiklikler additive/geriye
+      uyumlu olmalı — kolon silme/yeniden adlandırma iki aşamalı yapılmalı.
 - [ ] **Yedekleme/geri yükleme tatbikatı** — `redisdata`/Postgres volume'larının
       gerçek bir `pg_dump`/`pg_restore` döngüsünden geçirilip veri
       bütünlüğünün korunduğu en az bir kez elle doğrulanmalı (otomasyon
