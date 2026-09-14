@@ -5,17 +5,20 @@ import { useApp } from '../context/AppContext';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
-  const { loginCompany, companies, isAuthenticated } = useApp();
+  const { loginCompany, isAuthenticated } = useApp();
 
-  if (isAuthenticated) {
-    return <Navigate to="/panel" replace />;
-  }
-
-  const [username, setUsername] = useState<string>('camsa');
-  const [password, setPassword] = useState<string>('123456');
+  const [username, setUsername] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+
+  // Hook kuralı: erken return TÜM hook'lardan sonra olmalı — önceden
+  // useState'lerden ÖNCEydi; giriş sonrası isAuthenticated değişince React
+  // "Rendered fewer hooks than expected" hatası verebilirdi.
+  if (isAuthenticated) {
+    return <Navigate to="/panel" replace />;
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -48,11 +51,6 @@ export const LoginPage: React.FC = () => {
     }
   };
 
-  const handleQuickFill = (compCode: string) => {
-    setUsername(compCode.toLowerCase());
-    setPassword('123456');
-    setErrorMessage(null);
-  };
 
   return (
     <div className="min-h-screen bg-[#131313] text-[#e5e2e1] flex flex-col justify-between p-6 md:p-12 font-sans antialiased">

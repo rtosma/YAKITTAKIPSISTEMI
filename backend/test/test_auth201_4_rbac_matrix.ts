@@ -103,8 +103,13 @@ async function run() {
     ['PUMP_OPERATOR', tokens.pumpOperator, 403]
   ];
   for (const [role, token, expected] of createVehicleMatrix) {
-    const res = await call('POST', '/vehicles', { token, body: { ...vehicleBody, plate: `34 RBC ${Math.floor(Math.random() * 9000)}` } });
+    const res = await call('POST', '/vehicles', {
+      token,
+      body: { ...vehicleBody, plate: `34 RBC ${1000 + Math.floor(Math.random() * 9000)}`, rfidTag: `TAG-RBAC-${Date.now()}` }
+    });
     check(`Matris: POST /vehicles — ${role} → ${expected}`, res.status === expected, `HTTP ${res.status}`);
+    // Oluşturulan aracı sil — önceden her koşu kalıcı bir araç bırakıyordu (30 artık kayıt).
+    if (res.body?.data?.id) await call('DELETE', `/vehicles/${res.body.data.id}`, { token: tokens.owner });
   }
 
   // --- Şantiye kapsamı: gebze-santiye ve orman-santiye AYNI tenant'ta,

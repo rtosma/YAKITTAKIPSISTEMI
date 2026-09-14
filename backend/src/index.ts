@@ -193,11 +193,17 @@ initSocketServer(httpServer);
  * seedLegacyHardwareDevicesIfMissing).
  */
 async function startServer(): Promise<void> {
-  await seedLegacyHardwareDevicesIfMissing({
-    HW_SECRET_ESP32_PUMP_01: config.HW_SECRET_ESP32_PUMP_01,
-    HW_SECRET_ESP32_TANK_01: config.HW_SECRET_ESP32_TANK_01,
-    HW_SECRET_ESP32_FLOW_ISR: config.HW_SECRET_ESP32_FLOW_ISR
-  });
+  // CI'daki OPS-1101 SIGTERM testi POSTGRES_HOST=__CI_SKIP__ ile (DB'siz)
+  // çalışır — MQTT_URL'deki AYNI sözleşme. Bu kontrol olmadan seed, listen ve
+  // setupGracefulShutdown'dan ÖNCE DB'ye bağlanmaya çalışıp takılıyor/çöküyor;
+  // SIGTERM handler'sız bir sürece gelip testi (AUTH-202.3'ten beri) kırıyordu.
+  if (config.POSTGRES_HOST !== '__CI_SKIP__') {
+    await seedLegacyHardwareDevicesIfMissing({
+      HW_SECRET_ESP32_PUMP_01: config.HW_SECRET_ESP32_PUMP_01,
+      HW_SECRET_ESP32_TANK_01: config.HW_SECRET_ESP32_TANK_01,
+      HW_SECRET_ESP32_FLOW_ISR: config.HW_SECRET_ESP32_FLOW_ISR
+    });
+  }
 
   const server = httpServer.listen(PORT, () => {
     logger.info({

@@ -224,7 +224,10 @@ async function run() {
   console.log('===========================================================');
 
   await redis.quit();
-  if (passed !== total) process.exit(1);
+  // Başarıda da AÇIKÇA çık: import edilen src modüllerinin paylaşımlı
+  // redisPool/pg havuzu açık kalıyor ve süreç 11/11 sonrası HİÇ bitmiyordu
+  // (CI job'ı zaman aşımına kadar asılı kalırdı). Diğer testlerle aynı kalıp.
+  process.exit(passed === total ? 0 : 1);
 }
 
 run().catch(async (err) => {

@@ -382,8 +382,36 @@ export async function getTenantVehicles(siteRestriction?: string): Promise<Vehic
   });
 }
 
+/**
+ * Plaka, tenant içinde aracın İŞ ANAHTARIDIR: transactions, cross_site_permissions
+ * ve tüketim motoru araca plakayla bağlanır; FUEL-402 çapraz şantiye kontrolü
+ * aracın ev şantiyesini `WHERE plate = $1` ile okur. Kopya plaka engellenmiyordu
+ * (aynı plaka + aynı RFID ile iki araç kaydedilebildiği canlı doğrulandı):
+ * çapraz şantiye kararı ORDER BY'sız rastgele satıra, tüketim de iki aracın
+ * yakıtının toplamına dayanıyordu. Advisory lock eşzamanlı iki kaydın ikisinin
+ * de "boş" görmesini engeller. (DB'de UNIQUE index YOK — mevcut kopyalar
+ * temizlenmeden eklenirse deploy'daki şema adımı durur; bkz. TEST_PLAN §4.)
+ */
+async function assertPlateAvailable(client: import('pg').PoolClient, tenantId: string, plate: string, excludeVehicleId?: string): Promise<void> {
+  // Plaka regex'i boşlukları isteğe bağlı ve harfleri büyük/küçük duyarsız
+  // kabul ediyor: '34CTP82', '34 ctp 82' ve '34 CTP 82' AYNI araç.
+  const normalized = plate.replace(/\s+/g, '').toUpperCase();
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('vehicle-plate:' || $1 || ':' || $2))", [tenantId, normalized]);
+  const existing = await client.query(
+    "SELECT id FROM vehicles WHERE upper(regexp_replace(plate, '\\s', '', 'g')) = $1 AND ($2::text IS NULL OR id <> $2) LIMIT 1",
+    [normalized, excludeVehicleId ?? null]
+  );
+  if (existing.rows.length > 0) {
+    throw new ConflictError(`'${plate.trim().toUpperCase()}' plakalı bir araç zaten kayıtlı.`, {
+      error: 'DUPLICATE_PLATE',
+      existingVehicleId: existing.rows[0].id
+    });
+  }
+}
+
 export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'>): Promise<VehicleRecord> {
   return withTenant(async (client, tenantId) => {
+    await assertPlateAvailable(client, tenantId, data.plate);
     const id = generateId('veh'); // In production, use UUID or better ID generation
     const assignedDriverName = data.assigned_driver_name && !UNASSIGNED_SENTINELS.has(data.assigned_driver_name)
       ? data.assigned_driver_name
@@ -398,7 +426,8 @@ export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'
 }
 
 export async function updateVehicle(id: string, data: Partial<VehicleRecord>): Promise<VehicleRecord> {
-  return withTenant(async (client) => {
+  return withTenant(async (client, tenantId) => {
+    if (typeof data.plate === 'string') await assertPlateAvailable(client, tenantId, data.plate, id);
     const fields: Array<{ column: string; value: unknown }> = [];
 
     for (const [key, value] of Object.entries(data)) {

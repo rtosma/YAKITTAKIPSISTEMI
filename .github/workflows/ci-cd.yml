@@ -15,6 +15,7 @@ jobs:
   quality-and-tests:
     name: 🧪 Quality Check & Integration Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # ARCH-110: backend/src/config/env.ts artık JWT_SECRET/JWT_REFRESH_SECRET/
     # MQTT_USERNAME/MQTT_PASSWORD'ü HER modül import zincirinde (test_res902.ts
     # ve test_ops1101.ts dahil — logger.ts üzerinden transitif olarak) zorunlu
@@ -125,6 +126,7 @@ jobs:
   auth-integration-test:
     name: 🔐 AUTH-201 Integration Test (Login, Refresh Rotation, RBAC)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     # test_auth201.ts makes real HTTP calls against a running server backed by
     # a real PostgreSQL + Redis — the other two test files never actually
     # exercised login/refresh-rotation/RBAC end-to-end. Previously not run in
@@ -313,6 +315,17 @@ jobs:
       - name: "TEST_PLAN §2.2: Eşzamanlılık — Tenant Silme Onayı + Çapraz Şantiye Kotası"
         run: cd backend && npx tsx test/test_race_tenant_lifecycle_and_quota.ts
 
+      # TEST_PLAN §4 — canlı pg_catalog'dan FK CASCADE/RLS doğrulaması, 46 tabloda
+      # app_user olarak dinamik okuma/yazma-kaçışı taraması ve kalıcı silme
+      # sonrası: sıfır artık satır + silinen tenant'ın token'larının reddi.
+      - name: "TEST_PLAN §4: Canlı DB Bütünlüğü + Kalıcı Tenant Silme Sonrası"
+        run: cd backend && npx tsx test/test_db_integrity_tenant_deletion.ts
+
+      # TEST_PLAN §2.2 — plaka aracın iş anahtarı (işlemler, çapraz şantiye
+      # yetkisi, tüketim); kopya plaka (boşluk/harf varyantı + eşzamanlı kayıt dahil) 409.
+      - name: "TEST_PLAN §2.2: Araç Plakası Tenant İçinde Tekil"
+        run: cd backend && npx tsx test/test_vehicle_plate_uniqueness.ts
+
       - name: Run FUEL-401 RFID Dispense Session State Machine Tests
         run: cd backend && npx tsx test/test_fuel401_dispense_session.ts
 
@@ -478,6 +491,7 @@ jobs:
     # başarısızlık). Bkz. scripts/check-workflow-yaml.mjs.
     name: "🔑 OPS-1105: Gitleaks Secret Taraması"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # Diğer job'lardan bağımsız — build/test beklemeden hemen çalışabilir.
     # AC: "Repoda hiçbir gerçek secret bulunmamalı ve tarama CI'da çalışmalıdır."
     # Şu an checkout edilen ağaç taranır (git geçmişi değil) — .gitleaks.toml'a
@@ -519,6 +533,7 @@ jobs:
     name: 📦 Build Standalone Bundles
     needs: quality-and-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Repository
@@ -545,10 +560,17 @@ jobs:
       - name: Verify Frontend Bundle Output
         run: test -f frontend/dist/index.html && echo "frontend/dist/index.html built successfully"
 
+      # TEST_PLAN.md §3.4 — tarayıcıya giden GERÇEK çıktıda kimlik bilgisi /
+      # sır / kaynak haritası sızıntısı (kaynak guard'ı bunları göremez: mock
+      # verisi ve VITE_ değişkenleri ancak build sonrası bundle'da belirir).
+      - name: Frontend Bundle Leak Guard
+        run: node scripts/check-frontend-bundle.mjs frontend/dist
+
   docker-security-scan:
     name: 🔒 Docker Multi-Stage Build & Trivy Security Scan
     needs: quality-and-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout Repository
@@ -615,6 +637,27 @@ jobs:
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
 
+      # Frontend (nginx) imajı internete bakan tek bileşen olduğu hâlde HİÇ
+      # taranmıyordu; yerel Trivy tatbikatında düzeltmesi yayımlanmış 36
+      # HIGH/CRITICAL bulundu (OpenSSL CRITICAL dahil). Aynı eşik, aynı action.
+      - name: Build Frontend Image for Scanning
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          load: true
+          tags: yakittakip-frontend:ci-${{ github.sha }}
+
+      - name: Run Trivy Vulnerability Scanner on Frontend Image (Critical & High CVEs)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: 'yakittakip-frontend:ci-${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
   # ----------------------------------------------------------------------------
   # OPS-1102 — Sıfır Kesintili Otomatik Dağıtım
   # ----------------------------------------------------------------------------
@@ -643,6 +686,7 @@ jobs:
     name: 🚀 Sıfır Kesintili Dağıtım (yalnızca main/master push, DEPLOY_HOST tanımlıysa)
     needs: [quality-and-tests, auth-integration-test, build-bundle, docker-security-scan]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # TEST_PLAN.md §0.2 — `secrets` bağlamı job seviyesindeki `if:` içinde
     # KULLANILAMAZ (izinli bağlamlar: github, inputs, needs, vars). Önceden
     # burada `secrets.DEPLOY_HOST != ''` vardı; bu YAML sözdizimi hatası değil
@@ -689,6 +733,7 @@ jobs:
   load-test:
     name: 🔥 TEST-1002 k6 Yük ve Stres Testi (yalnızca manuel tetikleme)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # scripts/load-test/README.md'nin belgelediği gibi tamamen compose ağında
     # container-to-container çalışır (host firewall/NFS bind-mount kısıtları
     # bu makineye özgüydü, GitHub Actions runner'ında geçerli değil ama aynı

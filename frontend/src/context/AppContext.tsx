@@ -275,10 +275,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // Send login request to Backend API (PostgreSQL + Argon2id Verification)
       const response = await fetch(`${API_BASE_URL}/auth/login`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Tenant-ID': 'comp-camsa'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: trimmedUsername, password: trimmedPassword })
       });
 
@@ -386,6 +383,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const logoutCompany = () => {
+    // Sunucudaki oturumu da kapat (refresh ailesi iptal + access token
+    // deny-list). Önceden çıkış yalnızca localStorage'ı siliyordu; refresh
+    // token 7 gün geçerli kalıyordu. Yanıt beklenmez — çıkış ağ hatasında da
+    // yerelde tamamlanmalı; keepalive sayfa kapanırken de isteği gönderir.
+    const refreshToken = localStorage.getItem('YAKIT_REFRESH_TOKEN');
+    if (refreshToken) {
+      fetch(`${API_BASE_URL}/auth/logout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+        keepalive: true
+      }).catch(() => {});
+    }
     setIsAuthenticated(false);
     setIsManagerMode(true);
     setCurrentUser(null);

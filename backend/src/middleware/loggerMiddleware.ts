@@ -34,7 +34,7 @@ export const httpLoggerMiddleware = pinoHttp({
   genReqId: (req: Request) => req.traceId || (req.headers['x-trace-id'] as string) || randomUUID(),
   customProps: (req: Request) => ({
     traceId: req.traceId,
-    ...getLoggingTenantContext(req),
+    ...getLoggingTenantContext(),
   }),
   customLogLevel: (_req, res, err) => {
     if (res.statusCode >= 500 || err) {

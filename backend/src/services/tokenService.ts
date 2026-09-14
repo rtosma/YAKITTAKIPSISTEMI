@@ -329,21 +329,24 @@ export function verifyPendingTwoFactorToken(token: string): { userId: string; te
 }
 
 /**
- * Revoke a single refresh token (Logout)
+ * Logout — token'ın ait olduğu OTURUMU kapatır (AUTH-208 revokeSession):
+ * yalnızca bu jti değil tüm oturum ailesi iptal edilir ve sid deny-list'e
+ * girer. Önceden yalnızca tek jti işaretleniyordu; aynı oturumun süresi
+ * dolmamış access token'ı çıkıştan sonra 15 dk daha API'de çalışıyordu.
+ * Redis hatası artık YUTULMUYOR: iptal edilemeyen bir oturum için
+ * "çıkış yapıldı" demek yanlış güvence olur.
  */
 export async function revokeRefreshToken(token: string): Promise<void> {
+  let decoded: any;
   try {
-    const decoded = jwt.verify(token, JWT_REFRESH_SECRET) as any;
-    const key = refreshTokenKey(decoded.jti);
-    const raw = await redisPool.client.get(key);
-    if (raw) {
-      const record: RefreshTokenRecord = JSON.parse(raw);
-      record.isRevoked = true;
-      await redisPool.client.set(key, JSON.stringify(record), 'KEEPTTL');
-    }
-  } catch (err) {
-    // Token already expired or invalid — nothing to revoke
+    decoded = jwt.verify(token, JWT_REFRESH_SECRET);
+  } catch {
+    return; // süresi dolmuş/geçersiz token — iptal edilecek oturum yok
   }
+  const raw = await redisPool.client.get(refreshTokenKey(decoded.jti));
+  if (!raw) return;
+  const record: RefreshTokenRecord = JSON.parse(raw);
+  await revokeSession(record.userId, record.sessionId ?? record.id);
 }
 
 /**

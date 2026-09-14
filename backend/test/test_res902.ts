@@ -4,6 +4,9 @@ import { traceMiddleware, httpLoggerMiddleware } from '../src/middleware/loggerM
 import { globalErrorHandler, notFoundHandler } from '../src/middleware/errorHandler';
 import { AppError, BadRequestError, UnauthorizedError } from '../src/utils/errors';
 import { redactSensitiveFields } from '../src/utils/redaction';
+import { tenantStorage } from '../src/context/tenantContext';
+import { logger } from '../src/utils/logger';
+import pino from 'pino';
 import { z } from 'zod';
 
 const app = express();
@@ -43,6 +46,15 @@ app.get('/api/v1/test/critical-500', (_req, _res, next) => {
   // Simulate an unexpected internal database error with sensitive info
   const dbError = new Error('SELECT * FROM users WHERE password_hash = secret_key_123 FAILED: Connection timeout at postgres://admin:secret123@localhost:5432/db');
   next(dbError);
+});
+
+// Log atfı testi (9): doğrulanmış isteği taklit eden rota — gerçek
+// authenticateJWT ile aynı şekilde logger middleware'inden SONRA
+// tenantStorage.run içinde yanıt verir.
+app.get('/api/v1/test/authenticated', (req, res) => {
+  tenantStorage.run({ tenantId: 'comp-gercek', userId: 'usr-gercek', traceId: req.traceId }, () => {
+    res.json({ success: true });
+  });
 });
 
 // 404 Handler
@@ -147,6 +159,38 @@ async function runTests() {
         redacted.nested.refreshToken === '***MASKED***' && redacted.nested.ok === 'degismeyen-deger',
         'İç içe (nested) alanlar da redakte edilir; hassas OLMAYAN alanlar DEĞİŞMEDEN kalır'
       );
+
+      // 9. Log atfı İSTEMCİ başlıklarından gelmemeli. Önceden kimliksiz
+      // isteklerde (login/refresh) X-Tenant-ID/X-User-ID log satırına
+      // yazılıyordu → bir brute-force denemesi başka firma/kullanıcı adına
+      // loglatılabiliyordu (canlı doğrulandı). process.stdout.write yamalamak
+      // pino'yu yakalayamıyor (8. test notu) ama logger'ın KENDİ stream
+      // nesnesinin write'ı JS seviyesinde — gerçek log satırı buradan okunur.
+      const pinoStream = (logger as any)[pino.symbols.streamSym];
+      const originalWrite = pinoStream.write;
+      const captured: string[] = [];
+      pinoStream.write = function (chunk: string) {
+        captured.push(String(chunk));
+        return originalWrite.apply(this, arguments as any);
+      };
+      const spoofHeaders = { 'X-Tenant-ID': 'comp-kurban', 'X-User-ID': 'usr-kurban-owner' };
+      try {
+        await fetch('http://localhost:5099/api/v1/test/success?probe=log-anon', { headers: spoofHeaders });
+        await fetch('http://localhost:5099/api/v1/test/bad-request?probe=log-anon-err', { headers: spoofHeaders });
+        await fetch('http://localhost:5099/api/v1/test/authenticated?probe=log-auth', { headers: spoofHeaders });
+        await new Promise((r) => setTimeout(r, 50));
+      } finally {
+        pinoStream.write = originalWrite;
+      }
+      const logsFor = (probe: string) => captured.filter((l) => l.includes(`probe=${probe}`)).map((l) => JSON.parse(l));
+      const anonLogs = [...logsFor('log-anon'), ...logsFor('log-anon-err')];
+      assert(anonLogs.length >= 2 && anonLogs.every((l) => l.tenantId === 'N/A' && l.userId === 'N/A'),
+        "Kimliksiz istekte X-Tenant-ID/X-User-ID log satırına yazılmaz ('N/A') — istek ve hata logu",
+        JSON.stringify(anonLogs.map((l) => ({ msg: l.msg, tenantId: l.tenantId, userId: l.userId }))));
+      const authLogs = logsFor('log-auth');
+      assert(authLogs.length >= 1 && authLogs.every((l) => l.tenantId === 'comp-gercek' && l.userId === 'usr-gercek'),
+        'Doğrulanmış istekte log atfı başlıklardan değil tenant store\'dan gelir',
+        JSON.stringify(authLogs.map((l) => ({ tenantId: l.tenantId, userId: l.userId }))));
 
       console.log('\n-------------------------------------------------------------');
       console.log(`📊 Test Sonucu: ${passedCount} Başarılı, ${failedCount} Başarısız`);

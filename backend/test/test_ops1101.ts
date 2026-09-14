@@ -70,7 +70,13 @@ async function runOps1101Tests() {
     ? 'src/bootstrap.ts'
     : 'backend/src/bootstrap.ts';
 
-  const serverProcess = spawn('npx', ['tsx', bootstrapPath], {
+  // Sunucu `npx tsx` ile DEĞİL, doğrudan `node --import tsx` ile başlatılır.
+  // npx bir sarmalayıcı süreç: SIGTERM ona da ulaşınca handler'ı olmadığı için
+  // 143 (128+15) ile ölür — handler'sız öldürülmüş bir sunucuyla AYNI kod.
+  // Önceki `code === 0 || signal === 'SIGTERM'` koşulu da tam bu yüzden
+  // "güvenli kapandı" ile "öldürüldü"yü ayırt edemiyordu. Artık çıkış kodu
+  // doğrudan sunucunun kendi process.exit(0)'ı (utils/shutdown.ts).
+  const serverProcess = spawn(process.execPath, ['--import', 'tsx', bootstrapPath], {
     cwd: rootDir,
     env: {
       ...process.env,
@@ -82,17 +88,6 @@ async function runOps1101Tests() {
       JWT_REFRESH_SECRET: process.env.JWT_REFRESH_SECRET || 'test_only_ops1101_refresh_secret_do_not_reuse',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
-    // `npx tsx <file>` is not a single process — npx spawns a shell, which
-    // spawns the real tsx-loader node process that actually binds the port
-    // and holds our SIGTERM handler. `serverProcess.kill()` only signals the
-    // immediate npx child, which has no handler of its own: it dies from the
-    // OS default action while the real server is orphaned and never learns
-    // about the signal — it keeps listening on the port with no graceful
-    // shutdown log ever written (this is the source of the port-5088 zombie
-    // flakiness). `detached: true` makes serverProcess the leader of a new
-    // process group that all its descendants inherit, so signaling the whole
-    // group (negative PID, see below) reaches the real server process too.
-    detached: true,
   });
 
   let processOutput = '';
@@ -103,19 +98,28 @@ async function runOps1101Tests() {
     processOutput += data.toString();
   });
 
-  // Wait 2 seconds for server to start listening
-  await new Promise((resolve) => setTimeout(resolve, 2500));
+  // Sabit bir bekleme (eski 2500 ms) yavaş makinede SIGTERM'i handler
+  // kurulmadan ÖNCE gönderip testi rastgele kırıyordu. setupGracefulShutdown
+  // listen() ile aynı senkron adımda kurulur; "Başlatıldı" logu (listen
+  // callback'i) göründüğünde handler kesinlikle yerindedir.
+  const started = await new Promise<boolean>((resolve) => {
+    const deadline = Date.now() + 30000;
+    const poll = setInterval(() => {
+      if (processOutput.includes('Sunucusu Başlatıldı')) { clearInterval(poll); resolve(true); }
+      else if (Date.now() > deadline || serverProcess.exitCode !== null) { clearInterval(poll); resolve(false); }
+    }, 100);
+  });
+  assert(started, 'Sunucu (DB olmadan, POSTGRES_HOST=__CI_SKIP__) dinlemeye başladı', `çıktı: ${processOutput.slice(-600)}`);
 
-  // Send SIGTERM to the whole process group (see `detached: true` note above)
-  // so it actually reaches the real tsx-loader process, not just npx.
-  process.kill(-serverProcess.pid!, 'SIGTERM');
+  serverProcess.kill('SIGTERM');
 
-  // Wait up to 4 seconds for graceful shutdown to finish
+  // Wait up to 10 seconds for graceful shutdown to finish
   const exitResult = await new Promise<{ code: number | null; signal: string | null }>((resolve) => {
+    if (serverProcess.exitCode !== null) return resolve({ code: serverProcess.exitCode, signal: null });
     const timer = setTimeout(() => {
-      try { process.kill(-serverProcess.pid!, 'SIGKILL'); } catch { /* group may already be gone */ }
+      serverProcess.kill('SIGKILL');
       resolve({ code: -1, signal: 'SIGKILL' });
-    }, 4000);
+    }, 10000);
 
     serverProcess.on('exit', (code, signal) => {
       clearTimeout(timer);
@@ -123,8 +127,8 @@ async function runOps1101Tests() {
     });
   });
 
-  assert(exitResult.code === 0 || exitResult.signal === 'SIGTERM', 'Sunucu SIGTERM sinyali ile güvenli bir şekilde kapandı (Exit 0)');
-  assert(processOutput.includes('Graceful Shutdown') || processOutput.includes('SIGTERM'), 'Graceful Shutdown log mesajı üretilmiş olmalı');
+  assert(exitResult.code === 0, 'Sunucu SIGTERM sinyali ile güvenli bir şekilde kapandı (Exit 0)', `çıkış=${JSON.stringify(exitResult)}`);
+  assert(processOutput.includes('[Graceful Shutdown] SIGTERM') && processOutput.includes('HTTP sunucusu yeni bağlantıları kapattı'), 'Graceful Shutdown log mesajı üretilmiş olmalı');
 
   console.log('\n-------------------------------------------------------------');
   console.log(`📊 Test Sonucu: ${passedCount} Başarılı, ${failedCount} Başarısız`);

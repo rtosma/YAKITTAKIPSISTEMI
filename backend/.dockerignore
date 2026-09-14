@@ -4,8 +4,10 @@ node_modules
 .npm-cache
 dist
 coverage
+# .env.production / .env.staging vb. de imaj katmanlarına sırla birlikte girmesin.
 .env
-.env.local
+.env.*
+!.env.example
 *.log
 npm-debug.log*
 test

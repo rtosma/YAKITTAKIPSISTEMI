@@ -6,7 +6,7 @@ import { ROLE_GROUPS, roleAllowed } from '../utils/permissions';
 export const DeveloperLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { simulatedLatencyMs, setSimulatedLatencyMs, isLogStreamActive, setIsLogStreamActive, hardwareDevices, isAuthenticated, currentUser } = useApp();
+  const { simulatedLatencyMs, setSimulatedLatencyMs, isLogStreamActive, setIsLogStreamActive, hardwareDevices, isAuthenticated, currentUser, logoutCompany } = useApp();
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
@@ -102,12 +102,18 @@ export const DeveloperLayout: React.FC = () => {
             <p className="text-[10px] text-[#d5c4ab]/70">{hardwareDevices.length} Cihaz Bağlı | Port: 1883</p>
           </div>
 
+          {/* Önceki "Rol Seçimine Dön" `/`'a gidiyordu; giriş sayfası oturum
+              açık olduğu için panele geri yolladığından SUPER_ADMIN arayüzden
+              HİÇ çıkış yapamıyordu. CustomerLayout ile aynı çıkış akışı. */}
           <button
-            onClick={() => navigate('/')}
-            className="w-full flex items-center justify-center space-x-2 bg-[#20201f] hover:bg-[#282726] border border-[#353535] text-[#d5c4ab] hover:text-[#e5e2e1] py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+            onClick={() => {
+              logoutCompany();
+              navigate('/');
+            }}
+            className="w-full flex items-center justify-center space-x-2 bg-[#ffb4ab]/10 hover:bg-[#ffb4ab]/20 border border-[#ffb4ab]/30 text-[#ffb4ab] py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer"
           >
-            <span className="material-symbols-outlined text-base">swap_horiz</span>
-            <span>Rol Seçimine Dön</span>
+            <span className="material-symbols-outlined text-base">logout</span>
+            <span>Çıkış Yap</span>
           </button>
         </div>
       </aside>

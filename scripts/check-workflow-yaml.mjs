@@ -191,6 +191,29 @@ function structuralChecks(file, content) {
     found.push({ line: 1, rule: 'missing-jobs', text: '(dosya geneli)', hint: "Workflow'da `jobs:` bloğu yok." });
   }
 
+  // 4) Her job'da timeout-minutes. Varsayılan 360 dk: test_ai502 başarıyla
+  //    bitip paylaşımlı DB/Redis havuzları açık kaldığı için süreç HİÇ
+  //    kapanmıyordu — CI job'ı 6 saat asılı kalıp runner dakikası yakardı.
+  const jobsIdx = lines.findIndex((l) => /^jobs:\s*$/.test(l));
+  if (jobsIdx !== -1) {
+    const jobStarts = [];
+    for (let i = jobsIdx + 1; i < lines.length && !/^[^\s#]/.test(lines[i]); i++) {
+      const m = /^  ([A-Za-z0-9_-]+):\s*$/.exec(lines[i]);
+      if (m) jobStarts.push({ name: m[1], idx: i });
+    }
+    jobStarts.forEach((job, n) => {
+      const end = n + 1 < jobStarts.length ? jobStarts[n + 1].idx : lines.length;
+      if (!lines.slice(job.idx, end).some((l) => /^    timeout-minutes:\s*\d+/.test(l))) {
+        found.push({
+          line: job.idx + 1,
+          rule: 'job-without-timeout',
+          text: `${job.name}:`,
+          hint: 'Job\'a `timeout-minutes:` ekleyin — asılı kalan bir adım aksi halde 360 dk çalışır.'
+        });
+      }
+    });
+  }
+
   return found;
 }
 

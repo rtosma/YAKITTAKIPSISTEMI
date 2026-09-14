@@ -156,6 +156,19 @@ async function run() {
         r.rows[0].n >= 3, `SESSION_REVOKED satırı=${r.rows[0].n} (≥3 bekleniyor: Test3 + Test7 + Test8)`);
     }
 
+    // ── Test 11: POST /auth/logout oturumun TAMAMINI kapatır ──────────
+    // Önceden yalnızca gönderilen refresh jti'si işaretleniyordu: aynı
+    // oturumun süresi dolmamış access token'ı çıkıştan sonra 15 dk daha
+    // çalışıyordu (ve frontend bu ucu hiç çağırmıyordu — E2E ile kilitli).
+    const devD = await login('orman-santiye', 'Mozilla/5.0 (X11; Linux x86_64) Firefox/130.0');
+    const r11 = await call('POST', '/auth/logout', { body: { refreshToken: devD.refresh } });
+    const r11ref = await call('POST', '/auth/refresh', { body: { refreshToken: devD.refresh } });
+    const r11me = await call('GET', '/auth/me', { token: devD.access });
+    const r11other = await call('GET', '/auth/me', { token: devA.access });
+    check('Test 11: logout → aynı oturumun refresh (401) VE access token\'ı (401 SESSION_REVOKED) reddedilir; diğer oturum etkilenmez',
+      r11.status === 200 && r11ref.status === 401 && r11me.status === 401 && r11me.body.error === 'SESSION_REVOKED' && r11other.status === 200,
+      `logout=${r11.status}, refresh=${r11ref.status}, access=${r11me.status}/${r11me.body.error}, devA=${r11other.status}`);
+
   } finally {
     // orman-santiye'nin tüm refresh token izlerini temizle.
     try {

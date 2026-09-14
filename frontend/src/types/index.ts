@@ -4,8 +4,6 @@ export interface Site {
   location: string;
   activeTanksCount: number;
   activeVehiclesCount: number;
-  username?: string;
-  password?: string;
 }
 
 export interface CompanyModule {
@@ -29,8 +27,6 @@ export interface Company {
   modules: CompanyModule;
   activeVehiclesCount: number;
   totalFuelThisMonth: number; // Litres
-  username?: string;
-  password?: string;
 }
 
 export interface Vehicle {

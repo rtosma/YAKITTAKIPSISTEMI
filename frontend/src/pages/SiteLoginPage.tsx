@@ -7,15 +7,18 @@ export const SiteLoginPage: React.FC = () => {
   const navigate = useNavigate();
   const { loginSiteOperator, isAuthenticated } = useApp();
 
-  if (isAuthenticated) {
-    return <Navigate to="/santiye-panel" replace />;
-  }
-
-  const [username, setUsername] = useState<string>('gebze-santiye');
-  const [password, setPassword] = useState<string>('123456');
+  const [username, setUsername] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+
+  // Hook kuralı: erken return TÜM hook'lardan sonra olmalı — önceden
+  // useState'lerden ÖNCEydi; giriş sonrası isAuthenticated değişince React
+  // "Rendered fewer hooks than expected" hatası verebilirdi.
+  if (isAuthenticated) {
+    return <Navigate to="/santiye-panel" replace />;
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

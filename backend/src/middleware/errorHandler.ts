@@ -29,7 +29,7 @@ export const globalErrorHandler = (
   _next: NextFunction
 ): void => {
   const traceId = getTraceId(req);
-  const { tenantId, userId } = getLoggingTenantContext(req);
+  const { tenantId, userId } = getLoggingTenantContext();
 
   // Handle Operational AppError (4xx or explicit operational 5xx)
   if (err instanceof AppError) {

@@ -93,9 +93,24 @@ export async function authenticateJWT(req: AuthenticatedRequest, res: Response, 
     //    402 alır. 30/15/7 günlük ÖNCEDEN uyarı (licenseWarningService.ts)
     //    zaten bu noktaya gelmeden kullanıcıyı bilgilendirmiş olur — "önce
     //    uyarı" kısmı budur.
-    if (userPayload.role !== 'SUPER_ADMIN' && !LICENSE_GATE_ALLOWLIST.has(req.path)) {
+    if (userPayload.role !== 'SUPER_ADMIN' && req.path !== '/auth/logout') {
       const license = await getCompanyLicenseSnapshot(userPayload.tenantId);
-      if (license) {
+
+      // Firma satırı YOK = tenant kalıcı olarak silinmiş (approveTenantDeletion
+      // CASCADE ile kullanıcıları da sildi). Öncesinde `if (license)` bu durumu
+      // sessizce atlıyordu: silinen tenant'ın kullanıcısı süresi dolmamış access
+      // token'ıyla (15 dk) API'ye erişmeye, /auth/me'den "doğrulandı" almaya
+      // devam ediyordu. LICENSE_GATE_ALLOWLIST'ten ÖNCE — var olmayan bir
+      // tenant'ın "durumunu görme" gerekçesi yok; yalnızca logout serbest.
+      if (!license) {
+        return res.status(401).json({
+          success: false,
+          error: 'TENANT_DELETED',
+          message: 'Firmanızın hesabı kalıcı olarak silinmiştir. Oturumunuz sonlandırıldı.'
+        });
+      }
+
+      if (!LICENSE_GATE_ALLOWLIST.has(req.path)) {
         const isSuspended = license.licenseStatus === 'ASKIDA';
         const isExpired = !isSuspended && !!license.licenseExpiry && license.licenseExpiry < new Date().toISOString().slice(0, 10);
         const isReadOnlyMethod = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';

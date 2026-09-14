@@ -24,8 +24,13 @@ RUN npm run build
 # ==============================================================================
 FROM nginx:1.27-alpine AS runner
 
-# Remove default Nginx config and static files
-RUN rm -rf /usr/share/nginx/html/* /etc/nginx/conf.d/default.conf
+# Baz imajın paketleri yayımlandığı günkü hâliyle kalıyordu: Trivy bu imajda
+# düzeltmesi YAYIMLANMIŞ 36 HIGH/CRITICAL buldu (OpenSSL CVE-2026-31789
+# CRITICAL dahil — internete bakan sunucu). backend/Dockerfile ile aynı çözüm:
+# derleme anında yamalı OS paketlerine yükselt. Aynı katmanda eski dosyaları
+# temizle ki imaj büyümesin.
+RUN apk upgrade --no-cache \
+    && rm -rf /usr/share/nginx/html/* /etc/nginx/conf.d/default.conf
 
 # Copy custom Nginx configuration
 COPY nginx.conf /etc/nginx/conf.d/default.conf

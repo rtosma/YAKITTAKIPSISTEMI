@@ -320,6 +320,30 @@ listesine ekliyoruz:
       `123456` ile giren tüm testleri kırardı. Düzeltildi: test artık
       bozduğu değeri BAŞINDA ölçüp sonunda onu geri yazıyor (sabit hash
       sabiti tamamen kaldırıldı — kod da azaldı). 12/12 geçiyor.
+- [x] ✅ **Araç plakası tenant içinde tekil değildi — GERÇEK VERİ BÜTÜNLÜĞÜ AÇIĞI.**
+      Plaka aracın iş anahtarı: `transactions`, `cross_site_permissions` ve
+      tüketim motoru araca plakayla bağlanıyor; FUEL-402 çapraz şantiye
+      kontrolü ev şantiyesini `SELECT site_name FROM vehicles WHERE plate = $1`
+      ile ORDER BY'sız ilk satırdan okuyor. Hem uygulamada hem DB'de kopya
+      engeli yoktu — aynı plaka + aynı RFID ile iki araç API'den kaydedildi.
+      Yerel DB'de `test_auth201`'in her koşuda seed aracı veh-1'in plakasıyla
+      (`34 CTP 82`) eklediği **23 kopya** ve RBAC matrisinin bıraktığı 30 artık
+      araç vardı. Düzeltme: `assertPlateAvailable` — tenant içinde
+      boşluksuz+büyük harf normalize plaka, advisory lock ile (create + plaka
+      değiştiren update) → 409 `DUPLICATE_PLATE`. `test_vehicle_plate_uniqueness.ts`
+      (7/7): kopya, boşluk/harf varyantları (ilk sürüm `upper(btrim)`
+      normalizasyonu `34ctp82`'yi kaçırıyordu — test yakaladı), başka aracı
+      mevcut plakaya çevirme, kendi plakasıyla güncelleme, tenant'lar arası
+      serbestlik, 5 eşzamanlı kayıt → tam 1. **Mutasyonlar:** eski backend 3
+      FAIL (5 eşzamanlı kaydın 5'i kabul); yalnızca advisory lock kaldırılınca
+      Test 7 3/3 koşuda kırmızı. Kirleten iki test benzersiz plaka kullanıp
+      araçlarını siliyor; yerel artıklar (55 satır, açıkça test verisi) temizlendi.
+      **AÇIK KARAR (kullanıcıya):** DB seviyesinde `UNIQUE (tenant_id,
+      normalize(plate))` index'i EKLENMEDİ — production'da (UI hiç engellemediği
+      için) kopya varsa deploy'daki tek-transaction şema adımı durur. Önce
+      production'da kopya sorgusu çalıştırılıp temizlik kararı verilmeli.
+      RFID etiketi de tekil değil (kopya RFID ile kart değişimi TÜM eşleşen
+      araçları günceller) — aynı karar kapsamında.
 
 ### 2.3 Backend Regresyon Çalıştırma Matrisi (mevcut, belgeleniyor)
 
@@ -388,14 +412,43 @@ Frontend'de HİÇ test yok. Sıfırdan, hafif bir kurulumla başlanacak.
       AppContext'te 3 olmak üzere 6 kasıtlı mutasyon uygulandı; her biri
       TAM olarak hedeflediği testi kırdı. Yani testler sahte güvence
       vermiyor (§0.2'deki "var olması ≠ çalışıyor olması" dersi).
-- [ ] Rol bazlı UI koşulları — `customer`/`developer`/`santiye` sayfa
-      gruplarının doğru role'e göre render edildiği/gizlendiği (backend
-      RBAC'ın frontend yansıması — burada bir tutarsızlık olursa kullanıcı
-      kafası karışır, güvenlik açığı DEĞİL ama UX/güven sorunu).
-- [ ] Form doğrulama bileşenleri — backend Zod şemalarıyla PARALEL çalışan
-      frontend doğrulamaların (varsa) tutarlılığı.
-- [ ] Kritik hesaplama/gösterim bileşenleri (ör. kota bakiyesi, tank
-      doluluk yüzdesi, TCO özet kartı) — yanlış birim/yuvarlama riski.
+- [x] ✅ **Rol bazlı UI koşulları — 30 test.** `permissions.ts` "backend'in
+      `authorizeRoles` çağrılarının BİREBİR karşılığı" olduğunu iddia ediyordu
+      ama bunu zorlayan bir şey yoktu. `utils/permissions.test.ts` backend
+      `routes.ts` KAYNAĞINI ayrıştırıp (sabit `..._ROLES` spread'leri dahil)
+      her FE işlemini ve rota grubunu ilgili uçların rol kümesiyle
+      karşılaştırıyor — iki yönde de kayma (FE geniş → 403; FE dar → sessiz
+      özellik kaybı) CI'da kırılır. `components/RoleRoute.test.tsx`: token'sız,
+      bozuk localStorage (`isAuthenticated` var ama kullanıcı yok), zorunlu
+      parola değişikliği ve 3 rota grubu × 4 rol matrisi. **Mutasyonlar:**
+      FE matrisine rol eklemek, RoleRoute'ta parola kapısını kapatmak ve
+      BACKEND'de `/dispense`'ten PUMP_OPERATOR'ı çıkarmak → her biri hedef
+      testi kırdı.
+- [x] ✅ **Giriş sayfaları — 4 test, 2 GERÇEK BULGU.** (1) `LoginPage` ve
+      `SiteLoginPage` formları `camsa`/`gebze-santiye` + `123456` ile DOLU
+      geliyordu; `mock/index.ts` tüm demo firma/şantiye hesaplarının kullanıcı
+      adı + parolasını prod bundle'ına gömüyordu (seed'deki gerçek hesaplarla
+      aynı) — bkz. §3.4. Parola alanını hiçbir kod okumuyordu (`handleQuickFill`
+      ölü kod). (2) `if (isAuthenticated) return <Navigate/>` hook'lardan
+      ÖNCEydi: isAuthenticated false→true olunca React "Rendered fewer hooks
+      than expected" fırlatıyordu (eski kodla kanıtlandı; canlıda navigate()
+      çoğunlukla önce koştuğu için zamanlamaya bağlı gizli bir çökme).
+      `pages/LoginPages.test.tsx` ikisini de kilitliyor (eski kodla 2/2 kırmızı).
+- [x] ✅ **Form doğrulama ↔ backend — 11 test.** Frontend'deki TEK paralel
+      kural plaka regex'i (`utils/validation.ts`), backend
+      `schemas/vehicleSchema.ts`'teki regex'in elle kopyası. (İlk taramada
+      "paralel doğrulama yok" sonucuna varılmıştı; E2E CRUD testi formun
+      `34 E2E 1036`'yı reddetmesiyle bu kopyayı gösterdi — düzeltildi.)
+      `utils/validation.test.ts` backend kaynağından regex'i okuyup kaynak +
+      bayrakları karşılaştırır (backend'de `{1,3}` → `{1,4}` mutasyonu kırdı)
+      ve sınır örneklerini sabitler. Diğer formlar yalnızca boşluk kontrolü
+      yapıyor; asıl doğrulama backend Zod'da (`test_input_boundaries.ts`).
+- [x] **Hesaplama/gösterim — BİLİNÇLİ OLARAK birim testi yazılmadı.** Tank
+      doluluk yüzdeleri tek satırlık `Math.round(level/capacity*100)`;
+      `TankGauge` 0–100'e kıstırıyor ve backend `capacityLiters > 0`,
+      `level ≤ capacity` kurallarını Zod ile zorluyor (sıfıra bölme API'den
+      gelemez). Kota bakiyesi backend'de hesaplanıp (FUEL-402) orada test
+      ediliyor; frontend yalnızca gösteriyor.
 
 ### 3.3 E2E Testleri (Playwright — YALNIZCA kritik akışlar)
 
@@ -432,20 +485,38 @@ Kapsam ilkesi: E2E yalnızca birim testin YAKALAYAMADIĞI şeyler için.
       tüm giriş gerektiren testler 16 sn timeout) → `e2e/helpers.ts`
       ortak `resetLoginRateLimit` + giriş yardımcıları.
 
-**Sonraki tur (yapılacak):**
-- [ ] Login → dashboard → logout (üç farklı rol: SUPER_ADMIN, COMPANY_OWNER,
-      SITE_MANAGER/PUMP_OPERATOR).
-- [ ] Yanlış şifre → hata mesajı → hesap kilitleme sonrası 423 mesajının
-      UI'da doğru gösterilmesi.
-- [ ] Manuel ikmal talebi oluşturma → onay akışı (iki farklı rol arasında).
-- [ ] Araç/personel/site CRUD akışlarından en az biri uçtan uca.
-- [ ] Lisansı süresi dolmuş/dondurulmuş bir tenant kullanıcısının UI'da
-      doğru kısıtlama mesajını görmesi (BILL-1702/ARCH-108'in frontend
-      yansıması — backend zaten test edildi, burada YALNIZCA UI davranışı
-      doğrulanıyor).
-- [ ] Oturum süresi dolduğunda (401) kullanıcının login sayfasına
-      yönlendirildiği, hassas verinin ekranda KALMADIĞI.
-- [ ] Responsive/mobil temel kontrol (en az 1 kritik sayfa, dar viewport).
+**Üçüncü tur — ✅ TAMAMLANDI (toplam E2E: 20/20).**
+- [x] ✅ **Giriş → panel → çıkış, 3 rol — 2 GERÇEK AÇIK** (`e2e/session-lifecycle.spec.ts`):
+      (1) **"Çıkış Yap" sunucudaki oturumu kapatmıyordu:** frontend
+      `POST /auth/logout`'u HİÇ çağırmıyordu — çıkıştan sonra eski refresh
+      token ile `/auth/refresh` → **200** (canlı curl ile kanıtlandı; token 7
+      gün geçerli). (2) **SUPER_ADMIN arayüzden çıkış YAPAMIYORDU:** admin
+      panelinde çıkış butonu yoktu; "Rol Seçimine Dön" `/`'a gidiyor, giriş
+      sayfası oturum açık olduğu için panele geri yolluyordu. Ayrıca backend
+      `/auth/logout` yalnızca tek refresh jti'sini işaretliyordu: aynı
+      oturumun access token'ı çıkıştan sonra 15 dk daha çalışıyordu
+      (`test_auth208` Test 11 eski backend'de `access=200`). Düzeltmeler:
+      `logoutCompany` refresh token ile `/auth/logout` çağırır (keepalive,
+      yanıt beklemez); admin paneline gerçek "Çıkış Yap"; backend logout
+      AUTH-208 `revokeSession` ile tüm oturum ailesini iptal edip sid'i
+      deny-list'e alır (Redis hatası artık yutulmuyor). Kilitler: E2E 3 rol
+      (düzeltme öncesi 3/3 kırmızı), AppContext birim testi (mutasyonla
+      doğrulandı), `test_auth208` Test 11 (eski backend'de kırmızı).
+- [x] ✅ Hesap kilidi: 5 hatalı denemeden sonra 423 ve "hesap geçici olarak
+      kilitlendi" mesajı formda görünüyor (kilit anahtarları testten sonra temizlenir).
+- [x] ✅ Rol dışı panele URL ile giriş → "Erişim Reddedildi" (COMPANY_OWNER →
+      /admin, SITE_MANAGER → /panel).
+- [x] ✅ Bozuk/süresi dolmuş token → yenileme başarısız → giriş ekranı, token'lar silinmiş.
+- [x] ✅ Mobil (390px): giriş sayfası ve genel bakışta yatay taşma yok.
+- [x] ✅ Dondurulmuş tenant: giriş 403 ve "hesabı dondurulmuştur" mesajı
+      formda; panele geçilmez, token yazılmaz (`e2e/tenant-and-crud.spec.ts`).
+- [x] ✅ **Araç CRUD uçtan uca — GERÇEK VERİ BÜTÜNLÜĞÜ AÇIĞI** (bkz. §2.2 plaka
+      tekilliği): ekle → listede → aynı plaka backend'in 409 mesajıyla
+      formda reddedilir, ikinci satır oluşmaz → sil → DB'de yok.
+- [x] **Manuel ikmal onay akışı — E2E YAZILMADI, çünkü arayüzde YOK.**
+      `manual-dispense` uçları frontend'de hiç çağrılmıyor (FUEL-405 yalnızca
+      API); iki rollü onay akışı backend'de `test_fuel405_manual_dispense.ts`
+      ile kapsanıyor. UI eklendiğinde bu madde yeniden açılmalı.
 
 ### 3.4 Frontend Güvenlik Kontrolleri
 - [x] **Guard script:** ✅ TAMAMLANDI — `scripts/check-frontend-security.mjs`
@@ -467,16 +538,46 @@ Kapsam ilkesi: E2E yalnızca birim testin YAKALAYAMADIĞI şeyler için.
       (`input[type=file]`/`FileReader`) yok → fiilen istismar edilemez.
       Bu varsayım artık `no-xlsx-parse` kuralıyla kalıcı: biri okuma yolu
       eklerse CI kırılır ve bağımlılık kararı yeniden ele alınır.
-- [ ] Prod build'de kaynak haritası (`sourcemap`) / hassas ortam
-      değişkeninin (`VITE_*`) bundle'a sızmadığının kontrolü.
+- [x] ✅ **Prod bundle sızıntı kontrolü — TAMAMLANDI, GERÇEK BULGU.** Canlı
+      nginx'in sunduğu bundle tarandı: sourcemap yok, `VITE_*`/backend sır
+      adı/JWT/özel anahtar yok — ama **`password:"123456"` ile tüm demo firma
+      (camsa, kusak, avrasya) ve 6 şantiye hesabının kullanıcı adları
+      herkese açık JS dosyasındaydı** (kaynak: `mock/index.ts` + giriş
+      formu varsayılanları; seed hesaplarıyla birebir aynı kimlik bilgileri).
+      Düzeltme: mock'tan ve `Company`/`Site` tiplerinden `username`/`password`
+      kaldırıldı, formlar boş başlıyor, ölü `handleQuickFill` silindi.
+      **Kilit:** `scripts/check-frontend-bundle.mjs` build ÇIKTISINI tarar
+      (gömülü parola alanı, seed parolası, JWT, özel anahtar, backend sır
+      adları, sourcemap referansı, `.map`/`.env` dosyası) — CI'da
+      `build-bundle` job'ında. Eski canlı bundle'da 2 ihlal buldu, yeni
+      build temiz; `.map` dosyası ve eksik dist negatif testleri yapıldı.
+- [x] ✅ **`.dockerignore` açığı:** frontend ve backend yalnızca `.env` ve
+      `.env.local`'i hariç tutuyordu; Vite build modunda `.env.production`'ı
+      da OKUR ve `VITE_` değerlerini bundle'a gömer, backend imajına da sır
+      dosyası katman olarak girerdi. `.env.*` + `!.env.example` yapıldı —
+      gerçek `docker build` bağlamıyla doğrulandı (eski: `.env.production`
+      bağlamda; yeni: yalnızca `.env.example`).
 
 ---
 
 ## 4. Veritabanı Test Planı
 
-- [ ] **RLS — statik kapsama (mevcut):** `check-rls-coverage.mjs` her yeni
+- [x] **RLS — statik kapsama (mevcut):** `check-rls-coverage.mjs` her yeni
       tenant tablosunun `ENABLE`+`FORCE`+`POLICY` üçlüsüne sahip olduğunu
-      garanti ediyor. Korunacak.
+      garanti ediyor. Korunuyor. Statik kontrol schema.sql METNİNE baktığı
+      için (ve bu oturumda metnin DB'ye ulaşmadığı yaşandığı için) aynı
+      kontrol artık CANLI DB'de de yapılıyor — aşağıdaki bütünlük testi.
+- [x] ✅ **Canlı DB bütünlüğü + dinamik RLS taraması —
+      `test_db_integrity_tenant_deletion.ts` (7/7).** pg_catalog'dan: 46
+      tenant tablosunun HEPSİNDE companies'e `ON DELETE CASCADE` FK; RLS
+      ENABLE+FORCE; USING ve WITH CHECK ifadeleri `app.current_tenant_id`'ye
+      bağlı. Davranış olarak: app_user rolüyle 46 tablonun HİÇBİRİNDE yabancı
+      satır görünmüyor (23 tabloda gerçekten yabancı veri var — kapsama
+      boş değil); 16 tabloda bir satırın `tenant_id`'sini başka tenant'a
+      TAŞIMA denemesi reddediliyor (WITH CHECK ya da append-only REVOKE).
+      **Mutasyonlar:** `vehicles` RLS'i kapatılınca Test 2/3/4 kırmızı
+      (60 yabancı satır görünür, 1 satır taşındı); `transactions` FK'si
+      düşürülünce Test 1/5 kırmızı (kalıcı silme sonrası 1 artık satır).
 - [ ] **RLS — dinamik sızıntı testi (mevcut):** `test_195_tenant_isolation.ts`
       gerçek iki tenant arasında çapraz okuma/yazma denemesi yapıyor.
       Korunacak; **her yeni tablo eklendiğinde bu testin de o tabloyu
@@ -497,13 +598,24 @@ Kapsam ilkesi: E2E yalnızca birim testin YAKALAYAMADIĞI şeyler için.
       yetinmiyor: app_user rolüne geçip yazmayı DENİYOR ve reddedildiğini
       doğruluyor. Regresyon: BILL-1701 13/13, ARCH-108 17/17 (hiçbir akış
       kırılmadı — firma oluşturma/lisans yönetimi superuser üzerinden).
-- [ ] (kalan) diğer RLS'siz sistem tabloları — bunların
-      GERÇEKTEN yalnızca SUPER_ADMIN/sistem tarafından erişilebildiği (uygulama
-      katmanında, RLS olmadığı için) ayrı bir testle doğrulanmalı — RLS'siz
-      bir tablo, uygulama kodu değişirse sessizce sızdırabilir.
-- [ ] **Foreign key / cascade davranışı** — özellikle `tenant_deletion_approvals`
-      gibi CASCADE'li tabloların, bir tenant silindiğinde GERÇEKTEN tüm
-      bağımlı satırları temizlediği (yetim kayıt kalmadığı) doğrulanmalı.
+- [x] (kalan) diğer RLS'siz sistem tabloları — **kalan yok:** canlı
+      katalogda RLS'siz yalnızca `companies` ve `platform_audit_log` var
+      (ikisi de yukarıda yetkiyle kilitlendi).
+- [x] ✅ **Foreign key / cascade + kalıcı silme sonrası artık — TAMAMLANDI,
+      GERÇEK AÇIK.** Bütünlük testi bir tenant'ı gerçek API akışıyla (planlama
+      → 31 gün geriye alma → iki ayrı SUPER_ADMIN onayı) kalıcı siler ve 46
+      tablonun hepsinde o tenant_id için 0 satır kaldığını doğrular.
+      **Bulgu:** silinen tenant'ın kullanıcısının süresi dolmamış access
+      token'ı API'de ÇALIŞMAYA DEVAM EDİYORDU (`GET /vehicles` → 200,
+      `/auth/me` → "Kimlik bilgileri doğrulandı"). Kök neden:
+      `authMiddleware` lisans/dondurma kapısını `if (license) {...}` ile
+      sarıyordu; firma satırı silinince snapshot `null` → tüm kapı sessizce
+      atlanıyordu. Düzeltme: SUPER_ADMIN dışı rolde firma satırı yoksa
+      401 `TENANT_DELETED` — lisans istisna listesinden (`/auth/me`,
+      `/companies/me`) ÖNCE; yalnızca logout serbest. Refresh token yolu
+      zaten reddediyordu (kullanıcı satırı CASCADE ile silindiği için) —
+      Test 7 bunu kilitliyor. Düzeltme öncesi Test 6 kırmızıydı (200).
+      Regresyon: ARCH-108 17/17, BILL-1701/1702/1703 ✅.
 - [x] **Migration/şema değişikliği güvenliği — İNCELENDİ, GERÇEK BOŞLUK.**
       Tespit (canlı gözlemle): yerel stack farklı/eski bir volume ile yeniden
       başladığında, `schema.sql`'e eklenmiş `REVOKE` güvenlik düzeltmelerinin
@@ -670,23 +782,97 @@ Her madde için: **zaten kapsanan mı, yoksa yeni mi.**
       - Kalan küçük not: Docker imajları (`rhysd/actionlint:1.7.12`,
         `curlimages/curl:latest` load-test'te) tag ile; digest pinleme
         opsiyonel bir sonraki adım.
-- [ ] **Docker imaj sertleştirme regresyonu** — non-root user, minimal imaj
-      boyutu (<150MB, OPS-1101 AC'si) hâlâ geçerli mi diye periyodik kontrol.
+- [x] ✅ **Oturum kapatma (logout) — 2 GERÇEK AÇIK:** bkz. §3.3 üçüncü tur
+      (çıkış sunucu oturumunu kapatmıyordu; SUPER_ADMIN çıkış yapamıyordu;
+      logout access token'ı 15 dk açık bırakıyordu).
+- [x] ✅ **Log atfı sahteciliği — GERÇEK BULGU.** `getLoggingTenantContext`
+      tenant/user bağlamı yoksa (kimliksiz istekler: login, refresh, parola
+      sıfırlama) `X-Tenant-ID`/`X-User-ID` İSTEMCİ başlıklarını log satırına
+      yazıyordu. Canlı kanıt: `nobody-x` kullanıcısının hatalı giriş denemesi
+      `tenantId=comp-kusak, userId=usr-kusak-owner` olarak loglandı — bir
+      brute-force başka firma/kullanıcının üzerine yıkılabiliyordu. Ayrıca
+      frontend HER girişte sabit `X-Tenant-ID: comp-camsa` gönderiyordu (tüm
+      tenant'ların giriş logları camsa'ya atfediliyordu). Kimliği doğrulanmış
+      isteklerde sorun yoktu (ALS store önce geliyor — o da doğrulandı).
+      Düzeltme: başlık fallback'i kaldırıldı (kimliksiz → `N/A`), frontend
+      başlığı silindi. **Kilit:** `test_res902.ts` 9. test pino logger'ının
+      KENDİ stream nesnesini yamalayıp GERÇEK log satırlarını okuyor (istek
+      logu + hata logu + doğrulanmış bağlam). İlk yazdığım sürüm fonksiyonu
+      argümansız çağırdığı için mutasyonu YAKALAMADI — bu yüzden gerçek log
+      satırına geçildi; başlık fallback'i geri eklenince artık kırmızı.
+- [x] ✅ **Docker imaj sertleştirme regresyonu — kontrol edildi.** Backend:
+      `USER node` (uid 1000, canlı konteynerde doğrulandı), derleme araçları
+      (python3/make/g++) imajda yok, npm CLI kaldırılmış. Boyut: açık katman
+      toplamı ~391 MB (CI tavanı 450 MB — AC'nin 150 MB'ı baz imaj yüzünden
+      ulaşılamaz, CI yorumunda gerekçeli). Not: yerel containerd deposunda
+      `docker images` 486 MB gösterir (sıkıştırılmış+açık) — CI runner'ında
+      ölçüm farklıdır, yanlış alarm değildir. Frontend: nginx master süreci
+      root (resmî nginx:alpine varsayılanı; worker'lar `nginx` kullanıcısı) —
+      `nginx-unprivileged`'a geçiş port/compose değişikliği gerektirdiği için
+      AYRI bir iş olarak bırakıldı.
 
 ---
 
 ## 6. CI/CD ve Altyapı Test Planı
 
-- [ ] `npm audit` adımı (backend + frontend) — bölüm 2.2/5.
-- [ ] `npm ci` kullanımının tüm job'larda tutarlı olduğu doğrulanacak.
-- [ ] `docker-security-scan` (Trivy) sonuçlarının GERÇEKTEN build'i kırdığı
-      (CRITICAL/HIGH bulunduğunda) — bir kez KASITLI olarak bilinen zafiyetli
-      bir base image ile tetiklenip doğrulanacak (tatbikat, otomatik test
-      değil).
+- [x] `npm audit` adımı (backend + frontend) — `check-dependency-audit.mjs` (P0).
+- [x] `npm ci` kullanımının tüm job'larda tutarlı olduğu doğrulandı (§5.1
+      supply-chain: 7 kurulumun hepsi `npm ci`).
+- [x] ✅ **Job zaman aşımı — GERÇEK BULGU.** Hiçbir job'da `timeout-minutes`
+      yoktu (varsayılan 360 dk). Tam regresyonda `test_ai502` 11/11 geçtikten
+      sonra süreç HİÇ kapanmadı (import ettiği src modüllerinin paylaşımlı
+      Redis/pg havuzları açık; başarı yolunda `process.exit` yoktu) — CI'da
+      `auth-integration-test` 6 saat asılı kalırdı. Düzeltme: test açıkça
+      çıkıyor (3,8 sn); 9 job'a gerçekçi `timeout-minutes`; ve
+      `check-workflow-yaml.mjs` `job-without-timeout` kuralı (9/9 job'u
+      yakaladı — sütun-0 yorum satırının taramayı erken bitirdiği ilk sürüm
+      de bu sayede fark edildi). actionlint ✅.
+- [x] ✅ **OPS-1101 SIGTERM testi AUTH-202.3'ten beri KIRIKTI.** CI bu testi
+      `POSTGRES_HOST=__CI_SKIP__` (DB'siz) çalıştırır; `startServer()` ise
+      `listen` ve SIGTERM handler'ından ÖNCE DB'ye seed yazmaya başlıyordu →
+      sunucu hiç ayağa kalkmadan ölüyordu. CI ortamı (ağ yok, job env'i
+      birebir) ile yeniden üretildi. Düzeltme: seed `MQTT_URL`'deki aynı
+      `__CI_SKIP__` sözleşmesine uyuyor. **Testin kendisi de zayıftı:**
+      `npx` sarmalayıcısı SIGTERM'de 143 ile öldüğü için `code === 0 ||
+      signal === 'SIGTERM'` koşulu handler'sız öldürülen bir sunucuyu da
+      "güvenli kapandı" sayıyordu; sabit 2,5 sn bekleme de yavaş makinede
+      handler kurulmadan sinyal gönderiyordu. Artık `node --import tsx` ile
+      doğrudan başlatılıyor, "Başlatıldı" logu beklenip çıkış kodu 0 ve
+      kapanma logları şart. Mutasyonlar: eski index.ts → 3 FAIL; SIGTERM
+      handler kaydı silinince → 2 FAIL (eski test bunu geçirirdi).
+- [x] ✅ **`test_res906` Test 8 zamanlamaya bağlı kırılıyordu:** cache
+      testi `checkedAt` ISO damgalarını karşılaştırıyordu; force'lu iki
+      kontrol aynı milisaniyede bitince (pg+redis <1 ms) eşit çıkıyordu (tam
+      regresyonda gözlemlendi). Artık nesne kimliği karşılaştırılıyor.
+- [ ] ⚠️ **ÇÖZÜLMEMİŞ gözlem — `test_fleet1405` bir kez kırmızı:** tam
+      regresyonda veh-1 için bu ay 25 L beklenirken 175 L okundu (+150 L).
+      Tek başına, CI sırasıyla 42 testin ardından (her testten sonra veh-1
+      işlemleri sorgulanarak) ve fuel401'in (50+100 L üreten tek test)
+      ardından 12 dk bekleyerek tekrar üretilemedi; kaynak satırlar sonraki
+      `fleet1406` temizliğiyle (plaka + son 30 saat) silindiği için geriye
+      dönük incelenemedi. O koşuda eşzamanlı elle çalıştırılan testler vardı
+      (en olası neden bu, ama kanıtlanmadı). CI'da tekrarlarsa: fleet1405
+      başında ve Test 1 anında `transactions WHERE vehicle_plate='34 CTP 82'`
+      dökümü alınmalı.
+- [x] ✅ **Trivy tatbikatı — GERÇEK BULGU.** CI ile aynı ayarlarla
+      (`--severity CRITICAL,HIGH --ignore-unfixed --exit-code 1`, trivy 0.66)
+      iki imaj yerelde tarandı (rootless docker soketi yüzünden `docker save`
+      + `--input`). Backend: **0** (exit 0). Frontend (internete bakan nginx,
+      alpine 3.21.3): **36 düzeltmesi yayımlanmış açık — 2 CRITICAL (OpenSSL
+      CVE-2026-31789), 34 HIGH** (c-ares, libexpat, libpng, libxml2, musl,
+      nghttp2, zlib) → **exit 1**. Yani eşik gerçekten build'i kırıyor (tatbikat
+      kendiliğinden doğrulandı) — ama CI **yalnızca backend imajını**
+      tarıyordu; frontend hiç taranmıyordu. Düzeltme: frontend Dockerfile'da
+      `apk upgrade --no-cache` (backend ile aynı çözüm) → yeniden tarama **0**;
+      E2E 20/20 (CSP dahil) kırılmadı; imaj ~95 MB. CI'a frontend imaj derleme
+      + aynı pinli Trivy adımı eklendi. actionlint ✅.
 - [ ] `deploy-zero-downtime` job'ının GERÇEKTEN sıfır kesinti sağladığı —
       dağıtım sırasında sürekli health-check atan bir arka plan script'iyle
       (zaten `scripts/zero-downtime-deploy.sh` var) bir kez canlı doğrulama.
 - [ ] CI'daki `test/*.ts` çağrılarının HEPSİNİN `API_URL`/port tutarlılığı
+      (tam yerel regresyonda 6 test `localhost:3000` varsayılanı yüzünden
+      ECONNREFUSED verdi; CI env'iyle 6/6 geçti — CI doğru, yerel komut
+      belgelendi)
       (önceki oturumlarda bulunup düzeltilen 3000↔5000 karışıklığı) — yeni
       bir test dosyası eklendiğinde bunun bir PR checklist maddesi olarak
       hatırlatılması (bu dokümanın kendisi bu hatırlatıcı).
@@ -727,9 +913,9 @@ Test aşamasına geçildiğinde önerilen sıra (yüksek etki / düşük efor ö
    - [x] ✅ Frontend Vitest+RTL kurulumu + AppContext/api.ts testleri
          (bölüm 3.1-3.2) — **24 test**, 6 mutasyonla doğrulandı.
    - [x] ✅ Race-condition testleri (bölüm 2.2) — 10 test, mutation ile doğrulandı.
-   - [ ] CSP header tespiti + öneri (bölüm 5.1).
-   - [ ] Rol bazlı UI koşulları + form doğrulama testleri (bölüm 3.2'nin
-         kalan maddeleri).
+   - [x] CSP header tespiti + öneri (bölüm 5.1).
+   - [x] Rol bazlı UI koşulları (30 test) + giriş sayfaları (4 test);
+         form doğrulama/hesaplama için bilinçli "test yok" kararı (bölüm 3.2).
 3. **P2 — Daha büyük efor:**
    - Playwright E2E kritik akışlar (bölüm 3.3).
    - Pagination/idempotency sistematik taraması (bölüm 2.2).

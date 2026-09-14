@@ -72,7 +72,7 @@ function jsonResponse(body: unknown, status = 200): Response {
  * gerekir — bu yüzden mock URL'e göre cevap veriyor, sırayla değil.
  */
 function mockBackend(opts: { loginBody?: unknown; loginStatus?: number } = {}) {
-  const fetchMock = vi.fn(async (url: string) => {
+  const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
     const u = String(url);
     if (u.includes('/auth/login')) {
       return jsonResponse(
@@ -191,6 +191,28 @@ describe('AppContext — çıkış ve oturum düşürme', () => {
     // doğruluyor — gerçek gereksinim bu.
     expect(localStorage.getItem('YAKIT_IS_AUTH')).not.toBe('true');
     expect(screen.getByTestId('auth').textContent).toBe('giris-yok');
+  });
+
+  it('çıkış SUNUCUDAKİ oturumu da kapatır: refresh token ile POST /auth/logout', async () => {
+    const fetchMock = mockBackend();
+    renderApp();
+
+    await act(async () => {
+      screen.getByTestId('login').click();
+    });
+    await waitFor(() => expect(localStorage.getItem(REFRESH_KEY)).toBe('refresh-xyz'));
+
+    await act(async () => {
+      screen.getByTestId('logout').click();
+    });
+
+    // Önceden çıkış yalnızca localStorage'ı siliyordu; refresh token sunucuda
+    // 7 gün geçerli kalıyordu (E2E + canlı curl ile kanıtlandı).
+    const logoutCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/auth/logout'));
+    expect(logoutCall, 'POST /auth/logout çağrılmadı').toBeDefined();
+    const init = logoutCall![1]!;
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({ refreshToken: 'refresh-xyz' });
   });
 
   it('apiFetch UNAUTHORIZED olayını yayınca otomatik çıkış yapılır', async () => {

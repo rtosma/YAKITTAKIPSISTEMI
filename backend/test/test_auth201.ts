@@ -137,10 +137,13 @@ async function verifyAuth201() {
   }
 
   // 8. RBAC Rol İzin Verilen İstek (COMPANY_OWNER → Araç Ekleme)
+  // Benzersiz plaka + test sonunda silme: önceden seed aracı veh-1'in plakası
+  // ('34 CTP 82') ile her koşuda YENİ bir kopya ekleniyor ve silinmiyordu (yerel
+  // DB'de 23 kopya birikti) — plaka tekilliği (DUPLICATE_PLATE) ile artık 409 alır.
   const allowedAddVeh = await postJson('/api/v1/vehicles', { 'Authorization': 'Bearer ' + newAccessToken }, {
-    plate: '34 CTP 82',
+    plate: `34 ATH ${1000 + Math.floor(Math.random() * 9000)}`,
     brandModel: 'Volvo FMX',
-    rfidTag: 'TAG-101',
+    rfidTag: `TAG-AUTH201-${Date.now()}`,
     fuelCapacityLiters: 500
   });
 
@@ -149,6 +152,12 @@ async function verifyAuth201() {
   } else {
     console.error('❌ 8. RBAC İzinli İstek: BAŞARISIZ', allowedAddVeh);
     allPassed = false;
+  }
+  if (allowedAddVeh.data?.data?.id) {
+    await fetch(`http://localhost:5000/api/v1/vehicles/${allowedAddVeh.data.data.id}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer ' + newAccessToken }
+    });
   }
 
   console.log('\n---------------------------------------------------------');

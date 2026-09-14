@@ -79,8 +79,12 @@ async function run() {
   const c1 = await checkReadiness();
   const c2 = await checkReadiness();
   const c3 = await checkReadiness(true);
-  check('Test 8: checkReadiness() cache — force yok → aynı checkedAt; force:true → yeni',
-    c1.checkedAt === c2.checkedAt && c3.checkedAt !== c1.checkedAt,
+  // Nesne KİMLİĞİ karşılaştırılır, checkedAt değil: Test 7'deki force'lu
+  // kontrol ile c3 aynı milisaniyede bitebiliyor (pg SELECT 1 + redis PING
+  // <1 ms) → ISO damgaları eşit çıkıp test rastgele kırılıyordu (CI sırasında
+  // gözlemlendi). Cache isabeti = aynı nesne; force = yeni nesne.
+  check('Test 8: checkReadiness() cache — force yok → aynı sonuç nesnesi; force:true → yeni',
+    c1 === c2 && c3 !== c1,
     `c1=${c1.checkedAt}, c2=${c2.checkedAt}, c3(force)=${c3.checkedAt}`);
 
   // Test 9: invalidateReadinessCache() sonrası cache YENİDEN kuruluyor.
