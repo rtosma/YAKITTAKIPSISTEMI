@@ -170,6 +170,15 @@ export const SiteLoginPage: React.FC = () => {
                   </span>
                 </button>
               </div>
+              <div className="text-right">
+                <button
+                  type="button"
+                  onClick={() => navigate('/parola-unuttum')}
+                  className="text-[11px] font-semibold text-[#d5c4ab] hover:text-[#a1e8a2] hover:underline cursor-pointer"
+                >
+                  Parolamı Unuttum
+                </button>
+              </div>
             </div>
 
             {/* Submit Button */}

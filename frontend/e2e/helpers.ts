@@ -1,5 +1,14 @@
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, type Page } from '@playwright/test';
+
+// playwright.config.ts frontend/'de yaşıyor (testDir './e2e'), bu yüzden
+// Playwright süreci frontend/ cwd'siyle çalışır — docker compose/`.env`
+// repo KÖKÜNDE, bu yüzden burada açıkça çözülüyor. (ESM: __dirname yok.)
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /**
  * TEST_PLAN §0.3 — E2E paketi de aynı IP'den çok sayıda giriş yapar ve login
@@ -13,6 +22,80 @@ export function resetLoginRateLimit(): void {
   try {
     execSync(
       "docker exec yakittakip_redis sh -c \"redis-cli --scan --pattern 'rl:auth-login:*' | xargs -r redis-cli DEL\"",
+      { stdio: 'ignore' }
+    );
+  } catch {
+    // docker/redis erişilemiyorsa test yine de denesin.
+  }
+}
+
+/**
+ * FE-804 — bu ortamda docker-compose.yml backend'e NODE_ENV=production
+ * verdiğinden (bkz. proje belleği) forgot-password yanıtı `devResetToken`
+ * DÖNDÜRMEZ (sızıntı koruması route seviyesinde). E2E'nin gerçek reset
+ * adımını (sahte değil) çalıştırabilmesi için, backend'in KENDİ
+ * `test_auth206_password_reset.ts` testiyle AYNI desen kullanılır:
+ * `requestPasswordReset` servis fonksiyonu HTTP route'unu (ve onun
+ * devResetToken bastırmasını) atlayarak doğrudan çağrılır — mevcut
+ * `yakittakipsistemi-backend:test-runner` imajı (backend testleri için
+ * zaten inşa edilmiş) içinde, TEK bir geçici script dosyası tek-dosya
+ * bind-mount ile /app/test/'e bağlanır. backend/ dizininde HİÇBİR kalıcı
+ * dosya bırakılmaz (görev kapsamı yalnızca frontend) — script bir temp
+ * dizinde oluşturulup finally'de silinir.
+ */
+export function getPasswordResetToken(username: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'fe804-pwreset-'));
+  const scriptPath = join(dir, 'get-token.ts');
+  writeFileSync(
+    scriptPath,
+    [
+      "import { requestPasswordReset } from '../src/services/passwordResetService';",
+      '(async () => {',
+      '  const token = await requestPasswordReset(process.argv[2]);',
+      '  if (!token) { console.error("NULL_TOKEN"); process.exit(1); }',
+      '  console.log(`TOKEN=${token}`);',
+      '  process.exit(0);',
+      '})();',
+      ''
+    ].join('\n')
+  );
+
+  try {
+    const backendContainerId = execSync('docker compose ps -q backend', { encoding: 'utf-8', cwd: REPO_ROOT }).trim();
+    const output = execFileSync(
+      'docker',
+      [
+        'run', '--rm',
+        '--network', `container:${backendContainerId}`,
+        '--env-file', join(REPO_ROOT, '.env'),
+        '-e', 'POSTGRES_HOST=postgres',
+        '-e', 'REDIS_HOST=redis',
+        '-v', `${scriptPath}:/app/test/get-token.ts:ro`,
+        'yakittakipsistemi-backend:test-runner',
+        'npx', 'tsx', 'test/get-token.ts', username
+      ],
+      { encoding: 'utf-8', cwd: REPO_ROOT }
+    );
+    const match = output.match(/TOKEN=([0-9a-f]{64})/);
+    if (!match) throw new Error(`Reset token alınamadı, çıktı: ${output}`);
+    return match[1];
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * FE-804 — forgot-password kendi ayrı rate limitine sahip (1/dk + 5/saat,
+ * KULLANICI ADINA göre anahtarlanır — `usernameKey`, IP'ye göre DEĞİL; bkz.
+ * rateLimitMiddleware.ts). resetLoginRateLimit() bunu SIFIRLAMAZ (ayrı
+ * Redis anahtar öneki). Testler aynı SEED_USER'ı art arda çağırdığından
+ * (ve manuel doğrulama sırasında da aynı kullanıcı denenmiş olabilir) bu
+ * limit gerçek bir 429'a yol açıp testi YANLIŞ kırmızı yapabilir.
+ */
+export function resetPasswordResetRateLimit(): void {
+  try {
+    execSync(
+      "docker exec yakittakip_redis sh -c \"redis-cli --scan --pattern 'rl:pwreset-*:*' | xargs -r redis-cli DEL\"",
       { stdio: 'ignore' }
     );
   } catch {

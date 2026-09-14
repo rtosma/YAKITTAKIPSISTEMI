@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import React from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -34,6 +34,7 @@ describe.each(PAGES)('$name', ({ Page, target, usernamePlaceholder }) => {
       <Routes>
         <Route path="/" element={<Page />} />
         <Route path={target} element={<div>HEDEF-PANEL</div>} />
+        <Route path="/parola-unuttum" element={<div>UNUTTUM-EKRANI</div>} />
       </Routes>
     </MemoryRouter>
   );
@@ -53,5 +54,44 @@ describe.each(PAGES)('$name', ({ Page, target, usernamePlaceholder }) => {
     appState.isAuthenticated = true;
     expect(() => rerender(tree())).not.toThrow();
     expect(screen.getByText('HEDEF-PANEL')).toBeInTheDocument();
+  });
+
+  // FE-804
+  it('"Parolamı Unuttum" bağlantısı /parola-unuttum\'a götürür', () => {
+    render(tree());
+    fireEvent.click(screen.getByRole('button', { name: /Parolamı Unuttum/i }));
+    expect(screen.getByText('UNUTTUM-EKRANI')).toBeInTheDocument();
+  });
+});
+
+// FE-804 — yalnızca LoginPage: ResetPasswordPage başarıda buraya
+// /login?reset=success ile yönlendiriyor; backend parola sıfırlanınca TÜM
+// oturumları düşürdüğü için burada otomatik giriş YOK — yalnızca bir bilgi
+// kutusu bekleniyor, isAuthenticated hâlâ false olmalı.
+describe('LoginPage — parola sıfırlama sonrası bilgi kutusu', () => {
+  beforeEach(() => {
+    appState.isAuthenticated = false;
+  });
+
+  it('?reset=success ile açılınca başarı mesajı gösterilir', () => {
+    render(
+      <MemoryRouter initialEntries={['/?reset=success']}>
+        <Routes>
+          <Route path="/" element={<LoginPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    expect(screen.getByText(/Parolanız güncellendi/i)).toBeInTheDocument();
+  });
+
+  it('reset parametresi YOKSA başarı mesajı gösterilmez', () => {
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <Routes>
+          <Route path="/" element={<LoginPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    expect(screen.queryByText(/Parolanız güncellendi/i)).not.toBeInTheDocument();
   });
 });

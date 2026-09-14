@@ -1,11 +1,17 @@
 import React, { useState } from 'react';
-import { useNavigate, Navigate } from 'react-router-dom';
+import { useNavigate, useSearchParams, Navigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useApp } from '../context/AppContext';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
   const { loginCompany, isAuthenticated } = useApp();
+  // FE-804: ResetPasswordPage başarıda buraya /login?reset=success ile
+  // yönlendirir — backend parola sıfırlanınca TÜM oturumları düşürdüğü
+  // için burada otomatik giriş YOK, kullanıcı bilerek yeni parolasıyla
+  // tekrar giriş yapmalı; bu sadece bunu doğrulayan küçük bir bilgi kutusu.
+  const [searchParams] = useSearchParams();
+  const resetSuccess = searchParams.get('reset') === 'success';
 
   const [username, setUsername] = useState<string>('');
   const [password, setPassword] = useState<string>('');
@@ -102,6 +108,18 @@ export const LoginPage: React.FC = () => {
             </p>
           </div>
 
+          {/* Parola sıfırlama sonrası başarı bilgisi (FE-804) */}
+          {resetSuccess && !errorMessage && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="bg-[#a1e8a2]/10 border border-[#a1e8a2]/30 p-3.5 rounded-xl flex items-start space-x-3 text-xs text-[#a1e8a2]"
+            >
+              <span className="material-symbols-outlined text-lg shrink-0 mt-0.5">check_circle</span>
+              <span>Parolanız güncellendi. Lütfen yeni parolanızla giriş yapın.</span>
+            </motion.div>
+          )}
+
           {/* Error Alert Box */}
           {errorMessage && (
             <motion.div
@@ -169,6 +187,15 @@ export const LoginPage: React.FC = () => {
                   <span className="material-symbols-outlined text-lg">
                     {showPassword ? 'visibility_off' : 'visibility'}
                   </span>
+                </button>
+              </div>
+              <div className="text-right">
+                <button
+                  type="button"
+                  onClick={() => navigate('/parola-unuttum')}
+                  className="text-[11px] font-semibold text-[#d5c4ab] hover:text-[#ffdca1] hover:underline cursor-pointer"
+                >
+                  Parolamı Unuttum
                 </button>
               </div>
             </div>

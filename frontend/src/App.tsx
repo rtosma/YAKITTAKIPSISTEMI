@@ -23,6 +23,8 @@ const queryClient = new QueryClient({
 // Pages & Layouts
 import { LoginPage } from './pages/LoginPage';
 import { SiteLoginPage } from './pages/SiteLoginPage';
+import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
+import { ResetPasswordPage } from './pages/ResetPasswordPage';
 import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
 import { WelcomeScreen } from './pages/WelcomeScreen';
 import { NotFoundPage } from './pages/NotFoundPage';
@@ -65,6 +67,9 @@ export function App() {
           <Route path="/" element={<LoginPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/santiye-login" element={<SiteLoginPage />} />
+          {/* FE-804: parola sıfırlama — token'sız (talep formu) ve token'lı (yeni parola) ekranlar. */}
+          <Route path="/parola-unuttum" element={<ForgotPasswordPage />} />
+          <Route path="/parola-sifirla/:token" element={<ResetPasswordPage />} />
           {/* FE-803: Saha paneli — SITE_MANAGER / PUMP_OPERATOR (+ üst roller).
               DRIVER gibi yetkisiz bir rol doğrudan URL yazsa /403'e düşer. */}
           <Route
