@@ -231,8 +231,22 @@ listesine ekliyoruz:
       `FOR UPDATE` kaldırılıp backend yeniden derlendiğinde 10 testten 5'i
       kırıldı (tank testleri geçmeye devam etti — onların kilidi yerindeydi),
       ardından kod geri yüklendi. Yani testler gerçekten kilitleri ölçüyor.
-- [ ] Kota ve `tenant_deletion_approvals` eşzamanlılığı — aynı desenle
-      eklenecek (bu turda envanter + tank kapsandı).
+- [x] ✅ **Kota ve `tenant_deletion_approvals` eşzamanlılığı — 🔴 VERİ KAYBI HATASI BULUNDU.**
+      ARCH-108 yaşam döngüsü (dondur/çöz/planla/iptal/onayla) kilitsiz
+      check-then-act idi. 15'er turluk eşzamanlı prob: **iptal ile onay yarışınca
+      15 turun 14'ünde iptal 200 ("iptal edildi") döndü ama firma TÜM verisiyle
+      kalıcı silindi**; iki admin aynı anda son onayı verince 15/15 turda
+      platform_audit_log'a çift "kalıcı silindi" kaydı; iptal edilmiş firmada
+      bayat onay satırı kalabiliyordu (yeniden planlamada yeni 2-onay şartına
+      sayılırdı). Düzeltme: `withLockedCompany` — firma satırı `FOR UPDATE` ile
+      kilitli tek transaction (denetim kaydı dahil); yeniden planlama eski
+      onayları siler. Yarışı kaybeden iptal artık dürüstçe 404 alır.
+      `test_race_tenant_lifecycle_and_quota.ts` 8/8 — kilit sırasından bağımsız
+      değişmezleri 10'ar turda doğrular (iki sıra da gözlendi: 8 iptal / 2 onay
+      kazandı). Mutasyon: eski kilitsiz kodla 5/8 kırıldı. Çapraz şantiye kotası
+      (100 L, 6×30 L eşzamanlı) tam 3 kabul, used_liters=90. `fuel_quotas`
+      bakiyesi azaltılan sayaç değil işlemlerden hesaplanıyor (yarış yok);
+      Redis önbelleği bilinçli 5 sn TTL.
 - [x] ✅ **Sayfalama/filtre sınır-durumları + girdi güvenliği — TAMAMLANDI,
       GERÇEK BUG BULUNDU.** (`test/test_input_boundaries.ts`, 22/22)
       Kapsanan: devasa pageSize (100000 → 400, DoS yüzeyi kapalı), sınırın

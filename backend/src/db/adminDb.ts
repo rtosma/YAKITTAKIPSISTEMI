@@ -1,3 +1,4 @@
+import type { Pool, PoolClient } from 'pg';
 import { pool } from './postgresPool';
 import { hashPassword } from '../utils/password';
 import { generateId } from '../utils/id';
@@ -243,9 +244,12 @@ async function insertCompanyAuditLog(
   targetType: string,
   targetId: string,
   beforeValue: Record<string, unknown> | null,
-  afterValue: Record<string, unknown> | null
+  afterValue: Record<string, unknown> | null,
+  // Çağıran bir transaction içindeyse denetim kaydı da AYNI transaction'a
+  // girmeli — işlem geri alınırsa "yapıldı" diyen bir kayıt kalmasın.
+  db: Pool | PoolClient = pool
 ): Promise<void> {
-  await pool.query(
+  await db.query(
     `INSERT INTO audit_logs (id, tenant_id, user_id, action, target_type, target_id, before_value, after_value)
      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
     [generateId('audit'), tenantId, actorUserId, action, targetType, targetId, JSON.stringify(beforeValue), JSON.stringify(afterValue)]
@@ -927,15 +931,51 @@ export interface TenantLifecycleStatus {
   approvedBy: string[];
 }
 
+const COMPANY_LIFECYCLE_COLUMNS = `id, name, account_status, frozen_at, frozen_by, frozen_reason,
+            deletion_scheduled_at, deletion_requested_by, deletion_reason`;
+
 async function getCompanyLifecycleRow(tenantId: string): Promise<any> {
-  const res = await pool.query(
-    `SELECT id, name, account_status, frozen_at, frozen_by, frozen_reason,
-            deletion_scheduled_at, deletion_requested_by, deletion_reason
-       FROM companies WHERE id = $1`,
-    [tenantId]
-  );
+  const res = await pool.query(`SELECT ${COMPANY_LIFECYCLE_COLUMNS} FROM companies WHERE id = $1`, [tenantId]);
   if (res.rows.length === 0) throw new NotFoundError('Firma bulunamadı.', { error: 'COMPANY_NOT_FOUND' });
   return res.rows[0];
+}
+
+/**
+ * TEST_PLAN.md §2.2 — ARCH-108 yaşam döngüsü işlemlerini firma satırı KİLİTLİ
+ * tek bir transaction içinde çalıştırır.
+ *
+ * NEDEN (eşzamanlı isteklerle, 15'er tur tekrarlanarak kanıtlandı): bu
+ * işlemler önceden kilitsiz check-then-act idi (durum oku → karar ver → ayrı
+ * sorgularla yaz). Sonuçlar:
+ *   - İptal ile onay yarışınca 15 turun 14'ünde iptal isteği 200 ("iptal
+ *     edildi") döndü AMA firma ve tüm verisi KALICI olarak silindi — onay,
+ *     iptal commit'lenmeden önce durumu SILME_BEKLIYOR olarak okumuştu.
+ *   - İki farklı admin aynı anda son onayı verince 15/15 turda
+ *     platform_audit_log'a ÇİFT "kalıcı silindi" kaydı düştü.
+ *   - Bir turda iptal edilmiş (AKTİF) firmada bayat bir onay satırı kaldı;
+ *     silme yeniden planlanırsa eski onay yeni "2 farklı onay" şartına sayılırdı.
+ * `SELECT ... FOR UPDATE` ikinci işlemi birincinin COMMIT'ine kadar bekletir;
+ * bekleyen işlem güncel durumu (ya da silinmiş satırı) görür ve kararını ona
+ * göre verir.
+ */
+async function withLockedCompany<T>(tenantId: string, fn: (client: PoolClient, row: any) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const res = await client.query(`SELECT ${COMPANY_LIFECYCLE_COLUMNS} FROM companies WHERE id = $1 FOR UPDATE`, [tenantId]);
+    if (res.rows.length === 0) {
+      // Silinmiş olabilir (ör. yarışı kaybeden iptal isteği): dürüstçe 404.
+      throw new NotFoundError('Firma bulunamadı.', { error: 'COMPANY_NOT_FOUND' });
+    }
+    const result = await fn(client, res.rows[0]);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 export async function getTenantLifecycleStatus(tenantId: string): Promise<TenantLifecycleStatus> {
@@ -969,27 +1009,29 @@ export async function getTenantLifecycleStatus(tenantId: string): Promise<Tenant
  * satır silinmez/değiştirilmez.
  */
 export async function freezeCompany(tenantId: string, reason: string, actorUserId: string): Promise<void> {
-  const row = await getCompanyLifecycleRow(tenantId);
-  if (row.account_status === 'DONDURULDU') {
-    throw new ConflictError('Firma zaten dondurulmuş.', { error: 'ALREADY_FROZEN' });
-  }
-  await pool.query(
-    `UPDATE companies SET account_status = 'DONDURULDU', frozen_at = CURRENT_TIMESTAMP, frozen_by = $2, frozen_reason = $3 WHERE id = $1`,
-    [tenantId, actorUserId, reason]
-  );
-  await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_FROZEN', 'company', tenantId, { accountStatus: row.account_status }, { reason });
+  return withLockedCompany(tenantId, async (client, row) => {
+    if (row.account_status === 'DONDURULDU') {
+      throw new ConflictError('Firma zaten dondurulmuş.', { error: 'ALREADY_FROZEN' });
+    }
+    await client.query(
+      `UPDATE companies SET account_status = 'DONDURULDU', frozen_at = CURRENT_TIMESTAMP, frozen_by = $2, frozen_reason = $3 WHERE id = $1`,
+      [tenantId, actorUserId, reason]
+    );
+    await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_FROZEN', 'company', tenantId, { accountStatus: row.account_status }, { reason }, client);
+  });
 }
 
 export async function unfreezeCompany(tenantId: string, actorUserId: string): Promise<void> {
-  const row = await getCompanyLifecycleRow(tenantId);
-  if (row.account_status !== 'DONDURULDU') {
-    throw new ConflictError('Firma dondurulmuş durumda değil.', { error: 'NOT_FROZEN' });
-  }
-  await pool.query(
-    `UPDATE companies SET account_status = 'AKTİF', frozen_at = NULL, frozen_by = NULL, frozen_reason = NULL WHERE id = $1`,
-    [tenantId]
-  );
-  await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_UNFROZEN', 'company', tenantId, { accountStatus: 'DONDURULDU' }, { accountStatus: 'AKTİF' });
+  return withLockedCompany(tenantId, async (client, row) => {
+    if (row.account_status !== 'DONDURULDU') {
+      throw new ConflictError('Firma dondurulmuş durumda değil.', { error: 'NOT_FROZEN' });
+    }
+    await client.query(
+      `UPDATE companies SET account_status = 'AKTİF', frozen_at = NULL, frozen_by = NULL, frozen_reason = NULL WHERE id = $1`,
+      [tenantId]
+    );
+    await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_UNFROZEN', 'company', tenantId, { accountStatus: 'DONDURULDU' }, { accountStatus: 'AKTİF' }, client);
+  });
 }
 
 /**
@@ -998,30 +1040,35 @@ export async function unfreezeCompany(tenantId: string, actorUserId: string): Pr
  * üzere olan bir hesapta yeni veri üretilmemeli).
  */
 export async function scheduleTenantDeletion(tenantId: string, reason: string, actorUserId: string): Promise<void> {
-  const row = await getCompanyLifecycleRow(tenantId);
-  if (row.account_status === 'SILME_BEKLIYOR') {
-    throw new ConflictError('Bu firma için silme zaten planlanmış.', { error: 'ALREADY_SCHEDULED' });
-  }
-  await pool.query(
-    `UPDATE companies SET account_status = 'SILME_BEKLIYOR', deletion_scheduled_at = CURRENT_TIMESTAMP,
-        deletion_requested_by = $2, deletion_reason = $3 WHERE id = $1`,
-    [tenantId, actorUserId, reason]
-  );
-  await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_DELETION_SCHEDULED', 'company', tenantId, { accountStatus: row.account_status }, { reason });
+  return withLockedCompany(tenantId, async (client, row) => {
+    if (row.account_status === 'SILME_BEKLIYOR') {
+      throw new ConflictError('Bu firma için silme zaten planlanmış.', { error: 'ALREADY_SCHEDULED' });
+    }
+    await client.query(
+      `UPDATE companies SET account_status = 'SILME_BEKLIYOR', deletion_scheduled_at = CURRENT_TIMESTAMP,
+          deletion_requested_by = $2, deletion_reason = $3 WHERE id = $1`,
+      [tenantId, actorUserId, reason]
+    );
+    // Önceki (iptal edilmiş) bir döngüden kalmış olabilecek onaylar yeni
+    // planlamaya SAYILMAMALI — her döngü sıfır onayla başlar.
+    await client.query('DELETE FROM tenant_deletion_approvals WHERE tenant_id = $1', [tenantId]);
+    await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_DELETION_SCHEDULED', 'company', tenantId, { accountStatus: row.account_status }, { reason }, client);
+  });
 }
 
 export async function cancelTenantDeletion(tenantId: string, actorUserId: string): Promise<void> {
-  const row = await getCompanyLifecycleRow(tenantId);
-  if (row.account_status !== 'SILME_BEKLIYOR') {
-    throw new ConflictError('Bu firma için planlanmış bir silme yok.', { error: 'NOT_SCHEDULED' });
-  }
-  await pool.query(
-    `UPDATE companies SET account_status = 'AKTİF', deletion_scheduled_at = NULL,
-        deletion_requested_by = NULL, deletion_reason = NULL WHERE id = $1`,
-    [tenantId]
-  );
-  await pool.query('DELETE FROM tenant_deletion_approvals WHERE tenant_id = $1', [tenantId]);
-  await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_DELETION_CANCELLED', 'company', tenantId, { accountStatus: 'SILME_BEKLIYOR' }, { accountStatus: 'AKTİF' });
+  return withLockedCompany(tenantId, async (client, row) => {
+    if (row.account_status !== 'SILME_BEKLIYOR') {
+      throw new ConflictError('Bu firma için planlanmış bir silme yok.', { error: 'NOT_SCHEDULED' });
+    }
+    await client.query(
+      `UPDATE companies SET account_status = 'AKTİF', deletion_scheduled_at = NULL,
+          deletion_requested_by = NULL, deletion_reason = NULL WHERE id = $1`,
+      [tenantId]
+    );
+    await client.query('DELETE FROM tenant_deletion_approvals WHERE tenant_id = $1', [tenantId]);
+    await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_DELETION_CANCELLED', 'company', tenantId, { accountStatus: 'SILME_BEKLIYOR' }, { accountStatus: 'AKTİF' }, client);
+  });
 }
 
 export interface DeletionApprovalResult {
@@ -1037,40 +1084,42 @@ export interface DeletionApprovalResult {
  * engeller. İkinci FARKLI onay geldiğinde silme AYNI çağrıda gerçekleşir.
  */
 export async function approveTenantDeletion(tenantId: string, actorUserId: string): Promise<DeletionApprovalResult> {
-  const row = await getCompanyLifecycleRow(tenantId);
-  if (row.account_status !== 'SILME_BEKLIYOR') {
-    throw new ConflictError('Bu firma için planlanmış bir silme yok.', { error: 'NOT_SCHEDULED' });
-  }
-  const scheduledAt = new Date(row.deletion_scheduled_at);
-  const eligibleAt = new Date(scheduledAt.getTime() + TENANT_DELETION_WAITING_PERIOD_DAYS * 24 * 60 * 60 * 1000);
-  if (new Date() < eligibleAt) {
-    throw new ConflictError(
-      `30 günlük bekleme süresi ${eligibleAt.toISOString().slice(0, 10)} tarihine kadar dolmadı.`,
-      { error: 'WAITING_PERIOD_NOT_ELAPSED', eligibleAt: eligibleAt.toISOString() }
+  return withLockedCompany(tenantId, async (client, row) => {
+    if (row.account_status !== 'SILME_BEKLIYOR') {
+      throw new ConflictError('Bu firma için planlanmış bir silme yok.', { error: 'NOT_SCHEDULED' });
+    }
+    const scheduledAt = new Date(row.deletion_scheduled_at);
+    const eligibleAt = new Date(scheduledAt.getTime() + TENANT_DELETION_WAITING_PERIOD_DAYS * 24 * 60 * 60 * 1000);
+    if (new Date() < eligibleAt) {
+      throw new ConflictError(
+        `30 günlük bekleme süresi ${eligibleAt.toISOString().slice(0, 10)} tarihine kadar dolmadı.`,
+        { error: 'WAITING_PERIOD_NOT_ELAPSED', eligibleAt: eligibleAt.toISOString() }
+      );
+    }
+
+    await client.query(
+      'INSERT INTO tenant_deletion_approvals (tenant_id, approved_by) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+      [tenantId, actorUserId]
     );
-  }
+    const approvals = await client.query('SELECT approved_by FROM tenant_deletion_approvals WHERE tenant_id = $1 ORDER BY approved_at', [tenantId]);
+    const approvedBy: string[] = approvals.rows.map((r: any) => r.approved_by);
 
-  await pool.query(
-    'INSERT INTO tenant_deletion_approvals (tenant_id, approved_by) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-    [tenantId, actorUserId]
-  );
-  const approvals = await pool.query('SELECT approved_by FROM tenant_deletion_approvals WHERE tenant_id = $1 ORDER BY approved_at', [tenantId]);
-  const approvedBy: string[] = approvals.rows.map((r: any) => r.approved_by);
+    await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_DELETION_APPROVED', 'company', tenantId, null, { approvalsCount: approvedBy.length }, client);
 
-  await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_DELETION_APPROVED', 'company', tenantId, null, { approvalsCount: approvedBy.length });
-
-  if (approvedBy.length >= TENANT_DELETION_REQUIRED_APPROVALS) {
-    // Kalıcı silme kaydı ÖNCE (companies'e FK'sı YOK — cascade'den bağımsız
-    // hayatta kalır), asıl silme (ON DELETE CASCADE ile TÜM tenant verisi) SONRA.
-    await pool.query(
-      `INSERT INTO platform_audit_log (id, deleted_tenant_id, tenant_name, action, actor_user_id, detail)
-       VALUES ($1, $2, $3, 'TENANT_PERMANENTLY_DELETED', $4, $5::jsonb)`,
-      [generateId('paudit'), tenantId, row.name, actorUserId, JSON.stringify({ approvedBy, deletionReason: row.deletion_reason })]
-    );
-    await pool.query('DELETE FROM companies WHERE id = $1', [tenantId]);
-    return { executed: true, approvalsCount: approvedBy.length, approvedBy };
-  }
-  return { executed: false, approvalsCount: approvedBy.length, approvedBy };
+    if (approvedBy.length >= TENANT_DELETION_REQUIRED_APPROVALS) {
+      // Kalıcı silme kaydı ÖNCE (companies'e FK'sı YOK — cascade'den bağımsız
+      // hayatta kalır), asıl silme (ON DELETE CASCADE ile TÜM tenant verisi) SONRA.
+      // İkisi aynı transaction'da: silme başarısız olursa "silindi" kaydı da kalmaz.
+      await client.query(
+        `INSERT INTO platform_audit_log (id, deleted_tenant_id, tenant_name, action, actor_user_id, detail)
+         VALUES ($1, $2, $3, 'TENANT_PERMANENTLY_DELETED', $4, $5::jsonb)`,
+        [generateId('paudit'), tenantId, row.name, actorUserId, JSON.stringify({ approvedBy, deletionReason: row.deletion_reason })]
+      );
+      await client.query('DELETE FROM companies WHERE id = $1', [tenantId]);
+      return { executed: true, approvalsCount: approvedBy.length, approvedBy };
+    }
+    return { executed: false, approvalsCount: approvedBy.length, approvedBy };
+  });
 }
 
 /**

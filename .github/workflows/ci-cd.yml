@@ -307,6 +307,12 @@ jobs:
       - name: "TEST_PLAN §5: Proxy Arkasında Kişi Başı Login Rate Limit"
         run: cd backend && npx tsx test/test_trust_proxy_rate_limit.ts
 
+      # TEST_PLAN.md §2.2 — kalıcı tenant silme onayı kilitsizdi: iptal ile onay
+      # yarışınca iptal "başarılı" dönüp firma TÜM verisiyle silinebiliyordu
+      # (15 turun 14'ünde kanıtlandı). Çapraz şantiye kotası eşzamanlılığı dahil.
+      - name: "TEST_PLAN §2.2: Eşzamanlılık — Tenant Silme Onayı + Çapraz Şantiye Kotası"
+        run: cd backend && npx tsx test/test_race_tenant_lifecycle_and_quota.ts
+
       - name: Run FUEL-401 RFID Dispense Session State Machine Tests
         run: cd backend && npx tsx test/test_fuel401_dispense_session.ts
 
