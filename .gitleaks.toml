@@ -28,9 +28,16 @@ paths = [
   # yine de bir güvenlik ağı olarak burada da hariç tutuluyor.
   '''dist/.*''',
   '''backend/dist/.*''',
-  # .env dosyaları da gitignored (bkz. .gitignore) — CI bunları hiç checkout
-  # etmiyor, yalnızca yerel `gitleaks detect --no-git` çalıştıran bir
-  # geliştiricinin KENDİ gerçek .env'ini "sızıntı" sanıp kafası karışmasın
-  # diye burada da hariç tutuluyor.
-  '''(^|/)\.env$'''
+  # TEST_PLAN.md §5.1 — `.env` dosyaları BİLİNÇLİ OLARAK hariç TUTULMUYOR.
+  # Önceden burada `(^|/)\.env$` vardı; gerekçe, yerel `gitleaks detect --no-git`
+  # çalıştıran geliştiricinin kendi takip dışı .env'inin alarm vermemesiydi.
+  # Ama bu, tarayıcıyı EN YAYGIN gerçek sızıntı senaryosuna (yanlışlıkla
+  # commit'lenen bir .env) karşı kör ediyordu — canlı doğrulandı: gerçek bir
+  # token deseni .env ve backend/.env içindeyken hem CI komutu hem de
+  # `gitleaks git --pre-commit --staged` HİÇBİR ŞEY bulmadı; istisna
+  # kaldırılınca üçü de yakalandı.
+  # Yerel kullanım: takip dışı dosyaları hiç görmeyen modu kullanın —
+  #   gitleaks git --pre-commit --staged      (commit öncesi)
+  # CI checkout'unda .env yalnızca COMMIT'LENMİŞSE bulunur, o durumda da
+  # yakalanması tam olarak istenen şeydir.
 ]

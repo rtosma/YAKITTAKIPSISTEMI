@@ -532,10 +532,31 @@ Her madde için: **zaten kapsanan mı, yoksa yeni mi.**
       Canlı doğrulandı: yabancı Origin'e (ve OPTIONS preflight'ına) artık
       izin verilmiyor; frontend akışı (login + yetkili istek + SPA/bundle)
       kırılmadı. `test_security_headers_cors.ts` ile kilitlendi.
-- [ ] **Secrets taraması genişletme** — `gitleaks` mevcut commit geçmişini
-      tarıyor; `.gitleaks.toml` allowlist'inin gereğinden geniş olmadığı
-      (yanlışlıkla gerçek bir secret'ı maskelemediği) elle bir kez gözden
-      geçirilecek.
+- [x] ✅ **Secrets taraması — allowlist incelendi, GERÇEK KÖR NOKTA BULUNDU.**
+      (Not: plandaki "commit geçmişini tarıyor" ifadesi yanlıştı — CI
+      `--no-git` ile yalnızca checkout edilmiş ağacı tarıyor.)
+      **Bulgu:** `.gitleaks.toml` `paths` altında `(^|/)\.env$` hariç
+      tutulmuştu. Gerekçesi yerel geliştiricinin takip dışı `.env`'inin alarm
+      vermemesiydi, ama bu tarayıcıyı **en yaygın gerçek sızıntı senaryosuna
+      (yanlışlıkla commit'lenen `.env`) karşı kör ediyordu.** Repo dışında,
+      gerçek GitHub token desenine uyan sahte bir değerle kanıtlandı:
+      - `.env`, `backend/.env`, `config.txt` → mevcut config yalnızca
+        `config.txt`'i buldu; istisna kaldırılınca **3'ünü de** buldu.
+      - `git add -f .env` sonrası `gitleaks git --pre-commit --staged` bile
+        mevcut config ile **hiçbir şey bulmadı**.
+      **Düzeltmeler:** (1) `.env` istisnası kaldırıldı (CI checkout'unda `.env`
+      yalnızca commit'lenmişse bulunur — yakalanması istenen tam o); yerel
+      kullanım için `gitleaks git --pre-commit --staged` belgelendi. Takip
+      edilen ağaç yeni config ile temiz. (2) CI'a "takip edilen `.env` yasağı"
+      adımı: gitleaks'in kural dışı bıraktığı bir değeri de kapsar
+      (`.env.example` serbest; negatif testle doğrulandı). (3) **gitleaks
+      ikilisi checksum doğrulamasız indiriliyordu** — güvenlik tarayıcısının
+      kendisi supply-chain'e açıktı. SHA-256 resmi checksums dosyasıyla
+      çapraz doğrulanıp pinlendi (bozuk hash ile `sha256sum -c` başarısız
+      olduğu doğrulandı). actionlint ✅.
+      Diğer allowlist girdileri (`ci_only_*`, `__CHANGE_ME_*`, test sabitleri)
+      gitleaks'in varsayılan `regexTarget=secret` davranışıyla yalnızca
+      eşleşen DEĞERİ susturuyor; kabul edilebilir.
 - [ ] **Dependency confusion / supply-chain** — `package-lock.json`'ların
       (root, backend, frontend) HER ZAMAN commit'li ve `npm ci` (npm install
       DEĞİL) ile kurulduğu CI adımlarında doğrulanacak (mevcut CI script'i

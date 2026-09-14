@@ -471,12 +471,27 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # TEST_PLAN.md §5.1 — ikili dosya checksum doğrulaması OLMADAN indiriliyordu:
+      # güvenlik tarayıcısının kendisi supply-chain saldırısına açıktı. SHA-256,
+      # gitleaks'in resmi v8.30.1 checksums dosyasıyla çapraz doğrulandı.
       - name: Install gitleaks
         run: |
           curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" | sha256sum -c -
           tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
           sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
           gitleaks version
+
+      # TEST_PLAN.md §5.1 — .env'in commit'lenmesi en yaygın gerçek sızıntı
+      # senaryosu; gitleaks bir kurala uymayan bir değeri kaçırabilir, bu kontrol
+      # ise DOSYANIN KENDİSİNİN takip edilmesini yasaklar (.env.example serbest).
+      - name: Takip Edilen .env Dosyası Yasağı
+        run: |
+          if git ls-files | grep -E '(^|/)\.env(\.[^/]*)?$' | grep -v '\.env\.example$'; then
+            echo "HATA: yukarıdaki .env dosyası(ları) git tarafından takip ediliyor — gerçek sırlar içerebilir." >&2
+            exit 1
+          fi
+          echo "Takip edilen .env dosyası yok."
 
       - name: Scan checked-out tree for secrets
         run: gitleaks detect --source . --no-git --config .gitleaks.toml --verbose
