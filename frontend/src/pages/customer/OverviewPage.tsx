@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { TankGauge } from '../../components/TankGauge';
@@ -23,6 +23,14 @@ export const OverviewPage: React.FC = () => {
   const [refuelSite, setRefuelSite] = useState(currentCompany.sites[0]?.name || 'Gebze Ana Şantiye');
   const [refuelTank, setRefuelTank] = useState(tanks[0]?.name || 'Gebze Ana Tank (T-1)');
   const [refuelLiters, setRefuelLiters] = useState<number>(250);
+  // TEST_PLAN §2.2 — POST /dispense'in sunucuda doğal bir tekrar anahtarı yok
+  // (aynı araca art arda iki meşru ikmal olabilir); bu yüzden çift tıklama
+  // İKİ ikmal ve tanktan İKİ KEZ düşüm demekti (E2E ile kanıtlandı:
+  // e2e/double-submit.spec.ts). İstek sürerken form kilitlenir.
+  const [isSubmittingRefuel, setIsSubmittingRefuel] = useState(false);
+  // State closure'dan okunur ve aynı render içindeki ikinci olayda hâlâ false
+  // görünür; ref ise SENKRON güncellenir — asıl tekrar kilidi bu.
+  const refuelInFlightRef = useRef(false);
 
   // Filter transactions by site filter
   const filteredTransactions = selectedSiteFilter === 'TÜMÜ'
@@ -67,6 +75,11 @@ export const OverviewPage: React.FC = () => {
   const handleCreateRefuel = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!refuelLiters || refuelLiters <= 0) return;
+    // `disabled` bir sonraki render'da yansır; o render'dan ÖNCE gelen ikinci
+    // submit'i senkron ref ile durduruyoruz.
+    if (refuelInFlightRef.current) return;
+    refuelInFlightRef.current = true;
+    setIsSubmittingRefuel(true);
 
     try {
       await addFuelTransaction({
@@ -84,6 +97,9 @@ export const OverviewPage: React.FC = () => {
     } catch {
       // addFuelTransaction zaten hata toast'ını gösterdi — kullanıcı tekrar
       // deneyebilsin diye modal açık kalır.
+    } finally {
+      refuelInFlightRef.current = false;
+      setIsSubmittingRefuel(false);
     }
   };
 
@@ -384,9 +400,11 @@ export const OverviewPage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 bg-[#ffdca1] text-[#412d00] rounded-xl text-xs font-black hover:bg-[#ffe5b9]"
+                  disabled={isSubmittingRefuel}
+                  aria-busy={isSubmittingRefuel}
+                  className="px-5 py-2.5 bg-[#ffdca1] text-[#412d00] rounded-xl text-xs font-black hover:bg-[#ffe5b9] disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  İkmalı Kaydet
+                  {isSubmittingRefuel ? 'Kaydediliyor…' : 'İkmalı Kaydet'}
                 </button>
               </div>
             </form>

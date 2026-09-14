@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useApp } from '../../context/AppContext';
@@ -47,6 +47,11 @@ export const SiteOperatorPanel: React.FC = () => {
   const [selectedDriverId, setSelectedDriverId] = useState<string>(siteDrivers[0]?.id || '');
   const [amountLiters, setAmountLiters] = useState<number>(150);
   const [isPumpActive, setIsPumpActive] = useState<boolean>(false);
+  // TEST_PLAN §2.2 — POST /dispense'in sunucuda doğal tekrar anahtarı yok;
+  // `disabled={isPumpActive}` yalnızca bir SONRAKİ render'da yansır. Aynı
+  // render içindeki ikinci submit'i senkron ref durdurur (OverviewPage ile aynı
+  // desen, e2e/double-submit.spec.ts ile doğrulandı).
+  const dispenseInFlightRef = useRef(false);
 
   const handleStartRefuel = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,6 +60,8 @@ export const SiteOperatorPanel: React.FC = () => {
     const tank = siteTanks[0];
 
     if (!vehicle || !driver || !tank) return;
+    if (dispenseInFlightRef.current) return;
+    dispenseInFlightRef.current = true;
 
     setIsPumpActive(true);
 
@@ -80,6 +87,7 @@ export const SiteOperatorPanel: React.FC = () => {
     } catch {
       // addFuelTransaction zaten hata toast'ını gösterdi.
     } finally {
+      dispenseInFlightRef.current = false;
       setIsPumpActive(false);
     }
   };

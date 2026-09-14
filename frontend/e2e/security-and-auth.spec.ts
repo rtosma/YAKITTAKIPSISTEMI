@@ -1,4 +1,8 @@
 import { expect, test, type ConsoleMessage, type Page } from '@playwright/test';
+import { resetLoginRateLimit } from './helpers';
+
+// TEST_PLAN §0.3 — giriş yapan testler login rate limiter'ına takılmasın.
+test.beforeEach(() => resetLoginRateLimit());
 
 /**
  * TEST_PLAN.md §3.3 + §5.1 — E2E: CSP gerçek tarayıcıda + oturum zinciri.

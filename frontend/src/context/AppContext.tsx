@@ -955,11 +955,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const fetchTransactions = async () => {
     try {
       // Bu global liste; genel bakış/arşiv gibi widget'ların "son N hareket"
-      // ihtiyacı için makul bir üst sınırla (200) tek seferde çekiliyor.
-      // Tam sayfalı/filtreli geçmiş tablosu (TransactionsPage) artık kendi
-      // TanStack Query kancasıyla ayrıca sunucu taraflı sayfalama yapıyor
-      // (bkz. src/hooks/useTransactionsQuery.ts) — FE-802.
-      const response = await apiFetch('/transactions?page=1&pageSize=200');
+      // ihtiyacı için tek seferde çekiliyor. Tam sayfalı/filtreli geçmiş tablosu
+      // (TransactionsPage) kendi TanStack Query kancasıyla ayrıca sunucu taraflı
+      // sayfalama yapıyor (bkz. src/hooks/useTransactionsQuery.ts) — FE-802.
+      //
+      // TEST_PLAN §2.2/§3.3 — burada önceden pageSize=200 isteniyordu, ama
+      // backend sözleşmesi pageSize ≤ 100 (transactionQuerySchema; DoS sınırı,
+      // test_input_boundaries ile kilitli). İstek HER SEFERİNDE 400 alıyordu:
+      // bu liste FE-802'nin eklendiği günden (aca7241) beri hiç yüklenmiyordu ve
+      // her ikmalden sonra hata toast'ı çıkıyordu. E2E "sayfa yüklenirken
+      // başarısız API çağrısı yok" kontrolü (e2e/api-contract.spec.ts) buldu.
+      const response = await apiFetch('/transactions?page=1&pageSize=100');
       if (response.success && response.data) {
         const mappedTransactions: FuelTransaction[] = response.data.map((t: any) => ({
           id: t.id,

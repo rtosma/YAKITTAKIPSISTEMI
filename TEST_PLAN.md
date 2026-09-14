@@ -118,6 +118,11 @@ boşluklar **route sayısında değil**, aşağıdaki bölümlerde detaylandır�
       **NEDEN rate limiter'ı test ortamında kapatmadık:** o zaman
       production'da aktif bir güvenlik kontrolü test ortamında hiç
       çalışmaz, testlerin ürettiği güvence gerçeği yansıtmazdı.
+- [x] **Ev dizini kotası dolu (4.7 GB'ın %98'i) — ortam çökmelerinin olası
+      nedeni.** Playwright tarayıcı kurulumu `ENOSPC` ile başarısız oldu.
+      Çözüm (başka önbelleklere dokunmadan): tarayıcılar geniş yerel diske
+      kuruldu — `PLAYWRIGHT_BROWSERS_PATH=/goinfre/iekmen/ms-playwright`.
+      E2E komutu: `PLAYWRIGHT_BROWSERS_PATH=/goinfre/iekmen/ms-playwright npm run test:e2e`.
 - [x] **Sıfırdan `docker compose up` bu makinede şema yüklemiyor.**
       Postgres init script'leri (`docker-entrypoint-initdb.d`) konteynerdeki
       `postgres` kullanıcısı (uid 70) olarak çalışır; ancak
@@ -250,11 +255,39 @@ listesine ekliyoruz:
       28 alanın hepsi buna taşındı — 28 tekrarlanan regex tek yere indi.
       Regresyon: tarih kullanan 10 modül (quota, fleet1406/1407/1408/1409,
       hr1801, inv1507, fuel408/409, bill1701) = 124 test, hepsi geçti.
-- [ ] **İdempotency/duplicate-request taraması** — `(device_id,
-      localSequenceId)` gibi var olan desenler dışında, para/stok etkileyen
-      TÜM POST uçlarının bir envanteri çıkarılıp hangilerinin idempotency
-      garantisi olmadığı belgelenecek (yeni kod YAZMADAN önce bir envanter
-      çalışması).
+- [x] ✅ **İdempotency/duplicate-request taraması — envanter çıkarıldı, 2 GERÇEK
+      HATA bulundu ve kapatıldı.** Stok/para yazan fonksiyonların envanteri:
+      | Yol | Tekrar koruması |
+      |---|---|
+      | Cihaz oturumu (finalizeDispenseSession) | ✅ `idempotency_key` |
+      | Çevrimdışı toplu senkron | ✅ `(device_id, local_sequence_id)` UNIQUE |
+      | Manuel ikmal onayı | ✅ FOR UPDATE + durum makinesi |
+      | Envanter sayımı | ✅ mutlak değer yazar (doğası gereği) |
+      | **Yakıt alım irsaliyesi (`POST /tanks/:id/intakes`)** | ❌ → ✅ düzeltildi |
+      | Manuel `POST /dispense`, envanter hareketi | doğal anahtar yok (aynı araca art arda iki meşru ikmal olabilir) → istemci tarafı kilit |
+      **HATA 1 — mükerrer irsaliye hayali stok üretiyordu:** `waybill_no`
+      zorunlu ama benzersiz değildi, kodda kontrol yoktu. Canlı ölçüldü: aynı
+      5.000 L'lik irsaliye iki kez → tank 1.000'den 11.000'e. Bu hayali stok,
+      FUEL-409 mutabakatında gerçek bir kaybı (hırsızlığı) örtebilir. Düzeltme:
+      tank FOR UPDATE kilidinin ARDINDAN (yarış güvenli) aynı tank + tedarikçi
+      (harf/boşluk normalize) + irsaliye no → 409 `DUPLICATE_WAYBILL`. Kapsam
+      bilinçli olarak TANK BAŞINA: tek irsaliyeyle iki tanka bölünen teslimat
+      meşru. Unique index yerine uygulama kontrolü: mevcut verideki olası geçmiş
+      mükerrerler deploy'daki şema uygulamasını kırmasın.
+      `test_idempotency_fuel_intake.ts` 10/10 (eşzamanlı 3 gönderimde tam 1
+      kabul dahil); mutasyonla doğrulandı (kontrol kaldırılınca 7 test kırıldı).
+      **HATA 2 — frontend çift gönderimi yakıtı iki kez düşüyordu:** OverviewPage
+      "İkmalı Kaydet" butonu istek sürerken kilitlenmiyordu. Gerçek tarayıcıda
+      kanıtlandı (Playwright: çift tıklama → 2 `POST /dispense`). Düzeltme: buton
+      `disabled` + handler'da SENKRON `useRef` kilidi (state closure'dan okunduğu
+      için aynı render içindeki ikinci olayı durduramaz). Aynı açık
+      SiteOperatorPanel'de de vardı, aynı desenle kapatıldı.
+      `e2e/double-submit.spec.ts` 3 test; iki katman ayrı ayrı mutasyonla
+      doğrulandı: ref kaldırılınca "aynı görevde iki submit" testi 2 istekle
+      kırıldı, gerçek çift tıklama testi `disabled` sayesinde geçti.
+      **AÇIK (tasarım kararı):** manuel `/dispense` ve envanter hareketlerinde
+      ağ zaman aşımı sonrası TEKRAR GÖNDERME hâlâ sunucu tarafında korunmuyor —
+      kalıcı çözüm istemci üretimli `Idempotency-Key` başlığı olur.
 - [x] **Bağımlılık güvenlik taraması:** ✅ TAMAMLANDI —
       `scripts/check-dependency-audit.mjs` + CI adımı. Düz
       `npm audit --audit-level=high` YERİNE GHSA bazlı allowlist tercih
@@ -366,6 +399,24 @@ Kapsam ilkesi: E2E yalnızca birim testin YAKALAYAMADIĞI şeyler için.
       panelde CSP ihlali yok (connect-src yanlış olsaydı API çağrıları
       burada patlardı)
 - [x] ✅ Token olmadan korumalı sayfaya erişilemiyor (route guard)
+
+**İKİNCİ TUR TAMAMLANDI** — sözleşme taraması + çift gönderim (toplam E2E 11/11).
+- [x] ✅ **Frontend ↔ backend sözleşme taraması (`e2e/api-contract.spec.ts`) —
+      GERÇEK HATA BULDU.** Üç rolün (COMPANY_OWNER, SUPER_ADMIN, şantiye) 18
+      panel sayfası gerçek tarayıcıda açılıp yüklenme sırasındaki API
+      çağrılarından hiçbirinin 4xx/5xx dönmediği doğrulanıyor.
+      **Bulgu:** `AppContext` `GET /transactions?pageSize=200` istiyordu; backend
+      sözleşmesi `pageSize ≤ 100` (DoS sınırı). İstek **18 sayfanın tamamında
+      her yüklenişte 400** alıyordu → genel ikmal listesi hiç yüklenmiyor, her
+      ikmalden sonra hata toast'ı çıkıyordu. İkisi de AYNI commit'te (aca7241,
+      FE-802) girmiş, yani özellik eklendiği günden beri bozuktu. Ne backend
+      testleri (doğru parametre gönderiyor) ne Vitest (fetch mock'lu) bunu
+      görebilirdi. Backend sınırı gevşetilmedi (bilinçli ve test kilitli);
+      frontend `pageSize=100`'e uyduruldu. Tarama başka sözleşme kayması bulmadı.
+- [x] ✅ Çift gönderim E2E'leri — bkz. §2.2 idempotency maddesi.
+- [x] ✅ E2E paketi de login rate-limit'ine takılıyordu (art arda koşularda
+      tüm giriş gerektiren testler 16 sn timeout) → `e2e/helpers.ts`
+      ortak `resetLoginRateLimit` + giriş yardımcıları.
 
 **Sonraki tur (yapılacak):**
 - [ ] Login → dashboard → logout (üç farklı rol: SUPER_ADMIN, COMPANY_OWNER,
@@ -503,6 +554,32 @@ Her madde için: **zaten kapsanan mı, yoksa yeni mi.**
 | **A08 Software/Data Integrity** | HMAC imzalı donanım paketleri, idempotent batch-sync. Kısmen kapsanan — genel idempotency envanteri (bölüm 2.2) tamamlayıcı. |
 | **A09 Logging/Monitoring Failures** | `audit_logs` (27 test dosyası kontrol ediyor), yapısal Pino logu, hassas alan redaksiyonu (RES-902). Kapsanan. |
 | **A10 SSRF** | Dış URL'e istek atan tek nokta Google Gemini API (sabit endpoint) — kullanıcı girdisiyle URL oluşturan bir nokta YOK. Düşük risk, **yeni:** bunu doğrulayan tek bir grep taraması (kod incelemesi, otomatik test gerekmez). |
+
+### 5.0 Proxy Arkasında İstemci IP'si (test sırasında bulundu — planda yoktu)
+
+- [x] ✅ **🔴 Platform geneli giriş kilidi (DoS) — `trust proxy` eksikti.**
+      E2E hata ayıklarken rate-limit anahtarının `rl:auth-login:172.18.0.5`
+      olduğu görüldü — bu nginx konteynerinin IP'si. nginx gerçek istemci
+      IP'sini `X-Forwarded-For` ile iletiyordu ama Express'te `trust proxy`
+      yoktu; tüm istemciler tek IP görünüyordu. **Aynı anda çalışan iki ayrı
+      konteynerle kanıtlandı:** mağdur (172.18.0.7) önce 200 ile girdi;
+      saldırgan (172.18.0.8) KİMLİK BİLGİSİ OLMADAN 10 istek attı (istekleri
+      doğrulama hatası verse bile ortak kovayı doldurdu); ardından mağdur doğru
+      şifreyle **429** aldı. Yani 15 dakikada 10 istekle platformdaki herkesin
+      girişi kilitlenebiliyordu; IP bazlı brute-force koruması da kişisel değil
+      globaldi ve audit/oturum kayıtlarındaki IP'ler hep nginx'i gösteriyordu.
+      **Düzeltme:** `app.set('trust proxy', 1)` — tam olarak tek atlama.
+      nginx `$proxy_add_x_forwarded_for` ile gerçek adresi listenin sonuna
+      eklediği için Express yalnızca o son girdiyi alır; istemcinin eklediği
+      sahte girdiler yok sayılır. Önkoşul: backend portu dışarı yayınlanmamalı
+      (OPS-1102 zaten kaldırmış). Gerçek nginx senaryosu tekrarlandı: saldırgan
+      11. istekte 429, mağdur 200, Redis'te istemci başına ayrı kova.
+      **Test:** `test_trust_proxy_rate_limit.ts` 5/5 (CI'da da çalışır:
+      X-Forwarded-For ile proxy simülasyonu). Eski koda karşı kırmızı (mağdur
+      429). **Sahtecilik testleri mutasyonla doğrulandı:** `trust proxy = 2`
+      yapılınca saldırgan sahte IP ile kilidi aştı ve Test 4-5 kırıldı.
+      **Kilit:** `check-security-headers.mjs` değer tam `1` değilse CI'ı kırar
+      (satır yok → exit 1, `true` → exit 1 negatif testleri yapıldı).
 
 ### 5.1 Ek Güvenlik Test Kalemleri
 - [x] ✅ **CSP header kontrolü — TAMAMLANDI ve EKLENDİ.** Tespit: CSP HİÇ YOKTU.
