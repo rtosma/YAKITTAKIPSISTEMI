@@ -144,6 +144,34 @@ function structuralChecks(file, content) {
       }
     }
 
+    // 1d) Üçüncü taraf action'lar değişmez commit SHA'sına pinlenmeli.
+    //     Tag'ler (v1.0.3) ve branch'ler (@master) sonradan başka bir commit'e
+    //     taşınabilir; o repoyu ele geçiren biri bizim CI'ımızda — ve
+    //     appleboy/ssh-action örneğinde production SSH anahtarımızla — kod
+    //     çalıştırır. Gerçek durum: trivy-action @master (kayan branch),
+    //     ssh-action @v1.0.3 (prod SSH key alan, değiştirilebilir tag) idi.
+    //     GitHub'ın kendi `actions/*` action'ları tag ile kabul ediliyor.
+    const usesMatch = /^\s*(-\s+)?uses:\s*([^\s#]+)/.exec(line);
+    if (usesMatch && !trimmedLine.startsWith('#')) {
+      const ref = usesMatch[2];
+      const isLocalOrDocker = ref.startsWith('./') || ref.startsWith('docker://');
+      const isFirstParty = ref.startsWith('actions/');
+      if (!isLocalOrDocker && !isFirstParty) {
+        const at = ref.split('@')[1] ?? '';
+        if (!/^[0-9a-f]{40}$/.test(at)) {
+          found.push({
+            line: lineNo,
+            rule: 'third-party-action-not-sha-pinned',
+            text: trimmedLine,
+            hint:
+              'Üçüncü taraf action\'ı commit SHA\'sına pinleyin: ' +
+              '`git ls-remote https://github.com/<owner>/<repo> refs/tags/<tag>` ile çözüp ' +
+              '`uses: owner/repo@<40-hex-sha> # <tag>` yazın.'
+          });
+        }
+      }
+    }
+
     // 2) Girinti için sekme karakteri — YAML spec'inde kesinlikle yasak.
     if (/^\t| \t/.test(line)) {
       found.push({

@@ -557,10 +557,28 @@ Her madde için: **zaten kapsanan mı, yoksa yeni mi.**
       Diğer allowlist girdileri (`ci_only_*`, `__CHANGE_ME_*`, test sabitleri)
       gitleaks'in varsayılan `regexTarget=secret` davranışıyla yalnızca
       eşleşen DEĞERİ susturuyor; kabul edilebilir.
-- [ ] **Dependency confusion / supply-chain** — `package-lock.json`'ların
-      (root, backend, frontend) HER ZAMAN commit'li ve `npm ci` (npm install
-      DEĞİL) ile kurulduğu CI adımlarında doğrulanacak (mevcut CI script'i
-      kontrol edilip gerekirse `npm ci`'ye çevrilecek).
+- [x] ✅ **Supply-chain — İNCELENDİ, 2 GERÇEK RİSK KAPATILDI.**
+      - Lockfile'lar: root/backend/frontend `package-lock.json` üçü de takipte;
+        CI'da 7 kurulumun hepsi `npm ci` (hiç `npm install` yok). Sorun yok.
+      - **`aquasecurity/trivy-action@master` — kayan branch.** O repoda master'a
+        giren her commit bizim CI'ımızda çalışıyordu; master HEAD'in son sürümden
+        (v0.36.0) FARKLI olduğu, yani yayımlanmamış kodun çalıştığı görüldü.
+      - **`appleboy/ssh-action@v1.0.3` — production SSH private key'ini alan
+        üçüncü taraf action, değiştirilebilir tag'e bağlı.** Tag'i ele geçiren
+        biri prod anahtarını alırdı.
+      - Düzeltme: 4 üçüncü taraf action commit SHA'sına pinlendi (tag → SHA
+        doğrudan kaynak repolardan `git ls-remote` ile çözüldü; trivy v0.36.0
+        ve ssh-action v1.0.3'ün kullandığımız TÜM girdileri desteklediği
+        `action.yaml`'larından doğrulandı; docker action'larının kayan
+        v3/v5 tag'leri zaten v3.12.0/v5.4.0 ile aynı commit — davranış değişmedi).
+        GitHub'ın kendi `actions/*`'ı tag ile bırakıldı.
+      - Kilit: `check-workflow-yaml.mjs` artık SHA'ya pinlenmemiş her üçüncü
+        taraf action'da CI'ı kırıyor (HEAD sürümüne karşı negatif testte 4/4
+        yakaladı). actionlint ✅.
+      - (Önceki commit) gitleaks ikilisi checksum ile pinlendi.
+      - Kalan küçük not: Docker imajları (`rhysd/actionlint:1.7.12`,
+        `curlimages/curl:latest` load-test'te) tag ile; digest pinleme
+        opsiyonel bir sonraki adım.
 - [ ] **Docker imaj sertleştirme regresyonu** — non-root user, minimal imaj
       boyutu (<150MB, OPS-1101 AC'si) hâlâ geçerli mi diye periyodik kontrol.
 

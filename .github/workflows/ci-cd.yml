@@ -536,10 +536,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build Local Backend Docker Image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: ./backend
           file: ./backend/Dockerfile
@@ -587,7 +587,7 @@ jobs:
         # bundled npm CLI from the runtime image and runs `apk upgrade` for
         # patched OS packages — a fresh scan comes back with zero CRITICAL/HIGH
         # findings. exit-code is back to '1' so a real new CVE actually fails CI.
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 (önceden kayan @master)
         with:
           image-ref: 'yakittakip-backend:ci-${{ github.sha }}'
           format: 'table'
@@ -641,7 +641,7 @@ jobs:
     steps:
       - name: Deploy via SSH (git pull + zero-downtime-deploy.sh)
         if: env.DEPLOY_HOST != ''
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
