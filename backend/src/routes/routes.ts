@@ -34,7 +34,9 @@ import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
 import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes, normalizeRecoveryCode } from '../services/totpService';
 import { isServerShuttingDown } from '../utils/shutdown';
-import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS, getCompanyLicenseSnapshot, getTenantLifecycleStatus, freezeCompany, unfreezeCompany, scheduleTenantDeletion, cancelTenantDeletion, approveTenantDeletion, exportTenantDataEncrypted } from '../db/adminDb';
+import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS, getCompanyLicenseSnapshot, getTenantLifecycleStatus, freezeCompany, unfreezeCompany, scheduleTenantDeletion, cancelTenantDeletion, approveTenantDeletion, exportTenantDataEncrypted, getArchiveSettings, updateArchiveSettings } from '../db/adminDb';
+import { generateArchiveForTenant, listTenantArchives, verifyAndConsumeArchiveDownload } from '../services/tenantArchiveService';
+import { archiveSettingsSchema, createArchiveSchema, archiveIdParamsSchema, archiveDownloadParamsSchema } from '../schemas/archiveSchema';
 import { runLicenseExpiryWarningSweep } from '../services/licenseWarningService';
 import { getUsageMeteringHistory, computeUsageMeteringForCurrentTenant } from '../services/usageMeteringService';
 import { uploadVehicleDocument, getVehicleDocuments, getVehicleDocumentContent } from '../services/vehicleDocumentService';
@@ -5388,6 +5390,134 @@ router.get(
         res.destroy();
         return;
       }
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /companies/me/archive-settings:
+ *   get:
+ *     summary: Periyodik Arşiv Ayarını Getir (REP-702)
+ *     security:
+ *       - bearerAuth: []
+ *   patch:
+ *     summary: Periyodik Arşiv Ayarını Belirle (REP-702)
+ *     description: >
+ *       AC: "Periyot seçimi (7/15/30/90 gün)." `periodDays: null` gönderilirse
+ *       periyodik üretim KAPATILIR — index.ts'teki süpürücü bu firmayı bir
+ *       dahaki turda atlar. Manuel "Şimdi Arşiv Oluştur" (POST /archives)
+ *       bu ayardan BAĞIMSIZ, her zaman çalışır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/companies/me/archive-settings', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const settings = await getArchiveSettings(req.user!.tenantId);
+    if (!settings) throw new NotFoundError('Firma bulunamadı.');
+    res.json({ success: true, data: settings });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.patch(
+  '/companies/me/archive-settings',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  validateRequest({ body: archiveSettingsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const updated = await updateArchiveSettings(req.user!.tenantId, req.body.periodDays, req.user!.userId);
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /archives:
+ *   post:
+ *     summary: "Şimdi Arşiv Oluştur" — Manuel Tetikleyici (REP-702)
+ *     description: >
+ *       AC: "AES-256 şifreli ZIP üretimi ve parola teslimi." Parola YALNIZCA
+ *       bu yanıtta bir kez döner (ticket: "parola panelde tek seferlik
+ *       gösterilmeli") — sunucu tarafında hiçbir yerde ham saklanmaz, bir
+ *       daha asla okunup gösterilemez.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Firmanın Arşiv Geçmişi (REP-702)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/archives',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  validateRequest({ body: createArchiveSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await generateArchiveForTenant(req.user!.tenantId, req.body.periodDays, req.user!.userId, 'MANUEL');
+      res.status(201).json({
+        success: true,
+        message: 'Arşiv üretildi. Parolayı şimdi kaydedin — bir daha gösterilmeyecektir.',
+        data: {
+          archiveId: result.archiveId,
+          password: result.password,
+          downloadUrl: `/api/v1/archives/${result.archiveId}/download/${result.token}`,
+          expiresAt: result.expiresAt
+        }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get('/archives', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await listTenantArchives() });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /archives/{archiveId}/download/{token}:
+ *   get:
+ *     summary: Presigned Arşiv İndirme Bağlantısı (REP-702)
+ *     description: >
+ *       AC: "İndirme bağlantısı süreli olmalı ve indirmeler audit'lenmelidir."
+ *       JWT GEREKTİRMEZ (gerçek "presigned link" semantiği) — auth/login ve
+ *       auth/refresh ile AYNI pre-auth istisnası (bkz.
+ *       check-no-raw-pool-query.mjs ALLOWLIST yorumu: routes.ts, henüz bir
+ *       tenant context'i yokken tenant'ı bulmak için). Tenant bulunduktan
+ *       SONRA `runWithTenant` ile açılan context İÇİNDE (savunma derinliği
+ *       için RLS de devrede) token hash'i + süre kontrol edilir.
+ *     security: []
+ */
+router.get(
+  '/archives/:archiveId/download/:token',
+  validateRequest({ params: archiveDownloadParamsSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const lookup = await pool.query('SELECT tenant_id FROM tenant_archives WHERE id = $1', [req.params.archiveId]);
+      if (lookup.rows.length === 0) {
+        throw new NotFoundError('Geçersiz veya süresi dolmuş indirme bağlantısı.');
+      }
+      const tenantId = lookup.rows[0].tenant_id;
+
+      const payload = await runWithTenant({ tenantId }, () => verifyAndConsumeArchiveDownload(req.params.archiveId, tenantId, req.params.token));
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${payload.fileName}"`);
+      res.send(payload.fileData);
+    } catch (error: any) {
       next(error);
     }
   }

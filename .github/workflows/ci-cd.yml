@@ -384,6 +384,17 @@ jobs:
       - name: Run REP-703 PDF Export Regression Tests
         run: cd backend && npx tsx test/test_rep703_pdf_regression.ts
 
+      # REP-702 (#165) — periyodik/manuel şifreli ZIP arşivleme + presigned
+      # indirme: ayar CRUD'u, RBAC, tenant izolasyonu, presigned bağlantının
+      # şekli + süre kontrolü. GERÇEK AES-256 şifreleme/parola doğrulaması ve
+      # manifest bütünlük kontrolü BİLEREK burada YOK (test_res905/test_iot305
+      # /test_fuel406 ile AYNI gerekçe — `docker` CLI ile bir p7zip
+      # konteyneri gerektirir, GH Actions'ın `services:` modeli bunu
+      # desteklemez) — bkz. test_rep702_archive_encryption.ts'in kendi üst
+      # yorumu; o dosya CI'a EKLENMEDİ, host'ta ayrı çalıştırılır.
+      - name: Run REP-702 Encrypted Archive Framework Tests
+        run: cd backend && npx tsx test/test_rep702_archive_framework.ts
+
       # AI-502: bu job'ta GEMINI_API_KEY kasıtlı olarak SET EDİLMİYOR — test
       # dosyası bunun (bu sandbox'ta da gerçek olan) "yapılandırılmamış"
       # durumunu doğruluyor; asıl AI çıktı-doğrulama mantığı ise Gemini'ye

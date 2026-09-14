@@ -47,7 +47,7 @@ const FONT_BOLD = 'ReportRoboto-Bold';
 // gerçekten süreç genelinde tekil) ile doc'a KAYIT (her doc için ayrı,
 // aşağıda HER ÇAĞRIDA) birbirinden ayrılmalı.
 let cachedFontBuffers: { regular: Buffer; bold: Buffer } | null = null;
-function registerFontsOnDocument(doc: PDFKit.PDFDocument): void {
+export function registerFontsOnDocument(doc: PDFKit.PDFDocument): void {
   if (!cachedFontBuffers) {
     cachedFontBuffers = {
       regular: fs.readFileSync(path.join(FONTS_DIR, 'Roboto-Regular.woff')),
@@ -68,7 +68,7 @@ const BRAND_AMBER = '#ffdca1';
 const BRAND_DARK = '#412d00';
 const LOGO_SIZE = 26;
 
-function drawLogo(doc: PDFKit.PDFDocument, x: number, y: number): void {
+export function drawLogo(doc: PDFKit.PDFDocument, x: number, y: number): void {
   doc.roundedRect(x, y, LOGO_SIZE, LOGO_SIZE, 6).fill(BRAND_AMBER);
   doc.font(FONT_BOLD).fontSize(11).fillColor(BRAND_DARK).text('AŞ', x, y + 7, { width: LOGO_SIZE, align: 'center' });
 }
@@ -204,4 +204,71 @@ export async function streamReportToPdf(res: Response, def: ReportDefinition, qu
   drawSignatureBlock(doc);
   stampPageNumbers(doc);
   doc.end();
+}
+
+export interface ArchiveSummaryPdfInput {
+  companyName: string;
+  periodDays: number;
+  periodStart: string;
+  periodEnd: string;
+  totalTransactions: number;
+  totalLiters: number;
+  deviceCounts: { active: number; blocked: number; online: number; offline: number };
+  generatedAt: Date;
+}
+
+/**
+ * REP-702 — arşiv ZIP'inin "özet PDF" bileşeni. `streamReportToPdf`'in
+ * (yukarıda) tam TABLO motorunu DEĞİL — o rapor SATIRLARI çizer, burada
+ * tek bir sabit alan/değer listesi var — yalnızca ORTAK görsel kimliği
+ * (font kaydı, logo, marka renkleri) paylaşıyor. Bir Express `Response`'a
+ * DEĞİL, doğrudan bir Buffer'a yazar (arşiv motoru içeriği archiver'a
+ * bellekte Buffer olarak verir) — bu yüzden `doc.pipe(res)` yerine 'data'
+ * event'leri biriktiriliyor.
+ */
+export async function buildArchiveSummaryPdfBuffer(input: ArchiveSummaryPdfInput): Promise<Buffer> {
+  const doc = new PDFDocument({ margin: 50, size: 'A4' });
+  const chunks: Buffer[] = [];
+  const done = new Promise<Buffer>((resolve, reject) => {
+    doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+    doc.on('error', reject);
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+  });
+  registerFontsOnDocument(doc);
+
+  const startX = doc.page.margins.left;
+  const startY = doc.page.margins.top;
+  drawLogo(doc, startX, startY);
+  doc.font(FONT_BOLD).fontSize(16).fillColor('#000').text('Dönemsel Arşiv Özeti', startX + LOGO_SIZE + 10, startY + 2);
+  doc.font(FONT_REGULAR).fontSize(9).fillColor('#555').text(
+    `${input.companyName} — Oluşturulma: ${input.generatedAt.toLocaleString('tr-TR')}`,
+    startX + LOGO_SIZE + 10,
+    startY + 20
+  );
+  doc.y = startY + LOGO_SIZE + 20;
+  doc.x = startX;
+  doc.moveDown(1.5);
+
+  function row(label: string, value: string) {
+    doc.font(FONT_BOLD).fontSize(10).fillColor('#000').text(label, startX, doc.y, { continued: true, width: 260 });
+    doc.font(FONT_REGULAR).fontSize(10).fillColor('#222').text(`  ${value}`);
+    doc.moveDown(0.5);
+  }
+
+  row('Dönem:', `${input.periodDays} gün (${input.periodStart} — ${input.periodEnd})`);
+  row('Toplam İkmal Hareketi:', String(input.totalTransactions));
+  row('Toplam Yakıt (Litre):', input.totalLiters.toFixed(2));
+  row('Kayıtlı Cihaz (Aktif / Bloke):', `${input.deviceCounts.active} / ${input.deviceCounts.blocked}`);
+  row('Anlık Cihaz Durumu (Çevrimiçi / Çevrimdışı):', `${input.deviceCounts.online} / ${input.deviceCounts.offline}`);
+
+  doc.moveDown(1.5);
+  doc.font(FONT_REGULAR).fontSize(8).fillColor('#888').text(
+    'Not: Yukarıdaki cihaz durumu bu paketin ÜRETİLDİĞİ ANDAKİ anlık görüntüdür — sistemde geçmişe dönük ham ' +
+    'telemetri kaydı (uplink günlüğü) TUTULMAZ (bkz. lorawanUplinkService.ts: olay veri yolu + Redis presence, ' +
+    'kalıcı log yok); dönem boyunca bir telemetri GÜNLÜĞÜ değildir. Ayrıntı: telemetri-ozeti.json.',
+    { width: doc.page.width - startX - doc.page.margins.right }
+  );
+
+  doc.end();
+  return done;
 }

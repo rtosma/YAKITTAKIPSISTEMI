@@ -12,7 +12,8 @@ import { pool } from './db/postgresPool';
 import { redisPool } from './db/redisPool';
 import { mqttService } from './iot/mqttClient';
 import routes from './routes/routes';
-import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing, sweepTimedOutCalibrations, getAllTenantIdsWithAiAnomalyEnabled, getAllTenantIds } from './db/adminDb';
+import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing, sweepTimedOutCalibrations, getAllTenantIdsWithAiAnomalyEnabled, getAllTenantIds, listCompaniesDueForPeriodicArchive, sweepExpiredArchives, touchArchiveLastGenerated } from './db/adminDb';
+import { generateArchiveForTenant } from './services/tenantArchiveService';
 import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
@@ -533,6 +534,50 @@ async function startServer(): Promise<void> {
     }
   }, INVENTORY_CRITICAL_STOCK_SWEEP_MS);
 
+  // REP-702 AC: "Periyot seçimi (7/15/30/90 gün)... tetikleyicisi." Ticket
+  // BullMQ + @nestjs/schedule öneriyor — yok; yukarıdaki süpürücülerle AYNI
+  // düz setInterval. Günlük bir tur: `companies.archive_period_days` ayarlı
+  // VE süresi gelmiş (hiç üretilmemiş ya da son üretimden `period_days` gün
+  // geçmiş) her firma için şifreli arşivi üretir. Tek bir firmanın hatası
+  // (örn. o anki bir DB/Redis sıçraması) diğerlerini durdurmaz — sırayla,
+  // her biri kendi try/catch'i içinde.
+  const ARCHIVE_GENERATION_SWEEP_MS = 24 * 60 * 60 * 1000;
+  const archiveGenerationSweepInterval = setInterval(async () => {
+    let due: Array<{ tenantId: string; periodDays: number }> = [];
+    try {
+      due = await listCompaniesDueForPeriodicArchive();
+    } catch (err) {
+      logger.error({ err }, '🚨 [REP-702] Süresi gelen arşiv firmaları listelenemedi, bu tur atlandı.');
+      return;
+    }
+    for (const { tenantId, periodDays } of due) {
+      try {
+        await runWithTenant({ tenantId }, () => generateArchiveForTenant(tenantId, periodDays as 7 | 15 | 30 | 90, null, 'PERIYODIK'));
+        await touchArchiveLastGenerated(tenantId);
+        logger.info({ tenantId, periodDays }, '📦 [REP-702] Periyodik arşiv turu: firma için yeni arşiv üretildi.');
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [REP-702] Periyodik arşiv üretimi başarısız.');
+      }
+    }
+  }, ARCHIVE_GENERATION_SWEEP_MS);
+
+  // AC ile dolaylı ilgili (ARŞİV depolamasının süresiz büyümemesi) — süresi
+  // dolmuş arşivlerin BYTEA içeriğini temizler (bkz. adminDb.ts'teki
+  // sweepExpiredArchives yorumu: satırın kendisi/denetim geçmişi kalır,
+  // sadece dosya verisi silinir). Günlük yeterli — `expires_at` gün
+  // granülaritesinde bir SLA değil, saatlik bir hassasiyet gerektirmiyor.
+  const ARCHIVE_CLEANUP_SWEEP_MS = 24 * 60 * 60 * 1000;
+  const archiveCleanupSweepInterval = setInterval(async () => {
+    try {
+      const cleaned = await sweepExpiredArchives();
+      if (cleaned > 0) {
+        logger.info({ cleaned }, `🧹 [REP-702] Süresi dolmuş arşiv temizliği: ${cleaned} arşivin dosyası temizlendi.`);
+      }
+    } catch (err) {
+      logger.error({ err }, '🚨 [REP-702] Süresi dolmuş arşiv temizliği başarısız.');
+    }
+  }, ARCHIVE_CLEANUP_SWEEP_MS);
+
   // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
   setupGracefulShutdown(server, {
     timeoutMs: 30000,
@@ -552,6 +597,8 @@ async function startServer(): Promise<void> {
       clearInterval(maintenanceReminderSweepInterval);
       clearInterval(fleetComplianceSweepInterval);
       clearInterval(inventoryCriticalStockSweepInterval);
+      clearInterval(archiveGenerationSweepInterval);
+      clearInterval(archiveCleanupSweepInterval);
 
       // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
       // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters

@@ -471,6 +471,82 @@ export async function getCompanyLicenseSnapshot(companyId: string): Promise<Comp
 }
 
 // ============================================================================
+// REP-702 — Arşiv Ayarları (companies.archive_period_days/archive_last_generated_at)
+// ============================================================================
+// `companies` üzerindeki app_user UPDATE yetkisi schema.sql'de bilerek geri
+// alınmış (bkz. dosya başındaki REVOKE) — bu yüzden getCompanyLicenseSnapshot
+// ile AYNI gerekçeyle burada da doğrudan `pool` (superuser). Bu fonksiyonlar
+// SUPER_ADMIN'e ÖZEL DEĞİLDİR (dosya başındaki genel nottan farklı olarak) —
+// getCompanyLicenseSnapshot'ın login akışındaki KULLANIMIYLA AYNI istisna:
+// `companies` tablosunun kendisi RLS'siz olduğundan JWT'den gelen (istemcinin
+// DEĞİŞTİREMEYECEĞİ) tenantId ile `WHERE id = $1` filtrelemesi güvenlidir —
+// routes.ts'teki COMPANY_OWNER-gated route bu tenantId'yi asla istemciden
+// almaz, req.user.tenantId'den (JWT claim) okur.
+
+export interface ArchiveSettings {
+  periodDays: number | null;
+  lastGeneratedAt: string | null;
+}
+
+export async function getArchiveSettings(tenantId: string): Promise<ArchiveSettings | null> {
+  const result = await pool.query('SELECT archive_period_days, archive_last_generated_at FROM companies WHERE id = $1', [tenantId]);
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  return {
+    periodDays: row.archive_period_days,
+    lastGeneratedAt: row.archive_last_generated_at ? new Date(row.archive_last_generated_at).toISOString() : null
+  };
+}
+
+export async function updateArchiveSettings(tenantId: string, periodDays: number | null, actorUserId: string): Promise<ArchiveSettings> {
+  const before = await getArchiveSettings(tenantId);
+  if (before === null) throw new NotFoundError('Firma bulunamadı.');
+
+  await pool.query('UPDATE companies SET archive_period_days = $1 WHERE id = $2', [periodDays, tenantId]);
+  await insertCompanyAuditLog(tenantId, actorUserId, 'ARCHIVE_SETTINGS_UPDATE', 'company', tenantId, { periodDays: before.periodDays }, { periodDays });
+
+  return { periodDays, lastGeneratedAt: before.lastGeneratedAt };
+}
+
+export async function touchArchiveLastGenerated(tenantId: string): Promise<void> {
+  await pool.query('UPDATE companies SET archive_last_generated_at = CURRENT_TIMESTAMP WHERE id = $1', [tenantId]);
+}
+
+/**
+ * index.ts'teki periyodik arşiv süpürücüsü için: `archive_period_days` ayarlı
+ * VE (hiç üretilmemiş YA DA son üretimden bu yana o kadar gün geçmiş) firmalar.
+ * sweepTimedOutCalibrations ile AYNI gerekçeyle TÜM tenant'lara bakan ham
+ * `pool.query` (tek bir tenant'a değil, sistem genelinde periyodik bir tur).
+ */
+export async function listCompaniesDueForPeriodicArchive(): Promise<Array<{ tenantId: string; periodDays: number }>> {
+  const result = await pool.query(
+    `SELECT id, archive_period_days FROM companies
+     WHERE archive_period_days IS NOT NULL
+       AND (archive_last_generated_at IS NULL OR archive_last_generated_at <= NOW() - (archive_period_days || ' days')::interval)`
+  );
+  return result.rows.map((r) => ({ tenantId: r.id, periodDays: r.archive_period_days }));
+}
+
+/**
+ * AC ile dolaylı ilgili — arşivler `expires_at`'in ötesinde süresiz
+ * saklanmamalı (hem BYTEA depolama alanını hem de eski parolaların sonsuza
+ * dek geçerli bir ZIP'e karşı denenebilir olma yüzeyini büyütür). Süresi
+ * dolan arşivlerin `file_data`'sını NULL'a çeker (satırın kendisini SİLMEZ —
+ * `download_count`/denetim geçmişi bir süre daha görünür kalsın), sonraki bir
+ * indirme denemesi `verifyAndConsumeArchiveDownload`'daki `expires_at` kontrolüne
+ * zaten çarpar; burada AYRICA `file_data`'yı temizlemek BYTEA depolamayı
+ * gerçekten boşaltır (aksi halde sadece erişim engellenir, alan boşalmaz).
+ * `status`'a dokunulmuyor (KASITLI) — 'BASARISIZ' bir ÜRETİM hatası anlamına
+ * gelir (yorum: 'HAZIRLANIYOR' | 'HAZIR' | 'BASARISIZ'), süresi dolmuş bir
+ * arşiv onunla karıştırılmamalı; "artık indirilemez" bilgisi zaten
+ * `expires_at`'in geçmişte olmasından + `file_data IS NULL`'dan okunabilir.
+ */
+export async function sweepExpiredArchives(): Promise<number> {
+  const result = await pool.query(`UPDATE tenant_archives SET file_data = NULL WHERE expires_at < NOW() AND file_data IS NOT NULL`);
+  return result.rowCount ?? 0;
+}
+
+// ============================================================================
 // BILL-1702 — Şantiye/Cihaz/Kullanıcı Sayacı, Paket Limitleri, Lisans Süresi Uyarıları
 // ============================================================================
 

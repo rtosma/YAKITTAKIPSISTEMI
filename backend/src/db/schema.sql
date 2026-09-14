@@ -48,6 +48,19 @@ ALTER TABLE companies ADD COLUMN IF NOT EXISTS deletion_scheduled_at TIMESTAMP W
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS deletion_requested_by VARCHAR(64);
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS deletion_reason TEXT;
 
+-- REP-702: periyodik şifreli arşiv ayarı. NULL = periyodik oluşturma kapalı
+-- (yalnızca "Şimdi Arşiv Oluştur" ile manuel tetikleme). archive_period_days
+-- 7/15/30/90 dışında bir değer alamaz (uygulama katmanında Zod ile zorlanır,
+-- burada CHECK ile ikinci savunma katmanı).
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS archive_period_days INTEGER;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS archive_last_generated_at TIMESTAMP WITH TIME ZONE;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'companies_archive_period_days_check') THEN
+    ALTER TABLE companies ADD CONSTRAINT companies_archive_period_days_check
+      CHECK (archive_period_days IS NULL OR archive_period_days IN (7, 15, 30, 90));
+  END IF;
+END $$;
+
 -- ARCH-108: kalıcı silme için TOPLANAN onaylar. AC: "iki farklı SUPER_ADMIN
 -- onayı olmadan silme gerçekleşemez" — (tenant_id, approved_by) PRIMARY KEY
 -- olduğundan AYNI admin iki kez onaylayıp sayacı kendi başına ikiye
@@ -1377,6 +1390,37 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 
+-- REP-702: periyodik/manuel şifreli (AES-256) tenant veri arşivi.
+-- `file_data` — bu yığında S3/nesne depolama YOK (Postgres + Redis dışında
+-- durum tutan bir servis yok); dosya BYTEA olarak DB'de tutulur. Bu, birden
+-- fazla backend replikasının AYNI arşive erişebilmesi için ZORUNLU (yerel
+-- diske yazmak, "hangi replika üretti, hangi replika indirme isteğini
+-- karşılıyor" tutarsızlığı yaratırdı — Dockerfile'ın "runtime'da /app'e
+-- hiçbir şey YAZMIYOR" ilkesiyle de çelişirdi). Büyük kurumsal ölçek için
+-- gerçek bir nesne depolamaya taşınmalı — bkz. tenantArchiveService.ts.
+-- `download_token_hash` — AUTH-206 şifre sıfırlama token'ıyla AYNI desen:
+-- ham token ASLA saklanmaz, yalnızca SHA-256'sı.
+CREATE TABLE IF NOT EXISTS tenant_archives (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    requested_by VARCHAR(64),
+    period_days INTEGER NOT NULL,
+    trigger_type VARCHAR(16) NOT NULL DEFAULT 'MANUEL', -- 'MANUEL' | 'PERIYODIK'
+    status VARCHAR(16) NOT NULL DEFAULT 'HAZIRLANIYOR', -- 'HAZIRLANIYOR' | 'HAZIR' | 'BASARISIZ'
+    file_data BYTEA,
+    file_size_bytes BIGINT,
+    manifest_sha256 VARCHAR(64),
+    download_token_hash VARCHAR(64) NOT NULL,
+    download_count INTEGER NOT NULL DEFAULT 0,
+    last_downloaded_at TIMESTAMP WITH TIME ZONE,
+    error_message TEXT,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP WITH TIME ZONE
+);
+CREATE INDEX IF NOT EXISTS idx_tenant_archives_tenant_created ON tenant_archives(tenant_id, created_at DESC);
+ALTER TABLE tenant_archives ENABLE ROW LEVEL SECURITY;
+
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO app_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO app_user;
 
@@ -1501,6 +1545,7 @@ ALTER TABLE company_module_addons FORCE ROW LEVEL SECURITY;
 ALTER TABLE tenant_deletion_approvals FORCE ROW LEVEL SECURITY;
 ALTER TABLE usage_metering_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings FORCE ROW LEVEL SECURITY;
+ALTER TABLE tenant_archives FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -1549,6 +1594,7 @@ DROP POLICY IF EXISTS company_module_addons_tenant_isolation_policy ON company_m
 DROP POLICY IF EXISTS tenant_deletion_approvals_tenant_isolation_policy ON tenant_deletion_approvals;
 DROP POLICY IF EXISTS usage_metering_records_tenant_isolation_policy ON usage_metering_records;
 DROP POLICY IF EXISTS vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_readings;
+DROP POLICY IF EXISTS tenant_archives_tenant_isolation_policy ON tenant_archives;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -1799,6 +1845,11 @@ CREATE POLICY lab_test_results_tenant_isolation_policy ON lab_test_results
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
 CREATE POLICY vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_readings
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY tenant_archives_tenant_isolation_policy ON tenant_archives
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

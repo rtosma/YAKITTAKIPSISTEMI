@@ -17,6 +17,10 @@ function csvEscape(value: unknown): string {
   return s;
 }
 
+function formatCsvRow(def: ReportDefinition, row: Record<string, unknown>): string {
+  return def.columns.map((c) => csvEscape(c.format ? c.format(row[c.key]) : row[c.key])).join(',');
+}
+
 export async function streamReportToCsv(res: Response, def: ReportDefinition, query: ReportQueryParams, siteScope: string | undefined): Promise<void> {
   const filenameDate = new Date().toISOString().slice(0, 10);
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -28,10 +32,26 @@ export async function streamReportToCsv(res: Response, def: ReportDefinition, qu
 
   await streamReportExport(def, query, siteScope, (rows) => {
     for (const row of rows) {
-      const line = def.columns.map((c) => csvEscape(c.format ? c.format(row[c.key]) : row[c.key])).join(',');
-      res.write(line + '\r\n');
+      res.write(formatCsvRow(def, row) + '\r\n');
     }
   });
 
   res.end();
+}
+
+/**
+ * REP-702 — arşiv ZIP'i içine gömülecek CSV içeriğini bir Express `Response`
+ * OLMADAN, doğrudan bellekte üretir (`streamReportToCsv`'nin akışlı yazma
+ * hedefi burada yok — arşiv motoru içeriği archiver'a Buffer olarak verir).
+ * Dönemsel arşivlerdeki satır sayısı (varsayılan 90 gün) `streamReportExport`'un
+ * bellek-dostu keyset sayfalamasıyla zaten sınırlı olduğundan tüm çıktının
+ * bir kerede biriktirilmesi (streamReportToCsv'nin bilerek YAPMADIĞI şey)
+ * burada kabul edilebilir bir maliyettir.
+ */
+export async function buildReportCsvBuffer(def: ReportDefinition, query: ReportQueryParams, siteScope: string | undefined): Promise<Buffer> {
+  const lines: string[] = [def.columns.map((c) => csvEscape(c.header)).join(',')];
+  await streamReportExport(def, query, siteScope, (rows) => {
+    for (const row of rows) lines.push(formatCsvRow(def, row));
+  });
+  return Buffer.from('﻿' + lines.join('\r\n') + '\r\n', 'utf-8');
 }
