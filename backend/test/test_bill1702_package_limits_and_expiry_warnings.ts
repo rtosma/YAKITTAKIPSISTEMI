@@ -120,6 +120,30 @@ async function run() {
     `status: ${device6Res.status}, yanıt: ${JSON.stringify(device6Res.data)}`
   );
 
+  // --- Test 2c: AC "Cihaz sayımı pasif cihazları içermemelidir" — 5
+  // cihazdan biri BLOKE edilince limit sayımından DÜŞMELİ, yeni bir cihaz
+  // eklenebilmeli. Canlı doğrulanan gerçek bug: getCompanyPackageUsage
+  // önceden hardware_devices'ı status FİLTRESİZ sayıyordu — BLOKE bir cihaz
+  // hâlâ limiti tıkıyordu.
+  const devicesListRes = await api('GET', '/hardware-devices', ownerToken);
+  const ownDevices = (devicesListRes.data?.data || []).filter((d: any) => d.name === 'Test Cihaz 1');
+  const deviceToBlock = ownDevices[0]?.device_id;
+  check('Ön koşul (2c): bloke edilecek "Test Cihaz 1" bulundu', !!deviceToBlock, `bulunan=${deviceToBlock}`);
+
+  const blockRes = await api('POST', `/hardware-devices/${deviceToBlock}/block`, ownerToken);
+  check('Test 2c: bir cihaz BLOKE edilebiliyor', blockRes.status === 200, `status=${blockRes.status}`);
+
+  const device7AfterBlockRes = await api('POST', '/hardware-devices', ownerToken, {
+    deviceId: `BILL1702-DEV-${Date.now()}-7`,
+    name: 'Test Cihaz 7',
+    siteName: defaultSiteName
+  });
+  check(
+    'Test 2d: BLOKE cihaz limit sayımından DÜŞER — yeni cihaz artık kabul edilir (5/5 değil 4/5) — önceden bu bug yüzünden 409 dönerdi',
+    device7AfterBlockRes.status === 200,
+    `status: ${device7AfterBlockRes.status}, yanıt: ${JSON.stringify(device7AfterBlockRes.data)}`
+  );
+
   // --- Test 3: paket PROFESYONEL'e yükseltilince (maxSites=5) aynı şantiye isteği artık geçer ---
   await api('PATCH', `/companies/${companyId}`, adminToken, { package: 'PROFESYONEL' });
   await sleep(200);

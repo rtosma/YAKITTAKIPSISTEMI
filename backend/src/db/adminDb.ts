@@ -582,9 +582,12 @@ export async function getCompanyPackageUsage(companyId: string): Promise<Package
   if (companyRes.rows.length === 0) return null;
   const packageTier: PackageTier = isPackageTier(companyRes.rows[0].package) ? companyRes.rows[0].package : 'TEMEL';
 
+  // BILL-1702 AC: "Cihaz sayımı pasif cihazları içermemelidir." Önceden
+  // BLOKE (pasif) cihazlar da sayılıyordu — BILL-1704'ün usageMeteringService.ts'te
+  // ZATEN doğru uyguladığı AYNI filtre (status != 'BLOKE') burada da uygulandı.
   const [sitesRes, devicesRes, usersRes] = await Promise.all([
     pool.query('SELECT COUNT(*)::int AS cnt FROM sites WHERE tenant_id = $1', [companyId]),
-    pool.query('SELECT COUNT(*)::int AS cnt FROM hardware_devices WHERE tenant_id = $1', [companyId]),
+    pool.query(`SELECT COUNT(*)::int AS cnt FROM hardware_devices WHERE tenant_id = $1 AND status != 'BLOKE'`, [companyId]),
     pool.query('SELECT COUNT(*)::int AS cnt FROM users WHERE tenant_id = $1', [companyId])
   ]);
 
