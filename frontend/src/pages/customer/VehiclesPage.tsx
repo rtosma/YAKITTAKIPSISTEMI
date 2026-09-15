@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Vehicle } from '../../types';
 import { isValidPlate } from '../../utils/validation';
+import { VehicleMaintenanceModal } from '../../components/VehicleMaintenanceModal';
 
 export const VehiclesPage: React.FC = () => {
   const { vehicles, selectedSiteFilter, addVehicle, updateVehicle, deleteVehicle, currentCompany, drivers, isManagerMode, currentUser, sites } = useApp();
@@ -12,6 +13,8 @@ export const VehiclesPage: React.FC = () => {
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
   const [deletingVehicle, setDeletingVehicle] = useState<Vehicle | null>(null);
+  // FLEET-1407 AC: "Bakım kayıtları araç kartında listelenmelidir."
+  const [maintenanceVehicle, setMaintenanceVehicle] = useState<Vehicle | null>(null);
 
   // Form Fields
   const [plate, setPlate] = useState('');
@@ -192,6 +195,13 @@ export const VehiclesPage: React.FC = () => {
                 </td>
                 <td className="py-3.5 px-4 text-right">
                   <div className="flex items-center justify-end space-x-1">
+                    <button
+                      onClick={() => setMaintenanceVehicle(v)}
+                      title="Bakım Geçmişi"
+                      className="p-1.5 text-[#d5c4ab] hover:text-[#a1e8a2] hover:bg-[#353535] rounded transition-colors cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-base">build</span>
+                    </button>
                     <button
                       onClick={() => handleOpenEdit(v)}
                       title="Düzenle"
@@ -515,6 +525,10 @@ export const VehiclesPage: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {maintenanceVehicle && (
+        <VehicleMaintenanceModal vehicle={maintenanceVehicle} onClose={() => setMaintenanceVehicle(null)} />
       )}
 
     </div>

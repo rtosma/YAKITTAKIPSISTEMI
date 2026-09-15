@@ -56,6 +56,23 @@ export interface UnmatchedRfidAlert {
   detectedAt: string;
 }
 
+// FLEET-1407 — bir aracın bakım/servis geçmişi (append-only, backend
+// vehicle_maintenance_records tablosu).
+export interface VehicleMaintenanceRecord {
+  id: string;
+  vehicleId: string;
+  vehiclePlate: string;
+  maintenanceType: string;
+  performedAt: string;
+  odometerValue: number | null;
+  costAmount: number;
+  operationsDescription: string;
+  nextDueDate: string | null;
+  nextDueMeterValue: number | null;
+  createdBy: string;
+  createdAt: string;
+}
+
 export interface Driver {
   id: string;
   name: string;
