@@ -42,7 +42,7 @@ test('dondurulmuş tenant kullanıcısı girişte engellenir ve nedenini görür
   }
 });
 
-test('araç CRUD: ekle → listede görünür → aynı plaka backend mesajıyla reddedilir → sil', async ({ page }) => {
+test('araç CRUD: ekle → listede görünür → aynı plaka backend mesajıyla reddedilir → pasife al', async ({ page }) => {
   const plate = `34 ETE ${1000 + Math.floor(Math.random() * 9000)}`;
   try {
     await loginCompanyUser(page, 'camsa');
@@ -67,12 +67,16 @@ test('araç CRUD: ekle → listede görünür → aynı plaka backend mesajıyla
     await expect(page.getByText(/Araç eklenirken hata: .*zaten kayıtlı/)).toBeVisible();
     await expect(page.locator('tr', { hasText: plate })).toHaveCount(1);
 
-    const del = page.waitForResponse((r) => r.url().includes('/api/v1/vehicles/') && r.request().method() === 'DELETE');
-    await page.locator('tr', { hasText: plate }).getByTitle('Sil').click();
-    await page.getByRole('button', { name: 'Sil ve Kaldır' }).click();
-    expect((await del).status()).toBe(200);
-    await expect(page.locator('tr', { hasText: plate })).toHaveCount(0);
-    expect(psql(`SELECT count(*) FROM vehicles WHERE plate = '${plate}'`)).toBe('0');
+    // FLEET-1401: "Sil" artık gerçek bir silme DEĞİL — aracı 'PASİF'e alır,
+    // kayıt (ve geçmişi) korunur. Buton/onay metni buna göre değişti
+    // ("Pasife Al"); satır listeden KAYBOLMAZ, PASİF rozetiyle kalır.
+    const deactivate = page.waitForResponse((r) => r.url().includes('/api/v1/vehicles/') && r.request().method() === 'DELETE');
+    await page.locator('tr', { hasText: plate }).getByTitle('Pasife Al').click();
+    await page.getByRole('button', { name: 'Pasife Al' }).click();
+    expect((await deactivate).status()).toBe(200);
+    await expect(page.locator('tr', { hasText: plate })).toHaveCount(1);
+    await expect(page.locator('tr', { hasText: plate })).toContainText('PASİF');
+    expect(psql(`SELECT status FROM vehicles WHERE plate = '${plate}'`)).toBe('PASİF');
   } finally {
     psql(`DELETE FROM vehicles WHERE plate = '${plate}' AND tenant_id = 'comp-camsa'`);
   }

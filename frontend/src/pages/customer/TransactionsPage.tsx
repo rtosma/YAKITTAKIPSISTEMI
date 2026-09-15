@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../../context/AppContext';
 import { exportToExcelWithTotals } from '../../utils/excelExporter';
 import { FuelTransaction } from '../../types';
@@ -7,31 +8,67 @@ import { useTransactionsQuery, useDebouncedValue, fetchAllFilteredTransactions, 
 export const TransactionsPage: React.FC = () => {
   const { selectedSiteFilter, currentCompany, drivers, isManagerMode, currentUser, showToast } = useApp();
 
+  // FE-802 AC: "Filtreler URL ile senkron olmalıdır" (?page=1&site=...&startDate=...)
+  // — sayfa yenilenince/bağlantı paylaşılınca filtreler ÖNCEDEN kayboluyordu.
+  // Başlangıç durumu URL'den okunuyor (varsa), sonraki her değişiklik
+  // aşağıdaki yazıcı effect'le GERİ URL'e yazılıyor.
+  const [searchParams, setSearchParams] = useSearchParams();
+
   // Filter States
-  const [startDate, setStartDate] = useState<string>('');
-  const [endDate, setEndDate] = useState<string>('');
-  const [siteFilter, setSiteFilter] = useState<string>(selectedSiteFilter);
-  const [searchTerm, setSearchTerm] = useState<string>('');
-  const [driverFilter, setDriverFilter] = useState<string>('TÜMÜ');
-  const [pumpStatusFilter, setPumpStatusFilter] = useState<string>('TÜMÜ');
-  const [selectedType, setSelectedType] = useState<string>('TÜMÜ');
+  const [startDate, setStartDate] = useState<string>(() => searchParams.get('startDate') || '');
+  const [endDate, setEndDate] = useState<string>(() => searchParams.get('endDate') || '');
+  const [siteFilter, setSiteFilter] = useState<string>(() => searchParams.get('site') || selectedSiteFilter);
+  const [searchTerm, setSearchTerm] = useState<string>(() => searchParams.get('q') || '');
+  const [driverFilter, setDriverFilter] = useState<string>(() => searchParams.get('driver') || 'TÜMÜ');
+  const [pumpStatusFilter, setPumpStatusFilter] = useState<string>(() => searchParams.get('pumpStatus') || 'TÜMÜ');
+  const [selectedType, setSelectedType] = useState<string>(() => searchParams.get('type') || 'TÜMÜ');
 
   // Export Loading State
   const [isExporting, setIsExporting] = useState<boolean>(false);
 
   // Pagination State
-  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [currentPage, setCurrentPage] = useState<number>(() => {
+    const fromUrl = Number(searchParams.get('page'));
+    return Number.isFinite(fromUrl) && fromUrl > 0 ? Math.floor(fromUrl) : 1;
+  });
   const pageSize = 10;
 
-  // Sync with global header site filter if user changes header
+  // Sync with global header site filter if user changes header — İLK
+  // render'da ÇALIŞTIRILMAZ (yukarıdaki lazy initializer zaten URL'deki
+  // 'site' parametresini YA DA header'ın o anki değerini kullanıyor; bu
+  // effect ilk seferde de çalışsaydı URL'den geri yüklenen siteFilter'ı
+  // hemen ÜZERİNE yazardı).
+  const isFirstSiteSyncRef = useRef(true);
   useEffect(() => {
+    if (isFirstSiteSyncRef.current) {
+      isFirstSiteSyncRef.current = false;
+      return;
+    }
     setSiteFilter(selectedSiteFilter);
     setCurrentPage(1);
   }, [selectedSiteFilter]);
 
-  // FE-802 — arama kutusu her tuş vuruşunda değil, kullanıcı yazmayı
-  // bitirdikten ~400ms sonra sunucuya gitsin.
-  const debouncedSearchTerm = useDebouncedValue(searchTerm, 400);
+  // FE-802 Kapsam: "Arama girdilerinde 300ms debounce" — arama kutusu her
+  // tuş vuruşunda değil, kullanıcı yazmayı bitirdikten ~300ms sonra sunucuya gitsin.
+  const debouncedSearchTerm = useDebouncedValue(searchTerm, 300);
+
+  // Filtre/sayfa değiştikçe URL'i GÜNCEL durumla senkron tutar (AC).
+  // `replace: true` — her tuş vuruşunda/filtre değişiminde tarayıcı geçmişini
+  // ŞİŞİRMEMEK için (aksi halde "geri" tuşu kullanılamaz hale gelirdi).
+  // Varsayılan değerler ('TÜMÜ', boş, page 1) URL'i kirletmemek için hiç yazılmaz.
+  useEffect(() => {
+    const params: Record<string, string> = {};
+    if (startDate) params.startDate = startDate;
+    if (endDate) params.endDate = endDate;
+    if (siteFilter !== 'TÜMÜ') params.site = siteFilter;
+    if (driverFilter !== 'TÜMÜ') params.driver = driverFilter;
+    if (pumpStatusFilter !== 'TÜMÜ') params.pumpStatus = pumpStatusFilter;
+    if (selectedType !== 'TÜMÜ') params.type = selectedType;
+    if (searchTerm) params.q = searchTerm;
+    if (currentPage > 1) params.page = String(currentPage);
+    setSearchParams(params, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startDate, endDate, siteFilter, driverFilter, pumpStatusFilter, selectedType, searchTerm, currentPage]);
 
   // Sunucuya gidecek filtre seti — bunlardan biri değiştiğinde React Query
   // otomatik olarak yeni bir sayfa isteği atar (queryKey bu nesneyi içeriyor).
