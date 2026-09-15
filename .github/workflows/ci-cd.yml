@@ -431,6 +431,14 @@ jobs:
       - name: Run FLEET-1402 RFID Matching Tests
         run: cd backend && npx tsx test/test_fleet1402_rfid_matching.ts
 
+      # FLEET-1403 (#79) — TC kimlik no'nun COMP-605'in GERÇEK algoritmasıyla
+      # doğrulanması (önceden yalnızca biçim kontrolü vardı), işten ayrılan
+      # (PASİF) bir şoförün RFID kartının AUTH-210 kara listesine otomatik
+      # düşmesi (önceden hiç yapılmıyordu), ve TC No'nun PUMP_OPERATOR'a
+      # maskelenmiş gösterilmesi (KVKK/COMP-606).
+      - name: Run FLEET-1403 Driver Management Tests
+        run: cd backend && npx tsx test/test_fleet1403_driver_management.ts
+
       - name: Run RES-906 Health/Readiness Tests
         run: cd backend && npx tsx test/test_res906_health_readiness.ts
 

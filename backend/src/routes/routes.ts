@@ -108,6 +108,19 @@ function siteScopeFor(user: JwtUserPayload): string | undefined {
 }
 
 /**
+ * FLEET-1403 AC (KVKK/COMP-606): "Kişisel veriler yetkisiz rollere
+ * maskelenmiş gösterilmelidir." — TC Kimlik No önceden TÜM authenticateJWT
+ * geçen rollere (PUMP_OPERATOR dahil) ham döndürülüyordu. Şoför kaydını
+ * OLUŞTURABİLEN/DÜZENLEYEBİLEN roller (SUPER_ADMIN/COMPANY_OWNER/
+ * SITE_MANAGER — POST/PUT /drivers'ın authorizeRoles'ü) tam değeri görmeye
+ * devam eder; salt-okunur erişimi olan PUMP_OPERATOR maskelenmiş görür.
+ */
+function maskTcNoForRole(tcNo: string | null | undefined, role: UserRole): string | null | undefined {
+  if (role !== 'PUMP_OPERATOR' || !tcNo || tcNo.length !== 11) return tcNo;
+  return `${tcNo.slice(0, 3)}******${tcNo.slice(9)}`;
+}
+
+/**
  * @swagger
  * /health:
  *   get:
@@ -4300,12 +4313,13 @@ router.get('/vehicles/:id/assignment-history', authenticateJWT, async (req: Auth
 router.get('/drivers', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const drivers = await getTenantDrivers(siteScopeFor(req.user!));
+    const maskedDrivers = drivers.map((d) => ({ ...d, tc_no: maskTcNoForRole(d.tc_no, req.user!.role) }));
 
     res.json({
       success: true,
       tenantId: req.user?.tenantId,
       totalCount: drivers.length,
-      data: drivers
+      data: maskedDrivers
     });
   } catch (error: any) {
     next(error);

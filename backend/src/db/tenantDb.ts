@@ -669,6 +669,25 @@ export async function updateDriver(id: string, data: Partial<DriverRecord>): Pro
       throw new BadRequestError('Güncellenecek alan bulunamadı.');
     }
 
+    // FLEET-1403 AC: "İşten ayrılan sürücünün kartı otomatik bloke
+    // olmalıdır." Bu HİÇ YAPILMIYORDU — bir şoför PASİF'e alındığında kartı
+    // ('drivers.rfid_card_id') AKTİF kalmaya devam ediyordu, başka biri
+    // (kartı bulan/çalan biri) o kartla hâlâ ikmal alabiliyordu (canlı
+    // doğrulandı: authorizeDispenseRequest yalnızca sürücünün KENDİ
+    // status'una bakıyor, ki bu zaten PASİF olduğu için ikmali reddeder —
+    // ama kart AUTH-210'un kara listesine hiç GİRMİYORDU, yani örn.
+    // replaceRfidCard/denylist raporlaması bu kartı hâlâ "temiz" gösterirdi).
+    // Eski durumu ÖNCEDEN okumak gerekir (buildDynamicUpdate eski değeri
+    // döndürmez).
+    let previousStatus: string | null = null;
+    let previousRfidCardId: string | null = null;
+    if (typeof data.status === 'string') {
+      const current = await client.query('SELECT status, rfid_card_id FROM drivers WHERE id = $1', [id]);
+      if (current.rows.length === 0) throw new NotFoundError('Şoför bulunamadı veya yetkiniz yok.');
+      previousStatus = current.rows[0].status;
+      previousRfidCardId = current.rows[0].rfid_card_id;
+    }
+
     // fields boşsa (yalnızca assigned_vehicle_plate güncelleniyorsa) UPDATE
     // yerine SELECT yeterli — buildDynamicUpdate boş listede hata fırlatır,
     // o yüzden burada onu değil doğrudan bir SELECT'i kullanıyoruz.
@@ -683,6 +702,29 @@ export async function updateDriver(id: string, data: Partial<DriverRecord>): Pro
 
     if (data.assigned_vehicle_plate !== undefined) {
       await syncDriverVehicleAssignment(client, tenantId, updatedDriver.name, data.assigned_vehicle_plate);
+    }
+
+    // Kartı, GÜNCELLEMEDEN SONRAKİ (yeni rfid_card_id değişmiş olabilir)
+    // koduyla değil eski (previousRfidCardId) koduyla bloke ediyoruz —
+    // ayrılan şoförün SAHİP OLDUĞU fiziksel kart budur. blockRfidCard'ın
+    // KENDİSİ çağrılmadı (o AYRI bir withTenant/transaction açardı, atomik
+    // olmazdı) — AYNI INSERT deseni bu transaction'ın client'ıyla tekrarlandı.
+    if (typeof data.status === 'string' && data.status === 'PASİF' && previousStatus !== 'PASİF' && previousRfidCardId) {
+      await client.query(
+        `INSERT INTO rfid_card_blacklist (id, tenant_id, card_uid, status, reason, reported_by)
+         VALUES ($1,$2,$3,'BLOCKED',$4,$5)
+         ON CONFLICT (tenant_id, card_uid)
+         DO UPDATE SET status = 'BLOCKED', reason = EXCLUDED.reason, reported_by = EXCLUDED.reported_by,
+                       replaced_by_card_uid = NULL, updated_at = CURRENT_TIMESTAMP`,
+        [generateId('rfidbl'), tenantId, previousRfidCardId, `Şoför işten ayrıldı: ${updatedDriver.name}`, getTenantStore()?.userId ?? null]
+      );
+      await writeAuditLog(client, {
+        action: 'RFID_CARD_AUTO_BLOCKED_DRIVER_DEPARTURE',
+        targetType: 'rfid_card',
+        targetId: previousRfidCardId,
+        afterValue: { driverId: id, driverName: updatedDriver.name }
+      });
+      await redisPool.cacheDel(rfidDenylistCacheKey(tenantId));
     }
 
     return { ...updatedDriver, assigned_vehicle_plate: data.assigned_vehicle_plate ?? null };
