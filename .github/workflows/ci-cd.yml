@@ -423,6 +423,14 @@ jobs:
       - name: Run AUTH-210 RFID Card Blacklist Tests
         run: cd backend && npx tsx test/test_auth210_rfid_blacklist.ts
 
+      # FLEET-1402 (#78) — RFID etiket eşleştirme: UID tekilliği (create/update
+      # VE replaceRfidCard'ın hedef UID kontrolü — üçü de önceden YOKTU),
+      # etiket değişiminin audit_logs'a yazılması, ve eşleşmemiş kart
+      # okutulduğunda panele Socket.io ile ANLIK düşen 'rfid:unmatched' olayı
+      # (önceden yalnızca cihaza 403 dönüyordu, panel hiçbir şey görmüyordu).
+      - name: Run FLEET-1402 RFID Matching Tests
+        run: cd backend && npx tsx test/test_fleet1402_rfid_matching.ts
+
       - name: Run RES-906 Health/Readiness Tests
         run: cd backend && npx tsx test/test_res906_health_readiness.ts
 

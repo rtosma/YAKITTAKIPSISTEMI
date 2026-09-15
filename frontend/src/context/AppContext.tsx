@@ -12,9 +12,10 @@ import {
   FuelTransaction, 
   Tank, 
   CrossSitePermission, 
-  HardwareDevice, 
+  HardwareDevice,
   HardwareLog,
-  CompanyModule
+  CompanyModule,
+  UnmatchedRfidAlert
 } from '../types';
 // NOTE: Oturum açıldığında firma bilgisi de dahil her şey PostgreSQL backend'inden
 // (apiFetch) çekiliyor: firma profili -> GET /companies/me (yalnızca giriş yapan
@@ -90,6 +91,12 @@ interface AppContextType {
   addVehicle: (vehicle: Omit<Vehicle, 'id' | 'totalRefuelsCount'>) => Promise<void>;
   updateVehicle: (id: string, updatedVehicle: Partial<Vehicle>) => Promise<void>;
   deleteVehicle: (id: string) => Promise<void>;
+
+  // FLEET-1402: pompada okutulan, sisteme kayıtlı OLMAYAN RFID kartları —
+  // canlı Socket.io 'rfid:unmatched' olayından beslenir (bkz. backend
+  // tenantDb.ts authorizeDispenseRequest CARD_UNKNOWN dalı).
+  unmatchedRfidAlerts: UnmatchedRfidAlert[];
+  dismissRfidAlert: (cardUid: string) => void;
 
   // Driver CRUD
   fetchDrivers: () => Promise<void>;
@@ -219,6 +226,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [simulatedLatencyMs, setSimulatedLatencyMs] = useState<number>(14);
   const [isLogStreamActive, setIsLogStreamActive] = useState<boolean>(true);
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [unmatchedRfidAlerts, setUnmatchedRfidAlerts] = useState<UnmatchedRfidAlert[]>([]);
   const [selectedTenantForDetail, setSelectedTenantForDetail] = useState<Company | null>(null);
   const [tankRefreshKey, setTankRefreshKey] = useState<number>(0);
 
@@ -475,6 +483,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       queryClient.invalidateQueries({ queryKey: ['transactions'] });
     };
 
+    // FLEET-1402 AC: "Eşleşmemiş kart okutulduğunda uyarı... panele anlık
+    // düşmelidir." Aynı UID kısa aralıkla tekrar okutulursa (kart sahibi
+    // ısrarla deniyor) listeyi ŞİŞİRMEMEK için cardUid'e göre tekilleştirilir
+    // — YENİ okutma, aynı UID'nin ESKİ girdisinin ÜZERİNE yazar (zaman damgası
+    // güncellenir), yığılmaz.
+    const handleUnmatchedRfid = (payload: UnmatchedRfidAlert) => {
+      setUnmatchedRfidAlerts(prev => [payload, ...prev.filter(a => a.cardUid !== payload.cardUid)].slice(0, 10));
+    };
+
     // FE-801 AC: bağlantı koptuğunda "Bağlantı Yenileniyor..." uyarısı +
     // exponential backoff ile yeniden bağlanma (socket.io-client'ın
     // reconnectionDelay/reconnectionDelayMax ayarı bunu zaten yapar — bkz.
@@ -495,6 +512,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
     socket.on('dispense:completed', handleDispenseCompleted);
+    socket.on('rfid:unmatched', handleUnmatchedRfid);
 
     connectSocket();
 
@@ -516,6 +534,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
       socket.off('dispense:completed', handleDispenseCompleted);
+      socket.off('rfid:unmatched', handleUnmatchedRfid);
       disconnectSocket();
       wasConnectedRef.current = false;
     };
@@ -529,6 +548,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     await fetchTanks();
     setTankRefreshKey(prev => prev + 1);
     showToast('Tank verileri ve göstergeleri yenilendi', 'info');
+  };
+
+  const dismissRfidAlert = (cardUid: string) => {
+    setUnmatchedRfidAlerts(prev => prev.filter(a => a.cardUid !== cardUid));
   };
 
   // Toast Helper
@@ -1191,6 +1214,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         addVehicle,
         updateVehicle,
         deleteVehicle,
+        unmatchedRfidAlerts,
+        dismissRfidAlert,
         fetchDrivers,
         addDriver,
         updateDriver,

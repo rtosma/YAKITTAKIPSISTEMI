@@ -47,6 +47,15 @@ export interface Vehicle {
   status: 'AKTİF' | 'BAKIMDA' | 'PASİF' | 'BLOKE';
 }
 
+// FLEET-1402 — pompada okutulan, ne bir şoför kartına ne bir araç etiketine
+// eşleşen RFID UID'si (backend Socket.io 'rfid:unmatched' olayının payload'ı).
+export interface UnmatchedRfidAlert {
+  cardUid: string;
+  siteName: string;
+  deviceId: string | null;
+  detectedAt: string;
+}
+
 export interface Driver {
   id: string;
   name: string;

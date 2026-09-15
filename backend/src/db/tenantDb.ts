@@ -9,6 +9,7 @@ import { encryptDeviceSecret, generateDeviceSecret } from '../utils/hardwareSecr
 import { logger } from '../utils/logger';
 import { withTenant } from './withTenant';
 import { getTenantStore } from '../context/tenantContext';
+import { broadcastToTenant } from '../socket/socketServer';
 import { redisPool } from './redisPool';
 import {
   interpolateStrappingVolume,
@@ -424,6 +425,29 @@ async function assertPlateAvailable(client: import('pg').PoolClient, tenantId: s
 }
 
 /**
+ * FLEET-1402 AC: "Bir UID aynı anda yalnızca bir araçla eşleşebilmelidir."
+ * Önceden bu kontrol HİÇ YOKTU — assertPlateAvailable'ın AYNI deseni
+ * (advisory lock + hariç-tutulan ID) burada rfid_tag için tekrarlanıyor.
+ * Büyük/küçük harf VE baştaki/sondaki boşluk duyarsız (plaka normalizasyonu
+ * kadar agresif DEĞİL — etiket UID'leri plaka gibi rakam/harf gruplarına
+ * ayrılmıyor, iç boşluk kaldırmak anlamsız olurdu).
+ */
+async function assertRfidTagAvailable(client: import('pg').PoolClient, tenantId: string, rfidTag: string, excludeVehicleId?: string): Promise<void> {
+  const normalized = rfidTag.trim().toUpperCase();
+  await client.query("SELECT pg_advisory_xact_lock(hashtext('vehicle-rfid:' || $1 || ':' || $2))", [tenantId, normalized]);
+  const existing = await client.query(
+    'SELECT id FROM vehicles WHERE upper(trim(rfid_tag)) = $1 AND ($2::text IS NULL OR id <> $2) LIMIT 1',
+    [normalized, excludeVehicleId ?? null]
+  );
+  if (existing.rows.length > 0) {
+    throw new ConflictError(`'${rfidTag.trim()}' RFID etiketi zaten başka bir araca ('${existing.rows[0].id}') bağlı.`, {
+      error: 'DUPLICATE_RFID_TAG',
+      existingVehicleId: existing.rows[0].id
+    });
+  }
+}
+
+/**
  * FLEET-1401 AC: "Şantiye ataması ve atama geçmişi." Append-only — hiçbir
  * satır güncellenmez/silinmez, `writeAuditLog`'un `audit_logs` için yaptığıyla
  * AYNI ruh ama ayrı bir tabloda (audit_logs kritik İŞLEMLER için genel amaçlı;
@@ -469,6 +493,7 @@ export async function getVehicleSiteAssignmentHistory(vehicleId: string): Promis
 export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'>): Promise<VehicleRecord> {
   return withTenant(async (client, tenantId) => {
     await assertPlateAvailable(client, tenantId, data.plate);
+    await assertRfidTagAvailable(client, tenantId, data.rfid_tag);
     const id = generateId('veh'); // In production, use UUID or better ID generation
     const assignedDriverName = data.assigned_driver_name && !UNASSIGNED_SENTINELS.has(data.assigned_driver_name)
       ? data.assigned_driver_name
@@ -486,16 +511,20 @@ export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'
 export async function updateVehicle(id: string, data: Partial<VehicleRecord>): Promise<VehicleRecord> {
   return withTenant(async (client, tenantId) => {
     if (typeof data.plate === 'string') await assertPlateAvailable(client, tenantId, data.plate, id);
+    if (typeof data.rfid_tag === 'string') await assertRfidTagAvailable(client, tenantId, data.rfid_tag, id);
 
-    // FLEET-1401: site_name GERÇEKTEN değişiyorsa (aynı değer yeniden
-    // gönderilmişse DEĞİL) atama geçmişine bir satır düşürülür — güncelleme
-    // ÖNCESİ eski değeri okumak GEREKİR (buildDynamicUpdate tek sorguda
-    // üzerine yazar, eski değeri geri döndürmez).
+    // FLEET-1401/1402: site_name/rfid_tag GERÇEKTEN değişiyorsa (aynı değer
+    // yeniden gönderilmişse DEĞİL) sırasıyla atama geçmişine bir satır /
+    // audit_logs'a bir kayıt düşürülür — güncelleme ÖNCESİ eski değerleri
+    // okumak GEREKİR (buildDynamicUpdate tek sorguda üzerine yazar, eski
+    // değeri geri döndürmez).
     let previousSiteName: string | null = null;
-    if (typeof data.site_name === 'string') {
-      const current = await client.query('SELECT site_name FROM vehicles WHERE id = $1', [id]);
+    let previousRfidTag: string | null = null;
+    if (typeof data.site_name === 'string' || typeof data.rfid_tag === 'string') {
+      const current = await client.query('SELECT site_name, rfid_tag FROM vehicles WHERE id = $1', [id]);
       if (current.rows.length === 0) throw new NotFoundError('Araç bulunamadı veya yetkiniz yok.');
       previousSiteName = current.rows[0].site_name;
+      previousRfidTag = current.rows[0].rfid_tag;
     }
 
     const fields: Array<{ column: string; value: unknown }> = [];
@@ -515,6 +544,19 @@ export async function updateVehicle(id: string, data: Partial<VehicleRecord>): P
     const updated = await buildDynamicUpdate(client, 'vehicles', id, fields, 'Araç bulunamadı veya yetkiniz yok.');
     if (typeof data.site_name === 'string' && data.site_name !== previousSiteName) {
       await writeVehicleSiteAssignment(client, tenantId, id, previousSiteName, data.site_name);
+    }
+    // FLEET-1402 AC: "Etiket geçmişi denetim için saklanmalıdır." replaceRfidCard
+    // zaten kendi (kayıp/çalıntı kart) akışını audit'liyor (RFID_CARD_REPLACED)
+    // — bu, o akıştan GEÇMEYEN düz bir "Düzenle" formundan yapılan etiket
+    // değişimini de aynı denetim izine (audit_logs) yazar.
+    if (typeof data.rfid_tag === 'string' && data.rfid_tag !== previousRfidTag) {
+      await writeAuditLog(client, {
+        action: 'VEHICLE_RFID_TAG_CHANGED',
+        targetType: 'vehicle',
+        targetId: id,
+        beforeValue: { rfidTag: previousRfidTag },
+        afterValue: { rfidTag: data.rfid_tag }
+      });
     }
     return updated;
   });
@@ -1093,6 +1135,22 @@ export async function authorizeDispenseRequest(input: {
       [input.rfidCardId]
     );
     if (driverRes.rows.length === 0) {
+      // FLEET-1402 AC: "Eşleşmemiş kart okutulduğunda uyarı... panele anlık
+      // düşmelidir." Önceden yalnızca CİHAZA (pompaya, 403 üzerinden) bir
+      // ret dönüyordu — panelde AÇIK olan bir yöneticinin ekranına HİÇBİR
+      // şey yansımıyordu. `flow:unauthorized` (FUEL-406) ile AYNI desen:
+      // yayın BAŞARISIZ olursa (Socket.io'nun kendi bir sorunu) ana
+      // yetkilendirme reddi ETKİLENMEMELİ, bu yüzden try/catch İÇİNDE.
+      try {
+        broadcastToTenant(tenantId, 'rfid:unmatched', {
+          cardUid: input.rfidCardId,
+          siteName: input.deviceSiteName,
+          deviceId: input.deviceId ?? null,
+          detectedAt: new Date().toISOString()
+        });
+      } catch (err) {
+        logger.warn({ err }, '⚠️ [FLEET-1402] rfid:unmatched Socket.io yayını başarısız.');
+      }
       throw new ForbiddenError(`'${input.rfidCardId}' kartı sisteme kayıtlı değil.`, { error: 'CARD_UNKNOWN' });
     }
     const driver = driverRes.rows[0];
@@ -3665,6 +3723,17 @@ export async function replaceRfidCard(
     );
     if (newBlocked.rows.length > 0) {
       throw new ConflictError(`Yeni kart '${data.newCardUid}' zaten kara listede — önce onu temizleyin.`, { error: 'NEW_CARD_BLOCKED' });
+    }
+
+    // FLEET-1402 AC: "Bir UID aynı anda yalnızca bir araçla eşleşebilmelidir."
+    // Bu kontrol OLMADAN aşağıdaki blind UPDATE, newCardUid ZATEN başka bir
+    // araca bağlıysa iki aracı AYNI etikette bırakabilirdi.
+    const newTagConflict = await client.query('SELECT id FROM vehicles WHERE upper(trim(rfid_tag)) = upper(trim($1))', [data.newCardUid]);
+    if (newTagConflict.rows.length > 0) {
+      throw new ConflictError(`Yeni kart '${data.newCardUid}' zaten başka bir araca bağlı.`, {
+        error: 'DUPLICATE_RFID_TAG',
+        existingVehicleId: newTagConflict.rows[0].id
+      });
     }
 
     const d = await client.query('UPDATE drivers SET rfid_card_id = $2 WHERE rfid_card_id = $1', [data.oldCardUid, data.newCardUid]);
