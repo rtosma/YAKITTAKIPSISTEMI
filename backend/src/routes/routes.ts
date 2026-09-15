@@ -34,7 +34,7 @@ import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
 import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes, normalizeRecoveryCode } from '../services/totpService';
 import { isServerShuttingDown } from '../utils/shutdown';
-import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS, getCompanyLicenseSnapshot, getTenantLifecycleStatus, freezeCompany, unfreezeCompany, scheduleTenantDeletion, cancelTenantDeletion, approveTenantDeletion, exportTenantDataEncrypted, getArchiveSettings, updateArchiveSettings } from '../db/adminDb';
+import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS, getCompanyLicenseSnapshot, getTenantLifecycleStatus, freezeCompany, unfreezeCompany, scheduleTenantDeletion, cancelTenantDeletion, approveTenantDeletion, exportTenantDataEncrypted, getArchiveSettings, updateArchiveSettings, getModuleCatalog } from '../db/adminDb';
 import { generateArchiveForTenant, listTenantArchives, verifyAndConsumeArchiveDownload } from '../services/tenantArchiveService';
 import { archiveSettingsSchema, createArchiveSchema, archiveIdParamsSchema, archiveDownloadParamsSchema } from '../schemas/archiveSchema';
 import { runLicenseExpiryWarningSweep } from '../services/licenseWarningService';
@@ -1124,6 +1124,24 @@ router.patch(
  *     security:
  *       - bearerAuth: []
  */
+/**
+ * @swagger
+ * /admin/module-catalog:
+ *   get:
+ *     summary: Modül Fiyat Kataloğu — Bilgi Amaçlı (BILL-1703, Süper Admin)
+ *     description: >
+ *       Her modülün aylık listelenen fiyatı (TL, KDV hariç) ve hangi
+ *       paketlerde zaten dahil olduğu — satış/destek ekibinin bir firmaya ek
+ *       modül satarken danışacağı TEK kaynak. Gerçek bir tahsilat/ödeme
+ *       entegrasyonu DEĞİLDİR (ticket'ın kendi kapsam sınırı) — yalnızca
+ *       bilgi amaçlıdır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/admin/module-catalog', authenticateJWT, authorizeRoles('SUPER_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  res.json({ success: true, data: getModuleCatalog() });
+});
+
 router.get('/companies/:id/module-addons', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const addons = await getCompanyModuleAddons(req.params.id);

@@ -202,6 +202,25 @@ async function run() {
   const reapplyForbiddenRes = await api('POST', '/admin/package-defaults/TEMEL/reapply', ownerToken);
   check('Test 7b: COMPANY_OWNER reapply tetikleyemez (403)', reapplyForbiddenRes.status === 403, `status: ${reapplyForbiddenRes.status}`);
 
+  // --- Test 8: Kapsam — "Modül bazlı fiyatlandırma bilgisi (bilgi amaçlı)" ---
+  const catalogRes = await api('GET', '/admin/module-catalog', adminToken);
+  const catalog = catalogRes.data?.data || [];
+  check(
+    'Test 8: GET /admin/module-catalog — her modül için fiyat + hangi paketlerde dahil olduğu bilgisi döner',
+    catalogRes.status === 200 &&
+      catalog.length === 6 &&
+      catalog.every((m: any) => typeof m.monthlyPriceTRY === 'number' && m.monthlyPriceTRY > 0 && Array.isArray(m.includedInPackages)),
+    `status=${catalogRes.status}, catalog=${JSON.stringify(catalog)}`
+  );
+  const aiAnomalyEntry = catalog.find((m: any) => m.moduleName === 'aiAnomaly');
+  check(
+    'Test 8b: Katalog PACKAGE_MODULE_DEFAULTS ile TUTARLI — aiAnomaly yalnızca PROFESYONEL+KURUMSAL\'da dahil, TEMEL\'de DEĞİL (ayrı bir liste sürüklenip yanlış senkron olmamış)',
+    JSON.stringify((aiAnomalyEntry?.includedInPackages || []).sort()) === JSON.stringify(['KURUMSAL', 'PROFESYONEL']),
+    `includedInPackages=${JSON.stringify(aiAnomalyEntry?.includedInPackages)}`
+  );
+  const catalogForbiddenRes = await api('GET', '/admin/module-catalog', ownerToken);
+  check('Test 8c: COMPANY_OWNER katalog ucunu çağıramaz (403)', catalogForbiddenRes.status === 403, `status: ${catalogForbiddenRes.status}`);
+
   // Temizlik: firmayı zararsız bir duruma bırak (KURUMSAL, tüm modüller açık).
   await api('PATCH', `/companies/${companyId}`, adminToken, { package: 'KURUMSAL' });
 

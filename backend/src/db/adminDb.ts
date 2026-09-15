@@ -92,6 +92,45 @@ function isModuleName(value: unknown): value is string {
   return typeof value === 'string' && (MODULE_NAMES as string[]).includes(value);
 }
 
+/**
+ * BILL-1703 Kapsam: "Modül bazlı fiyatlandırma bilgisi (bilgi amaçlı,
+ * tahsilat kapsam dışı)." Ticket'ın kendi Teknik Notu'nun ikinci satırıyla
+ * BİREBİR tutarlı: "Tahsilat/ödeme entegrasyonu bu kapsamda değildir;
+ * yalnızca lisans modeli tutulur." — bu yüzden burada gerçek bir ödeme
+ * altyapısı YOK, yalnızca satış/destek ekibinin danışabileceği SABİT bir
+ * fiyat kataloğu (aylık, TL, KDV hariç). Tek doğruluk kaynağı burasıdır;
+ * `getModuleCatalog()` bunu PACKAGE_MODULE_DEFAULTS ile birleştirip "hangi
+ * modül hangi pakette zaten dahil, hangisi ek satın alma gerektirir" bilgisini
+ * de türetir — AC: "Paket seçimi ilgili modülleri otomatik açmalıdır" ile
+ * AYNI tek kaynağa (PACKAGE_MODULE_DEFAULTS) dayanır, ayrı bir liste
+ * TUTULMAZ (iki listenin birbirinden sapması riskini ortadan kaldırır).
+ */
+const MODULE_PRICING: Record<string, { label: string; monthlyPriceTRY: number }> = {
+  aiAnomaly: { label: 'Yapay Zekâ Anomali Tespiti', monthlyPriceTRY: 1500 },
+  eInvoice: { label: 'e-Fatura / e-İrsaliye Entegrasyonu', monthlyPriceTRY: 2000 },
+  smartWarehouse: { label: 'Akıllı Depo/Envanter Yönetimi', monthlyPriceTRY: 1000 },
+  maintenanceTrack: { label: 'Bakım/Muayene Takibi', monthlyPriceTRY: 750 },
+  driverScore: { label: 'Şoför Performans Skorlama', monthlyPriceTRY: 500 },
+  crossSiteAuth: { label: 'Çapraz Şantiye Yetkilendirme', monthlyPriceTRY: 500 }
+};
+
+export interface ModuleCatalogEntry {
+  moduleName: string;
+  label: string;
+  monthlyPriceTRY: number;
+  includedInPackages: PackageTier[];
+}
+
+/** Saf/I-O'suz — MODULE_PRICING + PACKAGE_MODULE_DEFAULTS'tan türetilir, ayrı bir DB sorgusu gerekmez. */
+export function getModuleCatalog(): ModuleCatalogEntry[] {
+  return MODULE_NAMES.map((moduleName) => ({
+    moduleName,
+    label: MODULE_PRICING[moduleName]?.label ?? moduleName,
+    monthlyPriceTRY: MODULE_PRICING[moduleName]?.monthlyPriceTRY ?? 0,
+    includedInPackages: PACKAGE_TIERS.filter((tier) => PACKAGE_MODULE_DEFAULTS[tier][moduleName] === true)
+  }));
+}
+
 function slugifyCompanyName(name: string): string {
   return name
     .toLowerCase()
