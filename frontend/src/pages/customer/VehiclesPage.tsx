@@ -20,7 +20,7 @@ export const VehiclesPage: React.FC = () => {
   const [siteName, setSiteName] = useState(availableSites[0] || 'Gebze Ana Şantiye');
   const [assignedDriver, setAssignedDriver] = useState('');
   const [fuelCapacityLiters, setFuelCapacityLiters] = useState(450);
-  const [status, setStatus] = useState<'AKTİF' | 'BAKIMDA' | 'PASİF'>('AKTİF');
+  const [status, setStatus] = useState<'AKTİF' | 'BAKIMDA' | 'PASİF' | 'BLOKE'>('AKTİF');
   const [plateError, setPlateError] = useState('');
 
   const filteredVehicles = vehicles
@@ -48,7 +48,7 @@ export const VehiclesPage: React.FC = () => {
     setPlateError('');
 
     if (!isValidPlate(plate)) {
-      setPlateError('Geçersiz Türkiye plaka formatı! (Örn: 34 CTP 82 veya 06 A 1234)');
+      setPlateError('Geçersiz plaka/tanım kodu formatı! (Örn: 34 CTP 82 ya da plakasız iş makineleri için EKS-04)');
       return;
     }
 
@@ -87,7 +87,7 @@ export const VehiclesPage: React.FC = () => {
     if (!editingVehicle) return;
 
     if (!isValidPlate(plate)) {
-      setPlateError('Geçersiz Türkiye plaka formatı! (Örn: 34 CTP 82 veya 06 A 1234)');
+      setPlateError('Geçersiz plaka/tanım kodu formatı! (Örn: 34 CTP 82 ya da plakasız iş makineleri için EKS-04)');
       return;
     }
 
@@ -201,10 +201,10 @@ export const VehiclesPage: React.FC = () => {
                     </button>
                     <button
                       onClick={() => setDeletingVehicle(v)}
-                      title="Sil"
+                      title="Pasife Al"
                       className="p-1.5 text-[#d5c4ab] hover:text-[#ffb4ab] hover:bg-[#93000a]/30 rounded transition-colors cursor-pointer"
                     >
-                      <span className="material-symbols-outlined text-base">delete</span>
+                      <span className="material-symbols-outlined text-base">block</span>
                     </button>
                   </div>
                 </td>
@@ -246,7 +246,7 @@ export const VehiclesPage: React.FC = () => {
                     setPlate(e.target.value);
                     if (plateError) setPlateError('');
                   }}
-                  placeholder="örn. 34 CTP 99"
+                  placeholder="örn. 34 CTP 99 ya da EKS-04"
                   className={`w-full bg-[#0e0e0e] border ${plateError ? 'border-[#ffb4ab]' : 'border-[#514532]/30'} text-[#e5e2e1] font-mono text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]`}
                   required
                 />
@@ -458,6 +458,7 @@ export const VehiclesPage: React.FC = () => {
                     <option value="AKTİF">AKTİF</option>
                     <option value="BAKIMDA">BAKIMDA</option>
                     <option value="PASİF">PASİF</option>
+                    <option value="BLOKE">BLOKE (yakıt alımı bloke)</option>
                   </select>
                 </div>
               </div>
@@ -482,7 +483,9 @@ export const VehiclesPage: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL 3: DELETE CONFIRMATION */}
+      {/* MODAL 3: PASİFE ALMA ONAYI — FLEET-1401: bu araç artık SİLİNMİYOR,
+          PASİF'e alınıyor; geçmiş kayıtları (ikmal, bakım, atama) korunur ve
+          "Düzenle" formundan durum tekrar AKTİF yapılarak geri alınabilir. */}
       {deletingVehicle && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-sm w-full space-y-4 text-center">
@@ -490,9 +493,10 @@ export const VehiclesPage: React.FC = () => {
               <span className="material-symbols-outlined text-2xl">warning</span>
             </div>
 
-            <h3 className="text-base font-bold text-[#e5e2e1]">Bu Aracı Silmek İstediğinize Emin Misiniz?</h3>
+            <h3 className="text-base font-bold text-[#e5e2e1]">Bu Aracı Pasife Almak İstediğinize Emin Misiniz?</h3>
             <p className="text-xs text-[#d5c4ab]">
-              <span className="font-bold text-[#e5e2e1]">{deletingVehicle.plate} ({deletingVehicle.brandModel})</span> kaydı sistemden kalıcı olarak silinecektir.
+              <span className="font-bold text-[#e5e2e1]">{deletingVehicle.plate} ({deletingVehicle.brandModel})</span> artık yakıt alamayacak.
+              Kayıt SİLİNMEZ — geçmiş ikmal/bakım/atama bilgileri korunur ve istendiğinde "Düzenle" ile tekrar aktif hale getirilebilir.
             </p>
 
             <div className="pt-4 flex items-center justify-center space-x-3">
@@ -506,7 +510,7 @@ export const VehiclesPage: React.FC = () => {
                 onClick={handleConfirmDelete}
                 className="px-5 py-2 bg-[#93000a] hover:bg-[#b5000d] text-[#ffdad6] rounded-md text-xs font-black"
               >
-                Sil ve Kaldır
+                Pasife Al
               </button>
             </div>
           </div>

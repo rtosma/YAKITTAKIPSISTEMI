@@ -520,14 +520,28 @@ export async function updateVehicle(id: string, data: Partial<VehicleRecord>): P
   });
 }
 
+/**
+ * FLEET-1401 AC: "Araç silinmemeli, pasife alınmalıdır; geçmiş ikmal
+ * kayıtları araca bağlıdır." Önceden bu fonksiyon GERÇEKTEN `DELETE FROM
+ * vehicles` yapıyordu — frontend'in "Sil ve Kaldır" butonu bunu çağırıyordu
+ * ve `vehicle_site_assignments` gibi `vehicle_id`'ye `ON DELETE CASCADE`
+ * bağlı geçmiş de onunla birlikte YOK OLUYORDU; AC'nin "geçmiş korunmalı"
+ * ifadesiyle DOĞRUDAN çelişiyordu. Artık aynı uç (`DELETE /vehicles/:id`,
+ * bilerek DEĞİŞTİRİLMEDİ — istemci sözleşmesi aynı kalsın diye) bir SİLME
+ * DEĞİL, `status = 'PASİF'` güncellemesidir: satırın kendisi, ona bağlı TÜM
+ * geçmiş (ikmaller, bakım kayıtları, atama geçmişi) korunur; yalnızca aracın
+ * yakıt alması engellenir (bkz. createTransaction/authorizeDispenseRequest
+ * 'AKTİF' dışı kontrolü) ve normal listede PASİF olarak görünür. Geri almak
+ * (reaktive etmek) mevcut "Düzenle" formundan status'u tekrar AKTİF yapmakla
+ * zaten mümkündür — ayrı bir "geri getir" ucu GEREKMEZ.
+ */
 export async function deleteVehicle(id: string): Promise<void> {
   return withTenant(async (client) => {
-    // TEST-1003'te yakalandı: silinen satır sayısı kontrol edilmediğinden
-    // ID başka bir tenant'a ait olsa bile (RLS 0 satır etkiler ama sorgu
-    // BAŞARIYLA döner) uç, hiçbir şey silinmediği halde 200 "başarılı"
-    // dönüyordu — yalnızca bir UX/doğruluk hatası (RLS'in kendisi hâlâ
-    // satırı korumuş oluyordu), ama yanıltıcıydı.
-    const result = await client.query('DELETE FROM vehicles WHERE id = $1', [id]);
+    // TEST-1003'te yakalandı (o zamanki DELETE için): satır sayısı kontrol
+    // edilmezse ID başka bir tenant'a ait olsa bile (RLS 0 satır etkiler ama
+    // sorgu BAŞARIYLA döner) uç, hiçbir şey değişmediği halde 200 "başarılı"
+    // dönerdi — AYNI kontrol, artık bir UPDATE için de geçerli.
+    const result = await client.query("UPDATE vehicles SET status = 'PASİF' WHERE id = $1", [id]);
     if (result.rowCount === 0) throw new NotFoundError('Araç bulunamadı veya yetkiniz yok.');
   });
 }

@@ -4246,6 +4246,9 @@ router.put(
 
 /**
  * DELETE /api/v1/vehicles/:id
+ * FLEET-1401: HTTP metodu/URL'i (istemci sözleşmesi) DEĞİŞMEDİ ama gerçek
+ * bir silme DEĞİLDİR — bkz. tenantDb.ts deleteVehicle: aracı 'PASİF'e alır,
+ * satırı ve tüm geçmişini korur.
  * Protected endpoint requiring COMPANY_OWNER or SITE_MANAGER role
  */
 router.delete(
@@ -4257,7 +4260,7 @@ router.delete(
       await deleteVehicle(req.params.id);
       res.json({
         success: true,
-        message: 'Araç kaydı başarıyla silindi.'
+        message: 'Araç pasife alındı — geçmiş kayıtları (ikmal, bakım, atama) korunuyor.'
       });
     } catch (error: any) {
       next(error);

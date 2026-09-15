@@ -781,15 +781,19 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  // FLEET-1401: uç ARTIK gerçekten silmiyor, aracı 'PASİF'e alıyor (bkz.
+  // backend routes.ts DELETE /vehicles/:id yorumu) — fonksiyon/prop adı
+  // (`deleteVehicle`) ve HTTP metodu istemci sözleşmesiyle tutarlı kalsın
+  // diye DEĞİŞTİRİLMEDİ, yalnızca kullanıcıya gösterilen metin düzeltildi.
   const deleteVehicle = async (id: string) => {
     try {
       await apiFetch(`/vehicles/${id}`, {
         method: 'DELETE'
       });
-      showToast(`Araç kaydı silindi`, 'warning');
+      showToast(`Araç pasife alındı`, 'warning');
       await fetchVehicles();
     } catch (err: any) {
-      showToast(`Araç silinirken hata: ${err.message}`, 'error');
+      showToast(`Araç pasife alınırken hata: ${err.message}`, 'error');
     }
   };
 

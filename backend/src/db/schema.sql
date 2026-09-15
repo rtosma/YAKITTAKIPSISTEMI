@@ -171,10 +171,11 @@ ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS avg_consumption_expectation NUMERI
 -- yalnızca GÜNCEL atamayı taşır (üzerine yazılır); bu tablo her GERÇEK
 -- değişiklikte (createVehicle'daki ilk atama + updateVehicle'daki her
 -- site_name değişikliği) append-only bir satır ekler. FK'sı vehicles(id)'ye
--- CASCADE'dir — araç silinirse (mevcut "Sil ve Kaldır" akışı, bkz.
--- tenantDb.ts deleteVehicle yorumu) geçmişi de onunla gider; bu BİLİNÇLİ bir
--- kapsam kararı: "geçmiş korunmalı" AC'si PASİF'e alma (silme DEĞİL) yoluna
--- uygulanıyor, silme her zaman geri alınamaz bir işlem olarak kaldı.
+-- CASCADE'dir ama pratikte "Sil ve Kaldır" akışından artık TETİKLENMEZ —
+-- tenantDb.ts deleteVehicle GERÇEK bir DELETE DEĞİL, `status='PASİF'`
+-- güncellemesidir (AC: "araç silinmemeli, pasife alınmalıdır"); CASCADE
+-- yalnızca kalıcı tenant silme gibi ayrı, gerçekten geri alınamaz bir
+-- admin akışında (adminDb.ts, companies(id) ON DELETE CASCADE zinciri) devreye girer.
 CREATE TABLE IF NOT EXISTS vehicle_site_assignments (
     id VARCHAR(64) PRIMARY KEY,
     tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,

@@ -41,7 +41,10 @@ export interface Vehicle {
   lastRefuelDate: string;
   lastRefuelLiters: number;
   totalRefuelsCount: number;
-  status: 'AKTİF' | 'BAKIMDA' | 'PASİF';
+  // FLEET-1401: BLOKE, PASİF'ten anlam olarak ayrı (PASİF: filodan çıkmış,
+  // BLOKE: filoda aktif ama yakıt alımı geçici durdurulmuş) — backend'de
+  // teknik etkisi aynı (AKTİF dışı = ikmal reddi), bkz. vehicleSchema.ts.
+  status: 'AKTİF' | 'BAKIMDA' | 'PASİF' | 'BLOKE';
 }
 
 export interface Driver {

@@ -5,7 +5,7 @@ import { resetLoginRateLimit } from './helpers/loginRateLimit';
  * TEST_PLAN.md / GitHub #77 [FLEET-1401] — Araç ve iş makinesi kartı (CRUD).
  *
  * Bu ticket'ın kapsamı geniş taranmış (bkz. commit mesajı); burada test
- * edilen, GERÇEKTEN eklenen/düzeltilen üç parça:
+ * edilen, GERÇEKTEN eklenen/düzeltilen dört parça:
  *  1. Plakasız iş makineleri (AC: "tanım koduyla kaydedilebilmelidir") —
  *     vehicleSchema.ts artık TURKISH_PLATE_REGEX YA DA EQUIPMENT_CODE_REGEX
  *     ("EKS-04" gibi) kabul ediyor.
@@ -18,12 +18,14 @@ import { resetLoginRateLimit } from './helpers/loginRateLimit';
  *     yapıyordu. Bir PASİF/BLOKE araç manuel ikmal ile hâlâ yakıt
  *     alabiliyordu (canlı doğrulandı, AC "pasife alındığında yakıt
  *     alamamalı" ihlaliydi) — şimdi createTransaction'da da aynı kontrol var.
+ *  4. AC: "Araç silinmemeli, pasife alınmalıdır; geçmişi korunmalıdır." —
+ *     `DELETE /vehicles/:id` ÖNCEDEN gerçekten `DELETE FROM vehicles`
+ *     yapıyordu (frontend'in "Sil ve Kaldır" butonu); artık AYNI uç
+ *     `status = 'PASİF'` günceller — satır ve TÜM geçmişi (ikmal, bakım,
+ *     atama) korunur, araç yalnızca yakıt alamaz hale gelir ve "Düzenle"
+ *     formundan tekrar AKTİF yapılabilir.
  *
  * BİLİNÇLİ KAPSAM DIŞI (kod içinde belgelendi, burada TEKRARLANMIYOR):
- *  - `deleteVehicle` hâlâ GERÇEK bir DELETE'tir (soft-delete'e çevrilmedi) —
- *    frontend'in ayrı, kasıtlı "Sil ve Kaldır" özelliği bu davranışa
- *    dayanıyor; "geçmiş korunmalı" AC'si PASİF durumuna geçiş yoluyla
- *    karşılanıyor, silme her zaman geri alınamaz bir aksiyon olarak kaldı.
  *  - Plaka üzerinde DB seviyesinde UNIQUE index YOK (TEST_PLAN §4'te ÖNCEDEN
  *    belgelenmiş, bilinçli bir karar — mevcut kopyalar temizlenmeden
  *    eklenirse deploy'daki şema adımı durur); uygulama seviyesi advisory-lock
@@ -210,6 +212,28 @@ async function run() {
       'Test 13: Kayıtlı OLMAYAN (serbest metin) plaka için durum kontrolü ATLANIR — mevcut tolerans deseni bozulmadı',
       dispenseUnregistered.status === 200,
       `status=${dispenseUnregistered.status}, body=${JSON.stringify(dispenseUnregistered.body)}`
+    );
+
+    // --- AC: "Araç silinmemeli, pasife alınmalıdır; geçmişi korunmalıdır." -
+    const historyBeforeDelete = await api('GET', `/vehicles/${equipId}/assignment-history`, owner);
+    const rowCountBeforeDelete = historyBeforeDelete.body.data.length;
+
+    const deleteRes = await api('DELETE', `/vehicles/${equipId}`, owner);
+    check('Test 14: "Sil" ucu 200 döner ("pasife alındı" mesajıyla)', deleteRes.status === 200, `status=${deleteRes.status}, message=${deleteRes.body?.message}`);
+
+    const vehiclesAfterDelete = await api('GET', '/vehicles', owner);
+    const deletedVehicle = vehiclesAfterDelete.body?.data?.find((v: any) => v.id === equipId);
+    check(
+      'Test 15: "Sil" SONRASI araç DB\'den SİLİNMEZ — hâlâ listede, status=\'PASİF\' olarak görünür',
+      vehiclesAfterDelete.status === 200 && !!deletedVehicle && deletedVehicle.status === 'PASİF',
+      `bulunanKayıt=${JSON.stringify(deletedVehicle)}`
+    );
+
+    const historyAfterDelete = await api('GET', `/vehicles/${equipId}/assignment-history`, owner);
+    check(
+      'Test 16: "Sil" SONRASI şantiye atama geçmişi KORUNUR (satır sayısı değişmez)',
+      historyAfterDelete.status === 200 && historyAfterDelete.body.data.length === rowCountBeforeDelete,
+      `öncesi=${rowCountBeforeDelete}, sonrası=${historyAfterDelete.body.data.length}`
     );
   } finally {
     for (const txId of txIds) {
