@@ -2,6 +2,7 @@ import React, { useState, useMemo, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { TankGauge } from '../../components/TankGauge';
+import { FleetComplianceWidget } from '../../components/FleetComplianceWidget';
 
 export const OverviewPage: React.FC = () => {
   const { 
@@ -190,6 +191,9 @@ export const OverviewPage: React.FC = () => {
         </div>
 
       </div>
+
+      {/* FLEET-1408 AC: "Geçmiş yükümlülükler dashboard'da kritik olarak gösterilmelidir." */}
+      <FleetComplianceWidget />
 
       {/* CHART & VERTICAL CAPSULE TANKS GRID */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
