@@ -16,7 +16,18 @@
  * Not: tek kullanımlık test firması + aracı, mevcut seed verisine dokunulmaz.
  */
 
+import { Client } from 'pg';
 import { resetLoginRateLimit } from './helpers/loginRateLimit';
+
+function pg(): Client {
+  return new Client({
+    host: process.env.POSTGRES_HOST || 'localhost',
+    port: parseInt(process.env.POSTGRES_PORT || '5432', 10),
+    user: process.env.POSTGRES_USER || 'postgres',
+    password: process.env.POSTGRES_PASSWORD || 'postgres',
+    database: process.env.POSTGRES_DB || 'yakittakip_db'
+  });
+}
 
 // CI'da (auth-integration-test job) backend nginx OLMADAN doğrudan 5000
 // portunda ayağa kalkar — bu yüzden localde varsayılan (3000, nginx proxy)
@@ -211,6 +222,52 @@ async function run() {
     'Test 8: audit_logs — VEHICLE_DOCUMENT_UPLOADED ve VEHICLE_DOCUMENT_DOWNLOADED kayıtları mevcut',
     actions.includes('VEHICLE_DOCUMENT_UPLOADED') && actions.includes('VEHICLE_DOCUMENT_DOWNLOADED'),
     `görülen action'lar: ${JSON.stringify([...new Set(actions)])}`
+  );
+
+  // --- AC: "Belgeler ... presigned URL ile indirilebilmelidir." -----------
+  const linkRes = await api('POST', `/vehicle-documents/${ruhsatV1Id}/download-link`, ownerToken);
+  check(
+    'Test 9: Presigned indirme bağlantısı üretilir (201 + downloadUrl/expiresAt)',
+    linkRes.status === 201 && typeof linkRes.data?.data?.downloadUrl === 'string' && typeof linkRes.data?.data?.expiresAt === 'string',
+    `status=${linkRes.status}, yanıt=${JSON.stringify(linkRes.data)}`
+  );
+  const downloadUrl: string = linkRes.data.data.downloadUrl;
+  // `downloadUrl` API yanıtında ZATEN `/api/v1/...` ile başlar (routes.ts) —
+  // API_URL de `/api/v1` içerdiğinden ORIGIN'e (şema+host+port) eklenmeli,
+  // API_URL'e DEĞİL (aksi halde /api/v1 İKİ KEZ tekrarlanır — canlı yakalandı).
+  const origin = API_URL.replace(/\/api\/v1\/?$/, '');
+
+  const dl1 = await fetch(`${origin}${downloadUrl}`); // JWT OLMADAN — presigned link'in ÖZÜ.
+  const dl1Buf = Buffer.from(await dl1.arrayBuffer());
+  check(
+    'Test 10: JWT OLMADAN indirme 200 döner ve içerik YÜKLENEN ile BİREBİR aynı',
+    dl1.status === 200 && dl1Buf.equals(Buffer.from(ruhsatContent, 'base64')),
+    `status=${dl1.status}, boyut=${dl1Buf.length}`
+  );
+
+  const dl2 = await fetch(`${origin}${downloadUrl}`);
+  check('Test 11: AYNI bağlantı İKİNCİ kez de çalışır (süreli, tek kullanımlık DEĞİL)', dl2.status === 200, `status=${dl2.status}`);
+
+  const wrongToken = 'a'.repeat(64);
+  const dlWrong = await fetch(`${API_URL}/vehicle-documents/${ruhsatV1Id}/download/${wrongToken}`);
+  check('Test 12: YANLIŞ token 404 ile reddedilir', dlWrong.status === 404, `status=${dlWrong.status}`);
+
+  const db = pg();
+  await db.connect();
+  try {
+    await db.query(`UPDATE vehicle_document_download_links SET expires_at = NOW() - INTERVAL '1 hour' WHERE document_id = $1`, [ruhsatV1Id]);
+    const dlExpired = await fetch(`${origin}${downloadUrl}`);
+    check('Test 13: Süresi dolmuş bağlantı 404 ile reddedilir', dlExpired.status === 404, `status=${dlExpired.status}`);
+  } finally {
+    await db.end();
+  }
+
+  const auditAfterLinkRes = await api('GET', '/audit-logs?limit=50', ownerToken);
+  const actionsAfterLink = (auditAfterLinkRes.data.data || []).map((l: any) => l.action);
+  check(
+    'Test 14: Bağlantı üretimi VE presigned indirmeler audit\'lenir',
+    actionsAfterLink.includes('VEHICLE_DOCUMENT_DOWNLOAD_LINK_CREATED') && actionsAfterLink.filter((a: string) => a === 'VEHICLE_DOCUMENT_DOWNLOADED').length >= 2,
+    `görülen action'lar: ${JSON.stringify(actionsAfterLink)}`
   );
 
   console.log('===========================================================');

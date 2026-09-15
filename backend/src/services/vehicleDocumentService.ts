@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { PoolClient } from 'pg';
 import { withTenant } from '../db/withTenant';
 import { writeAuditLog } from '../utils/auditLog';
@@ -13,6 +14,16 @@ import { logger } from '../utils/logger';
  * deposu yok (COMP-602.1'deki aynı boşluk). Dosya doğrudan Postgres'te
  * BYTEA olarak saklanıyor; 10MB sınırı burada (base64 decode SONRASI,
  * gerçek bayt uzunluğu üzerinden) uygulanıyor.
+ *
+ * "presigned URL ile indirilebilmelidir" AC'si REP-702'nin (tenant_archives)
+ * AYNI deseniyle karşılanıyor: `generateVehicleDocumentDownloadLink` ham bir
+ * token üretir, yalnızca SHA-256 hash'ini saklar (passwordResetService.ts'teki
+ * "token ham saklanmaz" ilkesiyle aynı); `GET /vehicle-documents/:id/download/:token`
+ * (routes.ts) JWT GEREKTİRMEZ — gerçek bir "bağlantıyı bilen indirir" presigned
+ * link semantiği. Süre: 24 saat (REP-702'nin 72 saatinden KISA — belgeler
+ * kişisel/ticari veri, tek seferlik paylaşım amaçlı daha dar bir pencere
+ * tercih edildi). Tek aktif token/belge; JWT'li `/content` ucu (önizleme,
+ * uygulama İÇİNDEN erişim için) AYRICA duruyor, kaldırılmadı.
  *
  * "FLEET-1408 ile koordineli" AC'si: document_type FLEET-1408'in izlediği
  * üç türden (MUAYENE/EGZOZ/SİGORTA) birine karşılık geliyorsa VE bir
@@ -184,6 +195,90 @@ export async function getVehicleDocumentContent(documentId: string, byUserId: st
       targetType: 'vehicle_document',
       targetId: documentId,
       afterValue: { vehicleId: row.vehicle_id, byUserId }
+    });
+
+    return { fileName: row.file_name, mimeType: row.mime_type, fileContent: row.file_content };
+  });
+}
+
+const DOWNLOAD_LINK_TTL_HOURS = 24;
+
+export interface VehicleDocumentDownloadLink {
+  documentId: string;
+  token: string;
+  expiresAt: string;
+}
+
+/**
+ * AC: "Belgeler ... presigned URL ile indirilebilmelidir." Token durumu
+ * `vehicle_documents`'a DEĞİL, AYRI bir tabloya (vehicle_document_download_links)
+ * yazılır — vehicle_documents DB seviyesinde immutable'dır (REVOKE UPDATE,
+ * bkz. schema.sql yorumu); ilk sürüm buna yanlışlıkla UPDATE atmaya çalışıp
+ * canlı "permission denied" ile yakalandı. Yeni bir bağlantı istemek ESKİ
+ * token'ı ANINDA geçersiz kılar (ON CONFLICT DO UPDATE — tek aktif token).
+ * Ham token yalnızca DÖNÜŞ DEĞERİNDE bulunur.
+ */
+export async function generateVehicleDocumentDownloadLink(documentId: string, byUserId: string): Promise<VehicleDocumentDownloadLink> {
+  return withTenant(async (client, tenantId) => {
+    const docRes = await client.query('SELECT vehicle_id FROM vehicle_documents WHERE tenant_id = $1 AND id = $2', [tenantId, documentId]);
+    if (docRes.rows.length === 0) throw new NotFoundError('Belge bulunamadı.');
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const expiresAt = new Date(Date.now() + DOWNLOAD_LINK_TTL_HOURS * 60 * 60 * 1000);
+
+    await client.query(
+      `INSERT INTO vehicle_document_download_links (document_id, tenant_id, download_token_hash, expires_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (document_id) DO UPDATE SET download_token_hash = EXCLUDED.download_token_hash, expires_at = EXCLUDED.expires_at, created_at = CURRENT_TIMESTAMP`,
+      [documentId, tenantId, tokenHash, expiresAt]
+    );
+
+    await writeAuditLog(client, {
+      action: 'VEHICLE_DOCUMENT_DOWNLOAD_LINK_CREATED',
+      targetType: 'vehicle_document',
+      targetId: documentId,
+      afterValue: { vehicleId: docRes.rows[0].vehicle_id, byUserId, expiresAt: expiresAt.toISOString() }
+    });
+
+    return { documentId, token, expiresAt: expiresAt.toISOString() };
+  });
+}
+
+/**
+ * Presigned indirme doğrulaması — routes.ts'in pre-auth login/refresh
+ * deseniyle AYNI gerekçeyle (JWT henüz yok) önce ham bir sorguyla tenant
+ * öğrenilir (routes.ts, check-no-raw-pool-query.mjs allowlist'inde), SONRA
+ * bu fonksiyon `runWithTenant` içinde çağrılır — token hash + süre kontrolü
+ * ve audit yazımı RLS altında yapılır (REP-702'nin verifyAndConsumeArchiveDownload'ıyla
+ * BİREBİR aynı desen).
+ */
+export async function verifyAndConsumeVehicleDocumentDownload(documentId: string, token: string): Promise<VehicleDocumentContent> {
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+
+  return withTenant(async (client) => {
+    const result = await client.query(
+      `SELECT d.vehicle_id, d.file_name, d.mime_type, d.file_content, l.download_token_hash, l.expires_at
+       FROM vehicle_documents d
+       LEFT JOIN vehicle_document_download_links l ON l.document_id = d.id
+       WHERE d.id = $1`,
+      [documentId]
+    );
+    if (result.rows.length === 0) throw new NotFoundError('Geçersiz veya süresi dolmuş indirme bağlantısı.');
+    const row = result.rows[0];
+
+    const expectedHash = row.download_token_hash ? Buffer.from(row.download_token_hash, 'hex') : null;
+    const suppliedHash = Buffer.from(tokenHash, 'hex');
+    const hashesMatch = !!expectedHash && expectedHash.length === suppliedHash.length && crypto.timingSafeEqual(expectedHash, suppliedHash);
+    if (!hashesMatch || !row.expires_at || new Date(row.expires_at) < new Date()) {
+      throw new NotFoundError('Geçersiz veya süresi dolmuş indirme bağlantısı.');
+    }
+
+    await writeAuditLog(client, {
+      action: 'VEHICLE_DOCUMENT_DOWNLOADED',
+      targetType: 'vehicle_document',
+      targetId: documentId,
+      afterValue: { vehicleId: row.vehicle_id, via: 'presigned-link' }
     });
 
     return { fileName: row.file_name, mimeType: row.mime_type, fileContent: row.file_content };

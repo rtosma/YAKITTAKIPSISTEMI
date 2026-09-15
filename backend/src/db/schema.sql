@@ -1236,6 +1236,27 @@ CREATE TABLE IF NOT EXISTS vehicle_documents (
 );
 CREATE INDEX IF NOT EXISTS idx_vehicle_documents_vehicle ON vehicle_documents(tenant_id, vehicle_id, document_type, uploaded_at DESC);
 
+-- FLEET-1409 AC: "Belgeler ... presigned URL ile indirilebilmelidir." Bu
+-- ortamda S3/obje deposu yok — REP-702'nin (tenant_archives) AYNI deseni:
+-- ham token DEĞİL yalnızca SHA-256 hash'i saklanır (passwordResetService.ts
+-- ile aynı ilke). BİLEREK vehicle_documents'e KOLON EKLEMEK yerine AYRI bir
+-- tabloda — o tablo yukarıdaki yorumun da belirttiği gibi (ve
+-- `REVOKE UPDATE, DELETE, TRUNCATE ON vehicle_documents FROM app_user`
+-- ile DB seviyesinde ZORLANAN) KASITLI OLARAK DEĞİŞTİRİLEMEZ/immutable —
+-- bir indirme bağlantısı token'ı UPDATE edilebilir bir durum, belgenin
+-- kendisi değil; bu canlı olarak "permission denied for table
+-- vehicle_documents" hatasıyla yakalandı (ilk sürüm yanlışlıkla oraya
+-- UPDATE atmaya çalışıyordu). Tek aktif token/belge —
+-- ON CONFLICT (document_id) DO UPDATE ile yeni bağlantı istenince eskisi
+-- otomatik geçersiz kalır (rfid_card_blacklist'in AYNI deseni).
+CREATE TABLE IF NOT EXISTS vehicle_document_download_links (
+    document_id VARCHAR(64) PRIMARY KEY REFERENCES vehicle_documents(id) ON DELETE CASCADE,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    download_token_hash VARCHAR(64) NOT NULL,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 -- INV-1506: yedek parça/sarf malzeme kartı. Yakıt tanklarından (tanks)
 -- KASITLI olarak farklı bir mimari — Kritik Not (ticket): "yakıt envanteri
 -- SENSÖRLÜ, burası SENSÖRSÜZ." `current_stock` yalnızca KAYDEDİLEN
@@ -1367,6 +1388,7 @@ ALTER TABLE vehicle_maintenance_records ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_compliance_deadlines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_tires ENABLE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_document_download_links ENABLE ROW LEVEL SECURITY;
 ALTER TABLE personnel ENABLE ROW LEVEL SECURITY;
 ALTER TABLE leave_requests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE inventory_items ENABLE ROW LEVEL SECURITY;
@@ -1563,6 +1585,7 @@ ALTER TABLE vehicle_maintenance_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_compliance_deadlines FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_tires FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_documents FORCE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_document_download_links FORCE ROW LEVEL SECURITY;
 ALTER TABLE personnel FORCE ROW LEVEL SECURITY;
 ALTER TABLE leave_requests FORCE ROW LEVEL SECURITY;
 ALTER TABLE inventory_items FORCE ROW LEVEL SECURITY;
@@ -1613,6 +1636,7 @@ DROP POLICY IF EXISTS vehicle_maintenance_records_tenant_isolation_policy ON veh
 DROP POLICY IF EXISTS vehicle_compliance_deadlines_tenant_isolation_policy ON vehicle_compliance_deadlines;
 DROP POLICY IF EXISTS vehicle_tires_tenant_isolation_policy ON vehicle_tires;
 DROP POLICY IF EXISTS vehicle_documents_tenant_isolation_policy ON vehicle_documents;
+DROP POLICY IF EXISTS vehicle_document_download_links_tenant_isolation_policy ON vehicle_document_download_links;
 DROP POLICY IF EXISTS personnel_tenant_isolation_policy ON personnel;
 DROP POLICY IF EXISTS leave_requests_tenant_isolation_policy ON leave_requests;
 DROP POLICY IF EXISTS inventory_items_tenant_isolation_policy ON inventory_items;
@@ -1840,6 +1864,11 @@ CREATE POLICY vehicle_tires_tenant_isolation_policy ON vehicle_tires
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
 CREATE POLICY vehicle_documents_tenant_isolation_policy ON vehicle_documents
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY vehicle_document_download_links_tenant_isolation_policy ON vehicle_document_download_links
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

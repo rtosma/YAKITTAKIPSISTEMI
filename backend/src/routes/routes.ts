@@ -39,7 +39,7 @@ import { generateArchiveForTenant, listTenantArchives, verifyAndConsumeArchiveDo
 import { archiveSettingsSchema, createArchiveSchema, archiveIdParamsSchema, archiveDownloadParamsSchema } from '../schemas/archiveSchema';
 import { runLicenseExpiryWarningSweep } from '../services/licenseWarningService';
 import { getUsageMeteringHistory, computeUsageMeteringForCurrentTenant } from '../services/usageMeteringService';
-import { uploadVehicleDocument, getVehicleDocuments, getVehicleDocumentContent } from '../services/vehicleDocumentService';
+import { uploadVehicleDocument, getVehicleDocuments, getVehicleDocumentContent, generateVehicleDocumentDownloadLink, verifyAndConsumeVehicleDocumentDownload } from '../services/vehicleDocumentService';
 import {
   createPersonnel, getPersonnelList, getPersonnel, createLeaveRequest, getLeaveRequestsForPersonnel, getLeaveBalance,
   getLeaveCalendar, getPendingLeaveApprovals, approveLeaveRequestAsSiteManager, approveLeaveRequestAsCompanyOwner,
@@ -2393,6 +2393,65 @@ router.get('/vehicle-documents/:id/content', authenticateJWT, authorizeRoles(...
     const doc = await getVehicleDocumentContent(req.params.id, req.user!.userId);
     res.setHeader('Content-Type', doc.mimeType);
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.fileName)}"`);
+    res.send(doc.fileContent);
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /vehicle-documents/{id}/download-link:
+ *   post:
+ *     summary: Presigned İndirme Bağlantısı Üret (FLEET-1409)
+ *     description: >
+ *       AC: "Belgeler ... presigned URL ile indirilebilmelidir." 24 saat
+ *       geçerli, JWT'siz bir indirme bağlantısı üretir (parola paylaşımı
+ *       gerektirmez — REP-702'nin arşiv indirme bağlantısıyla AYNI desen).
+ *       Yeni bir bağlantı istemek ÖNCEKİ bağlantıyı anında geçersiz kılar.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicle-documents/:id/download-link',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const link = await generateVehicleDocumentDownloadLink(req.params.id, req.user!.userId);
+      res.status(201).json({
+        success: true,
+        data: { downloadUrl: `/api/v1/vehicle-documents/${link.documentId}/download/${link.token}`, expiresAt: link.expiresAt }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /vehicle-documents/{id}/download/{token}:
+ *   get:
+ *     summary: Presigned Belge İndirme Bağlantısı (FLEET-1409)
+ *     description: >
+ *       JWT GEREKTİRMEZ — auth/login ve REP-702'nin arşiv indirmesiyle AYNI
+ *       pre-auth istisnası (bkz. check-no-raw-pool-query.mjs ALLOWLIST
+ *       yorumu). Tenant bulunduktan SONRA runWithTenant içinde token hash +
+ *       süre kontrol edilir, indirme audit'lenir.
+ *     security: []
+ */
+router.get('/vehicle-documents/:id/download/:token', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const lookup = await pool.query('SELECT tenant_id FROM vehicle_documents WHERE id = $1', [req.params.id]);
+    if (lookup.rows.length === 0) {
+      throw new NotFoundError('Geçersiz veya süresi dolmuş indirme bağlantısı.');
+    }
+    const tenantId = lookup.rows[0].tenant_id;
+
+    const doc = await runWithTenant({ tenantId }, () => verifyAndConsumeVehicleDocumentDownload(req.params.id, req.params.token));
+    res.setHeader('Content-Type', doc.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(doc.fileName)}"`);
     res.send(doc.fileContent);
   } catch (error: any) {
     next(error);
