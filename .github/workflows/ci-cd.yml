@@ -326,6 +326,14 @@ jobs:
       - name: "TEST_PLAN §2.2: Araç Plakası Tenant İçinde Tekil"
         run: cd backend && npx tsx test/test_vehicle_plate_uniqueness.ts
 
+      # FLEET-1401 (#77) — plakasız iş makinesi tanım kodu, şantiye atama
+      # geçmişi, ve GERÇEK bir bug düzeltmesi: manuel/operatör-tetiklemeli
+      # ikmal (POST /dispense) önceden aracın status'unu HİÇ kontrol
+      # etmiyordu (yalnızca RFID/cihaz-tetiklemeli otomatik akış kontrol
+      # ediyordu) — PASİF/BLOKE bir araç manuel ikmalle hâlâ yakıt alabiliyordu.
+      - name: Run FLEET-1401 Vehicle Lifecycle Tests
+        run: cd backend && npx tsx test/test_fleet1401_vehicle_lifecycle.ts
+
       # TEST_PLAN §7 — Redis yazmaları reddettiğinde (noeviction + maxmemory
       # dolu) login fail-closed 503: kilit/IP limiti düşmüşken parola kâhini yok.
       - name: "TEST_PLAN §7: Redis Bellek Baskısı — Giriş Korumaları"

@@ -159,6 +159,33 @@ ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS fuel_type VARCHAR(64);
 -- FLEET-1404: aracın sayaç ölçüm birimi. NULL ise vehicle_type'tan türetilir
 -- (iş makineleri MOTOR_SAAT, diğerleri KM). 'KM' | 'MOTOR_SAAT'.
 ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS meter_type VARCHAR(16);
+-- FLEET-1401: "yıl" ve "ortalama tüketim beklentisi" — ikisi de İKİNCİL/
+-- bilgilendirici alanlar (hiçbir iş kuralı bunlara dayanmaz), NULL edilebilir.
+-- avg_consumption_expectation birimi meter_type'a göre değişir (KM ise
+-- L/100km, MOTOR_SAAT ise L/saat) — ayrı bir birim kolonu YOK, meter_type
+-- zaten aracın birincil ölçüm birimini taşıyor, tekrar etmeye gerek yok.
+ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS year_of_manufacture INTEGER;
+ALTER TABLE vehicles ADD COLUMN IF NOT EXISTS avg_consumption_expectation NUMERIC(10, 2);
+
+-- FLEET-1401 AC: "Şantiye ataması ve atama geçmişi" — vehicles.site_name
+-- yalnızca GÜNCEL atamayı taşır (üzerine yazılır); bu tablo her GERÇEK
+-- değişiklikte (createVehicle'daki ilk atama + updateVehicle'daki her
+-- site_name değişikliği) append-only bir satır ekler. FK'sı vehicles(id)'ye
+-- CASCADE'dir — araç silinirse (mevcut "Sil ve Kaldır" akışı, bkz.
+-- tenantDb.ts deleteVehicle yorumu) geçmişi de onunla gider; bu BİLİNÇLİ bir
+-- kapsam kararı: "geçmiş korunmalı" AC'si PASİF'e alma (silme DEĞİL) yoluna
+-- uygulanıyor, silme her zaman geri alınamaz bir işlem olarak kaldı.
+CREATE TABLE IF NOT EXISTS vehicle_site_assignments (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    vehicle_id VARCHAR(64) NOT NULL REFERENCES vehicles(id) ON DELETE CASCADE,
+    from_site_name VARCHAR(128),
+    to_site_name VARCHAR(128) NOT NULL,
+    changed_by VARCHAR(64),
+    changed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_vehicle_site_assignments_vehicle ON vehicle_site_assignments(vehicle_id, changed_at DESC);
+ALTER TABLE vehicle_site_assignments ENABLE ROW LEVEL SECURITY;
 
 -- 3. Tanks Table with Tenant ID
 CREATE TABLE IF NOT EXISTS tanks (
@@ -1546,6 +1573,7 @@ ALTER TABLE tenant_deletion_approvals FORCE ROW LEVEL SECURITY;
 ALTER TABLE usage_metering_records FORCE ROW LEVEL SECURITY;
 ALTER TABLE vehicle_meter_readings FORCE ROW LEVEL SECURITY;
 ALTER TABLE tenant_archives FORCE ROW LEVEL SECURITY;
+ALTER TABLE vehicle_site_assignments FORCE ROW LEVEL SECURITY;
 
 -- Drop existing policies if re-running
 DROP POLICY IF EXISTS vehicles_tenant_isolation_policy ON vehicles;
@@ -1595,6 +1623,7 @@ DROP POLICY IF EXISTS tenant_deletion_approvals_tenant_isolation_policy ON tenan
 DROP POLICY IF EXISTS usage_metering_records_tenant_isolation_policy ON usage_metering_records;
 DROP POLICY IF EXISTS vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_readings;
 DROP POLICY IF EXISTS tenant_archives_tenant_isolation_policy ON tenant_archives;
+DROP POLICY IF EXISTS vehicle_site_assignments_tenant_isolation_policy ON vehicle_site_assignments;
 
 -- Create Tenant Isolation Policy for vehicles
 CREATE POLICY vehicles_tenant_isolation_policy ON vehicles
@@ -1850,6 +1879,11 @@ CREATE POLICY vehicle_meter_readings_tenant_isolation_policy ON vehicle_meter_re
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
 CREATE POLICY tenant_archives_tenant_isolation_policy ON tenant_archives
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+CREATE POLICY vehicle_site_assignments_tenant_isolation_policy ON vehicle_site_assignments
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

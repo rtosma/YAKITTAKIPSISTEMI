@@ -8,6 +8,7 @@ import { writeAuditLog } from '../utils/auditLog';
 import { encryptDeviceSecret, generateDeviceSecret } from '../utils/hardwareSecretCrypto';
 import { logger } from '../utils/logger';
 import { withTenant } from './withTenant';
+import { getTenantStore } from '../context/tenantContext';
 import { redisPool } from './redisPool';
 import {
   interpolateStrappingVolume,
@@ -82,6 +83,17 @@ export interface VehicleRecord {
   assigned_driver_name: string | null;
   fuel_type: string | null;
   meter_type: string | null;
+  year_of_manufacture: number | null;
+  avg_consumption_expectation: number | null;
+}
+
+export interface VehicleSiteAssignmentRecord {
+  id: string;
+  vehicleId: string;
+  fromSiteName: string | null;
+  toSiteName: string;
+  changedBy: string | null;
+  changedAt: string;
 }
 
 // Şoför/araç formlarının "atanmadı" durumu için kullandığı sentinel değerler —
@@ -377,7 +389,9 @@ export async function getTenantVehicles(siteRestriction?: string): Promise<Vehic
       fuel_capacity_liters: row.fuel_capacity_liters !== null ? Number(row.fuel_capacity_liters) : null,
       assigned_driver_name: row.assigned_driver_name,
       fuel_type: row.fuel_type ?? null,
-      meter_type: row.meter_type ?? null
+      meter_type: row.meter_type ?? null,
+      year_of_manufacture: row.year_of_manufacture !== null ? Number(row.year_of_manufacture) : null,
+      avg_consumption_expectation: row.avg_consumption_expectation !== null ? Number(row.avg_consumption_expectation) : null
     }));
   });
 }
@@ -409,6 +423,49 @@ async function assertPlateAvailable(client: import('pg').PoolClient, tenantId: s
   }
 }
 
+/**
+ * FLEET-1401 AC: "Şantiye ataması ve atama geçmişi." Append-only — hiçbir
+ * satır güncellenmez/silinmez, `writeAuditLog`'un `audit_logs` için yaptığıyla
+ * AYNI ruh ama ayrı bir tabloda (audit_logs kritik İŞLEMLER için genel amaçlı;
+ * bu tablo yalnızca ŞANTİYE atama geçmişini, sorgulaması/raporlaması daha
+ * kolay dar bir şemayla tutar).
+ */
+async function writeVehicleSiteAssignment(
+  client: import('pg').PoolClient,
+  tenantId: string,
+  vehicleId: string,
+  fromSiteName: string | null,
+  toSiteName: string
+): Promise<void> {
+  const store = getTenantStore();
+  await client.query(
+    `INSERT INTO vehicle_site_assignments (id, tenant_id, vehicle_id, from_site_name, to_site_name, changed_by)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [generateId('vsa'), tenantId, vehicleId, fromSiteName, toSiteName, store?.userId ?? null]
+  );
+}
+
+export async function getVehicleSiteAssignmentHistory(vehicleId: string): Promise<VehicleSiteAssignmentRecord[]> {
+  return withTenant(async (client) => {
+    // Araç ID'si tenant izolasyonuna RLS ile tabidir — başka bir tenant'ın
+    // aracı için burada 0 satır döner (var olmadığı gibi görünür), asertion
+    // gerekmiyor (getCalibrationHistory ile AYNI desen).
+    const result = await client.query(
+      `SELECT id, vehicle_id, from_site_name, to_site_name, changed_by, changed_at
+       FROM vehicle_site_assignments WHERE vehicle_id = $1 ORDER BY changed_at DESC`,
+      [vehicleId]
+    );
+    return result.rows.map((r) => ({
+      id: r.id,
+      vehicleId: r.vehicle_id,
+      fromSiteName: r.from_site_name,
+      toSiteName: r.to_site_name,
+      changedBy: r.changed_by,
+      changedAt: new Date(r.changed_at).toISOString()
+    }));
+  });
+}
+
 export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'>): Promise<VehicleRecord> {
   return withTenant(async (client, tenantId) => {
     await assertPlateAvailable(client, tenantId, data.plate);
@@ -417,10 +474,11 @@ export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'
       ? data.assigned_driver_name
       : null;
     const result = await client.query(
-      `INSERT INTO vehicles (id, tenant_id, plate, brand_model, vehicle_type, rfid_tag, site_name, status, fuel_capacity_liters, assigned_driver_name, fuel_type, meter_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-      [id, tenantId, data.plate, data.brand_model, data.vehicle_type, data.rfid_tag, data.site_name, data.status, data.fuel_capacity_liters ?? null, assignedDriverName, data.fuel_type ?? null, data.meter_type ?? null]
+      `INSERT INTO vehicles (id, tenant_id, plate, brand_model, vehicle_type, rfid_tag, site_name, status, fuel_capacity_liters, assigned_driver_name, fuel_type, meter_type, year_of_manufacture, avg_consumption_expectation)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
+      [id, tenantId, data.plate, data.brand_model, data.vehicle_type, data.rfid_tag, data.site_name, data.status, data.fuel_capacity_liters ?? null, assignedDriverName, data.fuel_type ?? null, data.meter_type ?? null, data.year_of_manufacture ?? null, data.avg_consumption_expectation ?? null]
     );
+    await writeVehicleSiteAssignment(client, tenantId, id, null, data.site_name);
     return result.rows[0];
   });
 }
@@ -428,11 +486,23 @@ export async function createVehicle(data: Omit<VehicleRecord, 'id' | 'tenant_id'
 export async function updateVehicle(id: string, data: Partial<VehicleRecord>): Promise<VehicleRecord> {
   return withTenant(async (client, tenantId) => {
     if (typeof data.plate === 'string') await assertPlateAvailable(client, tenantId, data.plate, id);
+
+    // FLEET-1401: site_name GERÇEKTEN değişiyorsa (aynı değer yeniden
+    // gönderilmişse DEĞİL) atama geçmişine bir satır düşürülür — güncelleme
+    // ÖNCESİ eski değeri okumak GEREKİR (buildDynamicUpdate tek sorguda
+    // üzerine yazar, eski değeri geri döndürmez).
+    let previousSiteName: string | null = null;
+    if (typeof data.site_name === 'string') {
+      const current = await client.query('SELECT site_name FROM vehicles WHERE id = $1', [id]);
+      if (current.rows.length === 0) throw new NotFoundError('Araç bulunamadı veya yetkiniz yok.');
+      previousSiteName = current.rows[0].site_name;
+    }
+
     const fields: Array<{ column: string; value: unknown }> = [];
 
     for (const [key, value] of Object.entries(data)) {
       if (value === undefined) continue;
-      if (['plate', 'brand_model', 'vehicle_type', 'rfid_tag', 'site_name', 'status', 'fuel_capacity_liters', 'fuel_type', 'meter_type'].includes(key)) {
+      if (['plate', 'brand_model', 'vehicle_type', 'rfid_tag', 'site_name', 'status', 'fuel_capacity_liters', 'fuel_type', 'meter_type', 'year_of_manufacture', 'avg_consumption_expectation'].includes(key)) {
         fields.push({ column: key, value });
       } else if (key === 'assigned_driver_name') {
         fields.push({
@@ -442,7 +512,11 @@ export async function updateVehicle(id: string, data: Partial<VehicleRecord>): P
       }
     }
 
-    return buildDynamicUpdate(client, 'vehicles', id, fields, 'Araç bulunamadı veya yetkiniz yok.');
+    const updated = await buildDynamicUpdate(client, 'vehicles', id, fields, 'Araç bulunamadı veya yetkiniz yok.');
+    if (typeof data.site_name === 'string' && data.site_name !== previousSiteName) {
+      await writeVehicleSiteAssignment(client, tenantId, id, previousSiteName, data.site_name);
+    }
+    return updated;
   });
 }
 
@@ -866,9 +940,19 @@ export async function createTransaction(
     // yoksa (serbest metin plaka) kontrol atlanır — diğer tolerans desenleriyle
     // tutarlı.
     const vehicleRes = await client.query(
-      'SELECT site_name FROM vehicles WHERE plate = $1',
+      'SELECT site_name, status FROM vehicles WHERE plate = $1',
       [data.vehicle_plate]
     );
+    // FLEET-1401 AC: "Araç pasife alındığında yakıt alamamalı." Bu kontrol
+    // önceden yalnızca authorizeDispenseRequest'te (RFID/cihaz-tetiklemeli
+    // otomatik ikmal) vardı — buradaki MANUEL/operatör-tetiklemeli yol hiç
+    // kontrol ETMİYORDU: bir PASİF/BAKIMDA/BLOKE araç manuel ikmal ile hâlâ
+    // yakıt alabiliyordu (canlı doğrulandı, gerçek bir AC ihlaliydi). Araç
+    // kaydı yoksa (serbest metin plaka) kontrol yine atlanır — üstteki YORUMDA
+    // zaten belgelenen aynı tolerans deseni.
+    if (vehicleRes.rows.length > 0 && vehicleRes.rows[0].status !== 'AKTİF') {
+      throw new ForbiddenError(`'${data.vehicle_plate}' plakalı araç aktif değil (durum: ${vehicleRes.rows[0].status}).`, { error: 'VEHICLE_BLOCKED' });
+    }
     if (vehicleRes.rows.length > 0 && vehicleRes.rows[0].site_name !== data.site_name) {
       const permRes = await client.query(
         `SELECT id, allowed_liters, used_liters FROM cross_site_permissions
