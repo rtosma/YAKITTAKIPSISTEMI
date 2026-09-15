@@ -4,7 +4,7 @@ import { TankGauge } from '../../components/TankGauge';
 import { Tank } from '../../types';
 
 export const TankStatusPage: React.FC = () => {
-  const { tanks, selectedSiteFilter, tankRefreshKey, triggerTankRefresh, addTank, updateTank, deleteTank, currentCompany, isManagerMode, currentUser, sites } = useApp();
+  const { tanks, selectedSiteFilter, tankRefreshKey, triggerTankRefresh, addTank, updateTank, deleteTank, currentCompany, isManagerMode, currentUser, sites, isSocketConnected } = useApp();
 
   const availableSites = Array.from(new Set([...sites, ...currentCompany.sites.map(s => s.name)])).filter(Boolean);
 
@@ -85,7 +85,17 @@ export const TankStatusPage: React.FC = () => {
 
   return (
     <div className="space-y-8">
-      
+
+      {/* FE-801 AC: "Eski veri açıkça işaretlenmelidir." — canlı bağlantı
+          kesikken (kopuk/yeniden bağlanıyor/sekme arka planda) aşağıdaki
+          seviyelerin ARTIK CANLI OLARAK doğrulanamadığını açıkça söyler. */}
+      {!isSocketConnected && (
+        <div className="bg-[#93000a]/10 border border-[#93000a]/40 rounded-xl p-3.5 flex items-center gap-2.5 text-xs font-bold text-[#ffb4ab]">
+          <span className="material-symbols-outlined text-lg">wifi_off</span>
+          <span>Canlı bağlantı kesik — aşağıdaki tank seviyeleri ESKİ (doğrulanmamış) olabilir.</span>
+        </div>
+      )}
+
       {/* SECTION 5.1 Sayfa Başlığı */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 bg-[#1c1b1b] border border-[#514532]/25 p-6 md:p-8 rounded-xl">
         <div className="space-y-1.5">

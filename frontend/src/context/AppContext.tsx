@@ -98,6 +98,14 @@ interface AppContextType {
   unmatchedRfidAlerts: UnmatchedRfidAlert[];
   dismissRfidAlert: (cardUid: string) => void;
 
+  // FE-801 AC: "Eski veri açıkça işaretlenmelidir." — Socket.io bağlantısı
+  // canlı değilken (kopuk/yeniden bağlanıyor/sekme arka planda) ekranda
+  // duran tank/pompa verisinin ARTIK KANITLANMIŞ-GÜNCEL olmadığını
+  // sayfaların kendi başına türetebilmesi için.
+  isSocketConnected: boolean;
+  lastTelemetryAt: string | null;
+  deviceOnlineStatus: Record<string, boolean>;
+
   // Driver CRUD
   fetchDrivers: () => Promise<void>;
   addDriver: (driver: Omit<Driver, 'id' | 'totalFuelPumpedLiters'>) => Promise<void>;
@@ -436,6 +444,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // sekmede/kullanıcıda dahi olsa) tank seviyeleri ve işlem geçmişi sayfa
   // yenilenmeden anında güncellenir.
   const wasConnectedRef = useRef(false);
+  // FE-801 AC: "Eski veri açıkça işaretlenmelidir." — bağlantı henüz hiç
+  // kurulmamışken (ilk render) bir "eski veri" yanıp sönmesin diye iyimser
+  // (true) başlar; İLK gerçek 'disconnect' onu false'a çeker.
+  const [isSocketConnected, setIsSocketConnected] = useState<boolean>(true);
+  const [lastTelemetryAt, setLastTelemetryAt] = useState<string | null>(null);
+  const [deviceOnlineStatus, setDeviceOnlineStatus] = useState<Record<string, boolean>>({});
   useEffect(() => {
     if (!isAuthenticated) {
       disconnectSocket();
@@ -502,17 +516,45 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         showToast('Canlı bağlantı yeniden sağlandı.', 'success');
       }
       wasConnectedRef.current = true;
+      setIsSocketConnected(true);
     };
     const handleDisconnect = (reason: string) => {
+      // FE-801 AC: "Eski veri açıkça işaretlenmelidir." Nedeni ne olursa
+      // olsun (kasıtlı sekme gizlenmesi dahil) — bağlantı canlı DEĞİLKEN
+      // ekranda duran veri artık kanıtlanmış-güncel değildir, bu yüzden
+      // toast'tan (yalnızca GERÇEK kopmalarda gösterilir) FARKLI olarak her
+      // koşulda işaretleniyor.
+      setIsSocketConnected(false);
       if (reason !== 'io client disconnect') {
         showToast('Bağlantı Yenileniyor...', 'warning');
       }
+    };
+    // FE-801 AC: "Pompa debisinin, tank seviyelerinin... gecikmesiz
+    // güncellenmesi." Backend `telemetry:data`/`device:status`'ü ZATEN
+    // `tenant:` odasına yayınlıyordu ama önceden burada HİÇ dinleyici yoktu.
+    // Ham telemetri (distanceMm/batteryVoltage/...) cihaza göre değişen,
+    // sunucu tarafında (strapping tablosu + ASTM D1250 düzeltmesi ile)
+    // hacme çevrilmesi gereken bir sinyaldir — bu dönüşümü İSTEMCİDE
+    // TEKRARLAMAK (yanlış/kalibrasyonsuz bir sayı göstermek riskiyle)
+    // BİLİNÇLİ olarak YAPILMADI. Bunun yerine "son telemetri ne zaman
+    // alındı" + "hangi cihaz o an çevrimiçi" bilgisi tutuluyor — tank/pompa
+    // ekranlarının doğru sayıyı yine `dispense:completed`/REST'ten (mevcut,
+    // doğrulanmış kaynak) aldığı, yalnızca CANLILIK sinyalinin buradan
+    // geldiği bir model.
+    const handleTelemetryData = (payload: { timestamp?: string }) => {
+      setLastTelemetryAt(payload?.timestamp || new Date().toISOString());
+    };
+    const handleDeviceStatusChanged = (payload: { deviceId: string; status: 'ONLINE' | 'OFFLINE' }) => {
+      if (!payload?.deviceId) return;
+      setDeviceOnlineStatus((prev) => ({ ...prev, [payload.deviceId]: payload.status === 'ONLINE' }));
     };
 
     socket.on('connect', handleConnect);
     socket.on('disconnect', handleDisconnect);
     socket.on('dispense:completed', handleDispenseCompleted);
     socket.on('rfid:unmatched', handleUnmatchedRfid);
+    socket.on('telemetry:data', handleTelemetryData);
+    socket.on('device:status', handleDeviceStatusChanged);
 
     connectSocket();
 
@@ -522,6 +564,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     const handleVisibilityChange = () => {
       if (document.hidden) {
         socket.disconnect();
+        setIsSocketConnected(false);
       } else {
         wasConnectedRef.current = false;
         connectSocket();
@@ -535,6 +578,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       socket.off('disconnect', handleDisconnect);
       socket.off('dispense:completed', handleDispenseCompleted);
       socket.off('rfid:unmatched', handleUnmatchedRfid);
+      socket.off('telemetry:data', handleTelemetryData);
+      socket.off('device:status', handleDeviceStatusChanged);
       disconnectSocket();
       wasConnectedRef.current = false;
     };
@@ -1216,6 +1261,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         deleteVehicle,
         unmatchedRfidAlerts,
         dismissRfidAlert,
+        isSocketConnected,
+        lastTelemetryAt,
+        deviceOnlineStatus,
         fetchDrivers,
         addDriver,
         updateDriver,
