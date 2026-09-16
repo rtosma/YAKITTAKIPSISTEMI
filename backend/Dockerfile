@@ -72,6 +72,11 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 # doğrudan node kullanıcısına ait olarak kopyalanıyor (ayrı bir RUN/katman
 # gerektirmez, COPY zaten hedef sahipliği ilk yazımda ayarlar).
 COPY --from=builder --chown=node:node /app/dist/server.cjs ./dist/server.cjs
+# IOT-301.3: MQTT payload doğrulama worker thread'i ayrı bir esbuild
+# bundle'ı (bkz. package.json build script + payloadValidationPool.ts'teki
+# yorum) — server.cjs'in İÇİNE gömülmez, worker_threads onu ayrı bir dosya
+# olarak `new Worker()` ile başlatır.
+COPY --from=builder --chown=node:node /app/dist/payloadValidationWorker.cjs ./dist/payloadValidationWorker.cjs
 COPY --chown=node:node src/db/schema.sql ./src/db/schema.sql
 COPY --chown=node:node src/routes ./src/routes
 # COMP-601: despatchAdviceXmlService.ts, bundle'a GÖMÜLEMEYEN (JS/TS değil)
