@@ -28,6 +28,16 @@ export interface DispenseSession {
   currentFlowRateLpm: number | null;
   createdAt: number;
   lastHeartbeatAt: number;
+  /**
+   * FUEL-402.2 — bu oturum bir ÇAPRAZ ŞANTİYE izninin rezervasyonuysa, o
+   * cross_site_permissions satırının id'si. `siteName` alanı ARACIN KENDİ
+   * (home) şantiyesini taşır (bkz. tenantDb.ts authorizeDispenseRequest) —
+   * çapraz şantiye rezervasyonunu ise HEDEF şantiyeye/izne göre eşlemek
+   * gerekir, bu yüzden ayrı bir alan: `s.siteName` ile eşleştirmeye
+   * çalışmak (hedef şantiyeyle karşılaştırarak) HER ZAMAN eşleşmez ve
+   * rezervasyonu SESSİZCE görünmez kılar — canlı yakalandı.
+   */
+  crossSitePermissionId: string | null;
 }
 
 // FUEL-401.2 AC + Teknik Notlar: TTL maksimum ikmal süresinden UZUN olmalı
@@ -110,6 +120,7 @@ export async function createSession(input: {
   driverName: string;
   tankName: string;
   maxAllowedLiters: number;
+  crossSitePermissionId?: string | null;
 }): Promise<DispenseSession> {
   const existing = await readSession(input.deviceId);
   if (existing && !['COMPLETED', 'ABORTED', 'TIMED_OUT'].includes(existing.state)) {
@@ -134,7 +145,8 @@ export async function createSession(input: {
     currentTotalizerLiters: null,
     currentFlowRateLpm: null,
     createdAt: now,
-    lastHeartbeatAt: now
+    lastHeartbeatAt: now,
+    crossSitePermissionId: input.crossSitePermissionId ?? null
   };
   await writeSession(session);
   logger.info({ sessionId: session.sessionId, deviceId: input.deviceId, vehiclePlate: input.vehiclePlate }, '🟢 [FUEL-401] İkmal oturumu yetkilendirildi (AUTHORIZED).');

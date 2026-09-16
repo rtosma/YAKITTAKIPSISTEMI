@@ -445,6 +445,9 @@ jobs:
       - name: Run FUEL-402.1 Fuel Quota + Periodic Reset Tests
         run: cd backend && npx tsx test/test_fuel402_1_quota.ts
 
+      - name: Run FUEL-402.2 Redlock Cross-Site Quota Concurrency Tests
+        run: cd backend && npx tsx test/test_fuel402_2_quota_concurrency.ts
+
       - name: Run FUEL-408 Tank Intake Receipt + Stock Increase Tests
         run: cd backend && npx tsx test/test_fuel408_tank_intake.ts
 

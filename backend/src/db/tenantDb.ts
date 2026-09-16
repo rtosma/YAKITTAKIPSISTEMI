@@ -26,7 +26,8 @@ import {
   type QuotaPeriodType,
   type CarryoverPolicy
 } from '../fuel/quotaPeriod';
-import { listActiveSessions } from '../services/dispenseSessionService';
+import { listActiveSessions, createSession, type DispenseSession } from '../services/dispenseSessionService';
+import { withQuotaLock } from '../services/quotaLockService';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { areFuelTypesCompatible, resolveFuelType } from '../fuel/fuelTypes';
@@ -1140,6 +1141,12 @@ export interface DispenseAuthResult {
   maxAllowedLiters: number;
   /** FUEL-407: ikmalin yakıt tipi (tanktan) — oturum/transaction taşır. */
   tankFuelType: string | null;
+  /**
+   * FUEL-402.2: oturum artık BURADA (gerekirse kota kilidi ALTINDA)
+   * oluşturuluyor — çağıran (routes.ts) ayrıca dispenseSessionService.
+   * createSession() çağırmaz. Bkz. fonksiyonun kendi doc yorumu.
+   */
+  session: DispenseSession;
 }
 
 /**
@@ -1216,13 +1223,138 @@ export async function authorizeDispenseRequest(input: {
       throw new ForbiddenError(`'${vehicle.plate}' plakalı araç aktif değil (durum: ${vehicle.status}).`, { error: 'VEHICLE_BLOCKED' });
     }
 
+    if (!input.deviceId) {
+      // Tek gerçek çağıran (routes.ts /dispense/request-auth) hardwareAuthMiddleware
+      // ÜZERİNDEN geçtiği için deviceId HER ZAMAN doludur — oturum (Redis
+      // rezervasyonu) deviceId'siz oluşturulamayacağından bu erken, açık bir
+      // kontrol (sessizce yanlış bir deviceId üretmek yerine).
+      throw new BadRequestError('deviceId zorunlu — donanım kimlik doğrulaması olmadan ikmal oturumu açılamaz.', { error: 'DEVICE_ID_REQUIRED' });
+    }
+    const deviceId = input.deviceId;
+
     // 3. Şantiye yetkisi + kota — createTransaction'daki FUEL-402 deseniyle
     // birebir aynı (çapraz şantiyede cross_site_permissions.allowed_liters
     // üst sınırı belirler; aynı şantiyede aracın kendi depo kapasitesi).
-    let maxAllowedLiters = vehicle.fuel_capacity_liters ? Number(vehicle.fuel_capacity_liters) : DEFAULT_MAX_DISPENSE_LITERS;
+    const initialMaxAllowedLiters = vehicle.fuel_capacity_liters ? Number(vehicle.fuel_capacity_liters) : DEFAULT_MAX_DISPENSE_LITERS;
+
+    // FUEL-402.2: 3.4/3.5/4/4.5 numaralı kontroller + oturum (=rezervasyon)
+    // oluşturma TEK bir kapanışta toplandı. Çapraz şantiye durumunda bunların
+    // TÜMÜ `lock:quota:{permissionId}` kilidi ALTINDA çalışır (ticket AC:
+    // "kilit altında bakiye okuma, REZERVASYON ve serbest bırakma") — aksi
+    // halde bakiye kontrolüyle oturumun Redis'e yazılması arasındaki boşlukta
+    // başka bir eşzamanlı istek AYNI kotayı görüp onu da onaylayabilir
+    // (ticket'ın uç durum notu: "500 litrelik kotayla 3 araç aynı anda
+    // başlayabilir").
+    const finishAuthorization = async (maxAllowedLitersIn: number, crossSitePermissionId: string | null): Promise<DispenseAuthResult> => {
+      let maxAllowedLiters = maxAllowedLitersIn;
+
+      // 3.4 FLEET-1406 — araç bazlı dönemsel yakıt limiti. Bu, çapraz şantiye
+      // kotasından FARKLI bir kavramdır (Kritik Not) — ikisi BİRLİKTE
+      // değerlendirilir, en kısıtlayıcı olan kazanır (aşağıdaki Math.min).
+      const limitRes = await client.query(`SELECT * FROM vehicle_fuel_limits WHERE vehicle_id = $1 AND status = 'AKTİF'`, [vehicle.id]);
+      if (limitRes.rows.length > 0) {
+        const limit = limitRes.rows[0];
+        const { periodStart, periodEnd } = periodWindowFor(limit.period_type, new Date());
+        const limitConsRes = await client.query(
+          `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS c FROM transactions
+            WHERE vehicle_plate = $1 AND created_at >= $2 AND created_at < $3`,
+          [vehicle.plate, periodStart.toISOString(), periodEnd.toISOString()]
+        );
+        const consumed = Number(limitConsRes.rows[0].c);
+        const tempActive = !!(limit.temp_increase_liters && limit.temp_increase_until && new Date(limit.temp_increase_until) >= new Date());
+        const effectiveLimit = Number(limit.limit_liters) + (tempActive ? Number(limit.temp_increase_liters) : 0);
+        const limitRemaining = effectiveLimit - consumed;
+
+        if (limit.enforcement === 'REJECT') {
+          if (limitRemaining <= 0) {
+            throw new ConflictError(
+              `'${vehicle.plate}' plakalı aracın ${limit.period_type} yakıt limiti (${effectiveLimit} L) doldu.`,
+              { error: 'VEHICLE_FUEL_LIMIT_EXCEEDED', limitLiters: effectiveLimit, consumedLiters: round2(consumed) }
+            );
+          }
+          maxAllowedLiters = Math.min(maxAllowedLiters, limitRemaining);
+        } else if (limitRemaining <= 0) {
+          // 'WARN' — ikmali ENGELLEMEZ, yalnızca AI-507 birleşik alarmına düşer.
+          await raiseAlarm(client, tenantId, {
+            alarmKey: `VEHICLE_LIMIT_EXCEEDED:${vehicle.id}`,
+            category: 'VEHICLE_LIMIT_EXCEEDED',
+            severity: 'WARNING',
+            title: `Araç yakıt limiti aşıldı (uyarı modu): ${vehicle.plate} (${round2(consumed)}/${effectiveLimit} L)`,
+            siteName: vehicle.site_name,
+            subjectType: 'VEHICLE',
+            subjectId: vehicle.plate,
+            detail: { periodType: limit.period_type, limitLiters: effectiveLimit, consumedLiters: round2(consumed) }
+          });
+        }
+      }
+
+      // 3.5 FUEL-407 — pompa-tank eşlemesi. Bu cihaz bir tanka bağlıysa ve
+      // istekteki tankName ondan farklıysa yanlış yapılandırma/manipülasyon
+      // vardır; reddet. (Eşleme yoksa istekteki tankName olduğu gibi kullanılır.)
+      const devRes = await client.query(
+        'SELECT tank_name FROM hardware_devices WHERE device_id = $1',
+        [deviceId]
+      );
+      const mappedTank: string | null = devRes.rows[0]?.tank_name ?? null;
+      if (mappedTank && mappedTank !== input.tankName) {
+        throw new ConflictError(
+          `Pompa '${deviceId}' '${mappedTank}' tankına bağlı ama istek '${input.tankName}' tankını gösteriyor.`,
+          { error: 'DEVICE_TANK_MISMATCH', mappedTank, requestedTank: input.tankName }
+        );
+      }
+
+      // 4. Tank bu şantiyede var mı, seviyesi yeterli mi?
+      const tankRes = await client.query(
+        'SELECT current_level_liters, fuel_type FROM tanks WHERE name = $1 AND site_name = $2',
+        [input.tankName, input.deviceSiteName]
+      );
+      if (tankRes.rows.length === 0) {
+        throw new NotFoundError(`'${input.tankName}' tankı '${input.deviceSiteName}' şantiyesinde bulunamadı.`, { error: 'TANK_NOT_FOUND' });
+      }
+      const tankFuelType: string | null = tankRes.rows[0].fuel_type ?? null;
+
+      // 4.5 FUEL-407 AC: "Araç yakıt tipi uyuşmazlığında ikmal reddedilmelidir."
+      if (!areFuelTypesCompatible(vehicle.fuel_type, tankFuelType)) {
+        throw new ForbiddenError(
+          `Yanlış yakıt tipi: '${vehicle.plate}' aracı '${vehicle.fuel_type}' alır, '${input.tankName}' tankı '${tankFuelType}' içerir.`,
+          { error: 'FUEL_TYPE_MISMATCH', vehicleFuelType: vehicle.fuel_type, tankFuelType }
+        );
+      }
+
+      const tankLevel = Number(tankRes.rows[0].current_level_liters);
+      if (tankLevel <= 0) {
+        throw new ConflictError(`'${input.tankName}' tankında yakıt kalmamış.`, { error: 'TANK_LOW' });
+      }
+      maxAllowedLiters = Math.min(maxAllowedLiters, tankLevel);
+
+      // FUEL-402.2: rezervasyon — kilit tutulurken (çapraz şantiye) YA DA
+      // kilitsiz (aynı şantiye, paylaşılan bir kota YOK) bu, YUKARIDAKİ TÜM
+      // kontrollerin ARDINDAN, nihai maxAllowedLiters ile Redis'e YAZILIR.
+      const session = await createSession({
+        tenantId,
+        siteName: vehicle.site_name,
+        deviceId,
+        vehiclePlate: vehicle.plate,
+        driverName: driver.name,
+        tankName: input.tankName,
+        maxAllowedLiters,
+        crossSitePermissionId
+      });
+
+      return {
+        vehiclePlate: vehicle.plate,
+        driverName: driver.name,
+        siteName: vehicle.site_name,
+        tankName: input.tankName,
+        maxAllowedLiters,
+        tankFuelType,
+        session
+      };
+    };
+
     if (vehicle.site_name !== input.deviceSiteName) {
       const permRes = await client.query(
-        `SELECT allowed_liters, used_liters FROM cross_site_permissions
+        `SELECT id, allowed_liters, used_liters FROM cross_site_permissions
          WHERE vehicle_plate = $1 AND target_site = $2 AND status = 'AKTİF' AND expiry_date >= CURRENT_DATE`,
         [vehicle.plate, input.deviceSiteName]
       );
@@ -1233,102 +1365,27 @@ export async function authorizeDispenseRequest(input: {
         );
       }
       const perm = permRes.rows[0];
-      const remaining = Number(perm.allowed_liters) - Number(perm.used_liters);
-      if (remaining <= 0) {
-        throw new ConflictError(`Çapraz şantiye kotası tükenmiş.`, { error: 'QUOTA_EXHAUSTED' });
-      }
-      maxAllowedLiters = Math.min(maxAllowedLiters, remaining);
-    }
 
-    // 3.4 FLEET-1406 — araç bazlı dönemsel yakıt limiti. Bu, çapraz şantiye
-    // kotasından FARKLI bir kavramdır (Kritik Not) — ikisi BİRLİKTE
-    // değerlendirilir, en kısıtlayıcı olan kazanır (aşağıdaki Math.min).
-    const limitRes = await client.query(`SELECT * FROM vehicle_fuel_limits WHERE vehicle_id = $1 AND status = 'AKTİF'`, [vehicle.id]);
-    if (limitRes.rows.length > 0) {
-      const limit = limitRes.rows[0];
-      const { periodStart, periodEnd } = periodWindowFor(limit.period_type, new Date());
-      const limitConsRes = await client.query(
-        `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS c FROM transactions
-          WHERE vehicle_plate = $1 AND created_at >= $2 AND created_at < $3`,
-        [vehicle.plate, periodStart.toISOString(), periodEnd.toISOString()]
-      );
-      const consumed = Number(limitConsRes.rows[0].c);
-      const tempActive = !!(limit.temp_increase_liters && limit.temp_increase_until && new Date(limit.temp_increase_until) >= new Date());
-      const effectiveLimit = Number(limit.limit_liters) + (tempActive ? Number(limit.temp_increase_liters) : 0);
-      const limitRemaining = effectiveLimit - consumed;
-
-      if (limit.enforcement === 'REJECT') {
-        if (limitRemaining <= 0) {
-          throw new ConflictError(
-            `'${vehicle.plate}' plakalı aracın ${limit.period_type} yakıt limiti (${effectiveLimit} L) doldu.`,
-            { error: 'VEHICLE_FUEL_LIMIT_EXCEEDED', limitLiters: effectiveLimit, consumedLiters: round2(consumed) }
-          );
+      return withQuotaLock(perm.id, async () => {
+        // FUEL-402.1'in getQuotaBalance()'ıyla AYNI desen: henüz FİNALİZE
+        // OLMAMIŞ (AUTHORIZED/PUMPING/FINALIZING) diğer aktif oturumların
+        // rezerve ettiği miktar, DB'deki (ZATEN kesinleşmiş) used_liters'a
+        // EK olarak düşülür — aksi halde bu miktar hiç görünmez. Eşleme
+        // `crossSitePermissionId` ÜZERİNDEN yapılır (vehiclePlate+siteName
+        // DEĞİL): DispenseSession.siteName ARACIN KENDİ (home) şantiyesini
+        // taşır, hedef şantiyeyle asla eşleşmez — canlı yakalanan bug.
+        const reservedLiters = (await listActiveSessions())
+          .filter((s) => s.crossSitePermissionId === perm.id)
+          .reduce((sum, s) => sum + Number(s.maxAllowedLiters || 0), 0);
+        const remaining = Number(perm.allowed_liters) - Number(perm.used_liters) - reservedLiters;
+        if (remaining <= 0) {
+          throw new ConflictError(`Çapraz şantiye kotası tükenmiş.`, { error: 'QUOTA_EXHAUSTED', reservedLiters: round2(reservedLiters) });
         }
-        maxAllowedLiters = Math.min(maxAllowedLiters, limitRemaining);
-      } else if (limitRemaining <= 0) {
-        // 'WARN' — ikmali ENGELLEMEZ, yalnızca AI-507 birleşik alarmına düşer.
-        await raiseAlarm(client, tenantId, {
-          alarmKey: `VEHICLE_LIMIT_EXCEEDED:${vehicle.id}`,
-          category: 'VEHICLE_LIMIT_EXCEEDED',
-          severity: 'WARNING',
-          title: `Araç yakıt limiti aşıldı (uyarı modu): ${vehicle.plate} (${round2(consumed)}/${effectiveLimit} L)`,
-          siteName: vehicle.site_name,
-          subjectType: 'VEHICLE',
-          subjectId: vehicle.plate,
-          detail: { periodType: limit.period_type, limitLiters: effectiveLimit, consumedLiters: round2(consumed) }
-        });
-      }
+        return finishAuthorization(Math.min(initialMaxAllowedLiters, remaining), perm.id);
+      });
     }
 
-    // 3.5 FUEL-407 — pompa-tank eşlemesi. Bu cihaz bir tanka bağlıysa ve
-    // istekteki tankName ondan farklıysa yanlış yapılandırma/manipülasyon
-    // vardır; reddet. (Eşleme yoksa istekteki tankName olduğu gibi kullanılır.)
-    if (input.deviceId) {
-      const devRes = await client.query(
-        'SELECT tank_name FROM hardware_devices WHERE device_id = $1',
-        [input.deviceId]
-      );
-      const mappedTank: string | null = devRes.rows[0]?.tank_name ?? null;
-      if (mappedTank && mappedTank !== input.tankName) {
-        throw new ConflictError(
-          `Pompa '${input.deviceId}' '${mappedTank}' tankına bağlı ama istek '${input.tankName}' tankını gösteriyor.`,
-          { error: 'DEVICE_TANK_MISMATCH', mappedTank, requestedTank: input.tankName }
-        );
-      }
-    }
-
-    // 4. Tank bu şantiyede var mı, seviyesi yeterli mi?
-    const tankRes = await client.query(
-      'SELECT current_level_liters, fuel_type FROM tanks WHERE name = $1 AND site_name = $2',
-      [input.tankName, input.deviceSiteName]
-    );
-    if (tankRes.rows.length === 0) {
-      throw new NotFoundError(`'${input.tankName}' tankı '${input.deviceSiteName}' şantiyesinde bulunamadı.`, { error: 'TANK_NOT_FOUND' });
-    }
-    const tankFuelType: string | null = tankRes.rows[0].fuel_type ?? null;
-
-    // 4.5 FUEL-407 AC: "Araç yakıt tipi uyuşmazlığında ikmal reddedilmelidir."
-    if (!areFuelTypesCompatible(vehicle.fuel_type, tankFuelType)) {
-      throw new ForbiddenError(
-        `Yanlış yakıt tipi: '${vehicle.plate}' aracı '${vehicle.fuel_type}' alır, '${input.tankName}' tankı '${tankFuelType}' içerir.`,
-        { error: 'FUEL_TYPE_MISMATCH', vehicleFuelType: vehicle.fuel_type, tankFuelType }
-      );
-    }
-
-    const tankLevel = Number(tankRes.rows[0].current_level_liters);
-    if (tankLevel <= 0) {
-      throw new ConflictError(`'${input.tankName}' tankında yakıt kalmamış.`, { error: 'TANK_LOW' });
-    }
-    maxAllowedLiters = Math.min(maxAllowedLiters, tankLevel);
-
-    return {
-      vehiclePlate: vehicle.plate,
-      driverName: driver.name,
-      siteName: vehicle.site_name,
-      tankName: input.tankName,
-      maxAllowedLiters,
-      tankFuelType
-    };
+    return finishAuthorization(initialMaxAllowedLiters, null);
   });
 }
 

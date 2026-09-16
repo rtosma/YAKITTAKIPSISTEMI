@@ -6211,6 +6211,10 @@ router.post(
   async (req: Request, res: Response, next: NextFunction) => {
     const hw = (req as any).authenticatedHardware as { deviceId: string; siteName: string; tenantId: string };
     try {
+      // FUEL-402.2: oturum (=kota rezervasyonu) artık authorizeDispenseRequest'in
+      // İÇİNDE, çapraz şantiye durumunda kota kilidi TUTULURKEN oluşturuluyor
+      // — burada AYRICA dispenseSessionService.createSession() çağırmak, bakiye
+      // kontrolüyle rezervasyon arasında (kilit dışında) bir boşluk açardı.
       const auth = await runWithTenant({ tenantId: hw.tenantId }, () =>
         authorizeDispenseRequest({
           rfidCardId: req.body.rfidCardId,
@@ -6219,16 +6223,7 @@ router.post(
           deviceId: hw.deviceId
         })
       );
-
-      const session = await dispenseSessionService.createSession({
-        tenantId: hw.tenantId,
-        siteName: auth.siteName,
-        deviceId: hw.deviceId,
-        vehiclePlate: auth.vehiclePlate,
-        driverName: auth.driverName,
-        tankName: auth.tankName,
-        maxAllowedLiters: auth.maxAllowedLiters
-      });
+      const session = auth.session;
 
       broadcastToTenant(hw.tenantId, 'dispense:session', session);
 
