@@ -2253,3 +2253,94 @@ CREATE POLICY device_health_scores_tenant_isolation_policy ON device_health_scor
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- ============================================================================
+-- [IOT-306] OTA Firmware Dağıtım Servisi (Sürüm, Kanal, Kademeli Rollout)
+-- ============================================================================
+-- AC bağımlılığı FW-1311 (güvenli OTA + A/B partition rollback) bu depoda
+-- YOK — cihaz tarafı firmware/bootloader kodu bu projenin kapsamı dışında.
+-- Bu yüzden "cihaz tarafı rollback sinyalinin izlenmesi" AC'si, cihazın
+-- KENDİSİNİN bir A/B rollback yaptığını AYRI bir bildirim olarak raporladığı
+-- varsayımıyla modellenir (routes.ts: POST .../devices/:deviceId/report-rollback)
+-- — IOT-305'in ack/timeout/retry kuyruğunun (commandQueueService.ts) PAYLOAD'ını
+-- GENİŞLETMEDEN (o dosya IOT-305/FUEL-406 arasında paylaşımlı, riskli).
+--
+-- Firmware artefaktları TENANT'A ÖZEL DEĞİL — platform genelinde tek bir
+-- katalog (getAllHardwareDevices/getModuleCatalog ile AYNI gerekçe: donanım
+-- envanteri SUPER_ADMIN'in yönettiği bir kaynak) — bu yüzden RLS YOK, ham
+-- `pool` ile adminDb.ts'te yazılır (schema.sql'in kendisi bunu KISITLAMAZ,
+-- ama tenant_id kolonu OLMADIĞI için check-rls-coverage.mjs'in "tenant
+-- tablosu" taramasına hiç girmez). Rollout'lar İSE bir tenant'ın KENDİ
+-- cihazlarını hedeflediği için tenant-scoped (RLS var).
+CREATE TABLE IF NOT EXISTS firmware_artifacts (
+    id VARCHAR(64) PRIMARY KEY,
+    version VARCHAR(32) NOT NULL,
+    -- Bu firmware'in uyumlu olduğu donanım revizyonu (hardware_devices.hardware_revision, IOT-304).
+    hardware_revision VARCHAR(64) NOT NULL,
+    -- 'stable' | 'beta'
+    channel VARCHAR(16) NOT NULL DEFAULT 'stable',
+    -- Nesne depolama yok (ticket "S3 uyumlu" öneriyor) — manual_dispense_
+    -- requests.document_url/vehicle_documents ile AYNI desen: sadece URL referansı.
+    artifact_url VARCHAR(512) NOT NULL,
+    sha256 VARCHAR(64) NOT NULL,
+    signature TEXT NOT NULL,
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (version, hardware_revision)
+);
+
+-- AC: "Cihaz grubuna kademeli dağıtım yapılabilmelidir" — %10 → %50 → %100.
+-- Her aşama SENKRON olarak (bir startFirmwareRollout çağrısı İÇİNDE, ayrı bir
+-- süpürücü/job OLMADAN) işlenir: aşamanın başarısızlık oranı %20'yi (
+-- failure_threshold_pct) aşarsa rollout DURDURULDU'ya düşer ve BİR SONRAKİ
+-- aşamaya HİÇ geçilmez (AC: "Başarısızlık eşiği aşıldığında rollout otomatik
+-- durmalıdır").
+CREATE TABLE IF NOT EXISTS firmware_rollouts (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    firmware_artifact_id VARCHAR(64) NOT NULL REFERENCES firmware_artifacts(id),
+    -- NULL = tüm uygun cihazlar; verilirse yalnızca o şantiyedeki cihazlar.
+    site_name VARCHAR(128),
+    -- 10 | 50 | 100 — o ana kadar ULAŞILAN kademe.
+    current_stage_pct INTEGER NOT NULL DEFAULT 0,
+    target_device_count INTEGER NOT NULL,
+    failure_threshold_pct NUMERIC(5, 2) NOT NULL DEFAULT 20,
+    -- 'DEVAM_EDIYOR' | 'DURDURULDU' | 'TAMAMLANDI'
+    status VARCHAR(24) NOT NULL DEFAULT 'DEVAM_EDIYOR',
+    halted_reason TEXT,
+    halted_at TIMESTAMP WITH TIME ZONE,
+    started_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_firmware_rollouts_lookup ON firmware_rollouts(tenant_id, status, created_at DESC);
+ALTER TABLE firmware_rollouts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE firmware_rollouts FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS firmware_rollouts_tenant_isolation_policy ON firmware_rollouts;
+CREATE POLICY firmware_rollouts_tenant_isolation_policy ON firmware_rollouts
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- Rollout'a atanan HER cihaz için TEK satır (hangi aşamada gönderildi + sonucu).
+CREATE TABLE IF NOT EXISTS firmware_rollout_devices (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    rollout_id VARCHAR(64) NOT NULL REFERENCES firmware_rollouts(id) ON DELETE CASCADE,
+    device_id VARCHAR(64) NOT NULL,
+    stage_pct INTEGER NOT NULL,
+    command_id VARCHAR(64),
+    -- 'GÖNDERILDI' | 'BAŞARILI' | 'BAŞARISIZ' | 'GERİ_ALINDI' (FW-1311 rollback bildirimi)
+    status VARCHAR(24) NOT NULL,
+    failure_reason TEXT,
+    dispatched_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TIMESTAMP WITH TIME ZONE,
+    UNIQUE (rollout_id, device_id)
+);
+CREATE INDEX IF NOT EXISTS idx_firmware_rollout_devices_lookup ON firmware_rollout_devices(tenant_id, rollout_id, stage_pct);
+ALTER TABLE firmware_rollout_devices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE firmware_rollout_devices FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS firmware_rollout_devices_tenant_isolation_policy ON firmware_rollout_devices;
+CREATE POLICY firmware_rollout_devices_tenant_isolation_policy ON firmware_rollout_devices
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

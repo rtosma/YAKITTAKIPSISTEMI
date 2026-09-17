@@ -9088,3 +9088,171 @@ export async function getDeviceFirmwareInventory(): Promise<DeviceFirmwareInvent
     return res.rows as DeviceFirmwareInventoryRow[];
   });
 }
+
+// ============================================================================
+// [IOT-306] OTA FİRMWARE DAĞITIM SERVİSİ — VERİ ERİŞİM KATMANI
+// ============================================================================
+// Orkestrasyon (cihaza komut gönderme, aşama ilerletme/durdurma kararı)
+// services/firmwareRolloutService.ts'te — burası SADECE CRUD. `firmware_
+// artifacts` RLS'siz (adminDb.ts) olduğundan bu tenant bağlantısıyla da
+// (app_user) okunabilir — RLS yalnızca firmware_rollouts/_devices'ta.
+
+export interface FirmwareRolloutRecord {
+  id: string;
+  tenant_id: string;
+  firmware_artifact_id: string;
+  site_name: string | null;
+  current_stage_pct: number;
+  target_device_count: number;
+  failure_threshold_pct: string;
+  status: 'DEVAM_EDIYOR' | 'DURDURULDU' | 'TAMAMLANDI';
+  halted_reason: string | null;
+  halted_at: string | null;
+  started_by: string;
+  created_at: string;
+}
+
+export interface FirmwareRolloutDeviceRecord {
+  id: string;
+  tenant_id: string;
+  rollout_id: string;
+  device_id: string;
+  stage_pct: number;
+  command_id: string | null;
+  status: 'GÖNDERILDI' | 'BAŞARILI' | 'BAŞARISIZ' | 'GERİ_ALINDI';
+  failure_reason: string | null;
+  dispatched_at: string;
+  resolved_at: string | null;
+}
+
+/** AC: "İkmal sırasında güncelleme başlatılmamalıdır" — atanmadan ÖNCE elenecek cihazları filtreler. */
+export async function selectEligibleDevicesForRollout(
+  artifactHardwareRevision: string,
+  targetVersion: string,
+  siteName: string | null,
+  excludeDeviceIds: string[]
+): Promise<string[]> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query(
+      `SELECT device_id FROM hardware_devices
+        WHERE tenant_id = $1 AND status = 'AKTİF' AND hardware_revision = $2
+          AND (firmware_version IS DISTINCT FROM $3)
+          AND ($4::varchar IS NULL OR site_name = $4)
+          AND NOT (device_id = ANY($5))
+        ORDER BY device_id`,
+      [tenantId, artifactHardwareRevision, targetVersion, siteName, excludeDeviceIds]
+    );
+    return res.rows.map((r: any) => r.device_id);
+  });
+}
+
+export async function createFirmwareRollout(
+  data: { firmwareArtifactId: string; siteName: string | null; targetDeviceCount: number; failureThresholdPct?: number },
+  startedByUserId: string
+): Promise<FirmwareRolloutRecord> {
+  return withTenant(async (client, tenantId) => {
+    const id = generateId('fwroll');
+    const res = await client.query(
+      `INSERT INTO firmware_rollouts (id, tenant_id, firmware_artifact_id, site_name, target_device_count, failure_threshold_pct, started_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [id, tenantId, data.firmwareArtifactId, data.siteName, data.targetDeviceCount, data.failureThresholdPct ?? 20, startedByUserId]
+    );
+    await writeAuditLog(client, {
+      action: 'FIRMWARE_ROLLOUT_STARTED',
+      targetType: 'firmware_rollout',
+      targetId: id,
+      afterValue: { firmwareArtifactId: data.firmwareArtifactId, siteName: data.siteName, targetDeviceCount: data.targetDeviceCount }
+    });
+    return res.rows[0];
+  });
+}
+
+export async function recordRolloutDeviceDispatch(rolloutId: string, deviceId: string, stagePct: number, commandId: string): Promise<void> {
+  return withTenant(async (client, tenantId) => {
+    await client.query(
+      `INSERT INTO firmware_rollout_devices (id, tenant_id, rollout_id, device_id, stage_pct, command_id, status)
+       VALUES ($1,$2,$3,$4,$5,$6,'GÖNDERILDI')`,
+      [generateId('fwrd'), tenantId, rolloutId, deviceId, stagePct, commandId]
+    );
+  });
+}
+
+export async function recordRolloutDeviceResult(
+  rolloutId: string,
+  deviceId: string,
+  status: 'BAŞARILI' | 'BAŞARISIZ',
+  failureReason: string | null
+): Promise<void> {
+  return withTenant(async (client) => {
+    await client.query(
+      `UPDATE firmware_rollout_devices SET status = $3, failure_reason = $4, resolved_at = CURRENT_TIMESTAMP
+        WHERE rollout_id = $1 AND device_id = $2`,
+      [rolloutId, deviceId, status, failureReason]
+    );
+  });
+}
+
+/** AC: "cihaz tarafı rollback sinyalinin izlenmesi" (FW-1311) — bkz. schema.sql notu. */
+export async function recordRolloutDeviceRollback(rolloutId: string, deviceId: string, reason: string): Promise<FirmwareRolloutDeviceRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      `UPDATE firmware_rollout_devices SET status = 'GERİ_ALINDI', failure_reason = $3, resolved_at = CURRENT_TIMESTAMP
+        WHERE rollout_id = $1 AND device_id = $2 RETURNING *`,
+      [rolloutId, deviceId, reason]
+    );
+    if (res.rows.length === 0) throw new NotFoundError('Bu rollout için bu cihaza ait bir kayıt bulunamadı.');
+    await writeAuditLog(client, {
+      action: 'FIRMWARE_ROLLOUT_DEVICE_ROLLBACK',
+      targetType: 'firmware_rollout_device',
+      targetId: res.rows[0].id,
+      afterValue: { rolloutId, deviceId, reason }
+    });
+    return res.rows[0];
+  });
+}
+
+
+export async function updateFirmwareRolloutProgress(
+  rolloutId: string,
+  data: { currentStagePct?: number; status?: 'DEVAM_EDIYOR' | 'DURDURULDU' | 'TAMAMLANDI'; haltedReason?: string }
+): Promise<FirmwareRolloutRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      `UPDATE firmware_rollouts
+          SET current_stage_pct = COALESCE($2, current_stage_pct),
+              status = COALESCE($3, status),
+              halted_reason = COALESCE($4, halted_reason),
+              halted_at = CASE WHEN $3 = 'DURDURULDU' THEN CURRENT_TIMESTAMP ELSE halted_at END
+        WHERE id = $1 RETURNING *`,
+      [rolloutId, data.currentStagePct ?? null, data.status ?? null, data.haltedReason ?? null]
+    );
+    if (res.rows.length === 0) throw new NotFoundError('Rollout bulunamadı.');
+    if (data.status) {
+      await writeAuditLog(client, {
+        action: data.status === 'DURDURULDU' ? 'FIRMWARE_ROLLOUT_HALTED' : 'FIRMWARE_ROLLOUT_ADVANCED',
+        targetType: 'firmware_rollout',
+        targetId: rolloutId,
+        afterValue: { status: data.status, currentStagePct: data.currentStagePct, haltedReason: data.haltedReason }
+      });
+    }
+    return res.rows[0];
+  });
+}
+
+export async function getFirmwareRollouts(filters: { status?: string }): Promise<FirmwareRolloutRecord[]> {
+  return withTenant(async (client) => {
+    const where = filters.status ? `WHERE status = $1` : '';
+    const params = filters.status ? [filters.status] : [];
+    const res = await client.query(`SELECT * FROM firmware_rollouts ${where} ORDER BY created_at DESC`, params);
+    return res.rows;
+  });
+}
+
+export async function getFirmwareRollout(id: string): Promise<{ rollout: FirmwareRolloutRecord; devices: FirmwareRolloutDeviceRecord[] }> {
+  return withTenant(async (client) => {
+    const rolloutRes = await client.query('SELECT * FROM firmware_rollouts WHERE id = $1', [id]);
+    if (rolloutRes.rows.length === 0) throw new NotFoundError('Rollout bulunamadı.');
+    const devicesRes = await client.query('SELECT * FROM firmware_rollout_devices WHERE rollout_id = $1 ORDER BY stage_pct, device_id', [id]);
+    return { rollout: rolloutRes.rows[0], devices: devicesRes.rows };
+  });
+}

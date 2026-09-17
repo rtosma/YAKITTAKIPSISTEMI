@@ -1298,3 +1298,56 @@ export async function exportTenantDataEncrypted(tenantId: string): Promise<Buffe
 
   return encryptTenantExport(JSON.stringify(exportData));
 }
+
+/**
+ * IOT-306 — firmware artefakt kataloğu. `getAllHardwareDevices` ile AYNI
+ * gerekçe: donanım envanteri SUPER_ADMIN'in yönettiği, tek bir (tenant'a
+ * ÖZEL OLMAYAN) kaynak — bu yüzden RLS yok, ham `pool` ile burada.
+ */
+export interface FirmwareArtifactRecord {
+  id: string;
+  version: string;
+  hardware_revision: string;
+  channel: string;
+  artifact_url: string;
+  sha256: string;
+  signature: string;
+  created_by: string;
+  created_at: string;
+}
+
+export async function createFirmwareArtifact(
+  data: { version: string; hardwareRevision: string; channel: 'stable' | 'beta'; artifactUrl: string; sha256: string; signature: string },
+  createdByUserId: string
+): Promise<FirmwareArtifactRecord> {
+  const existing = await pool.query(
+    'SELECT id FROM firmware_artifacts WHERE version = $1 AND hardware_revision = $2',
+    [data.version, data.hardwareRevision]
+  );
+  if (existing.rows.length > 0) {
+    throw new ConflictError(`'${data.hardwareRevision}' donanım revizyonu için '${data.version}' sürümü zaten kayıtlı.`, { error: 'ARTIFACT_ALREADY_EXISTS' });
+  }
+  const id = generateId('fwart');
+  const res = await pool.query(
+    `INSERT INTO firmware_artifacts (id, version, hardware_revision, channel, artifact_url, sha256, signature, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [id, data.version, data.hardwareRevision, data.channel, data.artifactUrl, data.sha256, data.signature, createdByUserId]
+  );
+  return res.rows[0];
+}
+
+export async function getFirmwareArtifacts(filters: { hardwareRevision?: string; channel?: string }): Promise<FirmwareArtifactRecord[]> {
+  const where: string[] = [];
+  const params: any[] = [];
+  if (filters.hardwareRevision) { params.push(filters.hardwareRevision); where.push(`hardware_revision = $${params.length}`); }
+  if (filters.channel) { params.push(filters.channel); where.push(`channel = $${params.length}`); }
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const res = await pool.query(`SELECT * FROM firmware_artifacts ${clause} ORDER BY created_at DESC`, params);
+  return res.rows;
+}
+
+export async function getFirmwareArtifact(id: string): Promise<FirmwareArtifactRecord> {
+  const res = await pool.query('SELECT * FROM firmware_artifacts WHERE id = $1', [id]);
+  if (res.rows.length === 0) throw new NotFoundError('Firmware artefaktı bulunamadı.', { error: 'ARTIFACT_NOT_FOUND' });
+  return res.rows[0];
+}

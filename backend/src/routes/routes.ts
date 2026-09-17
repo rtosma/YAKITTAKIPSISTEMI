@@ -37,7 +37,9 @@ import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
 import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes, normalizeRecoveryCode } from '../services/totpService';
 import { isServerShuttingDown } from '../utils/shutdown';
-import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS, getCompanyLicenseSnapshot, getTenantLifecycleStatus, freezeCompany, unfreezeCompany, scheduleTenantDeletion, cancelTenantDeletion, approveTenantDeletion, exportTenantDataEncrypted, getArchiveSettings, updateArchiveSettings, getModuleCatalog, getFuelCostSettings, updateFuelCostMethod } from '../db/adminDb';
+import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS, getCompanyLicenseSnapshot, getTenantLifecycleStatus, freezeCompany, unfreezeCompany, scheduleTenantDeletion, cancelTenantDeletion, approveTenantDeletion, exportTenantDataEncrypted, getArchiveSettings, updateArchiveSettings, getModuleCatalog, getFuelCostSettings, updateFuelCostMethod, createFirmwareArtifact, getFirmwareArtifacts } from '../db/adminDb';
+import { startFirmwareRollout, getFirmwareRollouts, getFirmwareRollout, reportRolloutDeviceRollback } from '../services/firmwareRolloutService';
+import { createFirmwareArtifactSchema, listFirmwareArtifactQuerySchema, startFirmwareRolloutSchema, listFirmwareRolloutQuerySchema, reportRolloutRollbackSchema } from '../schemas/firmwareRolloutSchema';
 import { generateArchiveForTenant, listTenantArchives, verifyAndConsumeArchiveDownload } from '../services/tenantArchiveService';
 import { archiveSettingsSchema, createArchiveSchema, archiveIdParamsSchema, archiveDownloadParamsSchema } from '../schemas/archiveSchema';
 import { fuelCostSettingsSchema } from '../schemas/fuelCostSchema';
@@ -3821,6 +3823,146 @@ router.get(
     try {
       const rows = await getDeviceFirmwareInventory();
       res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── IOT-306: OTA firmware dağıtım servisi (sürüm, kanal, kademeli rollout) ─
+const FIRMWARE_ARTIFACT_MANAGER_ROLES = ['SUPER_ADMIN'] as const;
+const FIRMWARE_ROLLOUT_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /firmware-artifacts:
+ *   post:
+ *     summary: Firmware Artefaktı Kaydet (IOT-306)
+ *     description: >
+ *       Donanım envanteri gibi platform genelinde (tenant'a özel değil) —
+ *       yalnızca SUPER_ADMIN. sha256 + imza zorunlu.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Firmware Artefakt Kataloğu (IOT-306)
+ *     description: '?hardwareRevision, ?channel'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/firmware-artifacts',
+  authenticateJWT,
+  authorizeRoles(...FIRMWARE_ARTIFACT_MANAGER_ROLES),
+  validateRequest({ body: createFirmwareArtifactSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const artifact = await createFirmwareArtifact(req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: artifact });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/firmware-artifacts',
+  authenticateJWT,
+  authorizeRoles(...FIRMWARE_ROLLOUT_MANAGER_ROLES),
+  validateRequest({ query: listFirmwareArtifactQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { hardwareRevision?: string; channel?: string };
+      const rows = await getFirmwareArtifacts(q);
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /firmware-rollouts:
+ *   post:
+ *     summary: Kademeli OTA Rollout Başlat (IOT-306)
+ *     description: >
+ *       AC: "Cihaz grubuna kademeli dağıtım (%10→%50→%100) yapılabilmelidir."
+ *       İkmal yapan cihazlar bu turda ATLANIR (AC). Bir aşamanın başarısızlık
+ *       oranı %20'yi (varsayılan) aşarsa rollout otomatik DURDURULDU'ya düşer
+ *       ve sonraki aşamalara HİÇ geçilmez.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Rollout Listesi (IOT-306)
+ *     description: '?status'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/firmware-rollouts',
+  authenticateJWT,
+  authorizeRoles(...FIRMWARE_ROLLOUT_MANAGER_ROLES),
+  validateRequest({ body: startFirmwareRolloutSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await startFirmwareRollout(req.body.firmwareArtifactId, req.body.siteName ?? null, req.user!.userId);
+      res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/firmware-rollouts',
+  authenticateJWT,
+  authorizeRoles(...FIRMWARE_ROLLOUT_MANAGER_ROLES),
+  validateRequest({ query: listFirmwareRolloutQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { status?: string };
+      const rows = await getFirmwareRollouts(q);
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/firmware-rollouts/:id',
+  authenticateJWT,
+  authorizeRoles(...FIRMWARE_ROLLOUT_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getFirmwareRollout(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /firmware-rollouts/{id}/devices/{deviceId}/report-rollback:
+ *   post:
+ *     summary: Cihaz Tarafı A/B Rollback Bildirimi (IOT-306, FW-1311 bağımlılığı)
+ *     description: >
+ *       AC: "Cihaz tarafı rollback sinyalinin izlenmesi." FW-1311 (güvenli
+ *       OTA + A/B partition rollback) bu depoda YOK — cihazın kendisi bu
+ *       endpoint'e bildirimde bulunduğu varsayılır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/firmware-rollouts/:id/devices/:deviceId/report-rollback',
+  authenticateJWT,
+  authorizeRoles(...FIRMWARE_ROLLOUT_MANAGER_ROLES),
+  validateRequest({ body: reportRolloutRollbackSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await reportRolloutDeviceRollback(req.params.id, req.params.deviceId, req.body.reason);
+      res.json({ success: true, data: record });
     } catch (error: any) {
       next(error);
     }
