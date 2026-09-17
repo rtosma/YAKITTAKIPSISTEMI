@@ -18,7 +18,7 @@ import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
-import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant, runTankStockAlertSweepForCurrentTenant } from './db/tenantDb';
+import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant, runTankStockAlertSweepForCurrentTenant, runDriverBehaviorScoreSweepForCurrentTenant, runDeviceHealthScoreSweepForCurrentTenant } from './db/tenantDb';
 import { runLicenseExpiryWarningSweep } from './services/licenseWarningService';
 import { runUsageMeteringSweepForPreviousMonth } from './services/usageMeteringService';
 
@@ -560,6 +560,58 @@ async function startServer(): Promise<void> {
     }
   }, TANK_STOCK_ALERT_SWEEP_MS);
 
+  // AI-506 AC: "skor geçmişi tutulmalı." Bu süpürücü fonksiyonu
+  // (runDriverBehaviorScoreSweepForCurrentTenant) tenantDb.ts'te önceden
+  // yazılmıştı ama BURADA hiç kayıt edilmemişti (yalnızca manuel POST
+  // /drivers/behavior-scores/compute ile tetiklenebiliyordu) — IOT-308
+  // taraması eklenirken fark edilip düzeltildi. Diğer günlük süpürücülerle
+  // AYNI desen.
+  const DRIVER_SCORE_SWEEP_MS = 24 * 60 * 60 * 1000;
+  const driverScoreSweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [AI-506] Tenant listesi alınamadı, bu şoför skoru turu atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const r = await runWithTenant({ tenantId }, () => runDriverBehaviorScoreSweepForCurrentTenant());
+        if (r.alarmsRaised > 0) {
+          logger.info({ tenantId, ...r }, `🚗 [AI-506] Şoför davranış skoru taraması: ${r.alarmsRaised} yeni/tekrarlanan alarm.`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [AI-506] Şoför davranış skoru taraması başarısız.');
+      }
+    }
+  }, DRIVER_SCORE_SWEEP_MS);
+
+  // IOT-308 AC: "aylık online SLA... eşik altına düşünce bildirim." Ticket
+  // NestJS + @nestjs/schedule öneriyor — yukarıdaki süpürücülerle AYNI düz
+  // setInterval. Günlük bir tur: her AKTİF cihaz için sağlık skoru hesaplar,
+  // kritik eşiğin altındakiler için AI-507'ye (DEVICE_HEALTH_SCORE_LOW) alarm.
+  const DEVICE_HEALTH_SWEEP_MS = 24 * 60 * 60 * 1000;
+  const deviceHealthSweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [IOT-308] Tenant listesi alınamadı, bu cihaz sağlığı turu atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const r = await runWithTenant({ tenantId }, () => runDeviceHealthScoreSweepForCurrentTenant());
+        if (r.alarmsRaised > 0) {
+          logger.info({ tenantId, ...r }, `🛰️ [IOT-308] Cihaz sağlığı taraması: ${r.alarmsRaised} yeni/tekrarlanan alarm.`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [IOT-308] Cihaz sağlığı taraması başarısız.');
+      }
+    }
+  }, DEVICE_HEALTH_SWEEP_MS);
+
   // REP-702 AC: "Periyot seçimi (7/15/30/90 gün)... tetikleyicisi." Ticket
   // BullMQ + @nestjs/schedule öneriyor — yok; yukarıdaki süpürücülerle AYNI
   // düz setInterval. Günlük bir tur: `companies.archive_period_days` ayarlı
@@ -624,6 +676,8 @@ async function startServer(): Promise<void> {
       clearInterval(fleetComplianceSweepInterval);
       clearInterval(inventoryCriticalStockSweepInterval);
       clearInterval(tankStockAlertSweepInterval);
+      clearInterval(driverScoreSweepInterval);
+      clearInterval(deviceHealthSweepInterval);
       clearInterval(archiveGenerationSweepInterval);
       clearInterval(archiveCleanupSweepInterval);
 

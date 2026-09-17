@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getVehicleSiteAssignmentHistory, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant, createLabSample, getLabSamples, getLabSample, cancelLabSample, recordLabTestResult, getLabTestResults, getNonConformingLabResults, computeDriverBehaviorScores, getDriverBehaviorScores, getDriverBehaviorScoreHistory, getTankStockForecasts, runTankStockAlertSweepForCurrentTenant } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getVehicleSiteAssignmentHistory, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant, createLabSample, getLabSamples, getLabSample, cancelLabSample, recordLabTestResult, getLabTestResults, getNonConformingLabResults, computeDriverBehaviorScores, getDriverBehaviorScores, getDriverBehaviorScoreHistory, getTankStockForecasts, runTankStockAlertSweepForCurrentTenant, computeDeviceHealthScores, getDeviceHealthScores, getDeviceHealthScoreHistory, getDeviceOnlineSla, getDeviceFirmwareInventory } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { getReportDefinition, listReportsForRole, runReport, streamReportToCsv, streamReportToPdf, ReportQueryParams } from '../reports';
 import { reportRunQuerySchema, reportExportQuerySchema, reportIdParamsSchema } from '../schemas/reportSchema';
@@ -16,6 +16,7 @@ import { createReconciliationSchema, listReconciliationQuerySchema } from '../sc
 import { createManualDispenseSchema, rejectManualDispenseSchema, listManualDispenseQuerySchema, manualDispenseRatioQuerySchema } from '../schemas/manualDispenseSchema';
 import { setWorkingHoursSchema, scanAnomalySchema, listAnomalyFlagQuerySchema, reviewAnomalyFlagSchema } from '../schemas/anomalyFlagSchema';
 import { computeDriverBehaviorScoresSchema, listDriverBehaviorScoresQuerySchema, driverBehaviorScoreHistoryQuerySchema } from '../schemas/driverBehaviorScoreSchema';
+import { computeDeviceHealthScoresSchema, listDeviceHealthScoresQuerySchema, deviceHealthScoreHistoryQuerySchema, deviceOnlineSlaQuerySchema } from '../schemas/deviceHealthScoreSchema';
 import { updateAlarmSchema, snoozeAlarmSchema, listAlarmQuerySchema } from '../schemas/alarmSchema';
 import { validateTaxIdSchema, createRecipientSchema } from '../schemas/recipientSchema';
 import { setDeviceTankSchema, fuelStockSummaryQuerySchema } from '../schemas/fuelTypeSchema';
@@ -3680,6 +3681,144 @@ router.get(
     try {
       const q = req.query as unknown as { limit: number };
       const rows = await getDriverBehaviorScoreHistory(req.params.driverName, q.limit);
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── IOT-308: cihaz sağlık skoru, sürüm envanteri, online SLA ───────────
+// AI-506'daki DRIVER_SCORE_MANAGER_ROLES/COMPUTE_ROLES ayrımıyla AYNI mantık
+// — okuma (izleme) SITE_MANAGER'a da açık, hesaplama tetikleme YALNIZCA
+// SUPER_ADMIN/COMPANY_OWNER (HARDWARE_DEVICE_MANAGER_ROLES'ün AKSİNE, çünkü
+// sağlık skoru SITE_MANAGER için de anlamlı bir izleme/gözlem verisi —
+// cihaz yönetimi/provizyon MUTASYONU değil).
+const DEVICE_HEALTH_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const DEVICE_HEALTH_COMPUTE_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /hardware-devices/health-scores/compute:
+ *   post:
+ *     summary: Cihaz Sağlık Skorlarını Hesapla (IOT-308)
+ *     description: >
+ *       index.ts'teki günlük süpürücünün yaptığı işi bu tenant için manuel
+ *       tetikler. `{ periodDays?, minSamples?, deviceId? }` (varsayılan 30
+ *       gün / min 1 presence olayı). Hiç presence verisi olmayan cihazlar
+ *       atlanır. Yalnızca SUPER_ADMIN / COMPANY_OWNER.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/hardware-devices/health-scores/compute',
+  authenticateJWT,
+  authorizeRoles(...DEVICE_HEALTH_COMPUTE_ROLES),
+  validateRequest({ body: computeDeviceHealthScoresSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await computeDeviceHealthScores(req.body);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/health-scores:
+ *   get:
+ *     summary: Cihaz Sağlık Skorları — Her Cihazın EN GÜNCEL Skoru (IOT-308)
+ *     description: '`?siteName ?minScore ?maxScore`. Geçmiş için bkz. /hardware-devices/{deviceId}/health-score/history.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/hardware-devices/health-scores',
+  authenticateJWT,
+  authorizeRoles(...DEVICE_HEALTH_MANAGER_ROLES),
+  validateRequest({ query: listDeviceHealthScoresQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { siteName?: string; minScore?: number; maxScore?: number };
+      const rows = await getDeviceHealthScores(q);
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/{deviceId}/health-score/history:
+ *   get:
+ *     summary: Bir Cihazın Sağlık Skoru Geçmişi (IOT-308)
+ *     description: '`?limit` (varsayılan 30, en yeniden en eskiye).'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/hardware-devices/:deviceId/health-score/history',
+  authenticateJWT,
+  authorizeRoles(...DEVICE_HEALTH_MANAGER_ROLES),
+  validateRequest({ query: deviceHealthScoreHistoryQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { limit: number };
+      const rows = await getDeviceHealthScoreHistory(req.params.deviceId, q.limit);
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/{deviceId}/online-sla:
+ *   get:
+ *     summary: Cihaz Online SLA (IOT-308)
+ *     description: '`?months` (varsayılan 1) — device_presence_events geçmişinden online oranı.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/hardware-devices/:deviceId/online-sla',
+  authenticateJWT,
+  authorizeRoles(...DEVICE_HEALTH_MANAGER_ROLES),
+  validateRequest({ query: deviceOnlineSlaQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { months: number };
+      const result = await getDeviceOnlineSla(req.params.deviceId, q.months);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/firmware-inventory:
+ *   get:
+ *     summary: Cihaz Firmware Sürüm Envanteri (IOT-308)
+ *     description: >
+ *       Her cihazın kendi bildirdiği (varsa) firmware sürümü + son görülme
+ *       zamanı. IOT-306 (OTA) henüz yok — bu yalnızca bir ENVANTER listesi,
+ *       bir dağıtım/rollout mekanizması DEĞİL.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/hardware-devices/firmware-inventory',
+  authenticateJWT,
+  authorizeRoles(...DEVICE_HEALTH_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rows = await getDeviceFirmwareInventory();
       res.json({ success: true, totalCount: rows.length, data: rows });
     } catch (error: any) {
       next(error);

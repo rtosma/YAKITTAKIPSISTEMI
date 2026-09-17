@@ -8391,3 +8391,411 @@ export async function getDriverBehaviorScoreHistory(driverName: string, limit: n
     return res.rows as DriverBehaviorScoreRecord[];
   });
 }
+
+// ============================================================================
+// IOT-308: CİHAZ SAĞLIK SKORU, SÜRÜM ENVANTERİ VE ONLINE SLA TAKİBİ
+// ============================================================================
+// AC: "0-100 sağlık skoru (online oranı, paket kayıp, pil/RSSI, hata sayısı,
+// saat sapması), aylık online SLA, firmware sürüm envanteri, eşik altına
+// düşünce bildirim." Bloklayan IOT-301.2 (presence/LWT) VAR, IOT-306 (OTA
+// firmware) YOK — firmware_version bu yüzden yalnızca cihazın KENDİ
+// bildirdiği sürümü KAYDEDER (envanter), bir OTA dağıtım mekanizması İÇERMEZ.
+//
+// AI-506 (driver_behavior_scores) ile AYNI desen: manuel bir hesaplama
+// endpoint'i + index.ts'te düz bir günlük setInterval süpürücüsü (ticket'ın
+// önerdiği NestJS/@nestjs/schedule bu yığında yok).
+//
+// Kritik Not — girdilerin GERÇEK veri kaynağı (schema.sql'deki IOT-308
+// bloğunun başındaki uzun yorumla AYNI, kısaca):
+//  - offline: device_presence_events (bugünden itibaren gerçek, backfill YOK).
+//  - packetLoss: GERÇEK sıra numarası/beklenen-aralık YOK — OFFLINE geçiş
+//    SIKLIĞI vekil gösterge (düşük ağırlık, dürüst bir yaklaşım olarak).
+//  - telemetryError: IOT-301.3 payload validation'ın reddettiği paket oranı
+//    (Redis sayaçları, her turda okunup sıfırlanır — bkz. redisPool.ts).
+//  - signalBattery / clockDrift: cihaz KENDİSİ bildiriyorsa (opsiyonel
+//    alanlar) hardware_devices'teki "son bilinen değer" — NOKTA-ZAMANLI
+//    (ratio değil) bir ceza; veri yoksa ceza YOK.
+
+const DEVICE_HEALTH_PERIOD_DAYS_DEFAULT = 30; // aylık SLA'ya uygun varsayılan.
+// AC: yetersiz presence verisiyle skor üretilmez. Kritik Not: bu, pencere
+// İÇİNDEKİ geçiş SAYISI değil, cihazın TÜM ZAMANLARDA hiç presence olayı
+// üretip üretmediği (>=1) — aksi halde HİÇ kesintisiz/kararlı bir cihaz
+// (tek "ONLINE" olayından sonra hiç geçiş yapmamış, dolayısıyla mükemmel
+// skoru hak eden) yanlışlıkla "yetersiz veri" sayılırdı (az geçiş = İYİ
+// bir işaret, kötü değil — AI-506'nın "az işlem" eşiğiyle KARIŞTIRILMAMALI).
+const DEVICE_HEALTH_MIN_SAMPLES_DEFAULT = 1;
+const DEVICE_HEALTH_WEIGHTS = {
+  offline: 30,
+  packetLoss: 15,
+  telemetryError: 25,
+  signalBattery: 15,
+  clockDrift: 15
+} as const;
+const DEVICE_HEALTH_ALARM_THRESHOLD = 50;
+const DEVICE_HEALTH_ALARM_CRITICAL_THRESHOLD = 30;
+// "Sık online/offline geçişi" paket-kaybı vekilinin normalizasyonu — bu
+// sayıda (veya fazla) OFFLINE geçişi dönem içinde %100 ceza ratio'suna karşılık gelir.
+const DEVICE_HEALTH_PACKET_LOSS_TRANSITION_NORM = 10;
+const DEVICE_HEALTH_RSSI_WEAK_THRESHOLD_DBM = -100;
+const DEVICE_HEALTH_CLOCK_DRIFT_THRESHOLD_MS = 5 * 60 * 1000; // 5 dakika.
+
+export interface DeviceHealthScoreDetail {
+  offlineSeconds: number;
+  totalSeconds: number;
+  offlineTransitionCount: number;
+  telemetryTotal: number;
+  telemetryErrors: number;
+  weakSignalOrLowBattery: boolean;
+  clockDriftMs: number | null;
+}
+
+export interface DeviceHealthScoreRecord {
+  id: string;
+  tenant_id: string;
+  device_id: string;
+  site_name: string | null;
+  period_days: number;
+  sample_count: number;
+  score: number;
+  offline_ratio_pct: number;
+  packet_loss_ratio_pct: number;
+  telemetry_error_ratio_pct: number;
+  signal_battery_penalty_pct: number;
+  clock_drift_penalty_pct: number;
+  detail: DeviceHealthScoreDetail;
+  computed_at: string;
+}
+
+export interface DeviceHealthScoreComputeResult {
+  periodDays: number;
+  minSamples: number;
+  scannedDevices: number;
+  scoredDevices: number;
+  skippedInsufficientData: number;
+  alarmsRaised: number;
+  scores: DeviceHealthScoreRecord[];
+}
+
+/**
+ * IOT-301.2'nin gerçek zamanlı tespit ettiği (setDeviceState true döndüren)
+ * ONLINE/OFFLINE geçişini kalıcı olarak kaydeder — mqttClient.ts'ten çağrılır.
+ * Presence geçmişinin TEK yazma noktası budur.
+ */
+export async function recordDevicePresenceEvent(deviceId: string, siteName: string | null, status: 'ONLINE' | 'OFFLINE'): Promise<void> {
+  return withTenant(async (client, tenantId) => {
+    await client.query(
+      `INSERT INTO device_presence_events (id, tenant_id, device_id, site_name, status) VALUES ($1,$2,$3,$4,$5)`,
+      [generateId('dpe'), tenantId, deviceId, siteName, status]
+    );
+  });
+}
+
+/**
+ * Cihazın kendi bildirdiği (opsiyonel) telemetri "vital" alanlarının en son
+ * bilinen değerini hardware_devices'e yazar — mqttClient.ts'ten, her
+ * ONLINE/telemetri mesajında çağrılır. Hiçbir alan zorunlu değil (yalnızca
+ * gönderilenler güncellenir); firmware henüz bu alanları göndermiyorsa
+ * satır NULL kalır (ceza yok — bkz. computeDeviceHealthScores).
+ */
+export async function updateDeviceTelemetrySnapshot(deviceId: string, fields: {
+  firmwareVersion?: string;
+  rssi?: number;
+  batteryPct?: number;
+  lowBattery?: boolean;
+  clockDriftMs?: number;
+}): Promise<void> {
+  return withTenant(async (client) => {
+    const sets: string[] = ['last_seen_at = CURRENT_TIMESTAMP'];
+    const params: any[] = [deviceId];
+    const add = (col: string, value: unknown) => { params.push(value); sets.push(`${col} = $${params.length}`); };
+    if (fields.firmwareVersion !== undefined) add('firmware_version', fields.firmwareVersion);
+    if (fields.rssi !== undefined) add('last_reported_rssi', fields.rssi);
+    if (fields.batteryPct !== undefined) add('last_reported_battery_pct', fields.batteryPct);
+    if (fields.lowBattery !== undefined) add('last_reported_low_battery', fields.lowBattery);
+    if (fields.clockDriftMs !== undefined) add('last_clock_drift_ms', fields.clockDriftMs);
+    await client.query(`UPDATE hardware_devices SET ${sets.join(', ')} WHERE device_id = $1`, params);
+  });
+}
+
+interface PresenceEventRow {
+  status: 'ONLINE' | 'OFFLINE';
+  occurred_at: Date;
+}
+
+/**
+ * Bir cihazın [periodStart, periodEnd] penceresindeki OFFLINE süresini,
+ * AYRIK geçiş olaylarından (device_presence_events) yeniden inşa eder.
+ * Pencereden ÖNCEKİ en son olay, pencerenin BAŞLANGICINDAKİ durumu bilmek
+ * için de okunur (aksi halde "pencere başında hangi durumdaydı?" bilinmez).
+ * Hiç olay yoksa (cihaz hiç MQTT/presence verisi üretmemiş) `null` döner —
+ * çağıran bunu "yetersiz veri" olarak ele alır.
+ */
+async function computeDeviceOfflineWindow(
+  client: any,
+  deviceId: string,
+  periodStart: Date,
+  periodEnd: Date
+): Promise<{ offlineSeconds: number; totalSeconds: number; offlineTransitionCount: number; sampleCount: number } | null> {
+  const res = await client.query(
+    `SELECT status, occurred_at FROM device_presence_events
+      WHERE device_id = $1 AND occurred_at <= $2
+      ORDER BY occurred_at ASC`,
+    [deviceId, periodEnd.toISOString()]
+  );
+  const events = res.rows as PresenceEventRow[];
+  if (events.length === 0) return null;
+
+  // Pencere, GERÇEKTEN görünürlüğümüz olan en erken noktadan başlar — ilk
+  // olaydan ÖNCEki bir aralık için veri İCAT edilmez.
+  const firstEventAt = new Date(events[0].occurred_at);
+  const effectiveStart = firstEventAt > periodStart ? firstEventAt : periodStart;
+  if (effectiveStart >= periodEnd) return null;
+
+  const inWindow = events.filter((e) => new Date(e.occurred_at) <= periodEnd);
+  let offlineMs = 0;
+  let offlineTransitionCount = 0;
+  for (let i = 0; i < inWindow.length; i++) {
+    const segStart = new Date(inWindow[i].occurred_at) > effectiveStart ? new Date(inWindow[i].occurred_at) : effectiveStart;
+    const nextAt = i + 1 < inWindow.length ? new Date(inWindow[i + 1].occurred_at) : periodEnd;
+    const segEnd = nextAt < periodEnd ? nextAt : periodEnd;
+    if (segEnd <= segStart) continue;
+    if (inWindow[i].status === 'OFFLINE') {
+      offlineMs += segEnd.getTime() - segStart.getTime();
+      if (new Date(inWindow[i].occurred_at) >= effectiveStart) offlineTransitionCount++;
+    }
+  }
+  const totalSeconds = Math.round((periodEnd.getTime() - effectiveStart.getTime()) / 1000);
+  // sampleCount = cihazın TÜM ZAMANLARDA (pencereyle sınırlı DEĞİL) kaç
+  // presence olayı ürettiği — "en az bir kez görüldü mü" eşiğinin dayanağı
+  // (bkz. yukarıdaki DEVICE_HEALTH_MIN_SAMPLES_DEFAULT notu), gözlem
+  // penceresiyle karıştırılmasın diye offlineTransitionCount'tan AYRI tutulur.
+  return { offlineSeconds: Math.round(offlineMs / 1000), totalSeconds, offlineTransitionCount, sampleCount: events.length };
+}
+
+/**
+ * IOT-308 çekirdeği. Her cihaz için [now-periodDays, now] penceresinde en az
+ * `minSamples` presence olayı varsa 0-100 sağlık skoru üretir ve
+ * `device_health_scores`'a YENİ bir satır ekler (append-only).
+ *
+ * Skor = 100 - Σ(girdi_oranı × ağırlık), [0,100]'e clamp edilir:
+ *  - offline: pencerede OFFLINE geçirilen süre oranı.
+ *  - packetLoss: OFFLINE geçiş sayısı / DEVICE_HEALTH_PACKET_LOSS_TRANSITION_NORM (vekil gösterge).
+ *  - telemetryError: IOT-301.3'ün reddettiği paket oranı (Redis sayaçları).
+ *  - signalBattery: NOKTA-ZAMANLI ceza (0/1) — son bilinen RSSI zayıf VEYA pil düşük.
+ *  - clockDrift: NOKTA-ZAMANLI ceza (0/1) — son bilinen saat sapması eşiğin üstünde.
+ */
+export async function computeDeviceHealthScores(opts: {
+  periodDays?: number;
+  minSamples?: number;
+  deviceId?: string;
+}): Promise<DeviceHealthScoreComputeResult> {
+  return withTenant(async (client, tenantId) => {
+    const periodDays = opts.periodDays ?? DEVICE_HEALTH_PERIOD_DAYS_DEFAULT;
+    const minSamples = opts.minSamples ?? DEVICE_HEALTH_MIN_SAMPLES_DEFAULT;
+    const periodEnd = new Date();
+    const periodStart = new Date(periodEnd.getTime() - periodDays * 24 * 60 * 60 * 1000);
+
+    const deviceFilter = opts.deviceId ? 'AND device_id = $1' : '';
+    const deviceParams: any[] = opts.deviceId ? [opts.deviceId] : [];
+    const devicesRes = await client.query(
+      `SELECT device_id, site_name, last_reported_rssi, last_reported_low_battery, last_clock_drift_ms
+         FROM hardware_devices
+        WHERE status = 'AKTİF' ${deviceFilter}`,
+      deviceParams
+    );
+
+    const scores: DeviceHealthScoreRecord[] = [];
+    let skippedInsufficientData = 0;
+    let alarmsRaised = 0;
+
+    for (const device of devicesRes.rows) {
+      const window = await computeDeviceOfflineWindow(client, device.device_id, periodStart, periodEnd);
+      if (!window || window.sampleCount < minSamples) {
+        skippedInsufficientData++;
+        continue;
+      }
+
+      const { total: telemetryTotal, errors: telemetryErrors } = await redisPool.getAndResetDeviceTelemetryCounters(device.device_id);
+
+      const offlineRatio = window.totalSeconds > 0 ? window.offlineSeconds / window.totalSeconds : 0;
+      const packetLossRatio = Math.min(1, window.offlineTransitionCount / DEVICE_HEALTH_PACKET_LOSS_TRANSITION_NORM);
+      const telemetryErrorRatio = telemetryTotal > 0 ? telemetryErrors / telemetryTotal : 0;
+      const weakSignalOrLowBattery =
+        (device.last_reported_rssi !== null && Number(device.last_reported_rssi) < DEVICE_HEALTH_RSSI_WEAK_THRESHOLD_DBM) ||
+        device.last_reported_low_battery === true;
+      const clockDriftMs = device.last_clock_drift_ms !== null ? Number(device.last_clock_drift_ms) : null;
+      const clockDriftFlag = clockDriftMs !== null && Math.abs(clockDriftMs) > DEVICE_HEALTH_CLOCK_DRIFT_THRESHOLD_MS;
+
+      const rawScore =
+        100 -
+        (offlineRatio * DEVICE_HEALTH_WEIGHTS.offline +
+          packetLossRatio * DEVICE_HEALTH_WEIGHTS.packetLoss +
+          telemetryErrorRatio * DEVICE_HEALTH_WEIGHTS.telemetryError +
+          (weakSignalOrLowBattery ? 1 : 0) * DEVICE_HEALTH_WEIGHTS.signalBattery +
+          (clockDriftFlag ? 1 : 0) * DEVICE_HEALTH_WEIGHTS.clockDrift);
+      const score = Math.max(0, Math.min(100, Math.round(rawScore)));
+
+      const detail: DeviceHealthScoreDetail = {
+        offlineSeconds: window.offlineSeconds, totalSeconds: window.totalSeconds,
+        offlineTransitionCount: window.offlineTransitionCount, telemetryTotal, telemetryErrors,
+        weakSignalOrLowBattery, clockDriftMs
+      };
+      const id = generateId('dhscore');
+
+      await client.query(
+        `INSERT INTO device_health_scores
+           (id, tenant_id, device_id, site_name, period_days, sample_count, score,
+            offline_ratio_pct, packet_loss_ratio_pct, telemetry_error_ratio_pct,
+            signal_battery_penalty_pct, clock_drift_penalty_pct, detail)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [
+          id, tenantId, device.device_id, device.site_name, periodDays, window.sampleCount, score,
+          round2(offlineRatio * 100), round2(packetLossRatio * 100), round2(telemetryErrorRatio * 100),
+          weakSignalOrLowBattery ? 100 : 0, clockDriftFlag ? 100 : 0, JSON.stringify(detail)
+        ]
+      );
+
+      scores.push({
+        id, tenant_id: tenantId, device_id: device.device_id, site_name: device.site_name, period_days: periodDays,
+        sample_count: window.sampleCount, score,
+        offline_ratio_pct: round2(offlineRatio * 100), packet_loss_ratio_pct: round2(packetLossRatio * 100),
+        telemetry_error_ratio_pct: round2(telemetryErrorRatio * 100),
+        signal_battery_penalty_pct: weakSignalOrLowBattery ? 100 : 0, clock_drift_penalty_pct: clockDriftFlag ? 100 : 0,
+        detail, computed_at: new Date().toISOString()
+      });
+
+      if (score < DEVICE_HEALTH_ALARM_THRESHOLD) {
+        await raiseAlarm(client, tenantId, {
+          alarmKey: `DEVICE_HEALTH_SCORE_LOW:${device.device_id}`,
+          category: 'DEVICE_HEALTH_SCORE_LOW',
+          severity: score < DEVICE_HEALTH_ALARM_CRITICAL_THRESHOLD ? 'CRITICAL' : 'WARNING',
+          title: `Cihaz sağlık skoru düşük: ${device.device_id} (${score}/100)`,
+          siteName: device.site_name,
+          subjectType: 'DEVICE',
+          subjectId: device.device_id,
+          detail: { score, ...detail }
+        });
+        alarmsRaised++;
+      }
+    }
+
+    if (scores.length > 0 || skippedInsufficientData > 0) {
+      await writeAuditLog(client, {
+        action: 'DEVICE_HEALTH_SCORE_COMPUTED',
+        targetType: 'device_health_score',
+        targetId: opts.deviceId ?? 'ALL',
+        afterValue: { periodDays, minSamples, scoredDevices: scores.length, skippedInsufficientData }
+      });
+    }
+
+    return {
+      periodDays, minSamples, scannedDevices: devicesRes.rows.length, scoredDevices: scores.length,
+      skippedInsufficientData, alarmsRaised, scores
+    };
+  });
+}
+
+/** index.ts günlük süpürücüsü — diğer "...ForCurrentTenant" sweep'lerle AYNI {scanned, alarmsRaised} şekli. */
+export async function runDeviceHealthScoreSweepForCurrentTenant(): Promise<{ scanned: number; alarmsRaised: number }> {
+  const r = await computeDeviceHealthScores({});
+  return { scanned: r.scoredDevices, alarmsRaised: r.alarmsRaised };
+}
+
+/** Her cihazın EN GÜNCEL (son hesaplanan) sağlık skoru. */
+export async function getDeviceHealthScores(filters: {
+  siteName?: string;
+  minScore?: number;
+  maxScore?: number;
+}): Promise<DeviceHealthScoreRecord[]> {
+  return withTenant(async (client) => {
+    const where: string[] = [];
+    const params: any[] = [];
+    if (filters.siteName) { params.push(filters.siteName); where.push(`site_name = $${params.length}`); }
+    if (filters.minScore !== undefined) { params.push(filters.minScore); where.push(`score >= $${params.length}`); }
+    if (filters.maxScore !== undefined) { params.push(filters.maxScore); where.push(`score <= $${params.length}`); }
+    // DISTINCT ON'DAN ÖNCE score/site_name FİLTRELEMEK YANLIŞ olurdu (bkz.
+    // AI-506 driver_behavior_scores'taki AYNI not) — CTE'de önce her
+    // cihazın gerçek en güncel satırı sabitlenir, filtre ANCAK ondan SONRA uygulanır.
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const res = await client.query(
+      `WITH latest AS (
+         SELECT DISTINCT ON (device_id) *
+           FROM device_health_scores
+          ORDER BY device_id, computed_at DESC
+       )
+       SELECT * FROM latest
+       ${whereSql}
+       ORDER BY device_id`,
+      params
+    );
+    return res.rows as DeviceHealthScoreRecord[];
+  });
+}
+
+/** Bir cihazın sağlık skoru geçmişi — en yeniden en eskiye. */
+export async function getDeviceHealthScoreHistory(deviceId: string, limit: number = 30): Promise<DeviceHealthScoreRecord[]> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      `SELECT * FROM device_health_scores WHERE device_id = $1 ORDER BY computed_at DESC LIMIT $2`,
+      [deviceId, limit]
+    );
+    return res.rows as DeviceHealthScoreRecord[];
+  });
+}
+
+export interface DeviceOnlineSlaResult {
+  deviceId: string;
+  periodStart: string;
+  periodEnd: string;
+  onlineRatioPct: number | null;
+  offlineSeconds: number;
+  totalSeconds: number;
+  insufficientData: boolean;
+}
+
+/**
+ * "Aylık online SLA" — computeDeviceHealthScores'un AYNI pencere
+ * yeniden-inşa mantığını, keyfi bir [monthsBack] için tekrar kullanır.
+ * Sağlık skorundan AYRI tutulur (ticket bunları iki farklı teslimat olarak
+ * listeliyor) ama AYNI temel veriye (device_presence_events) dayanır.
+ */
+export async function getDeviceOnlineSla(deviceId: string, months: number = 1): Promise<DeviceOnlineSlaResult> {
+  return withTenant(async (client) => {
+    const periodEnd = new Date();
+    const periodStart = new Date(periodEnd.getTime() - months * 30 * 24 * 60 * 60 * 1000);
+    const window = await computeDeviceOfflineWindow(client, deviceId, periodStart, periodEnd);
+    if (!window) {
+      return {
+        deviceId, periodStart: periodStart.toISOString(), periodEnd: periodEnd.toISOString(),
+        onlineRatioPct: null, offlineSeconds: 0, totalSeconds: 0, insufficientData: true
+      };
+    }
+    const onlineRatioPct = window.totalSeconds > 0 ? round2(100 - (window.offlineSeconds / window.totalSeconds) * 100) : null;
+    return {
+      deviceId, periodStart: periodStart.toISOString(), periodEnd: periodEnd.toISOString(),
+      onlineRatioPct, offlineSeconds: window.offlineSeconds, totalSeconds: window.totalSeconds, insufficientData: false
+    };
+  });
+}
+
+export interface DeviceFirmwareInventoryRow {
+  device_id: string;
+  name: string;
+  site_name: string;
+  model: string | null;
+  firmware_version: string | null;
+  last_seen_at: string | null;
+  status: string;
+}
+
+/** "Sürüm envanteri" — her cihazın kendi bildirdiği (varsa) firmware sürümü + son görülme zamanı. */
+export async function getDeviceFirmwareInventory(): Promise<DeviceFirmwareInventoryRow[]> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      `SELECT device_id, name, site_name, model, firmware_version, last_seen_at, status
+         FROM hardware_devices
+        ORDER BY firmware_version IS NULL, firmware_version, device_id`
+    );
+    return res.rows as DeviceFirmwareInventoryRow[];
+  });
+}

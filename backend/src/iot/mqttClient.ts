@@ -10,6 +10,7 @@ import { startUnauthorizedFlowDetectionEngine } from './unauthorizedFlowDetector
 import { startCommandQueueEngine } from './commandQueueService';
 import { incrementTelemetryPacketCounter } from '../services/usageMeteringService';
 import { payloadValidationPool } from './payloadValidationPool';
+import { recordDevicePresenceEvent, updateDeviceTelemetrySnapshot } from '../db/tenantDb';
 
 // Local Event Bus for decoupling (Prep for ARCH-102: BullMQ)
 export const ioTEventBus = new EventEmitter();
@@ -180,6 +181,18 @@ class MQTTService {
               // IOT-301.2 AC: "Cihaz durumu değişimi canlı olarak arayüze
               // yansımalıdır" — yalnızca GERÇEK bir geçişte yayınlanır.
               ioTEventBus.emit('deviceStatusChanged', { tenantId, siteId, deviceType, deviceId, status });
+              // IOT-308: online SLA/sağlık skorunun TEK gerçek veri kaynağı —
+              // Redis'teki TTL anahtarı geçmiş tutmaz, bu yüzden GERÇEK
+              // geçişler burada kalıcı olarak kaydedilir. Hata yutulur —
+              // telemetri hattını ASLA bloklamaz (BILL-1704 sayacıyla AYNI disiplin).
+              recordDevicePresenceEvent(deviceId, registeredDevice.site_name ?? null, status).catch((err) =>
+                logger.warn({ err, deviceId }, '⚠️ [IOT-308] Presence olayı kaydedilemedi.')
+              );
+            }
+            if (status === 'ONLINE') {
+              updateDeviceTelemetrySnapshot(deviceId, {}).catch((err) =>
+                logger.warn({ err, deviceId }, '⚠️ [IOT-308] last_seen_at güncellenemedi.')
+              );
             }
           } else if (messageType === 'data') {
             // IOT-301.3: JSON.parse (standart telemetri) ve LoRaWAN binary
@@ -188,7 +201,12 @@ class MQTTService {
             // yalnızca sonucu bekler, ayrıştırma mantığının KENDİSİ
             // payloadValidationWorker.ts'e taşındı (davranış birebir aynı).
             const validation = await payloadValidationPool.validatePayload(deviceType, messageStr);
+            // IOT-308: "hata sayısı" girdisi — her denemede (başarılı VEYA
+            // reddedilmiş) total artar, yalnızca reddedilende error de artar.
+            // computeDeviceHealthScores bu ikisini OKUYUP SIFIRLAR.
+            void redisPool.incrDeviceTelemetryCounter(deviceId, 'total');
             if (!validation.ok) {
+              void redisPool.incrDeviceTelemetryCounter(deviceId, 'error');
               if (validation.reason === 'CORRUPTED_LORAWAN') {
                 // IOT-302 AC: bozuk paket İZOLE edilir — yalnızca bu paket
                 // düşürülür; aynı akıştaki diğer cihazlar etkilenmez, ne
@@ -234,7 +252,32 @@ class MQTTService {
             const changed = await redisPool.setDeviceState(deviceId, 'ONLINE');
             if (changed) {
               ioTEventBus.emit('deviceStatusChanged', { tenantId, siteId, deviceType, deviceId, status: 'ONLINE' });
+              recordDevicePresenceEvent(deviceId, registeredDevice.site_name ?? null, 'ONLINE').catch((err) =>
+                logger.warn({ err, deviceId }, '⚠️ [IOT-308] Presence olayı kaydedilemedi.')
+              );
             }
+
+            // IOT-308: cihazın KENDİ bildirdiği (opsiyonel) sağlık alanları —
+            // LoRaWAN için decoder'ın zaten çözdüğü rssi/lowBattery, standart
+            // JSON telemetri için `firmwareVersion`/`rssi`/`batteryPct`/
+            // `deviceTimeMs` (cihaz saati — sunucu saatiyle farkı sapma
+            // olarak kaydedilir). Hiçbiri ZORUNLU değil — firmware henüz
+            // göndermiyorsa sessizce atlanır (bkz. tenantDb.ts'teki
+            // updateDeviceTelemetrySnapshot yorumu: veri yoksa ceza yok).
+            const vitals = parsedData as Record<string, unknown>;
+            const snapshotFields: Parameters<typeof updateDeviceTelemetrySnapshot>[1] = {};
+            if (deviceType === 'lorawan') {
+              if (typeof vitals.rssi === 'number') snapshotFields.rssi = vitals.rssi;
+              if (typeof vitals.lowBattery === 'boolean') snapshotFields.lowBattery = vitals.lowBattery;
+            } else {
+              if (typeof vitals.firmwareVersion === 'string') snapshotFields.firmwareVersion = vitals.firmwareVersion;
+              if (typeof vitals.rssi === 'number') snapshotFields.rssi = vitals.rssi;
+              if (typeof vitals.batteryPct === 'number') snapshotFields.batteryPct = vitals.batteryPct;
+              if (typeof vitals.deviceTimeMs === 'number') snapshotFields.clockDriftMs = Date.now() - vitals.deviceTimeMs;
+            }
+            updateDeviceTelemetrySnapshot(deviceId, snapshotFields).catch((err) =>
+              logger.warn({ err, deviceId }, '⚠️ [IOT-308] Telemetri anlık görüntüsü güncellenemedi.')
+            );
           }
         });
       } catch (err) {

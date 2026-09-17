@@ -191,6 +191,38 @@ class RedisManager {
   }
 
   /**
+   * IOT-308 — cihaz sağlık skoru için "paket kaybı/hata sayısı" girdisi.
+   * Her MQTT telemetri denemesinde (başarılı VEYA reddedilmiş) mqttClient.ts
+   * bu sayaçları artırır; computeDeviceHealthScores periyodik olarak OKUYUP
+   * SIFIRLAR (bkz. getAndResetDeviceTelemetryCounters) — yani bunlar
+   * Postgres'teki driver_behavior_scores'un "son N gün" pencereli
+   * sorgularının AKSİNE, "son hesaplamadan bu yana" biriken sayaçlardır
+   * (her MQTT paketini Postgres'e yazmak hacim/performans açısından
+   * anlamsız olurdu — bilinçli sapma).
+   */
+  public async incrDeviceTelemetryCounter(deviceId: string, kind: 'total' | 'error'): Promise<void> {
+    try {
+      await this.client.incr(`device:${deviceId}:health:${kind}`);
+    } catch (err) {
+      logger.warn({ err, deviceId, kind }, '⚠️ [IOT-308] Cihaz telemetri sayacı artırılamadı.');
+    }
+  }
+
+  /** Sayaçları okur ve ATOMİK OLMAYAN ama düşük riskli bir GET+DEL ile sıfırlar (bkz. yukarıdaki not). */
+  public async getAndResetDeviceTelemetryCounters(deviceId: string): Promise<{ total: number; errors: number }> {
+    const totalKey = `device:${deviceId}:health:total`;
+    const errorKey = `device:${deviceId}:health:error`;
+    try {
+      const [totalStr, errorStr] = await Promise.all([this.client.get(totalKey), this.client.get(errorKey)]);
+      await Promise.all([this.client.del(totalKey), this.client.del(errorKey)]);
+      return { total: Number(totalStr) || 0, errors: Number(errorStr) || 0 };
+    } catch (err) {
+      logger.warn({ err, deviceId }, '⚠️ [IOT-308] Cihaz telemetri sayaçları okunamadı.');
+      return { total: 0, errors: 0 };
+    }
+  }
+
+  /**
    * Bağlantıyı güvenli bir şekilde kapatır
    */
   public async close(): Promise<void> {

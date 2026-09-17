@@ -2095,3 +2095,97 @@ CREATE POLICY driver_behavior_scores_tenant_isolation_policy ON driver_behavior_
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- ============================================================================
+-- [IOT-308] Cihaz Sağlık Skoru, Sürüm Envanteri ve Online SLA Takibi
+-- ============================================================================
+-- Bloklayan IOT-301.2 (presence/LWT) VAR, IOT-306 (OTA firmware) YOK — bu
+-- yüzden "firmware_version" burada yalnızca cihazın KENDİ bildirdiği sürümü
+-- KAYDEDER (envanter), bir OTA dağıtım/rollout mekanizması İÇERMEZ (o,
+-- IOT-306'nın kapsamı).
+--
+-- Bilinçli sapma — "paket kaybı/hata sayısı/pil-RSSI/saat sapması" ticket'ın
+-- istediği ama bugüne kadar HİÇBİR yerde toplanmayan sinyaller (bkz.
+-- mqttClient.ts/redisPool.ts'teki IOT-308 yorumları):
+--  - "online oranı" → device_presence_events (aşağıda, append-only) — IOT-301.2
+--    zaten GERÇEK zamanlı geçişleri (deviceStatusChanged) tespit ediyordu ama
+--    hiçbir yere KALICI olarak yazmıyordu (yalnızca 10sn TTL'li bir Redis
+--    anahtarı — geçmiş yok). Bu tablo o boşluğu dolduruyor; SADECE BUGÜNDEN
+--    SONRAKİ geçişler için gerçek veri üretir, geriye dönük backfill YOK.
+--  - "paket kaybı" → GERÇEK bir sıra numarası/beklenen-aralık takibi YOK;
+--    vekil gösterge olarak OFFLINE geçiş SIKLIĞI kullanılıyor (sık
+--    online/offline "flapping" = bağlantı kararsızlığı). Dürüst bir yaklaşım
+--    olarak düşük ağırlıklı bir girdi (bkz. tenantDb.ts DEVICE_HEALTH_WEIGHTS).
+--  - "hata sayısı" → IOT-301.3 payload validation'ın REDDETTİĞİ paket oranı
+--    (bozuk JSON/LoRaWAN) — Redis sayaçları (device:{id}:health:total/error,
+--    bkz. redisPool.ts), her hesaplama turunda okunup sıfırlanır (Postgres'e
+--    her paketi yazmak hacim açısından anlamsız).
+--  - "pil/RSSI" ve "saat sapması" → yalnızca cihaz bu alanları KENDİSİ
+--    bildiriyorsa (LoRaWAN decoder zaten rssi/batteryVoltage/lowBattery
+--    çözüyor; standart JSON telemetri için `rssi`/`batteryPct`/`deviceTimeMs`
+--    OPSİYONEL alanlar) hardware_devices'te "son bilinen değer" olarak
+--    tutulur ve NOKTA-ZAMANLI (ratio değil, 0/1) bir ceza girdisi olarak
+--    skora katılır — veri yoksa ceza YOK (cihazın firmware'i bu alanları
+--    hiç göndermiyor olabilir, bu onu "kötü" yapmaz).
+
+-- Cihazın kendi bildirdiği sürüm + en son telemetri "vital" değerleri —
+-- her yeni ONLINE/telemetri mesajında ÜZERİNE YAZILIR (append-only DEĞİL,
+-- "son bilinen durum" anlık görüntüsü — geçmiş için device_presence_events'e
+-- ve device_health_scores'a bakın).
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS firmware_version VARCHAR(32);
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_reported_rssi INTEGER;
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_reported_battery_pct NUMERIC(5, 2);
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_reported_low_battery BOOLEAN;
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_clock_drift_ms BIGINT;
+
+-- IOT-301.2'nin GERÇEK ZAMANLI ürettiği (ama hiçbir yere kalıcı yazmadığı)
+-- ONLINE/OFFLINE geçişlerinin append-only geçmişi — online oranı/SLA
+-- hesabının TEK gerçek veri kaynağı budur (Redis'teki TTL anahtarı geçmiş
+-- tutmaz). mqttClient.ts'te SADECE gerçek bir geçişte (setDeviceState'in
+-- true döndürdüğü an) bir satır eklenir.
+CREATE TABLE IF NOT EXISTS device_presence_events (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    device_id VARCHAR(64) NOT NULL,
+    site_name VARCHAR(128),
+    status VARCHAR(16) NOT NULL, -- 'ONLINE' | 'OFFLINE'
+    occurred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_device_presence_events_lookup ON device_presence_events(tenant_id, device_id, occurred_at DESC);
+ALTER TABLE device_presence_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE device_presence_events FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS device_presence_events_tenant_isolation_policy ON device_presence_events;
+CREATE POLICY device_presence_events_tenant_isolation_policy ON device_presence_events
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- AI-506 (driver_behavior_scores) ile AYNI desen: append-only, her hesaplama
+-- turu YENİ bir satır ekler (UPDATE yok) — "skor geçmişi" böylece korunur.
+-- Eşiğin altındaki (yetersiz örnek/presence olayı) cihazlar İÇİN HİÇ satır
+-- yazılmaz (bkz. tenantDb.ts computeDeviceHealthScores — skippedInsufficientData).
+CREATE TABLE IF NOT EXISTS device_health_scores (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    device_id VARCHAR(64) NOT NULL,
+    site_name VARCHAR(128),
+    period_days INTEGER NOT NULL,
+    sample_count INTEGER NOT NULL,
+    score INTEGER NOT NULL CHECK (score BETWEEN 0 AND 100),
+    offline_ratio_pct NUMERIC(5, 2) NOT NULL DEFAULT 0,
+    packet_loss_ratio_pct NUMERIC(5, 2) NOT NULL DEFAULT 0,
+    telemetry_error_ratio_pct NUMERIC(5, 2) NOT NULL DEFAULT 0,
+    signal_battery_penalty_pct NUMERIC(5, 2) NOT NULL DEFAULT 0,
+    clock_drift_penalty_pct NUMERIC(5, 2) NOT NULL DEFAULT 0,
+    detail JSONB,
+    computed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_device_health_scores_lookup ON device_health_scores(tenant_id, device_id, computed_at DESC);
+ALTER TABLE device_health_scores ENABLE ROW LEVEL SECURITY;
+ALTER TABLE device_health_scores FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS device_health_scores_tenant_isolation_policy ON device_health_scores;
+CREATE POLICY device_health_scores_tenant_isolation_policy ON device_health_scores
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
