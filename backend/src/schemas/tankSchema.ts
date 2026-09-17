@@ -25,7 +25,11 @@ export const updateTankSchema = z.object({
   currentLevelLiters: z.number().nonnegative('Güncel seviye negatif olamaz.').optional(),
   fuelType: z.string().optional(),
   siteName: z.string().optional(),
-  status: z.string().optional()
+  status: z.string().optional(),
+  // INV-1504 AC: "Tank bazında kritik ve minimum stok eşikleri." null →
+  // eşik kaldırılır (yalnızca tahmini bitiş süresi kontrolü kalır).
+  lowStockThresholdLiters: z.number().nonnegative('Eşik negatif olamaz.').nullable().optional(),
+  reorderLeadDays: z.number().int().positive('Sipariş süresi 0\'dan büyük bir tam sayı olmalıdır.').optional()
 }).refine(
   (data) => data.capacityLiters === undefined || data.currentLevelLiters === undefined || data.currentLevelLiters <= data.capacityLiters,
   {

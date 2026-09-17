@@ -454,6 +454,9 @@ jobs:
       - name: Run INV-1503 Unit Price History and Fuel Cost Tests
         run: cd backend && npx tsx test/test_inv1503_fuel_cost.ts
 
+      - name: Run INV-1504 Tank Low-Stock Forecast + Reorder Alert Tests
+        run: cd backend && npx tsx test/test_inv1504_tank_stock_forecast.ts
+
       - name: Run FUEL-409 Theoretical vs Physical Stock Reconciliation Tests
         run: cd backend && npx tsx test/test_fuel409_stock_reconciliation.ts
 

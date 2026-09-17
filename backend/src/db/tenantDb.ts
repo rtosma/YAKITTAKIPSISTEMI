@@ -362,6 +362,9 @@ export interface TankRecord {
   fuel_type: string;
   site_name: string;
   status: string;
+  /** INV-1504 — bkz. tankStockAlertService.ts. */
+  low_stock_threshold_liters: number | null;
+  reorder_lead_days: number;
 }
 
 /**
@@ -753,7 +756,7 @@ export async function getTenantTanks(siteRestriction?: string): Promise<TankReco
   });
 }
 
-export async function createTank(data: Omit<TankRecord, 'id' | 'tenant_id'>): Promise<TankRecord> {
+export async function createTank(data: Omit<TankRecord, 'id' | 'tenant_id' | 'low_stock_threshold_liters' | 'reorder_lead_days'>): Promise<TankRecord> {
   return withTenant(async (client, tenantId) => {
     const id = generateId('tnk');
     const result = await client.query(
@@ -771,7 +774,7 @@ export async function updateTank(id: string, data: Partial<TankRecord>): Promise
 
     for (const [key, value] of Object.entries(data)) {
       if (value === undefined) continue;
-      if (['name', 'capacity_liters', 'current_level_liters', 'fuel_type', 'site_name', 'status'].includes(key)) {
+      if (['name', 'capacity_liters', 'current_level_liters', 'fuel_type', 'site_name', 'status', 'low_stock_threshold_liters', 'reorder_lead_days'].includes(key)) {
         fields.push({ column: key, value });
       }
     }
@@ -784,6 +787,114 @@ export async function deleteTank(id: string): Promise<void> {
   return withTenant(async (client) => {
     const result = await client.query('DELETE FROM tanks WHERE id = $1', [id]);
     if (result.rowCount === 0) throw new NotFoundError('Tank bulunamadı veya yetkiniz yok.');
+  });
+}
+
+// ============================================================================
+// INV-1504: MİNİMUM STOK EŞİĞİ VE OTOMATİK SİPARİŞ UYARISI
+// ============================================================================
+// Ticket "NOTIF-1601" (olay → şablon → kanal yönlendirme) öneriyor — bu kod
+// tabanında yok. BILL-1702/licenseWarningService.ts'in ZATEN belgelediği
+// desen: mevcut AI-507 birleşik alarm sistemi (raiseAlarm — kalıcı, panelde
+// görülebilir, alarm_key ile dedupe zaten var) tek bildirim kanalı. INV-1506
+// (checkAndRaiseCriticalStockAlarm) BİREBİR AYNI deseni envanter kalemleri
+// için zaten kullanıyor — burası onun tank karşılığı.
+
+const TANK_STOCK_LOOKBACK_DAYS = 14; // ticket notu: "son 7-14 günün ortalaması"
+
+export interface TankStockForecast {
+  tankId: string;
+  tankName: string;
+  siteName: string;
+  currentLevelLiters: number;
+  capacityLiters: number;
+  lowStockThresholdLiters: number | null;
+  reorderLeadDays: number;
+  /** Son TANK_STOCK_LOOKBACK_DAYS günün günlük ortalama tüketimi (litre). */
+  avgDailyConsumptionLiters: number;
+  /** avgDailyConsumptionLiters=0 ise hesaplanamaz (yetersiz veri) → null. */
+  estimatedDaysRemaining: number | null;
+  belowThreshold: boolean;
+  nearingEmpty: boolean;
+}
+
+async function computeTankForecast(client: any, tenantId: string, tank: TankRecord): Promise<TankStockForecast> {
+  const consRes = await client.query(
+    `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS c
+       FROM transactions
+      WHERE tenant_id = $1 AND tank_name = $2 AND site_name = $3
+        AND created_at >= NOW() - INTERVAL '${TANK_STOCK_LOOKBACK_DAYS} days'`,
+    [tenantId, tank.name, tank.site_name]
+  );
+  const avgDailyConsumptionLiters = round2(Number(consRes.rows[0].c) / TANK_STOCK_LOOKBACK_DAYS);
+  const currentLevelLiters = Number(tank.current_level_liters);
+  const estimatedDaysRemaining = avgDailyConsumptionLiters > 0 ? round2(currentLevelLiters / avgDailyConsumptionLiters) : null;
+  const lowStockThresholdLiters = tank.low_stock_threshold_liters === null ? null : Number(tank.low_stock_threshold_liters);
+  const reorderLeadDays = tank.reorder_lead_days;
+
+  return {
+    tankId: tank.id,
+    tankName: tank.name,
+    siteName: tank.site_name,
+    currentLevelLiters,
+    capacityLiters: Number(tank.capacity_liters),
+    lowStockThresholdLiters,
+    reorderLeadDays,
+    avgDailyConsumptionLiters,
+    estimatedDaysRemaining,
+    belowThreshold: lowStockThresholdLiters !== null && currentLevelLiters <= lowStockThresholdLiters,
+    nearingEmpty: estimatedDaysRemaining !== null && estimatedDaysRemaining <= reorderLeadDays
+  };
+}
+
+/** AC: "uyarının panelde gösterilmesi." Tüm tanklar için tahmin — eşiği aşanlar/aşmayanlar dahil. */
+export async function getTankStockForecasts(): Promise<TankStockForecast[]> {
+  return withTenant(async (client, tenantId) => {
+    const tanksRes = await client.query('SELECT * FROM tanks WHERE tenant_id = $1', [tenantId]);
+    return Promise.all(tanksRes.rows.map((t: TankRecord) => computeTankForecast(client, tenantId, t)));
+  });
+}
+
+async function checkAndRaiseTankLowStockAlarm(client: any, tenantId: string, forecast: TankStockForecast): Promise<RaiseAlarmResult | null> {
+  if (!forecast.belowThreshold && !forecast.nearingEmpty) return null;
+  return raiseAlarm(client, tenantId, {
+    alarmKey: `tank-low-stock:${forecast.tankId}`,
+    category: 'TANK_LOW_STOCK_FORECAST',
+    severity: forecast.belowThreshold || (forecast.estimatedDaysRemaining !== null && forecast.estimatedDaysRemaining <= 1) ? 'CRITICAL' : 'WARNING',
+    title: forecast.nearingEmpty
+      ? `${forecast.tankName} — tahmini ${forecast.estimatedDaysRemaining} gün içinde bitecek (mevcut ${forecast.currentLevelLiters} L, günlük ort. tüketim ${forecast.avgDailyConsumptionLiters} L)`
+      : `${forecast.tankName} — stok eşiğin altında (${forecast.currentLevelLiters} L, eşik ${forecast.lowStockThresholdLiters} L)`,
+    siteName: forecast.siteName,
+    subjectType: 'tank',
+    subjectId: forecast.tankId,
+    detail: {
+      currentLevelLiters: forecast.currentLevelLiters,
+      lowStockThresholdLiters: forecast.lowStockThresholdLiters,
+      avgDailyConsumptionLiters: forecast.avgDailyConsumptionLiters,
+      estimatedDaysRemaining: forecast.estimatedDaysRemaining,
+      reorderLeadDays: forecast.reorderLeadDays
+    }
+  });
+}
+
+/**
+ * AC: "eşik altına düşen tanklar için uyarı üretilmelidir" + "aynı tank için
+ * günde birden fazla uyarı gönderilmemelidir." raiseAlarm'ın alarm_key
+ * dedupe'ı (INV-1506'daki AYNI desen) bunu doğal olarak sağlar: tank hâlâ
+ * OPEN bir alarmdaysa tekrar çağrı yeni bir kullanıcı-görünür bildirim
+ * ÜRETMEZ (alarmsRaised yalnızca isNew||reopened'ı sayar), sadece
+ * alarm_events'e sessiz bir satır ekler.
+ */
+export async function runTankStockAlertSweepForCurrentTenant(): Promise<{ scanned: number; alarmsRaised: number }> {
+  return withTenant(async (client, tenantId) => {
+    const tanksRes = await client.query('SELECT * FROM tanks WHERE tenant_id = $1', [tenantId]);
+    let alarmsRaised = 0;
+    for (const tank of tanksRes.rows as TankRecord[]) {
+      const forecast = await computeTankForecast(client, tenantId, tank);
+      const result = await checkAndRaiseTankLowStockAlarm(client, tenantId, forecast);
+      if (result && (result.isNew || result.reopened)) alarmsRaised++;
+    }
+    return { scanned: tanksRes.rows.length, alarmsRaised };
   });
 }
 
@@ -5481,7 +5592,12 @@ export type AlarmCategory =
   // INV-1507: bir laboratuvar test sonucu şartnameye UYGUNSUZ çıktı.
   | 'LAB_NONCONFORMING_RESULT'
   // AI-506: bir şoförün davranış skoru kritik eşiğin altına düştü.
-  | 'DRIVER_BEHAVIOR_SCORE_LOW' | 'OTHER';
+  | 'DRIVER_BEHAVIOR_SCORE_LOW'
+  // INV-1504: bir tankın stoku eşiğin altına düştü VEYA tüketim hızına göre
+  // tahmini bitiş süresi reorder_lead_days'in içinde.
+  | 'TANK_LOW_STOCK_FORECAST'
+  // IOT-308: bir cihazın sağlık skoru kritik eşiğin altına düştü.
+  | 'DEVICE_HEALTH_SCORE_LOW' | 'OTHER';
 export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
 

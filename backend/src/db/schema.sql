@@ -205,6 +205,13 @@ CREATE TABLE IF NOT EXISTS tanks (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- INV-1504 AC: "Tank bazında kritik ve minimum stok eşikleri." NULL ise
+-- (eşik hiç tanımlanmamış) kalan-gün tahmini yine çalışır, yalnızca sabit
+-- litre eşiği devre dışı kalır — bkz. tankStockAlertService.ts.
+ALTER TABLE tanks ADD COLUMN IF NOT EXISTS low_stock_threshold_liters NUMERIC(10, 2);
+-- Ticket notu: "3 gün sonra biter" uyarısı eyleme daha dönük — varsayılan 3.
+ALTER TABLE tanks ADD COLUMN IF NOT EXISTS reorder_lead_days INTEGER NOT NULL DEFAULT 3;
+
 -- 3. Drivers Table
 CREATE TABLE IF NOT EXISTS drivers (
     id VARCHAR(64) PRIMARY KEY,
@@ -2083,6 +2090,7 @@ CREATE TABLE IF NOT EXISTS driver_behavior_scores (
 CREATE INDEX IF NOT EXISTS idx_driver_behavior_scores_lookup ON driver_behavior_scores(tenant_id, driver_name, computed_at DESC);
 ALTER TABLE driver_behavior_scores ENABLE ROW LEVEL SECURITY;
 ALTER TABLE driver_behavior_scores FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS driver_behavior_scores_tenant_isolation_policy ON driver_behavior_scores;
 CREATE POLICY driver_behavior_scores_tenant_isolation_policy ON driver_behavior_scores
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))

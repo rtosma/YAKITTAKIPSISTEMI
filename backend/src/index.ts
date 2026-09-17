@@ -18,7 +18,7 @@ import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { broadcastToTenant } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
-import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant } from './db/tenantDb';
+import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant, runTankStockAlertSweepForCurrentTenant } from './db/tenantDb';
 import { runLicenseExpiryWarningSweep } from './services/licenseWarningService';
 import { runUsageMeteringSweepForPreviousMonth } from './services/usageMeteringService';
 
@@ -534,6 +534,32 @@ async function startServer(): Promise<void> {
     }
   }, INVENTORY_CRITICAL_STOCK_SWEEP_MS);
 
+  // INV-1504 AC: "eşik altına düşen VEYA tahmini bitişe X gün kala tanklar
+  // için sipariş uyarısı üretilmelidir." Ticket NestJS + BullMQ repeatable
+  // job + NOTIF-1601 öneriyor — INV-1506'daki AYNI desen: düz setInterval,
+  // AI-507 alarm sistemi tek bildirim kanalı (alarm_key dedupe zaten "günde
+  // birden fazla uyarı" AC'sini doğal olarak sağlıyor).
+  const TANK_STOCK_ALERT_SWEEP_MS = 24 * 60 * 60 * 1000;
+  const tankStockAlertSweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [INV-1504] Tenant listesi alınamadı, bu stok tahmini turu atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const r = await runWithTenant({ tenantId }, () => runTankStockAlertSweepForCurrentTenant());
+        if (r.alarmsRaised > 0) {
+          logger.info({ tenantId, ...r }, `⛽ [INV-1504] Tank stok tahmini taraması: ${r.alarmsRaised} yeni/tekrarlanan alarm.`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [INV-1504] Tank stok tahmini taraması başarısız.');
+      }
+    }
+  }, TANK_STOCK_ALERT_SWEEP_MS);
+
   // REP-702 AC: "Periyot seçimi (7/15/30/90 gün)... tetikleyicisi." Ticket
   // BullMQ + @nestjs/schedule öneriyor — yok; yukarıdaki süpürücülerle AYNI
   // düz setInterval. Günlük bir tur: `companies.archive_period_days` ayarlı
@@ -597,6 +623,7 @@ async function startServer(): Promise<void> {
       clearInterval(maintenanceReminderSweepInterval);
       clearInterval(fleetComplianceSweepInterval);
       clearInterval(inventoryCriticalStockSweepInterval);
+      clearInterval(tankStockAlertSweepInterval);
       clearInterval(archiveGenerationSweepInterval);
       clearInterval(archiveCleanupSweepInterval);
 
