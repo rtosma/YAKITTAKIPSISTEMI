@@ -5,6 +5,7 @@ import { generateId } from '../utils/id';
 import { encryptDeviceSecret, generateDeviceSecret } from '../utils/hardwareSecretCrypto';
 import { ForbiddenError, ConflictError, NotFoundError } from '../utils/errors';
 import { encryptTenantExport } from '../utils/tenantExportCrypto';
+import type { FuelCostMethod } from '../fuel/fuelCostService';
 
 /**
  * SUPER_ADMIN'e özel, tek bir tenant'a kısıtlı OLMAYAN sorgular. Diğer
@@ -549,6 +550,33 @@ export async function updateArchiveSettings(tenantId: string, periodDays: number
 
 export async function touchArchiveLastGenerated(tenantId: string): Promise<void> {
   await pool.query('UPDATE companies SET archive_last_generated_at = CURRENT_TIMESTAMP WHERE id = $1', [tenantId]);
+}
+
+/**
+ * INV-1503 AC: "Maliyet yöntemi tenant bazında seçilebilmelidir." Bu ayar da
+ * `companies` üzerinde — updateArchiveSettings'teki AYNI gerekçeyle (o
+ * tablonun UPDATE'i app_user'dan REVOKE edilmiş, bkz. schema.sql) burada,
+ * ham `pool` ile yazılır; tenantDb.ts'teki withTenant() (app_user bağlantısı)
+ * "permission denied for table companies" ile patlar — canlı yakalandı.
+ */
+export interface FuelCostSettings {
+  method: FuelCostMethod;
+}
+
+export async function getFuelCostSettings(tenantId: string): Promise<FuelCostSettings | null> {
+  const result = await pool.query('SELECT fuel_cost_method FROM companies WHERE id = $1', [tenantId]);
+  if (result.rows.length === 0) return null;
+  return { method: result.rows[0].fuel_cost_method };
+}
+
+export async function updateFuelCostMethod(tenantId: string, method: FuelCostMethod, actorUserId: string): Promise<FuelCostSettings> {
+  const before = await getFuelCostSettings(tenantId);
+  if (before === null) throw new NotFoundError('Firma bulunamadı.');
+
+  await pool.query('UPDATE companies SET fuel_cost_method = $1 WHERE id = $2', [method, tenantId]);
+  await insertCompanyAuditLog(tenantId, actorUserId, 'FUEL_COST_METHOD_CHANGED', 'company', tenantId, { method: before.method }, { method });
+
+  return { method };
 }
 
 /**

@@ -451,6 +451,9 @@ jobs:
       - name: Run FUEL-408 Tank Intake Receipt + Stock Increase Tests
         run: cd backend && npx tsx test/test_fuel408_tank_intake.ts
 
+      - name: Run INV-1503 Unit Price History and Fuel Cost Tests
+        run: cd backend && npx tsx test/test_inv1503_fuel_cost.ts
+
       - name: Run FUEL-409 Theoretical vs Physical Stock Reconciliation Tests
         run: cd backend && npx tsx test/test_fuel409_stock_reconciliation.ts
 

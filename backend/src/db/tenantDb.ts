@@ -28,6 +28,7 @@ import {
 } from '../fuel/quotaPeriod';
 import { listActiveSessions, createSession, type DispenseSession } from '../services/dispenseSessionService';
 import { withQuotaLock } from '../services/quotaLockService';
+import { computeFuelCost, type FuelCostMethod } from '../fuel/fuelCostService';
 import { validateTaxId } from '../compliance/taxIdValidation';
 import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { areFuelTypesCompatible, resolveFuelType } from '../fuel/fuelTypes';
@@ -804,6 +805,9 @@ export interface TransactionRecord {
   verification_status: string;
   device_id: string | null;
   local_sequence_id: number | null;
+  /** INV-1503 — bkz. fuelCostService.ts. Tank/fiyat geçmişi yoksa null. */
+  unit_cost_liters: number | null;
+  total_cost: number | null;
 }
 
 export interface TransactionFilters {
@@ -1022,13 +1026,19 @@ export async function streamTenantTransactionsForExport(
  * içinde atomik olarak düşürür (FOR UPDATE kilidiyle) — böylece aynı anda
  * gelen iki ikmal isteği tank seviyesini birbirinin üzerine yazamaz.
  */
+/** INV-1503 — tenant'ın seçtiği maliyet yöntemi (bkz. companies.fuel_cost_method). */
+async function getTenantFuelCostMethod(client: import('pg').PoolClient, tenantId: string): Promise<FuelCostMethod> {
+  const res = await client.query('SELECT fuel_cost_method FROM companies WHERE id = $1', [tenantId]);
+  return (res.rows[0]?.fuel_cost_method as FuelCostMethod) ?? 'AGIRLIKLI_ORTALAMA';
+}
+
 export async function createTransaction(
   // idempotency_key/hash_signature/verification_status yalnızca FUEL-401.4'ün
   // finalizeDispenseSession()'ından geçen, cihaz-tetiklemeli otomatik
   // ikmallere özgü (bkz. yukarıdaki alan yorumları) — bu fonksiyon (manuel/
   // operatör tetiklemeli tek seferlik ikmal) bunları hiç set etmez, DB
   // varsayılanları (NULL / 'DOĞRULANDI') geçerli olur.
-  data: Omit<TransactionRecord, 'id' | 'tenant_id' | 'created_at' | 'idempotency_key' | 'hash_signature' | 'verification_status' | 'device_id' | 'local_sequence_id'>
+  data: Omit<TransactionRecord, 'id' | 'tenant_id' | 'created_at' | 'idempotency_key' | 'hash_signature' | 'verification_status' | 'device_id' | 'local_sequence_id' | 'unit_cost_liters' | 'total_cost'>
 ): Promise<TransactionRecord> {
   return withTenant(async (client, tenantId) => {
     const id = generateId('tx');
@@ -1087,6 +1097,7 @@ export async function createTransaction(
     // (örn. serbest metin girilmiş tankName), bu durumda seviye düşümü
     // sessizce atlanır ama ikmal kaydı yine de oluşturulur.
     let txFuelType: string | null = null;
+    let cost: { unitCostLiters: number; totalCost: number } | null = null;
     if (data.tank_name) {
       const tankResult = await client.query(
         'SELECT id, capacity_liters, current_level_liters, fuel_type FROM tanks WHERE name = $1 FOR UPDATE',
@@ -1104,16 +1115,22 @@ export async function createTransaction(
           'UPDATE tanks SET current_level_liters = $1, status = $2 WHERE id = $3',
           [newLevel, newStatus, tank.id]
         );
+
+        // INV-1503: bu ikmalin o ANDAKİ birim maliyeti — tank kilidi ALTINDA
+        // (FIFO'nun kümülatif tüketim hesabı aynı kilitli pencerede kalmalı,
+        // aksi halde eşzamanlı iki ikmal aynı FIFO katmanını iki kez sayabilir).
+        const method = await getTenantFuelCostMethod(client, tenantId);
+        cost = await computeFuelCost(client, method, tank.id, data.tank_name, data.site_name, Number(data.amount_liters), new Date());
       }
     }
 
     const result = await client.query(
-      `INSERT INTO transactions (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, fuel_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      `INSERT INTO transactions (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, fuel_type, unit_cost_liters, total_cost)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
       [
         id, tenantId, data.site_name, data.vehicle_plate, data.driver_name ?? null, data.tank_name ?? null,
         data.amount_liters, data.flow_rate_lpm ?? null, data.pump_status || 'TAMAMLANTI', data.type || 'Manuel',
-        data.rfid_auth ?? true, txFuelType
+        data.rfid_auth ?? true, txFuelType, cost?.unitCostLiters ?? null, cost?.totalCost ?? null
       ]
     );
     return result.rows[0];
@@ -1451,6 +1468,7 @@ export async function finalizeDispenseSession(
 
     // Tank seviyesi düşümü — createTransaction'daki AYNI kilitli-satır deseni.
     let finalizeFuelType: string | null = null;
+    let finalizeCost: { unitCostLiters: number; totalCost: number } | null = null;
     if (data.tankName) {
       const tankResult = await client.query(
         'SELECT id, capacity_liters, current_level_liters, fuel_type FROM tanks WHERE name = $1 AND site_name = $2 FOR UPDATE',
@@ -1463,6 +1481,10 @@ export async function finalizeDispenseSession(
         const percentage = (newLevel / Number(tank.capacity_liters)) * 100;
         const newStatus = percentage < 20 ? 'KRİTİK' : percentage < 40 ? 'UYARI' : 'GÜVENLİ';
         await client.query('UPDATE tanks SET current_level_liters = $1, status = $2 WHERE id = $3', [newLevel, newStatus, tank.id]);
+
+        // INV-1503 — createTransaction'daki AYNI desen.
+        const method = await getTenantFuelCostMethod(client, tenantId);
+        finalizeCost = await computeFuelCost(client, method, tank.id, data.tankName, data.siteName, totalizerLiters, new Date());
       }
     }
 
@@ -1495,12 +1517,13 @@ export async function finalizeDispenseSession(
 
     const result = await client.query(
       `INSERT INTO transactions
-         (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, idempotency_key, hash_signature, verification_status, fuel_type)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+         (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, idempotency_key, hash_signature, verification_status, fuel_type, unit_cost_liters, total_cost)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
       [
         id, tenantId, data.siteName, data.vehiclePlate, data.driverName, data.tankName,
         totalizerLiters, data.flowRateLpm, 'TAMAMLANTI', 'Otomatik', true,
-        data.idempotencyKey, hashSignature, needsVerification ? 'DOĞRULAMA_BEKLIYOR' : 'DOĞRULANDI', finalizeFuelType
+        data.idempotencyKey, hashSignature, needsVerification ? 'DOĞRULAMA_BEKLIYOR' : 'DOĞRULANDI', finalizeFuelType,
+        finalizeCost?.unitCostLiters ?? null, finalizeCost?.totalCost ?? null
       ]
     );
     return { ...(result.rows[0] as TransactionRecord), alreadyExisted: false };
@@ -1588,6 +1611,12 @@ async function syncSingleOfflineRecord(deviceId: string, record: SyncBatchRecord
       const newStatus = percentage < 20 ? 'KRİTİK' : percentage < 40 ? 'UYARI' : 'GÜVENLİ';
       await client.query('UPDATE tanks SET current_level_liters = $1, status = $2 WHERE id = $3', [newLevel, newStatus, tank.id]);
 
+      // INV-1503 AC: "Geriye dönük offline kayıtlar doğru tarihteki fiyatla
+      // maliyetlendirilmelidir" — atDate BİLEREK `record.deviceTimestamp`
+      // (kaydın GERÇEK zamanı), `new Date()` (senkron ANI) DEĞİL.
+      const syncMethod = await getTenantFuelCostMethod(client, tenantId);
+      const syncCost = await computeFuelCost(client, syncMethod, tank.id, record.tankName, record.siteName, record.amountLiters, new Date(record.deviceTimestamp));
+
       // FUEL-410: bu geçmiş kayıt, o şantiyenin GEÇERLİ fail-open politikasını
       // aşıyor mu? Fuel zaten fiziksel olarak dispense edildiğinden kaydın
       // KENDİSİ reddedilMİYOR (negatif stok kontrolünden farklı olarak) —
@@ -1630,12 +1659,13 @@ async function syncSingleOfflineRecord(deviceId: string, record: SyncBatchRecord
       try {
         insertResult = await client.query(
           `INSERT INTO transactions
-             (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, device_id, local_sequence_id, hash_signature, verification_status, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`,
+             (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, device_id, local_sequence_id, hash_signature, verification_status, created_at, unit_cost_liters, total_cost)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
           [
             id, tenantId, record.siteName, record.vehiclePlate, record.driverName ?? null, record.tankName,
             record.amountLiters, record.flowRateLpm ?? null, 'TAMAMLANTI', 'Çevrimdışı Senkron', true,
-            deviceId, record.localSequenceId, hashSignature, 'DOĞRULAMA_BEKLIYOR', record.deviceTimestamp
+            deviceId, record.localSequenceId, hashSignature, 'DOĞRULAMA_BEKLIYOR', record.deviceTimestamp,
+            syncCost?.unitCostLiters ?? null, syncCost?.totalCost ?? null
           ]
         );
       } catch (insertErr: any) {

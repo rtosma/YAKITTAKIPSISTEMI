@@ -48,6 +48,10 @@ ALTER TABLE companies ADD COLUMN IF NOT EXISTS deletion_scheduled_at TIMESTAMP W
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS deletion_requested_by VARCHAR(64);
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS deletion_reason TEXT;
 
+-- INV-1503 AC: "Maliyet yöntemi tenant bazında seçilebilmelidir." Varsayılan
+-- ağırlıklı ortalama (ticket'ın kendi varsayılanı) — bkz. fuelCostService.ts.
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS fuel_cost_method VARCHAR(32) NOT NULL DEFAULT 'AGIRLIKLI_ORTALAMA';
+
 -- REP-702: periyodik şifreli arşiv ayarı. NULL = periyodik oluşturma kapalı
 -- (yalnızca "Şimdi Arşiv Oluştur" ile manuel tetikleme). archive_period_days
 -- 7/15/30/90 dışında bir değer alamaz (uygulama katmanında Zod ile zorlanır,
@@ -331,6 +335,15 @@ BEGIN
         ALTER TABLE transactions ADD CONSTRAINT transactions_device_local_seq_unique UNIQUE (device_id, local_sequence_id);
     END IF;
 END $$;
+
+-- INV-1503: bu ikmalin o ANDAKİ birim maliyeti + toplam tutarı. Yazma-bir-kez
+-- (createTransaction/finalizeDispenseSession/syncSingleOfflineRecord'un INSERT'i
+-- ANINDA yazılır, ASLA sonradan UPDATE edilmez) — AC: "sonradan fiyat değişince
+-- geçmiş maliyetler değişmemelidir." Tank'ın hiç dolum geçmişi yoksa (fiyat
+-- bilinmiyor) NULL kalır — maliyetlendirilemeyen bir ikmal sessizce sıfır
+-- maliyetli sayılmaz, raporlarda "maliyet bilinmiyor" olarak ayırt edilir.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS unit_cost_liters NUMERIC(12, 4);
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS total_cost NUMERIC(14, 2);
 
 -- 3c. Cross-Site Fuel Permissions (Çapraz Şantiye İkmal Yetkileri — FUEL-402)
 -- Bir aracın KENDİ şantiyesi dışında (target_site) yakıt alabilmesi için

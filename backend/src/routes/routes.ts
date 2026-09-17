@@ -34,9 +34,10 @@ import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
 import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
 import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes, normalizeRecoveryCode } from '../services/totpService';
 import { isServerShuttingDown } from '../utils/shutdown';
-import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS, getCompanyLicenseSnapshot, getTenantLifecycleStatus, freezeCompany, unfreezeCompany, scheduleTenantDeletion, cancelTenantDeletion, approveTenantDeletion, exportTenantDataEncrypted, getArchiveSettings, updateArchiveSettings, getModuleCatalog } from '../db/adminDb';
+import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS, getCompanyLicenseSnapshot, getTenantLifecycleStatus, freezeCompany, unfreezeCompany, scheduleTenantDeletion, cancelTenantDeletion, approveTenantDeletion, exportTenantDataEncrypted, getArchiveSettings, updateArchiveSettings, getModuleCatalog, getFuelCostSettings, updateFuelCostMethod } from '../db/adminDb';
 import { generateArchiveForTenant, listTenantArchives, verifyAndConsumeArchiveDownload } from '../services/tenantArchiveService';
 import { archiveSettingsSchema, createArchiveSchema, archiveIdParamsSchema, archiveDownloadParamsSchema } from '../schemas/archiveSchema';
+import { fuelCostSettingsSchema } from '../schemas/fuelCostSchema';
 import { runLicenseExpiryWarningSweep } from '../services/licenseWarningService';
 import { getUsageMeteringHistory, computeUsageMeteringForCurrentTenant } from '../services/usageMeteringService';
 import { uploadVehicleDocument, getVehicleDocuments, getVehicleDocumentContent, generateVehicleDocumentDownloadLink, verifyAndConsumeVehicleDocumentDownload } from '../services/vehicleDocumentService';
@@ -5545,6 +5546,47 @@ router.patch(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const updated = await updateArchiveSettings(req.user!.tenantId, req.body.periodDays, req.user!.userId);
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /companies/me/fuel-cost-settings:
+ *   get:
+ *     summary: Yakıt Maliyet Yöntemi Ayarını Getir (INV-1503)
+ *     security:
+ *       - bearerAuth: []
+ *   patch:
+ *     summary: Yakıt Maliyet Yöntemini Değiştir (INV-1503)
+ *     description: >
+ *       AC: "Maliyet yöntemi tenant bazında seçilebilmelidir." Değişiklik
+ *       GEÇMİŞ ikmallerin donmuş unit_cost_liters/total_cost'unu ASLA
+ *       değiştirmez — yalnızca bundan SONRAKİ ikmalleri etkiler.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/companies/me/fuel-cost-settings', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const settings = await getFuelCostSettings(req.user!.tenantId);
+    if (!settings) throw new NotFoundError('Firma bulunamadı.');
+    res.json({ success: true, data: settings });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.patch(
+  '/companies/me/fuel-cost-settings',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  validateRequest({ body: fuelCostSettingsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const updated = await updateFuelCostMethod(req.user!.tenantId, req.body.method, req.user!.userId);
       res.json({ success: true, data: updated });
     } catch (error: any) {
       next(error);
