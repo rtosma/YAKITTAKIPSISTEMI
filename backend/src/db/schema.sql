@@ -885,6 +885,70 @@ CREATE TABLE IF NOT EXISTS stock_reconciliations (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+-- ============================================================================
+-- [INV-1505] Fire/Kayıp Kaydı ve Sınıflandırması
+-- ============================================================================
+-- AC: "Mutabakat farkları otomatik fire adayı üretmelidir." reconcileTankRow
+-- (yukarıda) status='MUTABAKAT_ALARMI' ürettiğinde BURAYA da BEKLIYOR
+-- durumunda bir aday satır yazar — reconciliation_id UNIQUE olduğundan
+-- (NULL'lar hariç, Postgres kuralı) aynı mutabakattan İKİNCİ bir aday asla
+-- üretilmez (idempotent, ON CONFLICT DO NOTHING). classification başlangıçta
+-- reconciliation'ın KENDİ (makine) sınıflandırmasıdır (BUHARLAŞMA/ÖLÇÜM_HATASI/
+-- AÇIKLANAMAYAN); KAÇAK/HIRSIZLIK yalnızca bir İNSANIN inceleyip onaylarken
+-- (approveFireRecord'un reclassify parametresi) atayabileceği İKİ İNCE
+-- sınıftır — makine bu ikisini asla ÜRETMEZ (araştırma gerektirir).
+-- Manuel kayıt da mümkündür (reconciliation_id NULL) — ticket "Fire record:
+-- tarih, tank, miktar, sınıflandırma, açıklama" formunu ayrıca tanımlıyor.
+-- AC: "Yüksek değerli fire kayıtları çift onay gerektirir" — manual_dispense_
+-- requests'teki (FUEL-405) BİREBİR AYNI desen: first/second_approver_id/role,
+-- ikinci onayın rolü BİRİNCİDEN FARKLI (bir SITE_MANAGER + bir COMPANY_OWNER/
+-- SUPER_ADMIN) olmalı. AC: "fire kayıtları stok bakiyesini düzeltmeli ama
+-- geçmiş dolum kayıtlarını DEĞİŞTİRMEMELİ" — onay KESİNLEŞTİĞİNDE tanks.
+-- current_level_liters'a GÖRELİ bir düzeltme uygulanır (fuel_intake_receipts
+-- append-only, hiç dokunulmaz).
+CREATE TABLE IF NOT EXISTS fire_records (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    tank_id VARCHAR(64) NOT NULL,
+    tank_name VARCHAR(128) NOT NULL,
+    site_name VARCHAR(128) NOT NULL,
+    -- ON DELETE SET NULL (CASCADE değil): bir fire kaydı ONAYLANDI olup gerçek
+    -- bir stok düzeltmesi uygulamış olabilir — kaynak mutabakat silinse de
+    -- (normal işleyişte hiç olmaz, yalnızca test/bakım senaryosu) o karar
+    -- kaydı YOK OLMAMALI, sadece kaynağıyla bağlantısını kaybeder.
+    reconciliation_id VARCHAR(64) UNIQUE REFERENCES stock_reconciliations(id) ON DELETE SET NULL,
+    record_date DATE NOT NULL,
+    -- Her zaman POZİTİF büyüklük — yön variance_direction'da ayrı tutulur.
+    quantity_liters NUMERIC(10, 2) NOT NULL,
+    -- 'KAYIP' (fiziksel < defter) | 'FAZLA' (fiziksel > defter).
+    variance_direction VARCHAR(10) NOT NULL,
+    -- 'BUHARLAŞMA' | 'ÖLÇÜM_HATASI' | 'KAÇAK' | 'HIRSIZLIK' | 'AÇIKLANAMAYAN'
+    classification VARCHAR(24) NOT NULL,
+    description TEXT,
+    -- 'BEKLIYOR' | 'ONAYLANDI' | 'REDDEDİLDİ'
+    status VARCHAR(24) NOT NULL DEFAULT 'BEKLIYOR',
+    requires_dual_approval BOOLEAN NOT NULL DEFAULT FALSE,
+    first_approver_id VARCHAR(64),
+    first_approver_role VARCHAR(32),
+    first_approved_at TIMESTAMP WITH TIME ZONE,
+    second_approver_id VARCHAR(64),
+    second_approver_role VARCHAR(32),
+    second_approved_at TIMESTAMP WITH TIME ZONE,
+    rejected_by VARCHAR(64),
+    rejected_at TIMESTAMP WITH TIME ZONE,
+    rejection_reason TEXT,
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_fire_records_lookup ON fire_records(tenant_id, tank_id, status, record_date DESC);
+ALTER TABLE fire_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fire_records FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS fire_records_tenant_isolation_policy ON fire_records;
+CREATE POLICY fire_records_tenant_isolation_policy ON fire_records
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- FUEL-405: cihaz arızası / elle pompa kullanımı durumunda ikmalin kayıt
 -- dışı kalmaması için manuel ikmal girişi — AMA bu kapı kaçak için
 -- kullanılamasın diye İKİ FARKLI yetkilinin (bir SITE_MANAGER + bir

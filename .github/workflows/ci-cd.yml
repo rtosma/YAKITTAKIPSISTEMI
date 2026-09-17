@@ -460,6 +460,9 @@ jobs:
       - name: Run FUEL-409 Theoretical vs Physical Stock Reconciliation Tests
         run: cd backend && npx tsx test/test_fuel409_stock_reconciliation.ts
 
+      - name: Run INV-1505 Fire/Loss Record Classification + Dual Approval Tests
+        run: cd backend && npx tsx test/test_inv1505_fire_records.ts
+
       - name: Run FUEL-405 Manual Dispense Entry + Dual Approval Tests
         run: cd backend && npx tsx test/test_fuel405_manual_dispense.ts
 

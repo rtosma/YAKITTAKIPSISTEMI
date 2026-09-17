@@ -4788,6 +4788,18 @@ async function reconcileTankRow(
       detail: { reconciliationId: id, varianceLiters, variancePct, classification, closingBookLiters: closingBook, physicalLiters: round2(input.physicalLiters) },
       sourceRef: { table: 'stock_reconciliations', id }
     });
+
+    // INV-1505 AC: "Mutabakat farkları otomatik fire adayı üretmelidir."
+    await createFireRecordCandidate(client, tenantId, {
+      tankId: tank.id,
+      tankName: tank.name,
+      siteName: tank.site_name,
+      reconciliationId: id,
+      recordDate: input.periodEnd,
+      quantityLiters: Math.abs(varianceLiters),
+      varianceDirection: varianceLiters < 0 ? 'KAYIP' : 'FAZLA',
+      classification
+    });
   }
 
   return insRes.rows[0] as StockReconciliationRecord;
@@ -4927,6 +4939,283 @@ export async function runDailyStockReconciliationForCurrentTenant(): Promise<{ t
       }
     }
     return { tanksProcessed: tanksRes.rows.length, alarms };
+  });
+}
+
+// ============================================================================
+// INV-1505: FİRE/KAYIP KAYDI VE SINIFLANDIRMASI
+// ============================================================================
+// AC: "Yüksek değerli fire kayıtları çift onay gerektirir." Eşik: tank
+// kapasitesinin %5'i — ticket sayı vermiyor, mevcut hiçbir yerde de yok;
+// kapasiteye ORANTILI bir eşik (sabit litre yerine) küçük/büyük tank
+// karışımında adil (100.000 L'lik bir tank için 200 L önemsiz, 500 L'lik
+// bir tank için ÇOK önemli).
+const FIRE_RECORD_DUAL_APPROVAL_CAPACITY_PCT = 5;
+
+export interface FireRecordRecord {
+  id: string;
+  tenant_id: string;
+  tank_id: string;
+  tank_name: string;
+  site_name: string;
+  reconciliation_id: string | null;
+  record_date: string;
+  quantity_liters: string;
+  variance_direction: 'KAYIP' | 'FAZLA';
+  classification: string;
+  description: string | null;
+  status: 'BEKLIYOR' | 'ONAYLANDI' | 'REDDEDİLDİ';
+  requires_dual_approval: boolean;
+  first_approver_id: string | null;
+  first_approver_role: string | null;
+  first_approved_at: string | null;
+  second_approver_id: string | null;
+  second_approver_role: string | null;
+  second_approved_at: string | null;
+  rejected_by: string | null;
+  rejected_at: string | null;
+  rejection_reason: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+/**
+ * reconcileTankRow'dan çağrılır — YALNIZCA MUTABAKAT_ALARMI'nda. `reconciliation_id`
+ * UNIQUE olduğundan (bkz. schema.sql) aynı mutabakattan ikinci bir aday asla
+ * üretilmez (ON CONFLICT DO NOTHING) — süpürücü/manuel tetik aynı mutabakatı
+ * tekrar işlese de fire_records çift satır YARATMAZ.
+ */
+async function createFireRecordCandidate(
+  client: any,
+  tenantId: string,
+  input: {
+    tankId: string;
+    tankName: string;
+    siteName: string;
+    reconciliationId: string;
+    recordDate: Date;
+    quantityLiters: number;
+    varianceDirection: 'KAYIP' | 'FAZLA';
+    classification: string;
+  }
+): Promise<void> {
+  const tankRes = await client.query('SELECT capacity_liters FROM tanks WHERE id = $1', [input.tankId]);
+  const capacityLiters = tankRes.rows[0] ? Number(tankRes.rows[0].capacity_liters) : 0;
+  const requiresDualApproval = capacityLiters > 0 && (input.quantityLiters / capacityLiters) * 100 >= FIRE_RECORD_DUAL_APPROVAL_CAPACITY_PCT;
+
+  const id = generateId('fire');
+  const res = await client.query(
+    `INSERT INTO fire_records
+       (id, tenant_id, tank_id, tank_name, site_name, reconciliation_id, record_date, quantity_liters,
+        variance_direction, classification, status, requires_dual_approval, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'BEKLIYOR',$11,'system-reconciliation')
+     ON CONFLICT (reconciliation_id) DO NOTHING
+     RETURNING id`,
+    [
+      id, tenantId, input.tankId, input.tankName, input.siteName, input.reconciliationId,
+      input.recordDate.toISOString().slice(0, 10), round2(input.quantityLiters),
+      input.varianceDirection, input.classification, requiresDualApproval
+    ]
+  );
+  if (res.rows.length > 0) {
+    await writeAuditLog(client, {
+      action: 'FIRE_RECORD_CANDIDATE_CREATED',
+      targetType: 'fire_record',
+      targetId: id,
+      afterValue: { tankId: input.tankId, quantityLiters: round2(input.quantityLiters), classification: input.classification, requiresDualApproval }
+    });
+  }
+}
+
+/** AC: "Fire record: tarih, tank, miktar, sınıflandırma, açıklama." Manuel giriş — reconciliation_id YOK. */
+export async function createFireRecord(
+  data: {
+    tankId: string;
+    recordDate: string;
+    quantityLiters: number;
+    varianceDirection: 'KAYIP' | 'FAZLA';
+    classification: 'BUHARLAŞMA' | 'ÖLÇÜM_HATASI' | 'KAÇAK' | 'HIRSIZLIK' | 'AÇIKLANAMAYAN';
+    description?: string;
+  },
+  createdByUserId: string
+): Promise<FireRecordRecord> {
+  return withTenant(async (client, tenantId) => {
+    const tankRes = await client.query('SELECT id, name, site_name, capacity_liters FROM tanks WHERE id = $1', [data.tankId]);
+    if (tankRes.rows.length === 0) throw new NotFoundError(`'${data.tankId}' tankı bulunamadı.`, { error: 'TANK_NOT_FOUND' });
+    const tank = tankRes.rows[0];
+    const capacityLiters = Number(tank.capacity_liters);
+    const requiresDualApproval = capacityLiters > 0 && (data.quantityLiters / capacityLiters) * 100 >= FIRE_RECORD_DUAL_APPROVAL_CAPACITY_PCT;
+
+    const id = generateId('fire');
+    const res = await client.query(
+      `INSERT INTO fire_records
+         (id, tenant_id, tank_id, tank_name, site_name, record_date, quantity_liters,
+          variance_direction, classification, description, status, requires_dual_approval, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'BEKLIYOR',$11,$12) RETURNING *`,
+      [
+        id, tenantId, tank.id, tank.name, tank.site_name, data.recordDate, round2(data.quantityLiters),
+        data.varianceDirection, data.classification, data.description ?? null, requiresDualApproval, createdByUserId
+      ]
+    );
+    await writeAuditLog(client, {
+      action: 'FIRE_RECORD_CREATED',
+      targetType: 'fire_record',
+      targetId: id,
+      afterValue: { tankId: tank.id, quantityLiters: round2(data.quantityLiters), classification: data.classification, requiresDualApproval }
+    });
+    return res.rows[0];
+  });
+}
+
+export async function getFireRecords(filters: { tankId?: string; status?: string; siteName?: string }): Promise<FireRecordRecord[]> {
+  return withTenant(async (client) => {
+    const where: string[] = [];
+    const params: any[] = [];
+    if (filters.tankId) { params.push(filters.tankId); where.push(`tank_id = $${params.length}`); }
+    if (filters.status) { params.push(filters.status); where.push(`status = $${params.length}`); }
+    if (filters.siteName) { params.push(filters.siteName); where.push(`site_name = $${params.length}`); }
+    const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const res = await client.query(`SELECT * FROM fire_records ${clause} ORDER BY record_date DESC, created_at DESC`, params);
+    return res.rows;
+  });
+}
+
+export interface FireRecordApprovalResult {
+  record: FireRecordRecord;
+  finalized: boolean;
+}
+
+/**
+ * manual_dispense_requests'teki (FUEL-405) BİREBİR AYNI çift-onay deseni.
+ * `requires_dual_approval=false` ise TEK onay hemen kesinleştirir. Kesinleşme
+ * anında `reclassify` verilmişse (AC: bir insanın AÇIKLANAMAYAN'ı KAÇAK/
+ * HIRSIZLIK olarak İNCELEYİP yeniden sınıflandırması) classification
+ * güncellenir. AC: "stok bakiyesini düzeltmeli" — GÖRELİ düzeltme (mevcut
+ * current_level_liters'a delta uygulanır, MUTLAK bir değere set edilmez —
+ * reconciliation'dan bu yana geçen sürede başka dispense/intake olmuş
+ * olabilir, göreli düzeltme bunlarla çakışmaz).
+ */
+export async function approveFireRecord(
+  id: string,
+  byUserId: string,
+  byUserRole: string,
+  opts?: { reclassify?: 'BUHARLAŞMA' | 'ÖLÇÜM_HATASI' | 'KAÇAK' | 'HIRSIZLIK' | 'AÇIKLANAMAYAN'; description?: string }
+): Promise<FireRecordApprovalResult> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM fire_records WHERE id = $1 FOR UPDATE', [id]);
+    if (res.rows.length === 0) throw new NotFoundError('Fire kaydı bulunamadı.');
+    const rec = res.rows[0] as FireRecordRecord;
+
+    if (rec.status !== 'BEKLIYOR') {
+      throw new ConflictError(`Kayıt '${rec.status}' durumunda — yeni onay kabul edilmez.`, { error: 'ALREADY_RESOLVED' });
+    }
+    if (rec.first_approver_id === byUserId) {
+      throw new ConflictError('Bu kaydı zaten onayladınız — ikinci onay farklı bir yetkiliden gelmelidir.', { error: 'DUPLICATE_APPROVER' });
+    }
+
+    const finalClassification = opts?.reclassify ?? rec.classification;
+    const finalDescription = opts?.description ?? rec.description;
+
+    // Çift onay GEREKMİYORSA ya da BİRİNCİ onaysa: henüz kesinleşme yok.
+    if (rec.requires_dual_approval && !rec.first_approver_id) {
+      const upd = await client.query(
+        `UPDATE fire_records
+            SET first_approver_id = $2, first_approver_role = $3, first_approved_at = CURRENT_TIMESTAMP,
+                classification = $4, description = $5
+          WHERE id = $1 RETURNING *`,
+        [id, byUserId, byUserRole, finalClassification, finalDescription]
+      );
+      await writeAuditLog(client, {
+        action: 'FIRE_RECORD_APPROVED',
+        targetType: 'fire_record',
+        targetId: id,
+        afterValue: { step: 1, approverId: byUserId, approverRole: byUserRole }
+      });
+      return { record: upd.rows[0], finalized: false };
+    }
+
+    if (rec.requires_dual_approval) {
+      // İKİNCİ ONAY — rol kuralı (FUEL-405 ile AYNI).
+      const roles = [rec.first_approver_role, byUserRole];
+      const hasSiteManager = roles.includes('SITE_MANAGER');
+      const hasOwner = roles.some((r) => r === 'COMPANY_OWNER' || r === 'SUPER_ADMIN');
+      if (!(hasSiteManager && hasOwner)) {
+        throw new ForbiddenError(
+          'İki onay birlikte bir SITE_MANAGER ve bir COMPANY_OWNER (veya SUPER_ADMIN) içermelidir.',
+          { error: 'APPROVAL_ROLE_RULE_UNMET', roles }
+        );
+      }
+    }
+
+    // KESİNLEŞME — stok düzeltmesi.
+    const tankRes = await client.query('SELECT id, current_level_liters FROM tanks WHERE id = $1 FOR UPDATE', [rec.tank_id]);
+    if (tankRes.rows.length > 0) {
+      const delta = rec.variance_direction === 'KAYIP' ? -Number(rec.quantity_liters) : Number(rec.quantity_liters);
+      const newLevel = Math.max(0, Number(tankRes.rows[0].current_level_liters) + delta);
+      await client.query('UPDATE tanks SET current_level_liters = $1 WHERE id = $2', [newLevel, tankRes.rows[0].id]);
+    }
+
+    const upd = await client.query(
+      `UPDATE fire_records
+          SET status = 'ONAYLANDI', second_approver_id = $2, second_approver_role = $3,
+              second_approved_at = CURRENT_TIMESTAMP, classification = $4, description = $5
+        WHERE id = $1 RETURNING *`,
+      [id, byUserId, byUserRole, finalClassification, finalDescription]
+    );
+    await writeAuditLog(client, {
+      action: 'FIRE_RECORD_FINALIZED',
+      targetType: 'fire_record',
+      targetId: id,
+      afterValue: { step: rec.requires_dual_approval ? 2 : 1, approverId: byUserId, approverRole: byUserRole, classification: finalClassification, tankId: rec.tank_id }
+    });
+    return { record: upd.rows[0], finalized: true };
+  });
+}
+
+export async function rejectFireRecord(id: string, byUserId: string, reason: string): Promise<FireRecordRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT status FROM fire_records WHERE id = $1 FOR UPDATE', [id]);
+    if (res.rows.length === 0) throw new NotFoundError('Fire kaydı bulunamadı.');
+    if (res.rows[0].status !== 'BEKLIYOR') {
+      throw new ConflictError(`Kayıt '${res.rows[0].status}' durumunda — reddedilemez.`, { error: 'ALREADY_RESOLVED' });
+    }
+    const upd = await client.query(
+      `UPDATE fire_records SET status = 'REDDEDİLDİ', rejected_by = $2, rejected_at = CURRENT_TIMESTAMP, rejection_reason = $3
+        WHERE id = $1 RETURNING *`,
+      [id, byUserId, reason]
+    );
+    await writeAuditLog(client, { action: 'FIRE_RECORD_REJECTED', targetType: 'fire_record', targetId: id, afterValue: { rejectedBy: byUserId, reason } });
+    return upd.rows[0];
+  });
+}
+
+export interface FireRecordSiteComparisonRow {
+  siteName: string;
+  recordCount: number;
+  totalLossLiters: number;
+  approvedLossLiters: number;
+}
+
+/** AC: "Fire oranı trendi ve şantiye karşılaştırması." Yalnızca KAYIP yönü (FAZLA hariç — o kayıp değil). */
+export async function getFireRecordSiteComparison(periodDays: number): Promise<FireRecordSiteComparisonRow[]> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      `SELECT site_name,
+              COUNT(*)::int AS record_count,
+              COALESCE(SUM(quantity_liters), 0)::numeric AS total_loss_liters,
+              COALESCE(SUM(quantity_liters) FILTER (WHERE status = 'ONAYLANDI'), 0)::numeric AS approved_loss_liters
+         FROM fire_records
+        WHERE variance_direction = 'KAYIP' AND record_date >= CURRENT_DATE - $1::int
+        GROUP BY site_name
+        ORDER BY total_loss_liters DESC`,
+      [periodDays]
+    );
+    return res.rows.map((r: any) => ({
+      siteName: r.site_name,
+      recordCount: r.record_count,
+      totalLossLiters: round2(Number(r.total_loss_liters)),
+      approvedLossLiters: round2(Number(r.approved_loss_liters))
+    }));
   });
 }
 
