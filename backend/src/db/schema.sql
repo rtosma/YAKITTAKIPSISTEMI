@@ -2041,3 +2041,49 @@ CREATE INDEX IF NOT EXISTS idx_transaction_anomaly_flags_queue ON transaction_an
 -- süpürücüsü (CRITICAL + OPEN + eski) bu desenle çalışır.
 CREATE INDEX IF NOT EXISTS idx_alarms_active ON alarms(tenant_id, status, severity, last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_alarm_events_alarm ON alarm_events(tenant_id, alarm_id, occurred_at DESC);
+
+-- ============================================================================
+-- [AI-506] Şoför Davranış Skorlama Motoru
+-- ============================================================================
+-- AC: "0-100 arası davranış skoru... skor geçmişi tutulmalı." Skor; mesai
+-- dışı alım (AI-504 MESAI_DISI oranı), mükerrer alım (AI-504
+-- KISA_ARALIK_MUKERRER oranı), tüketim sapması (AI-503'teki z-score
+-- yöntemiyle AYNI, ama şoförün KENDİ geçmiş ikmal miktarına göre),
+-- iptal/anormal sonlanan ikmaller (transactions.verification_status =
+-- 'DOĞRULAMA_BEKLIYOR' + manual_dispense_requests.status IN
+-- ('İPTAL','REDDEDİLDİ')) ve manuel giriş oranı (rfid_auth = false)
+-- girdilerinin ağırlıklı toplamından üretilir.
+-- Kritik Not: "minimum işlem eşiği altında skor üretilmemeli" — AI-503'teki
+-- "yetersiz geçmiş → anomali üretilmez" deseniyle AYNI: eşiğin altındaki
+-- şoförler için bu tabloya HİÇ satır yazılmaz.
+-- "Skor geçmişi" AC'si: her hesaplama turu YENİ bir satır ekler
+-- (append-only, UPDATE yok) — tarihçe böylece doğal olarak sağlanır.
+-- driver_name: transactions/drivers ile AYNI desen — plain string, FK değil
+-- (bkz. transactions tablosu üstündeki not); şoför yeniden adlandırılırsa
+-- geçmiş skorlar eski adla kalır.
+CREATE TABLE IF NOT EXISTS driver_behavior_scores (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    driver_name VARCHAR(128) NOT NULL,
+    -- Şoförün bu dönemdeki EN SON işlemine ait şantiye — filtreleme/rapor
+    -- amaçlı; drivers.name↔transactions.driver_name FK OLMADIĞI için
+    -- ayrıca bir JOIN gerektirmesin diye burada da tutuluyor (denormalize).
+    site_name VARCHAR(128),
+    period_days INTEGER NOT NULL,
+    transaction_count INTEGER NOT NULL,
+    score INTEGER NOT NULL CHECK (score BETWEEN 0 AND 100),
+    offhours_ratio_pct NUMERIC(5, 2) NOT NULL DEFAULT 0,
+    rapid_repeat_ratio_pct NUMERIC(5, 2) NOT NULL DEFAULT 0,
+    consumption_deviation_ratio_pct NUMERIC(5, 2) NOT NULL DEFAULT 0,
+    cancelled_ratio_pct NUMERIC(5, 2) NOT NULL DEFAULT 0,
+    manual_entry_ratio_pct NUMERIC(5, 2) NOT NULL DEFAULT 0,
+    detail JSONB,
+    computed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_driver_behavior_scores_lookup ON driver_behavior_scores(tenant_id, driver_name, computed_at DESC);
+ALTER TABLE driver_behavior_scores ENABLE ROW LEVEL SECURITY;
+ALTER TABLE driver_behavior_scores FORCE ROW LEVEL SECURITY;
+CREATE POLICY driver_behavior_scores_tenant_isolation_policy ON driver_behavior_scores
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

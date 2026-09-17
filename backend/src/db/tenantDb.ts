@@ -5479,7 +5479,9 @@ export type AlarmCategory =
   // INV-1506: bir envanter kaleminin stoku kritik eşiğin altına/eşitine düştü.
   | 'INVENTORY_LOW_STOCK'
   // INV-1507: bir laboratuvar test sonucu şartnameye UYGUNSUZ çıktı.
-  | 'LAB_NONCONFORMING_RESULT' | 'OTHER';
+  | 'LAB_NONCONFORMING_RESULT'
+  // AI-506: bir şoförün davranış skoru kritik eşiğin altına düştü.
+  | 'DRIVER_BEHAVIOR_SCORE_LOW' | 'OTHER';
 export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
 
@@ -7937,5 +7939,339 @@ export async function approveTemporaryFuelLimitIncrease(
     });
     await redisPool.cacheDel(`vehicle-limit:balance:${tenantId}:${vehicleId}`);
     return res.rows[0];
+  });
+}
+
+// ============================================================================
+// AI-506: ŞOFÖR DAVRANIŞ SKORLAMA MOTORU
+// ============================================================================
+// AC: "0-100 arası davranış skoru, minimum işlem eşiği altında skor
+// üretilmemeli, skor geçmişi tutulmalı." Ticket NestJS + @nestjs/schedule
+// öneriyor — bu yığında yok; AI-503/AI-504 ile AYNI desen: manuel bir
+// hesaplama endpoint'i + index.ts'te düz bir günlük setInterval süpürücüsü.
+//
+// Kritik Notlar:
+//  - "Minimum işlem eşiği altında skor üretilmemeli" → AI-503'teki
+//    "yetersiz geçmiş (<3 dönem) → anomali üretilmez" deseniyle AYNI: eşiğin
+//    altındaki şoförler tabloya HİÇ satır YAZILMADAN atlanır
+//    (skippedInsufficientData sayacı — API bunu "henüz skor yok" ile "skoru
+//    kötü" durumundan ayırt edebilsin diye).
+//  - "Skor geçmişi" → her hesaplama turu şoför için YENİ bir satır ekler
+//    (append-only, UPDATE YOK) — tarihçe böylece doğal olarak sağlanır.
+//  - transactions.driver_name bir FK DEĞİL, düz string (bkz. transactions
+//    tablosu üstündeki not) — bu yüzden şoför bazlı toplama isim eşleşmesiyle
+//    yapılır, drivers.id ile DEĞİL (aynı vehicles/drivers deseni).
+//  - "Tüketim sapması" AI-503'ün ARAÇ bazlı z-score'undan FARKLI bir eksen:
+//    burada ŞOFÖRÜN KENDİ geçmiş ikmal miktarına göre z-score kullanılıyor
+//    (AYNI eşik: |z| >= 2), çünkü ticket'ın odağı şoför davranışı.
+//  - "İptal/anormal sonlanan ikmaller": bu kod tabanında tek bir "iptal
+//    edilmiş ikmal" tablosu/kolonu YOK (transactions yalnızca BAŞARILI
+//    ikmalde satır alır). En yakın iki sinyal birleştiriliyor:
+//    transactions.verification_status='DOĞRULAMA_BEKLIYOR' (zaman aşımına
+//    uğrayıp elle doğrulama bekleyen dispense session — bkz.
+//    dispenseSessionService.ts forceAbort/finalizeDispenseSession) VE
+//    manual_dispense_requests.status IN ('İPTAL','REDDEDİLDİ') (bu talepler
+//    transactions'a HİÇ düşmez, o yüzden payda da ayrıca büyütülüyor).
+
+const DRIVER_SCORE_PERIOD_DAYS_DEFAULT = 90;
+const DRIVER_SCORE_MIN_TRANSACTIONS_DEFAULT = 5;
+// AI-503'teki CONSUMPTION_ANOMALY_ZSCORE_THRESHOLD ile AYNI eşik.
+const DRIVER_SCORE_CONSUMPTION_ZSCORE_THRESHOLD = 2;
+// Skor 100'den başlar, her girdi (0-1 oran) kendi ağırlığı kadar düşürür.
+const DRIVER_SCORE_WEIGHTS = {
+  offhours: 25,
+  rapidRepeat: 20,
+  consumptionDeviation: 20,
+  cancelled: 20,
+  manualEntry: 15
+} as const;
+// Skor bu eşiğin altına düşünce AI-507'ye alarm (CRITICAL eşiği 30).
+const DRIVER_SCORE_ALARM_THRESHOLD = 50;
+const DRIVER_SCORE_ALARM_CRITICAL_THRESHOLD = 30;
+
+export interface DriverBehaviorScoreDetail {
+  offhoursCount: number;
+  rapidRepeatCount: number;
+  deviationCount: number;
+  pendingVerificationCount: number;
+  rejectedRequestCount: number;
+  manualCount: number;
+  mean: number;
+  stddev: number;
+}
+
+export interface DriverBehaviorScoreRecord {
+  id: string;
+  tenant_id: string;
+  driver_name: string;
+  site_name: string | null;
+  period_days: number;
+  transaction_count: number;
+  score: number;
+  offhours_ratio_pct: number;
+  rapid_repeat_ratio_pct: number;
+  consumption_deviation_ratio_pct: number;
+  cancelled_ratio_pct: number;
+  manual_entry_ratio_pct: number;
+  detail: DriverBehaviorScoreDetail;
+  computed_at: string;
+}
+
+export interface DriverBehaviorScoreComputeResult {
+  periodDays: number;
+  minTransactions: number;
+  scannedDrivers: number;
+  scoredDrivers: number;
+  skippedInsufficientData: number;
+  alarmsRaised: number;
+  scores: DriverBehaviorScoreRecord[];
+}
+
+interface DriverScoreTxRow {
+  driver_name: string;
+  site_name: string;
+  amount_liters: string;
+  verification_status: string;
+  rfid_auth: boolean;
+}
+
+/**
+ * AI-506 çekirdeği. Belirtilen dönemde (varsayılan 90 gün) en az
+ * `minTransactions` işlemi olan HER şoför için 0-100 davranış skoru üretir
+ * ve `driver_behavior_scores`'a YENİ bir satır ekler.
+ *
+ * Skor = 100 - Σ(girdi_oranı × ağırlık), [0,100]'e clamp edilir. Girdiler
+ * (hepsi şoförün KENDİ işlem sayısına göre 0-1 oran):
+ *  - offhours: AI-504 MESAI_DISI bayraklı işlem oranı.
+ *  - rapidRepeat: AI-504 KISA_ARALIK_MUKERRER bayraklı işlem oranı.
+ *  - consumptionDeviation: |z-score| >= 2 olan ikmal oranı (şoförün KENDİ
+ *    amount_liters geçmişine göre).
+ *  - cancelled: (DOĞRULAMA_BEKLIYOR ikmal + reddedilen/iptal talep) /
+ *    (toplam ikmal + reddedilen/iptal talep).
+ *  - manualEntry: rfid_auth=false işlem oranı.
+ */
+export async function computeDriverBehaviorScores(opts: {
+  periodDays?: number;
+  minTransactions?: number;
+  driverName?: string;
+}): Promise<DriverBehaviorScoreComputeResult> {
+  return withTenant(async (client, tenantId) => {
+    const periodDays = opts.periodDays ?? DRIVER_SCORE_PERIOD_DAYS_DEFAULT;
+    const minTransactions = opts.minTransactions ?? DRIVER_SCORE_MIN_TRANSACTIONS_DEFAULT;
+    const intervalLiteral = `${periodDays} days`;
+
+    const driverFilter = opts.driverName ? 'AND t.driver_name = $2' : '';
+    const txParams: any[] = [intervalLiteral];
+    if (opts.driverName) txParams.push(opts.driverName);
+
+    // Kritik Not: transaction_anomaly_flags'e doğrudan LEFT JOIN yapmak
+    // YANLIŞ olurdu — bir işlemin AYNI ANDA hem MESAI_DISI hem
+    // KISA_ARALIK_MUKERRER bayrağı olabilir (iki farklı satır, UNIQUE
+    // (transaction_id, anomaly_type)), bu da fan-out ile o işlemi TOPLAM
+    // sayıma iki kez katardı ve tüm oranları bozardı. Bayrak sayıları bu
+    // yüzden AYRI, agregasyon yapan bir sorguda (manual_dispense_requests'in
+    // rejectedByDriver'ıyla AYNI desen) toplanır.
+    const txRes = await client.query(
+      `SELECT t.driver_name, t.site_name, t.amount_liters, t.verification_status, t.rfid_auth
+         FROM transactions t
+        WHERE t.driver_name IS NOT NULL AND t.driver_name <> ''
+          AND t.created_at >= NOW() - $1::interval
+          ${driverFilter}
+        ORDER BY t.driver_name, t.created_at`,
+      txParams
+    );
+
+    const byDriver = new Map<string, DriverScoreTxRow[]>();
+    for (const r of txRes.rows as DriverScoreTxRow[]) {
+      const list = byDriver.get(r.driver_name) ?? [];
+      list.push(r);
+      byDriver.set(r.driver_name, list);
+    }
+
+    const flagParams: any[] = [intervalLiteral];
+    const flagDriverFilter = opts.driverName ? 'AND t.driver_name = $2' : '';
+    if (opts.driverName) flagParams.push(opts.driverName);
+    const flagRes = await client.query(
+      `SELECT t.driver_name, f.anomaly_type, COUNT(*)::int AS c
+         FROM transaction_anomaly_flags f
+         JOIN transactions t ON t.id = f.transaction_id
+        WHERE t.driver_name IS NOT NULL AND t.driver_name <> ''
+          AND t.created_at >= NOW() - $1::interval
+          ${flagDriverFilter}
+        GROUP BY t.driver_name, f.anomaly_type`,
+      flagParams
+    );
+    const offhoursByDriver = new Map<string, number>();
+    const rapidRepeatByDriver = new Map<string, number>();
+    for (const r of flagRes.rows) {
+      if (r.anomaly_type === 'MESAI_DISI') offhoursByDriver.set(r.driver_name, Number(r.c));
+      else if (r.anomaly_type === 'KISA_ARALIK_MUKERRER') rapidRepeatByDriver.set(r.driver_name, Number(r.c));
+    }
+
+    const cancelParams: any[] = [intervalLiteral];
+    const cancelDriverFilter = opts.driverName ? 'AND driver_name = $2' : '';
+    if (opts.driverName) cancelParams.push(opts.driverName);
+    const cancelRes = await client.query(
+      `SELECT driver_name, COUNT(*)::int AS c
+         FROM manual_dispense_requests
+        WHERE status IN ('İPTAL', 'REDDEDİLDİ')
+          AND created_at >= NOW() - $1::interval
+          AND driver_name IS NOT NULL
+          ${cancelDriverFilter}
+        GROUP BY driver_name`,
+      cancelParams
+    );
+    const rejectedByDriver = new Map<string, number>();
+    for (const r of cancelRes.rows) rejectedByDriver.set(r.driver_name, Number(r.c));
+
+    const scores: DriverBehaviorScoreRecord[] = [];
+    let skippedInsufficientData = 0;
+    let alarmsRaised = 0;
+
+    for (const [driverName, txs] of byDriver) {
+      if (txs.length < minTransactions) {
+        skippedInsufficientData++;
+        continue;
+      }
+
+      const total = txs.length;
+      const offhoursCount = offhoursByDriver.get(driverName) ?? 0;
+      const rapidRepeatCount = rapidRepeatByDriver.get(driverName) ?? 0;
+      const pendingVerificationCount = txs.filter((t) => t.verification_status === 'DOĞRULAMA_BEKLIYOR').length;
+      const manualCount = txs.filter((t) => t.rfid_auth === false).length;
+
+      const liters = txs.map((t) => Number(t.amount_liters));
+      const mean = liters.reduce((s, v) => s + v, 0) / liters.length;
+      const sd = stddev(liters, mean);
+      const deviationCount = sd > 0
+        ? liters.filter((v) => Math.abs((v - mean) / sd) >= DRIVER_SCORE_CONSUMPTION_ZSCORE_THRESHOLD).length
+        : 0;
+
+      const rejectedRequestCount = rejectedByDriver.get(driverName) ?? 0;
+      const cancelledDenominator = total + rejectedRequestCount;
+      const cancelledCount = pendingVerificationCount + rejectedRequestCount;
+
+      const offhoursRatio = offhoursCount / total;
+      const rapidRepeatRatio = rapidRepeatCount / total;
+      const consumptionDeviationRatio = deviationCount / total;
+      const cancelledRatio = cancelledDenominator > 0 ? cancelledCount / cancelledDenominator : 0;
+      const manualEntryRatio = manualCount / total;
+
+      const rawScore =
+        100 -
+        (offhoursRatio * DRIVER_SCORE_WEIGHTS.offhours +
+          rapidRepeatRatio * DRIVER_SCORE_WEIGHTS.rapidRepeat +
+          consumptionDeviationRatio * DRIVER_SCORE_WEIGHTS.consumptionDeviation +
+          cancelledRatio * DRIVER_SCORE_WEIGHTS.cancelled +
+          manualEntryRatio * DRIVER_SCORE_WEIGHTS.manualEntry);
+      const score = Math.max(0, Math.min(100, Math.round(rawScore)));
+
+      const detail: DriverBehaviorScoreDetail = {
+        offhoursCount, rapidRepeatCount, deviationCount, pendingVerificationCount,
+        rejectedRequestCount, manualCount, mean: round2(mean), stddev: sd
+      };
+      const siteName = txs[txs.length - 1].site_name;
+      const id = generateId('dbscore');
+
+      await client.query(
+        `INSERT INTO driver_behavior_scores
+           (id, tenant_id, driver_name, site_name, period_days, transaction_count, score,
+            offhours_ratio_pct, rapid_repeat_ratio_pct, consumption_deviation_ratio_pct,
+            cancelled_ratio_pct, manual_entry_ratio_pct, detail)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [
+          id, tenantId, driverName, siteName, periodDays, total, score,
+          round2(offhoursRatio * 100), round2(rapidRepeatRatio * 100), round2(consumptionDeviationRatio * 100),
+          round2(cancelledRatio * 100), round2(manualEntryRatio * 100), JSON.stringify(detail)
+        ]
+      );
+
+      scores.push({
+        id, tenant_id: tenantId, driver_name: driverName, site_name: siteName, period_days: periodDays,
+        transaction_count: total, score,
+        offhours_ratio_pct: round2(offhoursRatio * 100), rapid_repeat_ratio_pct: round2(rapidRepeatRatio * 100),
+        consumption_deviation_ratio_pct: round2(consumptionDeviationRatio * 100),
+        cancelled_ratio_pct: round2(cancelledRatio * 100), manual_entry_ratio_pct: round2(manualEntryRatio * 100),
+        detail, computed_at: new Date().toISOString()
+      });
+
+      if (score < DRIVER_SCORE_ALARM_THRESHOLD) {
+        await raiseAlarm(client, tenantId, {
+          alarmKey: `DRIVER_BEHAVIOR_SCORE_LOW:${driverName}`,
+          category: 'DRIVER_BEHAVIOR_SCORE_LOW',
+          severity: score < DRIVER_SCORE_ALARM_CRITICAL_THRESHOLD ? 'CRITICAL' : 'WARNING',
+          title: `Şoför davranış skoru düşük: ${driverName} (${score}/100)`,
+          siteName,
+          subjectType: 'DRIVER',
+          subjectId: driverName,
+          detail: { score, ...detail }
+        });
+        alarmsRaised++;
+      }
+    }
+
+    if (scores.length > 0 || skippedInsufficientData > 0) {
+      await writeAuditLog(client, {
+        action: 'DRIVER_BEHAVIOR_SCORE_COMPUTED',
+        targetType: 'driver_behavior_score',
+        targetId: opts.driverName ?? 'ALL',
+        afterValue: { periodDays, minTransactions, scoredDrivers: scores.length, skippedInsufficientData }
+      });
+    }
+
+    return {
+      periodDays, minTransactions, scannedDrivers: byDriver.size, scoredDrivers: scores.length,
+      skippedInsufficientData, alarmsRaised, scores
+    };
+  });
+}
+
+/** index.ts günlük süpürücüsü — diğer "...ForCurrentTenant" sweep'lerle AYNI {scanned, alarmsRaised} şekli. */
+export async function runDriverBehaviorScoreSweepForCurrentTenant(): Promise<{ scanned: number; alarmsRaised: number }> {
+  const r = await computeDriverBehaviorScores({});
+  return { scanned: r.scoredDrivers, alarmsRaised: r.alarmsRaised };
+}
+
+/** Her şoförün EN GÜNCEL (son hesaplanan) skoru — geçmiş için bkz. getDriverBehaviorScoreHistory. */
+export async function getDriverBehaviorScores(filters: {
+  siteName?: string;
+  minScore?: number;
+  maxScore?: number;
+}): Promise<DriverBehaviorScoreRecord[]> {
+  return withTenant(async (client) => {
+    const where: string[] = [];
+    const params: any[] = [];
+    if (filters.siteName) { params.push(filters.siteName); where.push(`site_name = $${params.length}`); }
+    if (filters.minScore !== undefined) { params.push(filters.minScore); where.push(`score >= $${params.length}`); }
+    if (filters.maxScore !== undefined) { params.push(filters.maxScore); where.push(`score <= $${params.length}`); }
+    // "score"/"site_name" filtresi DISTINCT ON'DAN ÖNCE (WHERE ile) uygulanırsa
+    // bir şoförün EN GÜNCEL satırı eşiği karşılamadığında, filtre eski (daha
+    // uygun) bir satırı "en güncel" gibi göstermiş olurdu — bu yüzden önce
+    // CTE'de her şoförün gerçek en güncel satırı sabitlenir, filtre ANCAK
+    // ondan SONRA (dış sorguda) uygulanır.
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const res = await client.query(
+      `WITH latest AS (
+         SELECT DISTINCT ON (driver_name) *
+           FROM driver_behavior_scores
+          ORDER BY driver_name, computed_at DESC
+       )
+       SELECT * FROM latest
+       ${whereSql}
+       ORDER BY driver_name`,
+      params
+    );
+    return res.rows as DriverBehaviorScoreRecord[];
+  });
+}
+
+/** Bir şoförün skor geçmişi — en yeniden en eskiye. */
+export async function getDriverBehaviorScoreHistory(driverName: string, limit: number = 30): Promise<DriverBehaviorScoreRecord[]> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      `SELECT * FROM driver_behavior_scores WHERE driver_name = $1 ORDER BY computed_at DESC LIMIT $2`,
+      [driverName, limit]
+    );
+    return res.rows as DriverBehaviorScoreRecord[];
   });
 }

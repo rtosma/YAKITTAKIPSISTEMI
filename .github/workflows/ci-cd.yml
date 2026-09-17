@@ -466,6 +466,9 @@ jobs:
       - name: Run AI-504 Off-Hours + Rapid-Repeat Anomaly Detection Tests
         run: cd backend && npx tsx test/test_ai504_anomaly_detection.ts
 
+      - name: Run AI-506 Driver Behavior Scoring Tests
+        run: cd backend && npx tsx test/test_ai506_driver_behavior_score.ts
+
       - name: Run AUTH-207 TOTP 2FA Tests
         run: cd backend && npx tsx test/test_auth207_totp_2fa.ts
 
