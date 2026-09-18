@@ -405,6 +405,15 @@ jobs:
       - name: Run REP-702 Encrypted Archive Framework Tests
         run: cd backend && npx tsx test/test_rep702_archive_framework.ts
 
+      # REP-705 (#167): NOTIF-1602 ile AYNI gerekçe — mock SMTP dinleyicisi
+      # (smtp-server) 2525 portunda AYNI süreç içinde başlatılır.
+      - name: Run REP-705 Scheduled Report Delivery Tests
+        run: cd backend && npx tsx test/test_rep705_scheduled_report_delivery.ts
+        env:
+          SMTP_HOST: localhost
+          SMTP_PORT: 2525
+          SMTP_FROM: ci-test@yakittakip.local
+
       # AI-502: bu job'ta GEMINI_API_KEY kasıtlı olarak SET EDİLMİYOR — test
       # dosyası bunun (bu sandbox'ta da gerçek olan) "yapılandırılmamış"
       # durumunu doğruluyor; asıl AI çıktı-doğrulama mantığı ise Gemini'ye

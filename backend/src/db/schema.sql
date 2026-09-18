@@ -2521,3 +2521,81 @@ CREATE POLICY user_notification_mutes_tenant_isolation_policy ON user_notificati
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- REP-705 (#167): zamanlanmış rapor gönderimi (cron → e-posta) tanımı.
+-- `recipient_user_ids` bilerek e-posta ADRESİ değil kullanıcı ID'si tutar —
+-- "alıcı listesi kullanıcı silindiğinde güncellenmelidir" AC'si, gönderim
+-- ANINDA canlı bir `users` sorgusuyla e-postanın ÇÖZÜLMESİYLE karşılanır
+-- (bkz. reportScheduleService.ts) — silinen bir kullanıcı sorgudan
+-- KENDİLİĞİNDEN düşer, ayrı bir "temizleme" adımı gerekmez.
+CREATE TABLE IF NOT EXISTS report_schedules (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    -- reports/reportRegistry.ts'teki KAYITLI bir rapor id'si (ör. 'rep-711').
+    report_id VARCHAR(64) NOT NULL,
+    filters JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- 'CSV' — EXCEL/PDF bu turun KAPSAMI DIŞI (bkz. reportScheduleService.ts başı).
+    format VARCHAR(16) NOT NULL DEFAULT 'CSV',
+    -- 'DAILY' | 'WEEKLY' | 'MONTHLY'.
+    period_type VARCHAR(16) NOT NULL,
+    -- Europe/Istanbul (SABİT UTC+3 — bkz. index.ts'teki kota sıfırlama
+    -- yorumuyla AYNI varsayım, gerçek bir IANA tz kütüphanesi YOK) saatte 0-23.
+    send_hour_local INTEGER NOT NULL DEFAULT 7,
+    day_of_week INTEGER,   -- WEEKLY için 0(Pazar)-6(Cumartesi).
+    day_of_month INTEGER,  -- MONTHLY için 1-28 (ay uzunluğu belirsizliğini önlemek için 28'de sınırlı).
+    recipient_user_ids TEXT[] NOT NULL,
+    -- AC/Kapsam: "Boş rapor durumunda gönderim yapılmaması seçeneği."
+    skip_if_empty BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Oluşturan SITE_MANAGER ise siteScopeFor() ile SABİTLENİR (routes.ts'teki
+    -- AYNI desen) — zamanlama sonradan başka bir şantiyeye "kaydırılamaz".
+    site_scope VARCHAR(128),
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by VARCHAR(64) NOT NULL,
+    next_run_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_report_schedules_due ON report_schedules(tenant_id, next_run_at) WHERE enabled = TRUE;
+ALTER TABLE report_schedules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE report_schedules FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS report_schedules_tenant_isolation_policy ON report_schedules;
+CREATE POLICY report_schedules_tenant_isolation_policy ON report_schedules
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- REP-705: gönderim geçmişi + yeniden deneme. `notifications` tablosunun
+-- status/attempts deseninin AYNISI (bkz. NOTIF-1601). `UNIQUE(schedule_id,
+-- period_key)` — AYNI dönem için süpürücü birden fazla kez çalışsa da
+-- (retry) YENİ bir satır YARATMAZ, VAR OLANI dener (idempotency_key ile
+-- AYNI ruh). `file_data` yalnızca LINK modunda (>10MB) doldurulur —
+-- ATTACHMENT modunda e-posta zaten teslim edildiği için ekin KENDİSİ
+-- ayrıca DB'de saklanmaz (bkz. REP-702'nin her zaman sakladığı ZIP'ten
+-- BİLİNÇLİ fark — burada sık/küçük raporların DB'yi şişirmemesi öncelikli).
+CREATE TABLE IF NOT EXISTS report_deliveries (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    schedule_id VARCHAR(64) NOT NULL REFERENCES report_schedules(id) ON DELETE CASCADE,
+    period_key VARCHAR(32) NOT NULL,
+    -- 'BEKLIYOR' | 'GÖNDERILDI' | 'BAŞARISIZ' | 'KALICI_BAŞARISIZ' | 'ATLANDI_BOŞ'.
+    status VARCHAR(24) NOT NULL DEFAULT 'BEKLIYOR',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    row_count INTEGER,
+    delivery_mode VARCHAR(16), -- 'ATTACHMENT' | 'LINK'
+    file_data BYTEA,
+    file_size_bytes INTEGER,
+    download_token_hash VARCHAR(64),
+    expires_at TIMESTAMP WITH TIME ZONE,
+    last_error TEXT,
+    sent_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (schedule_id, period_key)
+);
+CREATE INDEX IF NOT EXISTS idx_report_deliveries_schedule ON report_deliveries(schedule_id, created_at DESC);
+ALTER TABLE report_deliveries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE report_deliveries FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS report_deliveries_tenant_isolation_policy ON report_deliveries;
+CREATE POLICY report_deliveries_tenant_isolation_policy ON report_deliveries
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

@@ -20,6 +20,7 @@ import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
 import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant, runTankStockAlertSweepForCurrentTenant, runDriverBehaviorScoreSweepForCurrentTenant, runDeviceHealthScoreSweepForCurrentTenant } from './db/tenantDb';
 import { runNotificationRetrySweepForCurrentTenant, notifyAlarmEscalationRecipients } from './services/notificationService';
+import { runReportScheduleSweepForCurrentTenant } from './services/reportScheduleService';
 import { runLicenseExpiryWarningSweep } from './services/licenseWarningService';
 import { runUsageMeteringSweepForPreviousMonth } from './services/usageMeteringService';
 
@@ -684,6 +685,32 @@ async function startServer(): Promise<void> {
     }
   }, ARCHIVE_CLEANUP_SWEEP_MS);
 
+  // REP-705 AC: "Zamanlanan rapor belirlenen periyotta üretilip
+  // gönderilmelidir." Ticket BullMQ repeatable job öneriyor — yukarıdaki
+  // süpürücülerle AYNI düz setInterval. Saatlik tur yeterli: zamanlamalar
+  // Europe/Istanbul (sabit UTC+3) saat granülaritesinde tanımlı (bkz.
+  // reportScheduleService.ts), bu yüzden en fazla ~1 saat gecikmeyle yakalanır.
+  const REPORT_SCHEDULE_SWEEP_MS = 60 * 60 * 1000;
+  const reportScheduleSweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [REP-705] Tenant listesi alınamadı, bu tur atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const r = await runWithTenant({ tenantId }, () => runReportScheduleSweepForCurrentTenant());
+        if (r.processed > 0) {
+          logger.info({ tenantId, ...r }, `📊 [REP-705] Zamanlanmış rapor turu: ${r.sent} gönderildi, ${r.failed} başarısız, ${r.skippedEmpty} boş rapor atlandı.`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [REP-705] Zamanlanmış rapor süpürmesi başarısız.');
+      }
+    }
+  }, REPORT_SCHEDULE_SWEEP_MS);
+
   // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
   setupGracefulShutdown(server, {
     timeoutMs: 30000,
@@ -709,6 +736,7 @@ async function startServer(): Promise<void> {
       clearInterval(notificationRetrySweepInterval);
       clearInterval(archiveGenerationSweepInterval);
       clearInterval(archiveCleanupSweepInterval);
+      clearInterval(reportScheduleSweepInterval);
 
       // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
       // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters

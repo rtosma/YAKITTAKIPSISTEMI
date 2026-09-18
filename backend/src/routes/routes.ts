@@ -44,6 +44,16 @@ import { listNotificationQuerySchema, updateNotificationChannelsSchema, sendTest
 import { createFirmwareArtifactSchema, listFirmwareArtifactQuerySchema, startFirmwareRolloutSchema, listFirmwareRolloutQuerySchema, reportRolloutRollbackSchema } from '../schemas/firmwareRolloutSchema';
 import { generateArchiveForTenant, listTenantArchives, verifyAndConsumeArchiveDownload } from '../services/tenantArchiveService';
 import { archiveSettingsSchema, createArchiveSchema, archiveIdParamsSchema, archiveDownloadParamsSchema } from '../schemas/archiveSchema';
+import {
+  createReportSchedule,
+  listReportSchedulesForCurrentTenant,
+  getReportSchedule,
+  updateReportSchedule,
+  deleteReportSchedule,
+  listReportDeliveriesForSchedule,
+  verifyAndConsumeReportDeliveryDownload
+} from '../services/reportScheduleService';
+import { createReportScheduleSchema, updateReportScheduleSchema, reportScheduleIdParamsSchema, reportDeliveryDownloadParamsSchema } from '../schemas/reportScheduleSchema';
 import { fuelCostSettingsSchema } from '../schemas/fuelCostSchema';
 import { runLicenseExpiryWarningSweep } from '../services/licenseWarningService';
 import { getUsageMeteringHistory, computeUsageMeteringForCurrentTenant } from '../services/usageMeteringService';
@@ -6290,6 +6300,163 @@ router.get(
         res.destroy();
         return;
       }
+      next(error);
+    }
+  }
+);
+
+// ── REP-705: Zamanlanmış rapor gönderimi (cron → e-posta) ────────────────
+// AC eşlemesi ve mimari kararlar için bkz. services/reportScheduleService.ts.
+const REPORT_SCHEDULE_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /report-schedules:
+ *   post:
+ *     summary: Zamanlanmış Rapor Oluştur (REP-705)
+ *     description: >
+ *       Alıcılar kullanıcı ID'si olarak saklanır — e-posta adresi GÖNDERİM
+ *       ANINDA çözülür (silinen bir kullanıcı otomatik düşer, bkz. servis
+ *       yorumu). SITE_MANAGER oluşturursa zamanlama KENDİ şantiyesine
+ *       sabitlenir.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Zamanlanmış Raporları Listele (REP-705)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/report-schedules',
+  authenticateJWT,
+  authorizeRoles(...REPORT_SCHEDULE_MANAGER_ROLES),
+  validateRequest({ body: createReportScheduleSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const schedule = await createReportSchedule(req.body, req.user!.userId, req.user!.role, siteScopeFor(req.user!));
+      res.status(201).json({ success: true, data: schedule });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get('/report-schedules', authenticateJWT, authorizeRoles(...REPORT_SCHEDULE_MANAGER_ROLES), async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await listReportSchedulesForCurrentTenant() });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /report-schedules/{scheduleId}:
+ *   get:
+ *     summary: Zamanlama Detayı (REP-705)
+ *     security:
+ *       - bearerAuth: []
+ *   patch:
+ *     summary: Zamanlamayı Güncelle / Etkinleştir-Devre Dışı Bırak (REP-705)
+ *     security:
+ *       - bearerAuth: []
+ *   delete:
+ *     summary: Zamanlamayı Sil (REP-705)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/report-schedules/:scheduleId',
+  authenticateJWT,
+  authorizeRoles(...REPORT_SCHEDULE_MANAGER_ROLES),
+  validateRequest({ params: reportScheduleIdParamsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getReportSchedule(req.params.scheduleId) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.patch(
+  '/report-schedules/:scheduleId',
+  authenticateJWT,
+  authorizeRoles(...REPORT_SCHEDULE_MANAGER_ROLES),
+  validateRequest({ params: reportScheduleIdParamsSchema, body: updateReportScheduleSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await updateReportSchedule(req.params.scheduleId, req.body) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.delete(
+  '/report-schedules/:scheduleId',
+  authenticateJWT,
+  authorizeRoles(...REPORT_SCHEDULE_MANAGER_ROLES),
+  validateRequest({ params: reportScheduleIdParamsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await deleteReportSchedule(req.params.scheduleId);
+      res.json({ success: true });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /report-schedules/{scheduleId}/deliveries:
+ *   get:
+ *     summary: Gönderim Geçmişi (REP-705 AC — hata durumunda yeniden deneme kaydı)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/report-schedules/:scheduleId/deliveries',
+  authenticateJWT,
+  authorizeRoles(...REPORT_SCHEDULE_MANAGER_ROLES),
+  validateRequest({ params: reportScheduleIdParamsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await listReportDeliveriesForSchedule(req.params.scheduleId) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /report-deliveries/{deliveryId}/download/{token}:
+ *   get:
+ *     summary: Presigned Rapor İndirme Bağlantısı (REP-705 AC — 10MB üzeri raporlar)
+ *     description: >
+ *       JWT GEREKTİRMEZ — /archives/{archiveId}/download/{token} (REP-702) ile
+ *       AYNI pre-auth istisnası.
+ *     security: []
+ */
+router.get(
+  '/report-deliveries/:deliveryId/download/:token',
+  validateRequest({ params: reportDeliveryDownloadParamsSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const lookup = await pool.query('SELECT tenant_id FROM report_deliveries WHERE id = $1', [req.params.deliveryId]);
+      if (lookup.rows.length === 0) {
+        throw new NotFoundError('Geçersiz veya süresi dolmuş indirme bağlantısı.');
+      }
+      const tenantId = lookup.rows[0].tenant_id;
+
+      const payload = await runWithTenant({ tenantId }, () => verifyAndConsumeReportDeliveryDownload(req.params.deliveryId, req.params.token));
+
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${payload.fileName}"`);
+      res.send(payload.fileData);
+    } catch (error: any) {
       next(error);
     }
   }

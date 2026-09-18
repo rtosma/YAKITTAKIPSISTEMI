@@ -51,6 +51,8 @@ export interface SendEmailInput {
   subject: string;
   text: string;
   html: string;
+  /** REP-705 — zamanlanmış rapor eki (CSV). Diğer çağıranlar bunu hiç göndermez. */
+  attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
 }
 
 export async function sendEmail(input: SendEmailInput): Promise<void> {
@@ -61,7 +63,8 @@ export async function sendEmail(input: SendEmailInput): Promise<void> {
       to: input.to,
       subject: input.subject,
       text: input.text,
-      html: input.html
+      html: input.html,
+      attachments: input.attachments?.map((a) => ({ filename: a.filename, content: a.content, contentType: a.contentType }))
     });
   } catch (err: any) {
     if (isPermanentSmtpFailure(err)) {
