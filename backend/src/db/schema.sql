@@ -2472,3 +2472,52 @@ CREATE POLICY tenant_notification_channels_tenant_isolation_policy ON tenant_not
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- ============================================================================
+-- [NOTIF-1605] Kullanıcı Bazlı Abonelik ve Sessize Alma
+-- ============================================================================
+-- AC: "Kullanıcı olay tipi VE kanal bazında tercih belirleyebilmelidir."
+-- Satır YOKSA varsayılan enabled=TRUE (opt-out modeli — "herkes başta her
+-- şeyi alır, istemeyen kapatır"). Ticket'ın "varsayılan tercih setleri (rol
+-- bazlı)" notu BİLEREK basitleştirildi (Efor: S) — tek bir global opt-out
+-- varsayılanı, rol bazlı farklı varsayılan setleri YOK.
+CREATE TABLE IF NOT EXISTS user_notification_preferences (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    user_id VARCHAR(64) NOT NULL,
+    event_type VARCHAR(64) NOT NULL,
+    channel VARCHAR(16) NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (user_id, event_type, channel)
+);
+ALTER TABLE user_notification_preferences ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_notification_preferences FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS user_notification_preferences_tenant_isolation_policy ON user_notification_preferences;
+CREATE POLICY user_notification_preferences_tenant_isolation_policy ON user_notification_preferences
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- AC: "Sessize alma süreli olmalı ve süre sonunda otomatik kalkmalıdır."
+-- Aktif temizlik/cron YOK — `muted_until > NOW()` kontrolü DELIVERY
+-- ANINDA yapılır (users.email_bounced_at/tank stok tahmini gibi "TTL
+-- karşılaştırmayla doğal olarak biter" deseninin AYNISI): süresi geçmiş
+-- bir satır basitçe artık etkisiz, silinmesi GEREKMEZ.
+CREATE TABLE IF NOT EXISTS user_notification_mutes (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    user_id VARCHAR(64) NOT NULL,
+    -- NULL = TÜM olay tipleri susturulur.
+    event_type VARCHAR(64),
+    muted_until TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_user_notification_mutes_lookup ON user_notification_mutes(tenant_id, user_id, muted_until);
+ALTER TABLE user_notification_mutes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE user_notification_mutes FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS user_notification_mutes_tenant_isolation_policy ON user_notification_mutes;
+CREATE POLICY user_notification_mutes_tenant_isolation_policy ON user_notification_mutes
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

@@ -9589,3 +9589,90 @@ export async function recordWebhookSuccess(): Promise<void> {
     await client.query('UPDATE tenant_notification_channels SET webhook_consecutive_failures = 0 WHERE tenant_id = $1', [tenantId]);
   });
 }
+
+// ============================================================================
+// [NOTIF-1605] KULLANICI BAZLI ABONELİK VE SESSİZE ALMA
+// ============================================================================
+
+export interface UserNotificationPreferenceRecord {
+  id: string;
+  user_id: string;
+  event_type: string;
+  channel: string;
+  enabled: boolean;
+  updated_at: string;
+}
+
+/** AC: "Kullanıcı olay tipi ve kanal bazında tercih belirleyebilmelidir." Satır yoksa varsayılan enabled=TRUE (opt-out). */
+export async function getUserNotificationPreference(userId: string, eventType: string, channel: string): Promise<boolean> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT enabled FROM user_notification_preferences WHERE user_id = $1 AND event_type = $2 AND channel = $3', [userId, eventType, channel]);
+    return res.rows.length === 0 ? true : res.rows[0].enabled;
+  });
+}
+
+export async function setUserNotificationPreference(userId: string, eventType: string, channel: string, enabled: boolean): Promise<UserNotificationPreferenceRecord> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query(
+      `INSERT INTO user_notification_preferences (id, tenant_id, user_id, event_type, channel, enabled)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (user_id, event_type, channel) DO UPDATE SET enabled = $6, updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [generateId('notifpref'), tenantId, userId, eventType, channel, enabled]
+    );
+    return res.rows[0];
+  });
+}
+
+export async function getUserNotificationPreferencesForCurrentUser(userId: string): Promise<UserNotificationPreferenceRecord[]> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM user_notification_preferences WHERE user_id = $1 ORDER BY event_type, channel', [userId]);
+    return res.rows;
+  });
+}
+
+export interface UserNotificationMuteRecord {
+  id: string;
+  user_id: string;
+  event_type: string | null;
+  muted_until: string;
+  created_at: string;
+}
+
+/**
+ * AC: "Sessize alma: belirli süre, belirli olay tipi... için." `eventType`
+ * verilmezse (NULL) TÜM olay tipleri susturulur. Süresiz susturma AC'nin
+ * "kalıcı susturma unutulur ve kritik olay kaçırılır" notu yüzünden bu
+ * fonksiyonun İMZASINDA bile YOK — `durationMinutes` zorunlu bir parametre.
+ */
+export async function createUserNotificationMute(userId: string, eventType: string | null, durationMinutes: number): Promise<UserNotificationMuteRecord> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query(
+      `INSERT INTO user_notification_mutes (id, tenant_id, user_id, event_type, muted_until)
+       VALUES ($1,$2,$3,$4, CURRENT_TIMESTAMP + ($5 || ' minutes')::interval)
+       RETURNING *`,
+      [generateId('notifmute'), tenantId, userId, eventType, durationMinutes]
+    );
+    return res.rows[0];
+  });
+}
+
+/** Bu (kullanıcı, olay tipi) çifti İÇİN şu an AKTİF bir susturma var mı (event_type-özel VEYA tüm-tipler susturması) — `muted_until` GEÇMİŞ olan satırlar (AC: "süre sonunda otomatik kalkmalı") kendiliğinden hariç kalır. */
+export async function isUserNotificationMuted(userId: string, eventType: string): Promise<boolean> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      `SELECT 1 FROM user_notification_mutes
+        WHERE user_id = $1 AND (event_type = $2 OR event_type IS NULL) AND muted_until > CURRENT_TIMESTAMP
+        LIMIT 1`,
+      [userId, eventType]
+    );
+    return res.rows.length > 0;
+  });
+}
+
+export async function getActiveUserNotificationMutes(userId: string): Promise<UserNotificationMuteRecord[]> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM user_notification_mutes WHERE user_id = $1 AND muted_until > CURRENT_TIMESTAMP ORDER BY muted_until DESC', [userId]);
+    return res.rows;
+  });
+}

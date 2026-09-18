@@ -18,6 +18,8 @@ import {
   getWebhookTargetForCurrentTenant,
   recordWebhookFailure,
   recordWebhookSuccess,
+  getUserNotificationPreference,
+  isUserNotificationMuted,
   type NotificationRecord
 } from '../db/tenantDb';
 import { runWithTenant, getTenantId } from '../context/tenantContext';
@@ -184,6 +186,40 @@ async function deliver(tenantId: string, notification: NotificationRecord): Prom
 export interface NotifyEventResult {
   notificationId: string | null;
   skippedDuplicate: boolean;
+  skippedByPreference: boolean;
+}
+
+/**
+ * NOTIF-1605 AC: "Kullanıcı, bildirim tiplerini kanal bazında açıp
+ * kapatabilmelidir" + "Sessize alma zaman sınırlı olmalıdır" + "Güvenlik
+ * bildirimleri tamamen kapatılamamalıdır, en az bir kanal zorunlu kalmalıdır".
+ * Ticket'ın ayrı bir "subscription service" / event-bus filtresi önerisi bu
+ * kod tabanında YOK — tercih/sessize-alma kontrolü notifyEvent() İÇİNE,
+ * bildirim satırı YARATILMADAN ÖNCE gömülüdür (bkz. çağrı yeri): engellenen
+ * bir bildirim için KAYIT DAHİ AÇILMAZ, retry süpürücüsünün tekrar kontrol
+ * etmesine gerek kalmaz.
+ *
+ * Zorunlu kanal AC'si: `isSecurityCritical` şablonlarda IN_APP kanalı, tercih
+ * VEYA sessize alma NE OLURSA OLSUN her zaman `true` döner — "tamamen
+ * kapatılamamalı" bunu tek bir kanalın DAİMA açık kalmasıyla karşılar, diğer
+ * kanallar (EMAIL/SMS/TELEGRAM/WEBHOOK) hâlâ normal şekilde tercihe tabidir.
+ */
+async function isDeliveryAllowedByPreference(
+  tenantId: string,
+  userId: string | null,
+  eventType: string,
+  channel: string,
+  isSecurityCritical: boolean
+): Promise<boolean> {
+  // Tenant geneli bildirim (userId yok) — kullanıcı bazlı tercih/sessize alma kapsam dışı (Efor: S basitleştirmesi).
+  if (!userId) return true;
+  if (isSecurityCritical && channel === 'IN_APP') return true;
+
+  const enabled = await runWithTenant({ tenantId }, () => getUserNotificationPreference(userId, eventType, channel));
+  if (!enabled) return false;
+
+  const muted = await runWithTenant({ tenantId }, () => isUserNotificationMuted(userId, eventType));
+  return !muted;
 }
 
 /** Kanalların "asla tekrar deneme" sinyali — hepsi FARKLI sebeplerle (bounce/yalnızca-kritik/token-yok/devre-dışı) ama HEPSİ AYNI davranışı ister: ANINDA KALICI_BAŞARISIZ. */
@@ -206,7 +242,13 @@ export async function notifyEvent(
     const template = NOTIFICATION_TEMPLATES[eventType];
     if (!template) {
       logger.error({ eventType }, `🚨 [NOTIF-1601] Bilinmeyen bildirim tipi (templateRegistry.ts'te kayıtlı değil): ${eventType}`);
-      return { notificationId: null, skippedDuplicate: false };
+      return { notificationId: null, skippedDuplicate: false, skippedByPreference: false };
+    }
+
+    const channel = opts?.channel ?? 'IN_APP';
+    const allowed = await isDeliveryAllowedByPreference(tenantId, opts?.userId ?? null, eventType, channel, template.isSecurityCritical === true);
+    if (!allowed) {
+      return { notificationId: null, skippedDuplicate: false, skippedByPreference: true };
     }
 
     const title = renderTemplate(template.titleTemplate, variables);
@@ -220,12 +262,12 @@ export async function notifyEvent(
         title,
         body,
         variables,
-        channel: opts?.channel ?? 'IN_APP',
+        channel,
         priority: opts?.priority ?? 'NORMAL'
       })
     );
     if (!created) {
-      return { notificationId: null, skippedDuplicate: true };
+      return { notificationId: null, skippedDuplicate: true, skippedByPreference: false };
     }
 
     try {
@@ -244,10 +286,10 @@ export async function notifyEvent(
         logger.error({ err: deliveryErr, notificationId: created.id }, '🚨 [NOTIF-1601] Bildirim teslimi başarısız, yeniden denenecek.');
       }
     }
-    return { notificationId: created.id, skippedDuplicate: false };
+    return { notificationId: created.id, skippedDuplicate: false, skippedByPreference: false };
   } catch (err) {
     logger.error({ err, tenantId, eventType }, '🚨 [NOTIF-1601] notifyEvent beklenmeyen hata (ana işlemi etkilemeden yutuldu).');
-    return { notificationId: null, skippedDuplicate: false };
+    return { notificationId: null, skippedDuplicate: false, skippedByPreference: false };
   }
 }
 

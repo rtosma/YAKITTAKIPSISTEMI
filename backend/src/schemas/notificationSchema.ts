@@ -20,3 +20,18 @@ export const sendTestNotificationSchema = z.object({
   userId: z.string().min(1).max(64).optional()
 });
 export type SendTestNotificationDTO = z.infer<typeof sendTestNotificationSchema>;
+
+/** NOTIF-1605 — kullanıcının kendi tercihi (event tipi × kanal). Self-servis: userId route/body'den GELMEZ, req.user'dan okunur. */
+export const setUserNotificationPreferenceSchema = z.object({
+  eventType: z.string().min(1).max(64),
+  channel: z.enum(['IN_APP', 'EMAIL', 'SMS', 'TELEGRAM', 'WEBHOOK']),
+  enabled: z.boolean()
+});
+export type SetUserNotificationPreferenceDTO = z.infer<typeof setUserNotificationPreferenceSchema>;
+
+/** NOTIF-1605 — zaman sınırlı sessize alma. `eventType` boşsa TÜM bildirim tipleri için geçerlidir. */
+export const createUserNotificationMuteSchema = z.object({
+  eventType: z.string().min(1).max(64).optional(),
+  durationMinutes: z.number().int().min(1, 'durationMinutes en az 1 olmalıdır.').max(10080, 'durationMinutes en fazla 10080 (7 gün) olmalıdır.')
+});
+export type CreateUserNotificationMuteDTO = z.infer<typeof createUserNotificationMuteSchema>;

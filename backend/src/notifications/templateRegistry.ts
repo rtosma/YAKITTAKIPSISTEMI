@@ -11,6 +11,14 @@
 export interface NotificationTemplate {
   titleTemplate: string;
   bodyTemplate: string;
+  /**
+   * NOTIF-1605 AC: "Güvenlik bildirimleri tamamen kapatılamamalıdır... en
+   * azından bir kanal zorunlu kalmalıdır." `true` ise IN_APP kanalı
+   * kullanıcı tercihi/sessize alma NE OLURSA OLSUN her zaman teslim edilir
+   * (bkz. notificationService.ts isDeliveryAllowedByPreference) — SADECE
+   * IN_APP için, diğer kanallar (EMAIL/SMS/...) hâlâ tercihe tabidir.
+   */
+  isSecurityCritical?: boolean;
 }
 
 export const NOTIFICATION_TEMPLATES: Record<string, NotificationTemplate> = {
@@ -25,5 +33,13 @@ export const NOTIFICATION_TEMPLATES: Record<string, NotificationTemplate> = {
   FIRE_RECORD_HIGH_VALUE: {
     titleTemplate: '{{tankName}} — onay bekleyen yüksek değerli fire kaydı',
     bodyTemplate: '{{quantityLiters}} L {{classification}} sınıflandırmasıyla onay bekliyor.'
+  },
+  // AI-501'in hırsızlık tespiti KENDİ alarm mekanizmasını kullanıyor
+  // (notifyEvent'e henüz bağlanmadı) — bu tip, "güvenlik kritik" AC'sini
+  // somut bir örnekle egzersiz etmek için burada TANIMLIDIR.
+  THEFT_DETECTED: {
+    titleTemplate: '🚨 Hırsızlık şüphesi: {{tankName}}',
+    bodyTemplate: '{{siteName}} şantiyesinde yetkisiz akış tespit edildi.',
+    isSecurityCritical: true
   }
 };
