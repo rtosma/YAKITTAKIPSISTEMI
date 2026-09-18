@@ -463,6 +463,9 @@ jobs:
       - name: Run INV-1505 Fire/Loss Record Classification + Dual Approval Tests
         run: cd backend && npx tsx test/test_inv1505_fire_records.ts
 
+      - name: Run NOTIF-1601 Notification Core (Event/Template/Channel) Tests
+        run: cd backend && npx tsx test/test_notif1601_notification_core.ts
+
       - name: Run FUEL-405 Manual Dispense Entry + Dual Approval Tests
         run: cd backend && npx tsx test/test_fuel405_manual_dispense.ts
 

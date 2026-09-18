@@ -19,6 +19,7 @@ import { broadcastToTenant } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
 import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant, runTankStockAlertSweepForCurrentTenant, runDriverBehaviorScoreSweepForCurrentTenant, runDeviceHealthScoreSweepForCurrentTenant } from './db/tenantDb';
+import { runNotificationRetrySweepForCurrentTenant } from './services/notificationService';
 import { runLicenseExpiryWarningSweep } from './services/licenseWarningService';
 import { runUsageMeteringSweepForPreviousMonth } from './services/usageMeteringService';
 
@@ -612,6 +613,31 @@ async function startServer(): Promise<void> {
     }
   }, DEVICE_HEALTH_SWEEP_MS);
 
+  // NOTIF-1601 AC: "Teslim durumu takibi, yeniden deneme..." Ticket BullMQ
+  // öneriyor — yukarıdaki süpürücülerle AYNI düz setInterval. BAŞARISIZ
+  // bildirimlerin teslimini yeniden dener; MAX_DELIVERY_ATTEMPTS (3) sonrası
+  // KALICI_BAŞARISIZ'a düşürür (bkz. notificationService.ts).
+  const NOTIFICATION_RETRY_SWEEP_MS = 5 * 60 * 1000;
+  const notificationRetrySweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [NOTIF-1601] Tenant listesi alınamadı, bu bildirim yeniden deneme turu atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const r = await runWithTenant({ tenantId }, () => runNotificationRetrySweepForCurrentTenant());
+        if (r.retried > 0 || r.permanentlyFailed > 0) {
+          logger.info({ tenantId, ...r }, `📬 [NOTIF-1601] Bildirim yeniden deneme turu: ${r.retried} teslim edildi, ${r.permanentlyFailed} kalıcı başarısız.`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [NOTIF-1601] Bildirim yeniden deneme turu başarısız.');
+      }
+    }
+  }, NOTIFICATION_RETRY_SWEEP_MS);
+
   // REP-702 AC: "Periyot seçimi (7/15/30/90 gün)... tetikleyicisi." Ticket
   // BullMQ + @nestjs/schedule öneriyor — yok; yukarıdaki süpürücülerle AYNI
   // düz setInterval. Günlük bir tur: `companies.archive_period_days` ayarlı
@@ -678,6 +704,7 @@ async function startServer(): Promise<void> {
       clearInterval(tankStockAlertSweepInterval);
       clearInterval(driverScoreSweepInterval);
       clearInterval(deviceHealthSweepInterval);
+      clearInterval(notificationRetrySweepInterval);
       clearInterval(archiveGenerationSweepInterval);
       clearInterval(archiveCleanupSweepInterval);
 

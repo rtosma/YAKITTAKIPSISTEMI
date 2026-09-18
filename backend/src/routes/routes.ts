@@ -39,6 +39,8 @@ import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes,
 import { isServerShuttingDown } from '../utils/shutdown';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS, getCompanyLicenseSnapshot, getTenantLifecycleStatus, freezeCompany, unfreezeCompany, scheduleTenantDeletion, cancelTenantDeletion, approveTenantDeletion, exportTenantDataEncrypted, getArchiveSettings, updateArchiveSettings, getModuleCatalog, getFuelCostSettings, updateFuelCostMethod, createFirmwareArtifact, getFirmwareArtifacts } from '../db/adminDb';
 import { startFirmwareRollout, getFirmwareRollouts, getFirmwareRollout, reportRolloutDeviceRollback } from '../services/firmwareRolloutService';
+import { getNotifications, markNotificationRead } from '../services/notificationService';
+import { listNotificationQuerySchema } from '../schemas/notificationSchema';
 import { createFirmwareArtifactSchema, listFirmwareArtifactQuerySchema, startFirmwareRolloutSchema, listFirmwareRolloutQuerySchema, reportRolloutRollbackSchema } from '../schemas/firmwareRolloutSchema';
 import { generateArchiveForTenant, listTenantArchives, verifyAndConsumeArchiveDownload } from '../services/tenantArchiveService';
 import { archiveSettingsSchema, createArchiveSchema, archiveIdParamsSchema, archiveDownloadParamsSchema } from '../schemas/archiveSchema';
@@ -3962,6 +3964,54 @@ router.post(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const record = await reportRolloutDeviceRollback(req.params.id, req.params.deviceId, req.body.reason);
+      res.json({ success: true, data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── NOTIF-1601: bildirim çekirdeği ──────────────────────────────────────
+/**
+ * @swagger
+ * /notifications:
+ *   get:
+ *     summary: Bildirim Geçmişi (NOTIF-1601)
+ *     description: >
+ *       Tenant geneli (kullanıcıya özel olmayan) + oturum sahibine özel
+ *       bildirimler. `?unreadOnly=true` yalnızca okunmamışları döndürür.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/notifications',
+  authenticateJWT,
+  validateRequest({ query: listNotificationQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { unreadOnly?: boolean };
+      const rows = await getNotifications({ userId: req.user!.userId, unreadOnly: q.unreadOnly });
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /notifications/{id}/read:
+ *   post:
+ *     summary: Bildirimi Okundu İşaretle (NOTIF-1601 AC — kullanıcı bazlı okundu bilgisi)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/notifications/:id/read',
+  authenticateJWT,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await markNotificationRead(req.params.id);
       res.json({ success: true, data: record });
     } catch (error: any) {
       next(error);

@@ -2344,3 +2344,47 @@ CREATE POLICY firmware_rollout_devices_tenant_isolation_policy ON firmware_rollo
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- ============================================================================
+-- [NOTIF-1601] Bildirim Çekirdeği: Olay → Şablon → Kanal Yönlendirme
+-- ============================================================================
+-- Bloklayan ARCH-102 (event-driven olay veri yolu, #14) bu depoda YOK — bu
+-- yüzden "olay yayımlanır" AC'si, notificationService.ts'in `notifyEvent()`
+-- fonksiyonunun DÜZ bir çağrı (fire-and-forget, `void notifyEvent(...)`)
+-- olarak çağrılmasıyla sağlanır; ayrı bir event bus/kuyruk YOK. Şablon
+-- motoru: handlebars/eta (ticket'ın Teknik Yığın'ı) DEĞİL — basit bir
+-- `{{degisken}}` regex değiştiricisi (templateRegistry.ts, kod içi, DB'de
+-- DEĞİL — "yeni bir bildirim tipi şablon+eşleme EKLENEREK tanımlanabilir"
+-- AC'si TypeScript registry'sine YENİ BİR SATIR eklemekle sağlanıyor, ayrıca
+-- iş mantığı kodu YAZILMADAN). "Aynı olay için mükerrer bildirim gitmemeli"
+-- AC'si UNIQUE(tenant_id, idempotency_key) ile (NULL'lar hariç, Postgres
+-- kuralı — idempotency_key vermeyen çağrılar dedupe edilmez, bilerek).
+CREATE TABLE IF NOT EXISTS notifications (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    event_type VARCHAR(64) NOT NULL,
+    idempotency_key VARCHAR(128),
+    -- NULL = tenant geneli (tüm yönetici rolleri) — belirli bir kullanıcıya YÖNELİK değil.
+    user_id VARCHAR(64),
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    -- Şimdilik yalnızca 'IN_APP' (NOTIF-1602/1603/1604 e-posta/SMS/Telegram — AYRI ticket'lar).
+    channel VARCHAR(16) NOT NULL DEFAULT 'IN_APP',
+    -- 'BEKLIYOR' | 'GÖNDERILDI' | 'BAŞARISIZ' (yeniden denenecek) | 'KALICI_BAŞARISIZ' (deneme tükendi)
+    status VARCHAR(24) NOT NULL DEFAULT 'BEKLIYOR',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    variables JSONB,
+    read_at TIMESTAMP WITH TIME ZONE,
+    delivered_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tenant_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_lookup ON notifications(tenant_id, user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_retry ON notifications(status) WHERE status = 'BAŞARISIZ';
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notifications FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS notifications_tenant_isolation_policy ON notifications;
+CREATE POLICY notifications_tenant_isolation_policy ON notifications
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

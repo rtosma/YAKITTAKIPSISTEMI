@@ -9256,3 +9256,97 @@ export async function getFirmwareRollout(id: string): Promise<{ rollout: Firmwar
     return { rollout: rolloutRes.rows[0], devices: devicesRes.rows };
   });
 }
+
+// ============================================================================
+// [NOTIF-1601] BİLDİRİM ÇEKİRDEĞİ — VERİ ERİŞİM KATMANI
+// ============================================================================
+// Şablon render'ı (notifications/templateRegistry.ts) + teslim (Socket.io
+// broadcast) services/notificationService.ts'te — burası SADECE CRUD.
+
+export interface NotificationRecord {
+  id: string;
+  tenant_id: string;
+  event_type: string;
+  idempotency_key: string | null;
+  user_id: string | null;
+  title: string;
+  body: string;
+  channel: string;
+  status: 'BEKLIYOR' | 'GÖNDERILDI' | 'BAŞARISIZ' | 'KALICI_BAŞARISIZ';
+  attempts: number;
+  variables: Record<string, unknown> | null;
+  read_at: string | null;
+  delivered_at: string | null;
+  created_at: string;
+}
+
+/** AC: "Aynı olay için mükerrer bildirim gitmemeli." `idempotencyKey` verilmişse UNIQUE(tenant_id, idempotency_key) devreye girer — satır ZATEN varsa null döner. */
+export async function createNotificationForCurrentTenant(data: {
+  eventType: string;
+  idempotencyKey: string | null;
+  userId: string | null;
+  title: string;
+  body: string;
+  variables: Record<string, unknown>;
+}): Promise<NotificationRecord | null> {
+  return withTenant(async (client, tenantId) => {
+    const id = generateId('notif');
+    const res = await client.query(
+      `INSERT INTO notifications (id, tenant_id, event_type, idempotency_key, user_id, title, body, variables)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+       ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+       RETURNING *`,
+      [id, tenantId, data.eventType, data.idempotencyKey, data.userId, data.title, data.body, JSON.stringify(data.variables)]
+    );
+    return res.rows[0] ?? null;
+  });
+}
+
+export async function markNotificationDelivered(id: string): Promise<void> {
+  await withTenant(async (client) => {
+    await client.query(`UPDATE notifications SET status = 'GÖNDERILDI', delivered_at = CURRENT_TIMESTAMP, attempts = attempts + 1 WHERE id = $1`, [id]);
+  });
+}
+
+/** AC: "Teslim durumu takibi, yeniden deneme ve teslim edilemeyen bildirimlerin kaydı." */
+export async function markNotificationFailed(id: string, maxAttempts: number): Promise<void> {
+  await withTenant(async (client) => {
+    await client.query(
+      `UPDATE notifications
+          SET attempts = attempts + 1,
+              status = CASE WHEN attempts + 1 >= $2 THEN 'KALICI_BAŞARISIZ' ELSE 'BAŞARISIZ' END
+        WHERE id = $1`,
+      [id, maxAttempts]
+    );
+  });
+}
+
+export async function getFailedNotificationsForCurrentTenant(): Promise<NotificationRecord[]> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query(`SELECT * FROM notifications WHERE tenant_id = $1 AND status = 'BAŞARISIZ'`, [tenantId]);
+    return res.rows;
+  });
+}
+
+export async function getNotifications(filters: { userId?: string; unreadOnly?: boolean }): Promise<NotificationRecord[]> {
+  return withTenant(async (client, tenantId) => {
+    const where = ['tenant_id = $1', '(user_id IS NULL OR user_id = $2)'];
+    const params: any[] = [tenantId, filters.userId ?? null];
+    if (filters.unreadOnly) where.push('read_at IS NULL');
+    const res = await client.query(`SELECT * FROM notifications WHERE ${where.join(' AND ')} ORDER BY created_at DESC LIMIT 100`, params);
+    return res.rows;
+  });
+}
+
+/** AC: "Bildirim geçmişi ve kullanıcı bazlı okundu bilgisi." Tenant geneli (user_id NULL) bir bildirim, HERHANGİ bir yönetici tarafından okundu işaretlenebilir. */
+export async function markNotificationRead(id: string): Promise<NotificationRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query(`UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE id = $1 AND read_at IS NULL RETURNING *`, [id]);
+    if (res.rows.length === 0) {
+      const existing = await client.query('SELECT * FROM notifications WHERE id = $1', [id]);
+      if (existing.rows.length === 0) throw new NotFoundError('Bildirim bulunamadı.');
+      return existing.rows[0];
+    }
+    return res.rows[0];
+  });
+}
