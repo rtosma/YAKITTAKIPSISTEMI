@@ -34,6 +34,7 @@ jobs:
       TRANSACTION_HASH_SECRET: ci_only_unused
       HW_SECRET_ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       TENANT_EXPORT_ENCRYPTION_KEY: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      NOTIFICATION_CHANNEL_ENCRYPTION_KEY: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 
     steps:
       - name: Checkout Repository
@@ -145,6 +146,7 @@ jobs:
       # gibi rastgele bir metin OLAMAZ.
       HW_SECRET_ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       TENANT_EXPORT_ENCRYPTION_KEY: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      NOTIFICATION_CHANNEL_ENCRYPTION_KEY: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
       # IOT-302.1: sunucu ve test_iot302_1 AYNI token'ı görmeli (test webhook'a
       # bu token'la POST atıyor). Job seviyesinde tanımlı → hem "Start Backend
       # Server" hem test adımları görür.
@@ -482,6 +484,15 @@ jobs:
         run: cd backend && npx tsx test/test_notif1603_sms_channel.ts
         env:
           SMS_PROVIDER_URL: http://localhost:3999/send
+
+      # NOTIF-1604: NOTIF-1602/1603 ile AYNI gerekçe — mock Telegram/webhook
+      # uçları Node'un yerleşik `http` modülüyle AYNI süreç içinde başlatılır
+      # (4001/4002 portları). TELEGRAM_API_BASE_URL gerçek api.telegram.org'a
+      # HİÇ gitmemesi için bu mock'a yönlendirir.
+      - name: Run NOTIF-1604 Telegram + Webhook Channel Tests
+        run: cd backend && npx tsx test/test_notif1604_telegram_webhook.ts
+        env:
+          TELEGRAM_API_BASE_URL: http://localhost:4001
 
       - name: Run FUEL-405 Manual Dispense Entry + Dual Approval Tests
         run: cd backend && npx tsx test/test_fuel405_manual_dispense.ts
@@ -845,6 +856,7 @@ jobs:
           TRANSACTION_HASH_SECRET=ci_only_tx_hash_${{ github.run_id }}
           HW_SECRET_ENCRYPTION_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           TENANT_EXPORT_ENCRYPTION_KEY=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+          NOTIFICATION_CHANNEL_ENCRYPTION_KEY=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
           EOF
 
       - name: Start Full Docker Compose Stack

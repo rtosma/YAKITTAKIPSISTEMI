@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getVehicleSiteAssignmentHistory, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant, createLabSample, getLabSamples, getLabSample, cancelLabSample, recordLabTestResult, getLabTestResults, getNonConformingLabResults, computeDriverBehaviorScores, getDriverBehaviorScores, getDriverBehaviorScoreHistory, getTankStockForecasts, runTankStockAlertSweepForCurrentTenant, computeDeviceHealthScores, getDeviceHealthScores, getDeviceHealthScoreHistory, getDeviceOnlineSla, getDeviceFirmwareInventory, createFireRecord, getFireRecords, approveFireRecord, rejectFireRecord, getFireRecordSiteComparison, getSmsMonthlyUsageForCurrentTenant } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getVehicleSiteAssignmentHistory, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant, createLabSample, getLabSamples, getLabSample, cancelLabSample, recordLabTestResult, getLabTestResults, getNonConformingLabResults, computeDriverBehaviorScores, getDriverBehaviorScores, getDriverBehaviorScoreHistory, getTankStockForecasts, runTankStockAlertSweepForCurrentTenant, computeDeviceHealthScores, getDeviceHealthScores, getDeviceHealthScoreHistory, getDeviceOnlineSla, getDeviceFirmwareInventory, createFireRecord, getFireRecords, approveFireRecord, rejectFireRecord, getFireRecordSiteComparison, getSmsMonthlyUsageForCurrentTenant, upsertTenantNotificationChannels, getTenantNotificationChannels } from '../db/tenantDb';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { getReportDefinition, listReportsForRole, runReport, streamReportToCsv, streamReportToPdf, ReportQueryParams } from '../reports';
 import { reportRunQuerySchema, reportExportQuerySchema, reportIdParamsSchema } from '../schemas/reportSchema';
@@ -39,8 +39,8 @@ import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes,
 import { isServerShuttingDown } from '../utils/shutdown';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS, getCompanyLicenseSnapshot, getTenantLifecycleStatus, freezeCompany, unfreezeCompany, scheduleTenantDeletion, cancelTenantDeletion, approveTenantDeletion, exportTenantDataEncrypted, getArchiveSettings, updateArchiveSettings, getModuleCatalog, getFuelCostSettings, updateFuelCostMethod, createFirmwareArtifact, getFirmwareArtifacts } from '../db/adminDb';
 import { startFirmwareRollout, getFirmwareRollouts, getFirmwareRollout, reportRolloutDeviceRollback } from '../services/firmwareRolloutService';
-import { getNotifications, markNotificationRead } from '../services/notificationService';
-import { listNotificationQuerySchema } from '../schemas/notificationSchema';
+import { getNotifications, markNotificationRead, sendTestNotification } from '../services/notificationService';
+import { listNotificationQuerySchema, updateNotificationChannelsSchema, sendTestNotificationSchema } from '../schemas/notificationSchema';
 import { createFirmwareArtifactSchema, listFirmwareArtifactQuerySchema, startFirmwareRolloutSchema, listFirmwareRolloutQuerySchema, reportRolloutRollbackSchema } from '../schemas/firmwareRolloutSchema';
 import { generateArchiveForTenant, listTenantArchives, verifyAndConsumeArchiveDownload } from '../services/tenantArchiveService';
 import { archiveSettingsSchema, createArchiveSchema, archiveIdParamsSchema, archiveDownloadParamsSchema } from '../schemas/archiveSchema';
@@ -4034,6 +4034,94 @@ router.get(
   async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       res.json({ success: true, data: await getSmsMonthlyUsageForCurrentTenant() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+const NOTIFICATION_CHANNEL_ADMIN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /notifications/channels:
+ *   put:
+ *     summary: Telegram/Webhook Kanal Yapılandırması (NOTIF-1604 AC — token şifreli saklanır)
+ *     description: >
+ *       Kısmi güncelleme — yalnızca gönderilen alanlar değişir. webhookUrl
+ *       veya webhookSecret gönderilirse devre kesici (ardışık başarısızlık
+ *       sayacı + devre dışı durumu) SIFIRLANIR.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Kanal Yapılandırma Durumu (NOTIF-1604)
+ *     description: 'Sırların KENDİSİNİ DÖNDÜRMEZ — yalnızca "yapılandırılmış mı" ve devre kesici durumu.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put(
+  '/notifications/channels',
+  authenticateJWT,
+  authorizeRoles(...NOTIFICATION_CHANNEL_ADMIN_ROLES),
+  validateRequest({ body: updateNotificationChannelsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await upsertTenantNotificationChannels(req.body);
+      res.json({
+        success: true,
+        data: {
+          telegramConfigured: !!record.telegram_bot_token_encrypted,
+          webhookConfigured: !!record.webhook_url,
+          webhookDisabled: record.webhook_disabled_at !== null,
+          webhookConsecutiveFailures: record.webhook_consecutive_failures
+        }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/notifications/channels',
+  authenticateJWT,
+  authorizeRoles(...NOTIFICATION_CHANNEL_ADMIN_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await getTenantNotificationChannels();
+      res.json({
+        success: true,
+        data: {
+          telegramConfigured: !!record?.telegram_bot_token_encrypted,
+          webhookConfigured: !!record?.webhook_url,
+          webhookDisabled: record?.webhook_disabled_at !== null && record?.webhook_disabled_at !== undefined,
+          webhookConsecutiveFailures: record?.webhook_consecutive_failures ?? 0
+        }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /notifications/channels/test-send:
+ *   post:
+ *     summary: Kanal Test Gönderimi (NOTIF-1604 AC — kanal bazlı test gönderimi düğmesi)
+ *     description: 'Sonucu SENKRON döndürür (notifyEvent gibi fire-and-forget DEĞİL) — bir yönetici sonucu ANINDA görmeli.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/notifications/channels/test-send',
+  authenticateJWT,
+  authorizeRoles(...NOTIFICATION_CHANNEL_ADMIN_ROLES),
+  validateRequest({ body: sendTestNotificationSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await sendTestNotification(req.user!.tenantId, req.body.channel, req.body.userId);
+      res.json({ success: true, data: result });
     } catch (error: any) {
       next(error);
     }

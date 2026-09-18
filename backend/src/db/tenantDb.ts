@@ -6,6 +6,7 @@ import { hashPassword, verifyPassword } from '../utils/password';
 import { generateReadableUsername, generateTempPassword } from '../utils/tempCredentials';
 import { writeAuditLog } from '../utils/auditLog';
 import { encryptDeviceSecret, generateDeviceSecret } from '../utils/hardwareSecretCrypto';
+import { encryptChannelSecret, decryptChannelSecret } from '../utils/channelSecretCrypto';
 import { logger } from '../utils/logger';
 import { withTenant } from './withTenant';
 import { getTenantStore } from '../context/tenantContext';
@@ -5888,7 +5889,9 @@ export type AlarmCategory =
   // IOT-308: bir cihazın sağlık skoru kritik eşiğin altına düştü.
   | 'DEVICE_HEALTH_SCORE_LOW'
   // NOTIF-1603 AC: "Aylık SMS limiti aşıldığında uyarı üretilmelidir."
-  | 'SMS_MONTHLY_LIMIT_EXCEEDED' | 'OTHER';
+  | 'SMS_MONTHLY_LIMIT_EXCEEDED'
+  // NOTIF-1604 AC: "Sürekli hata veren webhook otomatik devre dışı bırakılmalıdır."
+  | 'WEBHOOK_AUTO_DISABLED' | 'OTHER';
 export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
 
@@ -9291,7 +9294,7 @@ export async function createNotificationForCurrentTenant(data: {
   title: string;
   body: string;
   variables: Record<string, unknown>;
-  channel?: 'IN_APP' | 'EMAIL' | 'SMS';
+  channel?: 'IN_APP' | 'EMAIL' | 'SMS' | 'TELEGRAM' | 'WEBHOOK';
   priority?: 'NORMAL' | 'CRITICAL';
 }): Promise<NotificationRecord | null> {
   return withTenant(async (client, tenantId) => {
@@ -9448,5 +9451,141 @@ export async function getSmsMonthlyUsageForCurrentTenant(): Promise<SmsUsageChec
     const res = await client.query('SELECT sent_count, monthly_limit FROM sms_monthly_usage WHERE tenant_id = $1 AND year_month = $2', [tenantId, yearMonth]);
     if (res.rows.length === 0) return { allowed: true, sentCount: 0, monthlyLimit: 100 };
     return { allowed: res.rows[0].sent_count < res.rows[0].monthly_limit, sentCount: res.rows[0].sent_count, monthlyLimit: res.rows[0].monthly_limit };
+  });
+}
+
+// ============================================================================
+// [NOTIF-1604] TELEGRAM VE WEBHOOK KANALLARI — TENANT YAPILANDIRMASI
+// ============================================================================
+// AC: "Sürekli hata veren webhook otomatik devre dışı bırakılmalıdır."
+// Opossum (COMP-602.2, YOK) yerine basit bir ardışık-başarısızlık sayacı.
+const WEBHOOK_DISABLE_THRESHOLD = 5;
+
+export interface TenantNotificationChannelsRecord {
+  tenant_id: string;
+  telegram_bot_token_encrypted: string | null;
+  telegram_chat_id: string | null;
+  webhook_url: string | null;
+  webhook_secret_encrypted: string | null;
+  webhook_consecutive_failures: number;
+  webhook_disabled_at: string | null;
+  updated_at: string;
+}
+
+/**
+ * AC: "Bot token'ı tenant bazında saklanmalı ve şifrelenmelidir." Yalnızca
+ * VERİLEN (undefined OLMAYAN) alanlar güncellenir — kısmi güncelleme.
+ * Webhook yeniden yapılandırılırsa devre kesici SIFIRLANIR (AC'nin bir
+ * yöneticinin "manuel düzeltme" ile devreye alma niyetiyle uyumlu). Bir
+ * alanı EXPLICIT olarak TEMİZLEMEK bu fonksiyonun kapsamında DEĞİL (Efor:
+ * XS) — yalnızca set etmek/olduğu gibi bırakmak desteklenir.
+ */
+export async function upsertTenantNotificationChannels(data: {
+  telegramBotToken?: string;
+  telegramChatId?: string;
+  webhookUrl?: string;
+  webhookSecret?: string;
+}): Promise<TenantNotificationChannelsRecord> {
+  return withTenant(async (client, tenantId) => {
+    const telegramBotTokenEncrypted = data.telegramBotToken !== undefined ? encryptChannelSecret(data.telegramBotToken) : null;
+    const webhookSecretEncrypted = data.webhookSecret !== undefined ? encryptChannelSecret(data.webhookSecret) : null;
+    const resetCircuitBreaker = data.webhookUrl !== undefined || data.webhookSecret !== undefined;
+
+    const res = await client.query(
+      `INSERT INTO tenant_notification_channels (tenant_id, telegram_bot_token_encrypted, telegram_chat_id, webhook_url, webhook_secret_encrypted)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (tenant_id) DO UPDATE SET
+         telegram_bot_token_encrypted = COALESCE($2, tenant_notification_channels.telegram_bot_token_encrypted),
+         telegram_chat_id = COALESCE($3, tenant_notification_channels.telegram_chat_id),
+         webhook_url = COALESCE($4, tenant_notification_channels.webhook_url),
+         webhook_secret_encrypted = COALESCE($5, tenant_notification_channels.webhook_secret_encrypted),
+         webhook_consecutive_failures = CASE WHEN $6 THEN 0 ELSE tenant_notification_channels.webhook_consecutive_failures END,
+         webhook_disabled_at = CASE WHEN $6 THEN NULL ELSE tenant_notification_channels.webhook_disabled_at END,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING *`,
+      [tenantId, telegramBotTokenEncrypted, data.telegramChatId ?? null, data.webhookUrl ?? null, webhookSecretEncrypted, resetCircuitBreaker]
+    );
+    await writeAuditLog(client, {
+      action: 'NOTIFICATION_CHANNELS_UPDATED',
+      targetType: 'tenant_notification_channels',
+      targetId: tenantId,
+      afterValue: { telegramConfigured: !!res.rows[0].telegram_bot_token_encrypted, webhookConfigured: !!res.rows[0].webhook_url }
+    });
+    return res.rows[0];
+  });
+}
+
+export async function getTenantNotificationChannels(): Promise<TenantNotificationChannelsRecord | null> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query('SELECT * FROM tenant_notification_channels WHERE tenant_id = $1', [tenantId]);
+    return res.rows[0] ?? null;
+  });
+}
+
+export interface DecryptedTelegramTarget {
+  botToken: string;
+  chatId: string;
+}
+
+export async function getTelegramTargetForCurrentTenant(): Promise<DecryptedTelegramTarget | null> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query('SELECT telegram_bot_token_encrypted, telegram_chat_id FROM tenant_notification_channels WHERE tenant_id = $1', [tenantId]);
+    const row = res.rows[0];
+    if (!row?.telegram_bot_token_encrypted || !row?.telegram_chat_id) return null;
+    return { botToken: decryptChannelSecret(row.telegram_bot_token_encrypted), chatId: row.telegram_chat_id };
+  });
+}
+
+export interface DecryptedWebhookTarget {
+  url: string;
+  secret: string;
+  disabled: boolean;
+}
+
+export async function getWebhookTargetForCurrentTenant(): Promise<DecryptedWebhookTarget | null> {
+  return withTenant(async (client, tenantId) => {
+    const res = await client.query('SELECT webhook_url, webhook_secret_encrypted, webhook_disabled_at FROM tenant_notification_channels WHERE tenant_id = $1', [tenantId]);
+    const row = res.rows[0];
+    if (!row?.webhook_url || !row?.webhook_secret_encrypted) return null;
+    return { url: row.webhook_url, secret: decryptChannelSecret(row.webhook_secret_encrypted), disabled: row.webhook_disabled_at !== null };
+  });
+}
+
+/**
+ * AC: "Sürekli hata veren webhook otomatik devre dışı bırakılmalıdır."
+ * `FOR UPDATE` ile kilitlenip artırım + eşik kontrolü TEK transaction'da —
+ * eşzamanlı iki başarısız denemenin sayaç güncellemesini birbirinin
+ * üzerine YAZMASI (klasik lost-update) böyle engellenir.
+ */
+export async function recordWebhookFailure(): Promise<{ disabled: boolean; consecutiveFailures: number }> {
+  return withTenant(async (client, tenantId) => {
+    const row = await client.query('SELECT webhook_consecutive_failures FROM tenant_notification_channels WHERE tenant_id = $1 FOR UPDATE', [tenantId]);
+    const newCount = (row.rows[0]?.webhook_consecutive_failures ?? 0) + 1;
+    const shouldDisable = newCount >= WEBHOOK_DISABLE_THRESHOLD;
+
+    await client.query(
+      `UPDATE tenant_notification_channels
+          SET webhook_consecutive_failures = $2,
+              webhook_disabled_at = CASE WHEN $3 THEN COALESCE(webhook_disabled_at, CURRENT_TIMESTAMP) ELSE webhook_disabled_at END
+        WHERE tenant_id = $1`,
+      [tenantId, newCount, shouldDisable]
+    );
+
+    if (shouldDisable && newCount === WEBHOOK_DISABLE_THRESHOLD) {
+      await raiseAlarm(client, tenantId, {
+        alarmKey: `webhook-auto-disabled:${tenantId}`,
+        category: 'WEBHOOK_AUTO_DISABLED',
+        severity: 'WARNING',
+        title: `Webhook ${WEBHOOK_DISABLE_THRESHOLD} ardışık başarısızlık sonrası otomatik devre dışı bırakıldı`,
+        detail: { consecutiveFailures: newCount }
+      });
+    }
+    return { disabled: shouldDisable, consecutiveFailures: newCount };
+  });
+}
+
+export async function recordWebhookSuccess(): Promise<void> {
+  await withTenant(async (client, tenantId) => {
+    await client.query('UPDATE tenant_notification_channels SET webhook_consecutive_failures = 0 WHERE tenant_id = $1', [tenantId]);
   });
 }

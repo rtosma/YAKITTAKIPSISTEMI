@@ -154,6 +154,8 @@ services:
       HW_SECRET_ENCRYPTION_KEY: ${HW_SECRET_ENCRYPTION_KEY:?HW_SECRET_ENCRYPTION_KEY .env dosyasında tanımlanmalıdır}
       # ARCH-108: tenant veri dışa aktarım arşivi AES-256-GCM anahtarı.
       TENANT_EXPORT_ENCRYPTION_KEY: ${TENANT_EXPORT_ENCRYPTION_KEY:?TENANT_EXPORT_ENCRYPTION_KEY .env dosyasında tanımlanmalıdır}
+      # NOTIF-1604: Telegram bot token'ı/webhook HMAC sırrı AES-256-GCM anahtarı.
+      NOTIFICATION_CHANNEL_ENCRYPTION_KEY: ${NOTIFICATION_CHANNEL_ENCRYPTION_KEY:?NOTIFICATION_CHANNEL_ENCRYPTION_KEY .env dosyasında tanımlanmalıdır}
       # AI-502: yukarıdakilerin AKSİNE zorunlu DEĞİL (`:-` boş varsayılan) —
       # tanımsızsa özellik nazikçe 503 döner, uygulamanın geri kalanı normal
       # çalışır (bkz. config/env.ts, consumptionAnomalyService.ts).

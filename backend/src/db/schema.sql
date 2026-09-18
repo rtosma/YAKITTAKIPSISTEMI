@@ -2439,3 +2439,36 @@ CREATE POLICY sms_monthly_usage_tenant_isolation_policy ON sms_monthly_usage
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- ============================================================================
+-- [NOTIF-1604] Telegram ve Webhook Kanalı — Tenant Bazlı Yapılandırma
+-- ============================================================================
+-- AC: "Bot token'ı tenant bazında saklanmalı ve şifrelenmelidir" — bu yüzden
+-- `companies` üzerinde DEĞİL (app_user'dan UPDATE zaten REVOKE edilmiş,
+-- INV-1503/REP-702 ile AYNI gerekçe) ayrı, tenant-scoped bir tablo; şifreli
+-- alanlar channelSecretCrypto.ts ile (webhook_secret_encrypted DE dahil —
+-- HMAC imzalamak için düz metne geri dönülebilmesi gerekir, tek yönlü hash
+-- KULLANILAMAZ).
+CREATE TABLE IF NOT EXISTS tenant_notification_channels (
+    tenant_id VARCHAR(64) PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+    telegram_bot_token_encrypted TEXT,
+    telegram_chat_id VARCHAR(64),
+    webhook_url VARCHAR(512),
+    webhook_secret_encrypted TEXT,
+    -- AC: "Sürekli hata veren webhook otomatik devre dışı bırakılmalıdır."
+    -- Opossum (COMP-602.2'nin kendi ticket'ı, YOK) yerine basit bir ardışık-
+    -- başarısızlık sayacı — WEBHOOK_DISABLE_THRESHOLD (kod içi) art üst
+    -- üste başarısızlıkta webhook_disabled_at doldurulur, bir SONRAKİ
+    -- gönderim denemesi bile YAPILMAZ (WebhookDisabledError). Yalnızca elle
+    -- (bir yönetici webhook_url/secret'i YENİDEN kaydederek) temizlenebilir.
+    webhook_consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    webhook_disabled_at TIMESTAMP WITH TIME ZONE,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+ALTER TABLE tenant_notification_channels ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tenant_notification_channels FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_notification_channels_tenant_isolation_policy ON tenant_notification_channels;
+CREATE POLICY tenant_notification_channels_tenant_isolation_policy ON tenant_notification_channels
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

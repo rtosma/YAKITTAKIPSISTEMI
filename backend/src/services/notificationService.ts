@@ -1,6 +1,8 @@
 import { NOTIFICATION_TEMPLATES } from '../notifications/templateRegistry';
 import { sendEmail, deriveHtmlFromText, EmailPermanentFailureError } from '../notifications/emailChannel';
 import { sendSms, SmsPermanentFailureError } from '../notifications/smsChannel';
+import { sendTelegramMessage, TelegramPermanentFailureError } from '../notifications/telegramChannel';
+import { sendWebhook, WebhookDisabledError } from '../notifications/webhookChannel';
 import {
   createNotificationForCurrentTenant,
   markNotificationDelivered,
@@ -12,6 +14,10 @@ import {
   markUserEmailBounced,
   getUserPhoneTarget,
   checkAndIncrementSmsUsage,
+  getTelegramTargetForCurrentTenant,
+  getWebhookTargetForCurrentTenant,
+  recordWebhookFailure,
+  recordWebhookSuccess,
   type NotificationRecord
 } from '../db/tenantDb';
 import { runWithTenant, getTenantId } from '../context/tenantContext';
@@ -121,11 +127,55 @@ async function deliverSms(tenantId: string, notification: NotificationRecord): P
   await sendSms({ to: phone, text: `${notification.title}: ${notification.body}` });
 }
 
+/** AC: "Telegram grubuna bildirim gönderilebilmelidir." Tenant bazlı yapılandırma (bkz. tenantDb.ts) yoksa deneme yapılmaz. */
+async function deliverTelegram(tenantId: string, notification: NotificationRecord): Promise<void> {
+  const target = await runWithTenant({ tenantId }, () => getTelegramTargetForCurrentTenant());
+  if (!target) {
+    throw new TelegramPermanentFailureError('Bu tenant için Telegram yapılandırması (bot token + chat_id) yok.');
+  }
+  await sendTelegramMessage({ botToken: target.botToken, chatId: target.chatId, text: `${notification.title}\n${notification.body}` });
+}
+
+/**
+ * AC: "Webhook çağrıları imzalı ve zaman aşımı korumalı olmalıdır." + AC:
+ * "Sürekli hata veren webhook otomatik devre dışı bırakılmalıdır." — devre
+ * kesici durumu (webhook_disabled_at) BURADA kontrol edilir (tenantDb.ts
+ * salt VERİYİ tutar, KARARI vermez); her BAŞARILI denemede sayaç sıfırlanır,
+ * her BAŞARISIZ denemede recordWebhookFailure eşiği kontrol eder.
+ */
+async function deliverWebhook(tenantId: string, notification: NotificationRecord): Promise<void> {
+  const target = await runWithTenant({ tenantId }, () => getWebhookTargetForCurrentTenant());
+  if (!target) {
+    throw new WebhookDisabledError('Bu tenant için webhook yapılandırması (URL + sır) yok.');
+  }
+  if (target.disabled) {
+    throw new WebhookDisabledError('Webhook, ardışık başarısızlıklar sonrası otomatik devre dışı bırakıldı — yeniden yapılandırma gerekir.');
+  }
+  try {
+    await sendWebhook({
+      url: target.url,
+      secret: target.secret,
+      payload: { id: notification.id, eventType: notification.event_type, title: notification.title, body: notification.body, variables: notification.variables }
+    });
+    await runWithTenant({ tenantId }, () => recordWebhookSuccess());
+  } catch (err) {
+    const { disabled } = await runWithTenant({ tenantId }, () => recordWebhookFailure());
+    if (disabled) {
+      throw new WebhookDisabledError(`Webhook başarısızlığı eşiği aştı, otomatik devre dışı bırakıldı: ${(err as Error).message}`);
+    }
+    throw err;
+  }
+}
+
 async function deliver(tenantId: string, notification: NotificationRecord): Promise<void> {
   if (notification.channel === 'EMAIL') {
     await deliverEmail(tenantId, notification, notification.priority);
   } else if (notification.channel === 'SMS') {
     await deliverSms(tenantId, notification);
+  } else if (notification.channel === 'TELEGRAM') {
+    await deliverTelegram(tenantId, notification);
+  } else if (notification.channel === 'WEBHOOK') {
+    await deliverWebhook(tenantId, notification);
   } else {
     await deliverInApp(tenantId, notification);
   }
@@ -134,6 +184,11 @@ async function deliver(tenantId: string, notification: NotificationRecord): Prom
 export interface NotifyEventResult {
   notificationId: string | null;
   skippedDuplicate: boolean;
+}
+
+/** Kanalların "asla tekrar deneme" sinyali — hepsi FARKLI sebeplerle (bounce/yalnızca-kritik/token-yok/devre-dışı) ama HEPSİ AYNI davranışı ister: ANINDA KALICI_BAŞARISIZ. */
+function isPermanentChannelFailure(err: unknown): boolean {
+  return err instanceof EmailPermanentFailureError || err instanceof SmsPermanentFailureError || err instanceof TelegramPermanentFailureError || err instanceof WebhookDisabledError;
 }
 
 /**
@@ -145,7 +200,7 @@ export async function notifyEvent(
   tenantId: string,
   eventType: string,
   variables: Record<string, unknown>,
-  opts?: { userId?: string; idempotencyKey?: string; channel?: 'IN_APP' | 'EMAIL' | 'SMS'; priority?: 'NORMAL' | 'CRITICAL' }
+  opts?: { userId?: string; idempotencyKey?: string; channel?: 'IN_APP' | 'EMAIL' | 'SMS' | 'TELEGRAM' | 'WEBHOOK'; priority?: 'NORMAL' | 'CRITICAL' }
 ): Promise<NotifyEventResult> {
   try {
     const template = NOTIFICATION_TEMPLATES[eventType];
@@ -177,13 +232,13 @@ export async function notifyEvent(
       await deliver(tenantId, created);
       await runWithTenant({ tenantId }, () => markNotificationDelivered(created.id));
     } catch (deliveryErr) {
-      if (deliveryErr instanceof EmailPermanentFailureError || deliveryErr instanceof SmsPermanentFailureError) {
+      if (isPermanentChannelFailure(deliveryErr)) {
         await runWithTenant({ tenantId }, async () => {
           if (created.user_id && deliveryErr instanceof EmailPermanentFailureError) await markUserEmailBounced(created.user_id);
           // maxAttempts=0 → attempts+1 her zaman >= 0 → ANINDA KALICI_BAŞARISIZ (retry döngüsüne HİÇ girmez).
           await markNotificationFailed(created.id, 0);
         });
-        logger.error({ err: deliveryErr, notificationId: created.id }, '🚨 [NOTIF-1602/1603] Kanal kalıcı olarak başarısız, yeniden denenmeyecek.');
+        logger.error({ err: deliveryErr, notificationId: created.id }, '🚨 [NOTIF-1602/1603/1604] Kanal kalıcı olarak başarısız, yeniden denenmeyecek.');
       } else {
         await runWithTenant({ tenantId }, () => markNotificationFailed(created.id, MAX_DELIVERY_ATTEMPTS));
         logger.error({ err: deliveryErr, notificationId: created.id }, '🚨 [NOTIF-1601] Bildirim teslimi başarısız, yeniden denenecek.');
@@ -217,7 +272,7 @@ export async function runNotificationRetrySweepForCurrentTenant(): Promise<{ ret
       await markNotificationDelivered(notification.id);
       retried++;
     } catch (err) {
-      if (err instanceof EmailPermanentFailureError || err instanceof SmsPermanentFailureError) {
+      if (isPermanentChannelFailure(err)) {
         if (notification.user_id && err instanceof EmailPermanentFailureError) await markUserEmailBounced(notification.user_id);
         await markNotificationFailed(notification.id, 0);
         permanentlyFailed++;
@@ -229,6 +284,41 @@ export async function runNotificationRetrySweepForCurrentTenant(): Promise<{ ret
     }
   }
   return { retried, permanentlyFailed };
+}
+
+/**
+ * AC: "Kanal bazlı test gönderimi düğmesi." notifyEvent'in AKSİNE (fire-
+ * and-forget, hataları yutar) burası çağıranın SONUCU HEMEN görmesi
+ * gerektiği için senkron döner ve fırlatan hatayı SARMALAR — bir yönetici
+ * "Telegram'ı test et" düğmesine bastığında "başarısız" mı "başarılı" mı
+ * ANINDA bilmek ister, sessizce yutulmuş bir hata işe yaramaz. Kalıcı bir
+ * `notifications` satırı YARATILMAZ (bu bir bağlantı testi, gerçek bir
+ * bildirim değil).
+ */
+export async function sendTestNotification(tenantId: string, channel: 'EMAIL' | 'SMS' | 'TELEGRAM' | 'WEBHOOK', userId?: string): Promise<{ success: boolean; error?: string }> {
+  const testNotification: NotificationRecord = {
+    id: 'test',
+    tenant_id: tenantId,
+    event_type: 'TEST',
+    idempotency_key: null,
+    user_id: userId ?? null,
+    title: 'Test Bildirimi',
+    body: 'Bu, kanal yapılandırmanızı doğrulamak için gönderilen bir test bildirimidir.',
+    channel,
+    priority: 'CRITICAL',
+    status: 'BEKLIYOR',
+    attempts: 0,
+    variables: null,
+    read_at: null,
+    delivered_at: null,
+    created_at: new Date().toISOString()
+  };
+  try {
+    await deliver(tenantId, testNotification);
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
 }
 
 export { getNotifications, markNotificationRead };

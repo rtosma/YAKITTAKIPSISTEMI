@@ -90,6 +90,18 @@ const envSchema = z.object({
   TENANT_EXPORT_ENCRYPTION_KEY: z.string({ message: 'TENANT_EXPORT_ENCRYPTION_KEY tanımlı değil.' })
     .regex(/^[0-9a-fA-F]{64}$/, 'TENANT_EXPORT_ENCRYPTION_KEY tam olarak 64 hex karakter (32 bayt) olmalıdır (öneri: openssl rand -hex 32).'),
 
+  // NOTIF-1604: HW_SECRET_ENCRYPTION_KEY/TENANT_EXPORT_ENCRYPTION_KEY ile
+  // AYNI gerekçe — bu ayrı pepper, Telegram bot token'ı/webhook HMAC
+  // sırrının şifrelenmesi için. "Bot token'ı tenant bazında saklanmalı ve
+  // ŞİFRELENMELİDİR" AC'sinin ön koşulu.
+  NOTIFICATION_CHANNEL_ENCRYPTION_KEY: z.string({ message: 'NOTIFICATION_CHANNEL_ENCRYPTION_KEY tanımlı değil.' })
+    .regex(/^[0-9a-fA-F]{64}$/, 'NOTIFICATION_CHANNEL_ENCRYPTION_KEY tam olarak 64 hex karakter (32 bayt) olmalıdır (öneri: openssl rand -hex 32).'),
+
+  // NOTIF-1604: SMTP_HOST/SMS_PROVIDER_URL ile AYNI gerekçe — test/dev
+  // ortamında GERÇEK Telegram sunucularına gitmeden yerel bir mock uca
+  // yönlendirilebilmesi için. Üretimde hiç ayarlanmaz (varsayılan gerçek API).
+  TELEGRAM_API_BASE_URL: z.string().url().default('https://api.telegram.org'),
+
   // AI-502: yukarıdaki sırların aksine BİLEREK opsiyonel — bu özellik
   // (Gemini ile tüketim anomali analizi) yapılandırılmamışsa uygulamanın
   // TAMAMI ayağa kalkmayı reddetmemeli, yalnızca consumptionAnomalyService.ts
