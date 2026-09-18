@@ -1005,6 +1005,16 @@ CREATE TABLE IF NOT EXISTS users (
 ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS temp_password_expires_at TIMESTAMP WITH TIME ZONE;
 
+-- NOTIF-1602: e-posta kanalı hedefi. NULL = bu kullanıcı için e-posta
+-- bildirimi hiç denenmez (notifyEvent EMAIL kanalında sessizce atlar).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+-- AC: "Bounce alan adresler işaretlenip tekrar denenmemelidir." Dolu ise
+-- (herhangi bir zaman damgası) bu adrese BİR DAHA ASLA e-posta denemesi
+-- yapılmaz — yalnızca bir yönetici manuel olarak temizleyebilir (bkz.
+-- clearEmailBounce). Otomatik "bir süre sonra tekrar dene" YOK (AC net:
+-- "tekrar denenmemeli", zaman aşımlı bir af mekanizması İSTENMEDİ).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_bounced_at TIMESTAMP WITH TIME ZONE;
+
 -- 5. Refresh Tokens — KASITLI OLARAK YOK.
 -- Refresh token rotasyonu + reuse-detection tamamen Redis'te tutuluyor
 -- (bkz. backend/src/services/tokenService.ts): `refresh_token:{jti}` ve

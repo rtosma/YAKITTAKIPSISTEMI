@@ -466,6 +466,16 @@ jobs:
       - name: Run NOTIF-1601 Notification Core (Event/Template/Channel) Tests
         run: cd backend && npx tsx test/test_notif1601_notification_core.ts
 
+      # NOTIF-1602: gerçek bir SMTP sunucusu bağlanmaz — test kendi mock
+      # SMTP dinleyicisini (smtp-server) 2525 portunda AYNI süreç içinde
+      # başlatır; SMTP_HOST/SMTP_PORT config/env.ts'in bunu okuması için.
+      - name: Run NOTIF-1602 Email Channel + Delivery Tracking Tests
+        run: cd backend && npx tsx test/test_notif1602_email_channel.ts
+        env:
+          SMTP_HOST: localhost
+          SMTP_PORT: 2525
+          SMTP_FROM: ci-test@yakittakip.local
+
       - name: Run FUEL-405 Manual Dispense Entry + Dual Approval Tests
         run: cd backend && npx tsx test/test_fuel405_manual_dispense.ts
 

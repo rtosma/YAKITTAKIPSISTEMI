@@ -9288,15 +9288,16 @@ export async function createNotificationForCurrentTenant(data: {
   title: string;
   body: string;
   variables: Record<string, unknown>;
+  channel?: 'IN_APP' | 'EMAIL';
 }): Promise<NotificationRecord | null> {
   return withTenant(async (client, tenantId) => {
     const id = generateId('notif');
     const res = await client.query(
-      `INSERT INTO notifications (id, tenant_id, event_type, idempotency_key, user_id, title, body, variables)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+      `INSERT INTO notifications (id, tenant_id, event_type, idempotency_key, user_id, title, body, variables, channel)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
        ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
        RETURNING *`,
-      [id, tenantId, data.eventType, data.idempotencyKey, data.userId, data.title, data.body, JSON.stringify(data.variables)]
+      [id, tenantId, data.eventType, data.idempotencyKey, data.userId, data.title, data.body, JSON.stringify(data.variables), data.channel ?? 'IN_APP']
     );
     return res.rows[0] ?? null;
   });
@@ -9348,5 +9349,29 @@ export async function markNotificationRead(id: string): Promise<NotificationReco
       return existing.rows[0];
     }
     return res.rows[0];
+  });
+}
+
+// ============================================================================
+// [NOTIF-1602] E-POSTA KANALI — KULLANICI HEDEF SORGUSU
+// ============================================================================
+
+export interface UserEmailTarget {
+  email: string | null;
+  bounced: boolean;
+}
+
+export async function getUserEmailTarget(userId: string): Promise<UserEmailTarget | null> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT email, email_bounced_at FROM users WHERE id = $1', [userId]);
+    if (res.rows.length === 0) return null;
+    return { email: res.rows[0].email, bounced: res.rows[0].email_bounced_at !== null };
+  });
+}
+
+/** AC: "Bounce alan adresler işaretlenip tekrar denenmemelidir." Kalıcıdır — otomatik bir sona erme/af YOK, yalnızca elle temizlenebilir (bkz. clearUserEmailBounce). */
+export async function markUserEmailBounced(userId: string): Promise<void> {
+  await withTenant(async (client) => {
+    await client.query('UPDATE users SET email_bounced_at = CURRENT_TIMESTAMP WHERE id = $1', [userId]);
   });
 }

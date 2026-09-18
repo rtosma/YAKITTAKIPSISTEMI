@@ -107,6 +107,17 @@ const envSchema = z.object({
   // engellenir). En az 24 karakter (öneri: openssl rand -hex 32).
   LORAWAN_WEBHOOK_TOKEN: z.string().min(24).optional(),
 
+  // NOTIF-1602: AI-502 ile AYNI gerekçe — bu ortamda gerçek bir SMTP
+  // sunucusu YOK, e-posta kanalı opsiyonel bir zenginleştirme. Tanımlı
+  // değilse emailChannel.ts açıkça "SMTP yapılandırılmamış" hatası fırlatır
+  // (notifyEvent bunu yutar, bildirim BAŞARISIZ'a düşer) — sistemin çekirdek
+  // (IN_APP) bildirim akışını hiç etkilemez.
+  SMTP_HOST: z.string().min(1).optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_USER: z.string().min(1).optional(),
+  SMTP_PASSWORD: z.string().min(1).optional(),
+  SMTP_FROM: z.string().email('SMTP_FROM geçerli bir e-posta adresi olmalıdır.').optional(),
+
   // AUTH-207: "true"/"1" ise SUPER_ADMIN ve COMPANY_OWNER hesapları 2FA
   // KURMADAN sisteme giremez (login yalnızca kurulum için kısmi token döner;
   // refresh de reddedilir). Varsayılan KAPALI — aksi halde seed/demo yönetici
