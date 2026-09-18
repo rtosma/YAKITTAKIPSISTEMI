@@ -1015,6 +1015,9 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255);
 -- "tekrar denenmemeli", zaman aşımlı bir af mekanizması İSTENMEDİ).
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_bounced_at TIMESTAMP WITH TIME ZONE;
 
+-- NOTIF-1603: SMS kanalı hedefi. NULL = bu kullanıcı için SMS hiç denenmez.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(32);
+
 -- 5. Refresh Tokens — KASITLI OLARAK YOK.
 -- Refresh token rotasyonu + reuse-detection tamamen Redis'te tutuluyor
 -- (bkz. backend/src/services/tokenService.ts): `refresh_token:{jti}` ve
@@ -2380,6 +2383,14 @@ CREATE TABLE IF NOT EXISTS notifications (
     body TEXT NOT NULL,
     -- Şimdilik yalnızca 'IN_APP' (NOTIF-1602/1603/1604 e-posta/SMS/Telegram — AYRI ticket'lar).
     channel VARCHAR(16) NOT NULL DEFAULT 'IN_APP',
+    -- NOTIF-1603: kanal-özel karar mantığı (örn. SMS "yalnızca CRITICAL")
+    -- YARATMA anındaki opts.priority'ye bağlıdır. Bu KALICI olarak
+    -- saklanmalı — runNotificationRetrySweepForCurrentTenant() aynı
+    -- bildirimi GÜNLER sonra yeniden dener; priority argüman olarak
+    -- YENİDEN geçirilseydi (geçirilmiyordu, canlı yakalanan bir kusur)
+    -- her retry sessizce 'NORMAL'e düşer, CRITICAL bir SMS'i kalıcı olarak
+    -- reddederdi. 'NORMAL' | 'CRITICAL'.
+    priority VARCHAR(16) NOT NULL DEFAULT 'NORMAL',
     -- 'BEKLIYOR' | 'GÖNDERILDI' | 'BAŞARISIZ' (yeniden denenecek) | 'KALICI_BAŞARISIZ' (deneme tükendi)
     status VARCHAR(24) NOT NULL DEFAULT 'BEKLIYOR',
     attempts INTEGER NOT NULL DEFAULT 0,
@@ -2391,10 +2402,40 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_lookup ON notifications(tenant_id, user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifications_retry ON notifications(status) WHERE status = 'BAŞARISIZ';
+-- `priority` CREATE TABLE'ın kendi sütun listesinde de var (yeni bir kurulum
+-- için) — ama bu tablo NOTIF-1601/1602'den beri VAR olan kurulumlarda
+-- `IF NOT EXISTS` CREATE TABLE'ı hiç ÇALIŞTIRMAZ (canlıda böyle yakalandı:
+-- sütun sessizce eksik kaldı). Var olan kurulumlar için ayrıca ALTER gerekli.
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS priority VARCHAR(16) NOT NULL DEFAULT 'NORMAL';
 ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notifications FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS notifications_tenant_isolation_policy ON notifications;
 CREATE POLICY notifications_tenant_isolation_policy ON notifications
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- ============================================================================
+-- [NOTIF-1603] SMS Kanalı — Aylık Kullanım/Limit Takibi
+-- ============================================================================
+-- AC: "Aylık SMS limiti aşıldığında uyarı üretilmelidir." Redis DEĞİL —
+-- e-posta hızı sınırının (NOTIF-1602, 60sn'lik kayan pencere) AKSİNE bu
+-- AY BOYUNCA kalıcı olmalı (bir Redis restart'ı sayacı sıfırlarsa maliyet
+-- kontrolü AC'si delinir) — bu yüzden kalıcı bir DB satırı.
+CREATE TABLE IF NOT EXISTS sms_monthly_usage (
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    -- 'YYYY-MM' — insan-okunur, sıralanabilir, DATE_TRUNC gerektirmez.
+    year_month VARCHAR(7) NOT NULL,
+    sent_count INTEGER NOT NULL DEFAULT 0,
+    monthly_limit INTEGER NOT NULL DEFAULT 100,
+    limit_alarm_raised BOOLEAN NOT NULL DEFAULT FALSE,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (tenant_id, year_month)
+);
+ALTER TABLE sms_monthly_usage ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sms_monthly_usage FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS sms_monthly_usage_tenant_isolation_policy ON sms_monthly_usage;
+CREATE POLICY sms_monthly_usage_tenant_isolation_policy ON sms_monthly_usage
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

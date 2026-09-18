@@ -476,6 +476,13 @@ jobs:
           SMTP_PORT: 2525
           SMTP_FROM: ci-test@yakittakip.local
 
+      # NOTIF-1603: NOTIF-1602 ile AYNI gerekçe — mock sağlayıcı Node'un
+      # yerleşik `http` modülüyle AYNI süreç içinde başlatılır (3999 portu).
+      - name: Run NOTIF-1603 SMS Channel + Monthly Limit Tests
+        run: cd backend && npx tsx test/test_notif1603_sms_channel.ts
+        env:
+          SMS_PROVIDER_URL: http://localhost:3999/send
+
       - name: Run FUEL-405 Manual Dispense Entry + Dual Approval Tests
         run: cd backend && npx tsx test/test_fuel405_manual_dispense.ts
 

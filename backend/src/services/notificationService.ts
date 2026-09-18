@@ -1,5 +1,6 @@
 import { NOTIFICATION_TEMPLATES } from '../notifications/templateRegistry';
 import { sendEmail, deriveHtmlFromText, EmailPermanentFailureError } from '../notifications/emailChannel';
+import { sendSms, SmsPermanentFailureError } from '../notifications/smsChannel';
 import {
   createNotificationForCurrentTenant,
   markNotificationDelivered,
@@ -9,6 +10,8 @@ import {
   markNotificationRead,
   getUserEmailTarget,
   markUserEmailBounced,
+  getUserPhoneTarget,
+  checkAndIncrementSmsUsage,
   type NotificationRecord
 } from '../db/tenantDb';
 import { runWithTenant, getTenantId } from '../context/tenantContext';
@@ -91,9 +94,38 @@ async function deliverEmail(tenantId: string, notification: NotificationRecord, 
   await sendEmail({ to: target.email, subject: notification.title, text: notification.body, html: deriveHtmlFromText(notification.body) });
 }
 
-async function deliver(tenantId: string, notification: NotificationRecord, priority: 'NORMAL' | 'CRITICAL' = 'NORMAL'): Promise<void> {
+/**
+ * AC: "Kritik alarmlar SMS ile iletilmelidir" + Teknik Not: "SMS maliyetlidir;
+ * hangi olayların SMS ile gideceği... varsayılan olarak dar tutulmalıdır" —
+ * bu, kanalın KENDİSİNE gömülü bir politika: `priority !== 'CRITICAL'` olan
+ * HİÇBİR bildirim SMS ile gönderilMEZ (çağıranın bunu unutması/istismar
+ * etmesi mümkün değil). "Gece saatlerinde kritik olmayan SMS gönderilmemeli"
+ * notu bu yüzden zaten YAPISAL olarak sağlanıyor — kritik-olmayan SMS hiçbir
+ * saatte gönderilmiyor, ayrı bir saat kontrolüne gerek yok.
+ */
+async function deliverSms(tenantId: string, notification: NotificationRecord): Promise<void> {
+  if (notification.priority !== 'CRITICAL') {
+    throw new SmsPermanentFailureError('SMS kanalı yalnızca CRITICAL öncelikli bildirimler için kullanılabilir (maliyet kontrolü).');
+  }
+  if (!notification.user_id) {
+    throw new SmsPermanentFailureError('SMS kanalı bir userId gerektirir (tenant geneli bildirim SMS ile gönderilemez).');
+  }
+  const phone = await runWithTenant({ tenantId }, () => getUserPhoneTarget(notification.user_id!));
+  if (!phone) {
+    throw new SmsPermanentFailureError(`Kullanıcının (${notification.user_id}) kayıtlı bir telefon numarası yok.`);
+  }
+  const usage = await runWithTenant({ tenantId }, () => checkAndIncrementSmsUsage(tenantId));
+  if (!usage.allowed) {
+    throw new Error(`Aylık SMS limiti aşıldı (${usage.sentCount}/${usage.monthlyLimit}) — bir sonraki ay sıfırlanana kadar gönderim yapılamaz.`);
+  }
+  await sendSms({ to: phone, text: `${notification.title}: ${notification.body}` });
+}
+
+async function deliver(tenantId: string, notification: NotificationRecord): Promise<void> {
   if (notification.channel === 'EMAIL') {
-    await deliverEmail(tenantId, notification, priority);
+    await deliverEmail(tenantId, notification, notification.priority);
+  } else if (notification.channel === 'SMS') {
+    await deliverSms(tenantId, notification);
   } else {
     await deliverInApp(tenantId, notification);
   }
@@ -113,7 +145,7 @@ export async function notifyEvent(
   tenantId: string,
   eventType: string,
   variables: Record<string, unknown>,
-  opts?: { userId?: string; idempotencyKey?: string; channel?: 'IN_APP' | 'EMAIL'; priority?: 'NORMAL' | 'CRITICAL' }
+  opts?: { userId?: string; idempotencyKey?: string; channel?: 'IN_APP' | 'EMAIL' | 'SMS'; priority?: 'NORMAL' | 'CRITICAL' }
 ): Promise<NotifyEventResult> {
   try {
     const template = NOTIFICATION_TEMPLATES[eventType];
@@ -133,7 +165,8 @@ export async function notifyEvent(
         title,
         body,
         variables,
-        channel: opts?.channel ?? 'IN_APP'
+        channel: opts?.channel ?? 'IN_APP',
+        priority: opts?.priority ?? 'NORMAL'
       })
     );
     if (!created) {
@@ -141,16 +174,16 @@ export async function notifyEvent(
     }
 
     try {
-      await deliver(tenantId, created, opts?.priority);
+      await deliver(tenantId, created);
       await runWithTenant({ tenantId }, () => markNotificationDelivered(created.id));
     } catch (deliveryErr) {
-      if (deliveryErr instanceof EmailPermanentFailureError) {
+      if (deliveryErr instanceof EmailPermanentFailureError || deliveryErr instanceof SmsPermanentFailureError) {
         await runWithTenant({ tenantId }, async () => {
-          if (created.user_id) await markUserEmailBounced(created.user_id);
+          if (created.user_id && deliveryErr instanceof EmailPermanentFailureError) await markUserEmailBounced(created.user_id);
           // maxAttempts=0 → attempts+1 her zaman >= 0 → ANINDA KALICI_BAŞARISIZ (retry döngüsüne HİÇ girmez).
           await markNotificationFailed(created.id, 0);
         });
-        logger.error({ err: deliveryErr, notificationId: created.id }, '🚨 [NOTIF-1602] E-posta kalıcı olarak başarısız — adres işaretlendi, yeniden denenmeyecek.');
+        logger.error({ err: deliveryErr, notificationId: created.id }, '🚨 [NOTIF-1602/1603] Kanal kalıcı olarak başarısız, yeniden denenmeyecek.');
       } else {
         await runWithTenant({ tenantId }, () => markNotificationFailed(created.id, MAX_DELIVERY_ATTEMPTS));
         logger.error({ err: deliveryErr, notificationId: created.id }, '🚨 [NOTIF-1601] Bildirim teslimi başarısız, yeniden denenecek.');
@@ -184,8 +217,8 @@ export async function runNotificationRetrySweepForCurrentTenant(): Promise<{ ret
       await markNotificationDelivered(notification.id);
       retried++;
     } catch (err) {
-      if (err instanceof EmailPermanentFailureError) {
-        if (notification.user_id) await markUserEmailBounced(notification.user_id);
+      if (err instanceof EmailPermanentFailureError || err instanceof SmsPermanentFailureError) {
+        if (notification.user_id && err instanceof EmailPermanentFailureError) await markUserEmailBounced(notification.user_id);
         await markNotificationFailed(notification.id, 0);
         permanentlyFailed++;
       } else {

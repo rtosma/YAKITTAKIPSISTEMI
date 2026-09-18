@@ -5886,7 +5886,9 @@ export type AlarmCategory =
   // tahmini bitiş süresi reorder_lead_days'in içinde.
   | 'TANK_LOW_STOCK_FORECAST'
   // IOT-308: bir cihazın sağlık skoru kritik eşiğin altına düştü.
-  | 'DEVICE_HEALTH_SCORE_LOW' | 'OTHER';
+  | 'DEVICE_HEALTH_SCORE_LOW'
+  // NOTIF-1603 AC: "Aylık SMS limiti aşıldığında uyarı üretilmelidir."
+  | 'SMS_MONTHLY_LIMIT_EXCEEDED' | 'OTHER';
 export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
 
@@ -9272,6 +9274,7 @@ export interface NotificationRecord {
   title: string;
   body: string;
   channel: string;
+  priority: 'NORMAL' | 'CRITICAL';
   status: 'BEKLIYOR' | 'GÖNDERILDI' | 'BAŞARISIZ' | 'KALICI_BAŞARISIZ';
   attempts: number;
   variables: Record<string, unknown> | null;
@@ -9288,16 +9291,17 @@ export async function createNotificationForCurrentTenant(data: {
   title: string;
   body: string;
   variables: Record<string, unknown>;
-  channel?: 'IN_APP' | 'EMAIL';
+  channel?: 'IN_APP' | 'EMAIL' | 'SMS';
+  priority?: 'NORMAL' | 'CRITICAL';
 }): Promise<NotificationRecord | null> {
   return withTenant(async (client, tenantId) => {
     const id = generateId('notif');
     const res = await client.query(
-      `INSERT INTO notifications (id, tenant_id, event_type, idempotency_key, user_id, title, body, variables, channel)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
+      `INSERT INTO notifications (id, tenant_id, event_type, idempotency_key, user_id, title, body, variables, channel, priority)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10)
        ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
        RETURNING *`,
-      [id, tenantId, data.eventType, data.idempotencyKey, data.userId, data.title, data.body, JSON.stringify(data.variables), data.channel ?? 'IN_APP']
+      [id, tenantId, data.eventType, data.idempotencyKey, data.userId, data.title, data.body, JSON.stringify(data.variables), data.channel ?? 'IN_APP', data.priority ?? 'NORMAL']
     );
     return res.rows[0] ?? null;
   });
@@ -9373,5 +9377,76 @@ export async function getUserEmailTarget(userId: string): Promise<UserEmailTarge
 export async function markUserEmailBounced(userId: string): Promise<void> {
   await withTenant(async (client) => {
     await client.query('UPDATE users SET email_bounced_at = CURRENT_TIMESTAMP WHERE id = $1', [userId]);
+  });
+}
+
+// ============================================================================
+// [NOTIF-1603] SMS KANALI — KULLANICI HEDEFİ + AYLIK KULLANIM
+// ============================================================================
+
+export async function getUserPhoneTarget(userId: string): Promise<string | null> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT phone FROM users WHERE id = $1', [userId]);
+    return res.rows[0]?.phone ?? null;
+  });
+}
+
+export interface SmsUsageCheckResult {
+  allowed: boolean;
+  sentCount: number;
+  monthlyLimit: number;
+}
+
+/**
+ * AC: "Aylık SMS limiti aşıldığında uyarı üretilmelidir." `FOR UPDATE` ile
+ * kilitlenip TEK bir transaction (withTenant'ın kendi BEGIN/COMMIT'i)
+ * içinde kontrol+artırım yapılır — eşzamanlı iki SMS gönderiminin limiti
+ * ikisinin de "hâlâ altındayız" görüp AŞMASI (klasik check-then-act
+ * yarışı) böylece engellenir. Limit AŞILMIŞSA sayaç ARTIRILMAZ (gönderim
+ * hiç denenmeyecek) ve bu ay İÇİN yalnızca BİR KEZ (limit_alarm_raised)
+ * AI-507 alarmı üretilir — her reddedilen SMS için tekrar tekrar DEĞİL.
+ */
+export async function checkAndIncrementSmsUsage(tenantId: string): Promise<SmsUsageCheckResult> {
+  return withTenant(async (client) => {
+    const yearMonth = new Date().toISOString().slice(0, 7);
+    await client.query(
+      `INSERT INTO sms_monthly_usage (tenant_id, year_month) VALUES ($1, $2) ON CONFLICT (tenant_id, year_month) DO NOTHING`,
+      [tenantId, yearMonth]
+    );
+    const row = await client.query(
+      `SELECT sent_count, monthly_limit, limit_alarm_raised FROM sms_monthly_usage WHERE tenant_id = $1 AND year_month = $2 FOR UPDATE`,
+      [tenantId, yearMonth]
+    );
+    const { sent_count: sentCount, monthly_limit: monthlyLimit, limit_alarm_raised: alarmRaised } = row.rows[0];
+
+    if (sentCount >= monthlyLimit) {
+      if (!alarmRaised) {
+        await client.query(`UPDATE sms_monthly_usage SET limit_alarm_raised = TRUE WHERE tenant_id = $1 AND year_month = $2`, [tenantId, yearMonth]);
+        await raiseAlarm(client, tenantId, {
+          alarmKey: `sms-monthly-limit:${tenantId}:${yearMonth}`,
+          category: 'SMS_MONTHLY_LIMIT_EXCEEDED',
+          severity: 'WARNING',
+          title: `Aylık SMS limiti aşıldı (${yearMonth}): ${sentCount}/${monthlyLimit}`,
+          detail: { yearMonth, sentCount, monthlyLimit }
+        });
+      }
+      return { allowed: false, sentCount, monthlyLimit };
+    }
+
+    const upd = await client.query(
+      `UPDATE sms_monthly_usage SET sent_count = sent_count + 1, updated_at = CURRENT_TIMESTAMP WHERE tenant_id = $1 AND year_month = $2 RETURNING sent_count`,
+      [tenantId, yearMonth]
+    );
+    return { allowed: true, sentCount: upd.rows[0].sent_count, monthlyLimit };
+  });
+}
+
+/** AC: "Gönderim maliyeti takibi." Bu ayki kullanımı, ARTIRMADAN, salt okunur döner. */
+export async function getSmsMonthlyUsageForCurrentTenant(): Promise<SmsUsageCheckResult> {
+  return withTenant(async (client, tenantId) => {
+    const yearMonth = new Date().toISOString().slice(0, 7);
+    const res = await client.query('SELECT sent_count, monthly_limit FROM sms_monthly_usage WHERE tenant_id = $1 AND year_month = $2', [tenantId, yearMonth]);
+    if (res.rows.length === 0) return { allowed: true, sentCount: 0, monthlyLimit: 100 };
+    return { allowed: res.rows[0].sent_count < res.rows[0].monthly_limit, sentCount: res.rows[0].sent_count, monthlyLimit: res.rows[0].monthly_limit };
   });
 }

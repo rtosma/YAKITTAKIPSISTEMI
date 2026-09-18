@@ -118,6 +118,11 @@ const envSchema = z.object({
   SMTP_PASSWORD: z.string().min(1).optional(),
   SMTP_FROM: z.string().email('SMTP_FROM geçerli bir e-posta adresi olmalıdır.').optional(),
 
+  // NOTIF-1603: SMTP_HOST ile AYNI gerekçe — bu ortamda gerçek bir SMS
+  // sağlayıcısı YOK. Tanımlı değilse smsChannel.ts açıkça hata fırlatır.
+  SMS_PROVIDER_URL: z.string().url().optional(),
+  SMS_PROVIDER_API_KEY: z.string().min(1).optional(),
+
   // AUTH-207: "true"/"1" ise SUPER_ADMIN ve COMPANY_OWNER hesapları 2FA
   // KURMADAN sisteme giremez (login yalnızca kurulum için kısmi token döner;
   // refresh de reddedilir). Varsayılan KAPALI — aksi halde seed/demo yönetici
