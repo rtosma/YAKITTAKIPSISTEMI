@@ -5897,9 +5897,28 @@ export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED'
 
 const SEVERITY_RANK: Record<AlarmSeverity, number> = { INFO: 0, WARNING: 1, CRITICAL: 2 };
 const ALARM_TERMINAL: AlarmStatus[] = ['RESOLVED', 'FALSE_POSITIVE'];
-// AI-507 AC: "Kritik alarm belirlenen sürede yanıtlanmazsa eskalasyon".
-const ALARM_ESCALATE_AFTER_MINUTES = 60;
-const ALARM_MAX_ESCALATION_LEVEL = 3;
+
+export interface AlarmEscalationStep {
+  afterMinutes: number;
+  notifyRole: 'SITE_MANAGER' | 'COMPANY_OWNER' | 'SUPER_ADMIN';
+}
+/**
+ * NOTIF-1606 AC: "Olay şiddetine göre farklı zincirler ve süreler." Ticket
+ * BullMQ delayed job öneriyor — YOK; AI-507'nin var olan saatlik setInterval
+ * süpürücüsü (bkz. index.ts) üzerine kurulu. INFO alarmları bu map'te YOK →
+ * hiç eskalasyona girmez.
+ */
+export const ALARM_ESCALATION_CHAINS: Record<'CRITICAL' | 'WARNING', AlarmEscalationStep[]> = {
+  CRITICAL: [
+    { afterMinutes: 15, notifyRole: 'SITE_MANAGER' },
+    { afterMinutes: 30, notifyRole: 'COMPANY_OWNER' },
+    { afterMinutes: 60, notifyRole: 'SUPER_ADMIN' }
+  ],
+  WARNING: [
+    { afterMinutes: 120, notifyRole: 'SITE_MANAGER' },
+    { afterMinutes: 240, notifyRole: 'COMPANY_OWNER' }
+  ]
+};
 
 export interface AlarmSpec {
   alarmKey: string;
@@ -6171,25 +6190,130 @@ export async function getFalsePositiveFeedback(): Promise<{
   });
 }
 
+export interface EscalatedAlarmResult {
+  id: string;
+  title: string;
+  severity: AlarmSeverity;
+  site_name: string | null;
+  escalation_level: number;
+  notify_role: 'SITE_MANAGER' | 'COMPANY_OWNER' | 'SUPER_ADMIN' | null;
+  recipient_user_ids: string[];
+  chain_exhausted: boolean;
+}
+
 /**
- * AI-507 — index.ts saatlik süpürücüsü. CRITICAL + OPEN + atanmamış +
- * susturulmamış, eşik süreyi (kademe başına) aşan alarmların escalation_level'ını
- * artırır. Döndürülen satırları çağıran (index.ts) WebSocket'te yayınlar.
+ * NOTIF-1606 AC: "Eskalasyon zinciri boşsa (kullanıcı silinmiş, telefon yok)
+ * alarm sessizce kaybolur; zincir doğrulaması yapılmalıdır." SITE_MANAGER
+ * alarmın `site_name`'ine göre eşleşir; COMPANY_OWNER/SUPER_ADMIN tenant
+ * geneli aranır (bu kod tabanında her ikisi de tenant başına ayrı, PLATFORM
+ * geneli DEĞİL — bkz. NOTIFICATION_CHANNEL_ADMIN_ROLES ile AYNI varsayım).
  */
-export async function runAlarmEscalationForCurrentTenant(): Promise<Array<{ id: string; title: string; escalation_level: number; site_name: string | null }>> {
-  return withTenant(async (client) => {
-    const res = await client.query(
-      `UPDATE alarms SET escalation_level = escalation_level + 1, escalated_at = NOW(), updated_at = NOW()
-        WHERE severity = 'CRITICAL'
-          AND status = 'OPEN'
+async function getAlarmEscalationRecipients(
+  client: any,
+  tenantId: string,
+  role: 'SITE_MANAGER' | 'COMPANY_OWNER' | 'SUPER_ADMIN',
+  siteName: string | null
+): Promise<string[]> {
+  if (role === 'SITE_MANAGER') {
+    if (!siteName) return [];
+    const res = await client.query(`SELECT id FROM users WHERE tenant_id = $1 AND role = 'SITE_MANAGER' AND site_name = $2`, [tenantId, siteName]);
+    return res.rows.map((r: any) => r.id);
+  }
+  const res = await client.query(`SELECT id FROM users WHERE tenant_id = $1 AND role = $2`, [tenantId, role]);
+  return res.rows.map((r: any) => r.id);
+}
+
+/**
+ * NOTIF-1606 — AI-507'nin var olan "sadece sayaç artır" süpürücüsünün
+ * YERİNİ alır. Her kademe artık TANIMLI bir role karşılık gelir (bkz.
+ * ALARM_ESCALATION_CHAINS) — bu fonksiyon o roldeki ALICI kullanıcı ID'lerini
+ * DÖNDÜRÜR, bildirimi KENDİSİ GÖNDERMEZ (notifyEvent buradan çağrılırsa
+ * notificationService.ts ↔ tenantDb.ts DAİRESEL import oluşur — gönderim
+ * çağıranda yapılır, bkz. notificationService.ts notifyAlarmEscalationRecipients,
+ * index.ts'teki süpürücü ve routes.ts'teki /alarms/run-escalation).
+ *
+ * AC: "Yanıt alındığında bekleyen eskalasyonlar iptal edilmelidir." BullMQ
+ * delayed job YOK, dolayısıyla ayrıca iptal edilecek bir "job" da YOK —
+ * WHERE koşulu (status='OPEN' AND assignee_id IS NULL) HER turda YENİDEN
+ * değerlendirilir; alarm onaylanır/atanırsa bir DAHA hiç eşleşmez.
+ *
+ * AC: "Eskalasyon geçmişi alarm kaydında görünmelidir" — her kademe (ve
+ * atlanan/alıcısız kademeler) alarm_events'e (append-only) yazılır, GET
+ * /alarms/:id bunu zaten `events` alanında döndürüyor.
+ *
+ * Teknik Not: bir kademede alıcı YOKSA, o kademe BEKLEMEDEN bir SONRAKİ
+ * kademeye düşülür (alarm "sessizce kaybolmaz"); zincirin TAMAMI alıcısız
+ * kalırsa escalation_level chain.length'e sabitlenir VE bir hata logu +
+ * `ESCALATION_CHAIN_EXHAUSTED` alarm_events satırı yazılır.
+ */
+export async function runAlarmEscalationForCurrentTenant(): Promise<EscalatedAlarmResult[]> {
+  return withTenant(async (client, tenantId) => {
+    const candidates = await client.query(
+      `SELECT id, title, severity, site_name, escalation_level, escalated_at, first_seen_at
+         FROM alarms
+        WHERE status = 'OPEN'
           AND assignee_id IS NULL
-          AND escalation_level < $1
+          AND severity IN ('CRITICAL', 'WARNING')
           AND (snoozed_until IS NULL OR snoozed_until <= NOW())
-          AND COALESCE(escalated_at, first_seen_at) <= NOW() - (($2 * (escalation_level + 1)) || ' minutes')::interval
-      RETURNING id, title, escalation_level, site_name`,
-      [ALARM_MAX_ESCALATION_LEVEL, ALARM_ESCALATE_AFTER_MINUTES]
+        FOR UPDATE`
     );
-    return res.rows;
+
+    const results: EscalatedAlarmResult[] = [];
+    for (const alarm of candidates.rows) {
+      const chain = ALARM_ESCALATION_CHAINS[alarm.severity as 'CRITICAL' | 'WARNING'];
+      if (!chain || alarm.escalation_level >= chain.length) continue;
+
+      const dueStep = chain[alarm.escalation_level];
+      const sinceMs = Date.now() - new Date(alarm.escalated_at ?? alarm.first_seen_at).getTime();
+      if (sinceMs < dueStep.afterMinutes * 60_000) continue; // henüz sırası gelmedi
+
+      let level = alarm.escalation_level;
+      let recipients: string[] = [];
+      let notifyRole: AlarmEscalationStep['notifyRole'] | null = null;
+      const skippedRoles: string[] = [];
+      while (level < chain.length) {
+        const step = chain[level];
+        recipients = await getAlarmEscalationRecipients(client, tenantId, step.notifyRole, alarm.site_name);
+        if (recipients.length > 0) {
+          notifyRole = step.notifyRole;
+          break;
+        }
+        skippedRoles.push(step.notifyRole);
+        level++;
+      }
+      const chainExhausted = recipients.length === 0;
+      const newLevel = chainExhausted ? chain.length : level + 1;
+
+      await client.query(`UPDATE alarms SET escalation_level = $2, escalated_at = NOW(), updated_at = NOW() WHERE id = $1`, [alarm.id, newLevel]);
+      await client.query(
+        `INSERT INTO alarm_events (id, tenant_id, alarm_id, detail) VALUES ($1, $2, $3, $4)`,
+        [
+          generateId('almev'),
+          tenantId,
+          alarm.id,
+          JSON.stringify(
+            chainExhausted
+              ? { type: 'ESCALATION_CHAIN_EXHAUSTED', skippedRoles }
+              : { type: 'ESCALATION', level: newLevel, notifyRole, skippedRoles, recipientUserIds: recipients }
+          )
+        ]
+      );
+      if (chainExhausted) {
+        logger.error({ tenantId, alarmId: alarm.id, skippedRoles }, `🚨 [NOTIF-1606] Eskalasyon zinciri tükendi, HİÇBİR kademede alıcı bulunamadı: ${alarm.title}`);
+      }
+
+      results.push({
+        id: alarm.id,
+        title: alarm.title,
+        severity: alarm.severity,
+        site_name: alarm.site_name,
+        escalation_level: newLevel,
+        notify_role: notifyRole,
+        recipient_user_ids: recipients,
+        chain_exhausted: chainExhausted
+      });
+    }
+    return results;
   });
 }
 

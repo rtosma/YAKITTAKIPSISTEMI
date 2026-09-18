@@ -41,5 +41,10 @@ export const NOTIFICATION_TEMPLATES: Record<string, NotificationTemplate> = {
     titleTemplate: '🚨 Hırsızlık şüphesi: {{tankName}}',
     bodyTemplate: '{{siteName}} şantiyesinde yetkisiz akış tespit edildi.',
     isSecurityCritical: true
+  },
+  // NOTIF-1606: yanıtsız alarm bir üst kademeye (roleLabel) iletildiğinde.
+  ALARM_ESCALATED: {
+    titleTemplate: '⛰️ Alarm eskalasyonu (Kademe {{level}} — {{roleLabel}}): {{alarmTitle}}',
+    bodyTemplate: '{{siteName}} — "{{alarmTitle}}" alarmı yanıtsız kaldığı için size iletildi.'
   }
 };

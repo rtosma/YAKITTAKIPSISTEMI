@@ -39,7 +39,7 @@ import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes,
 import { isServerShuttingDown } from '../utils/shutdown';
 import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS, getCompanyLicenseSnapshot, getTenantLifecycleStatus, freezeCompany, unfreezeCompany, scheduleTenantDeletion, cancelTenantDeletion, approveTenantDeletion, exportTenantDataEncrypted, getArchiveSettings, updateArchiveSettings, getModuleCatalog, getFuelCostSettings, updateFuelCostMethod, createFirmwareArtifact, getFirmwareArtifacts } from '../db/adminDb';
 import { startFirmwareRollout, getFirmwareRollouts, getFirmwareRollout, reportRolloutDeviceRollback } from '../services/firmwareRolloutService';
-import { getNotifications, markNotificationRead, sendTestNotification } from '../services/notificationService';
+import { getNotifications, markNotificationRead, sendTestNotification, notifyAlarmEscalationRecipients } from '../services/notificationService';
 import { listNotificationQuerySchema, updateNotificationChannelsSchema, sendTestNotificationSchema, setUserNotificationPreferenceSchema, createUserNotificationMuteSchema } from '../schemas/notificationSchema';
 import { createFirmwareArtifactSchema, listFirmwareArtifactQuerySchema, startFirmwareRolloutSchema, listFirmwareRolloutQuerySchema, reportRolloutRollbackSchema } from '../schemas/firmwareRolloutSchema';
 import { generateArchiveForTenant, listTenantArchives, verifyAndConsumeArchiveDownload } from '../services/tenantArchiveService';
@@ -4357,9 +4357,10 @@ router.post(
       const escalated = await runAlarmEscalationForCurrentTenant();
       const tenantId = req.user?.tenantId;
       if (tenantId && escalated.length > 0) {
+        await notifyAlarmEscalationRecipients(tenantId, escalated);
         try {
           for (const a of escalated) {
-            broadcastToTenant(tenantId, 'alarm:escalated', { id: a.id, title: a.title, escalationLevel: a.escalation_level, siteName: a.site_name });
+            broadcastToTenant(tenantId, 'alarm:escalated', { id: a.id, title: a.title, escalationLevel: a.escalation_level, siteName: a.site_name, notifyRole: a.notify_role, chainExhausted: a.chain_exhausted });
           }
         } catch { /* */ }
       }

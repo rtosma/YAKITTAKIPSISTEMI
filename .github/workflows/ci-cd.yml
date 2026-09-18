@@ -497,6 +497,9 @@ jobs:
       - name: Run NOTIF-1605 User Subscription Preferences + Mute Tests
         run: cd backend && npx tsx test/test_notif1605_user_preferences_mute.ts
 
+      - name: Run NOTIF-1606 Alarm Escalation Rules Tests
+        run: cd backend && npx tsx test/test_notif1606_alarm_escalation.ts
+
       - name: Run FUEL-405 Manual Dispense Entry + Dual Approval Tests
         run: cd backend && npx tsx test/test_fuel405_manual_dispense.ts
 

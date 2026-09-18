@@ -19,7 +19,7 @@ import { broadcastToTenant } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
 import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant, runTankStockAlertSweepForCurrentTenant, runDriverBehaviorScoreSweepForCurrentTenant, runDeviceHealthScoreSweepForCurrentTenant } from './db/tenantDb';
-import { runNotificationRetrySweepForCurrentTenant } from './services/notificationService';
+import { runNotificationRetrySweepForCurrentTenant, notifyAlarmEscalationRecipients } from './services/notificationService';
 import { runLicenseExpiryWarningSweep } from './services/licenseWarningService';
 import { runUsageMeteringSweepForPreviousMonth } from './services/usageMeteringService';
 
@@ -407,10 +407,11 @@ async function startServer(): Promise<void> {
     }
   }, ANOMALY_SWEEP_MS);
 
-  // AI-507 AC: "Kritik alarm belirlenen sürede yanıtlanmazsa eskalasyon
-  // tetiklenmelidir." Saatlik: atanmamış + susturulmamış CRITICAL/OPEN
-  // alarmların (kademe başına ~60 dk) escalation_level'ını artırır ve
-  // WebSocket'te yayınlar. Ticket'ın NOTIF-1606'sı yok — düz setInterval.
+  // AI-507/NOTIF-1606 AC: "Yanıtsız kritik alarm tanımlı süre sonra üst
+  // kademeye iletilmelidir." Saatlik: atanmamış + susturulmamış CRITICAL/
+  // WARNING/OPEN alarmların tanımlı zincirdeki (bkz. tenantDb.ts
+  // ALARM_ESCALATION_CHAINS) sırası gelen kademesindeki ROLE'e bildirim
+  // gönderilir + WebSocket'te yayınlanır.
   const ALARM_ESCALATION_SWEEP_MS = 60 * 60 * 1000;
   const alarmEscalationSweepInterval = setInterval(async () => {
     let tenantIds: string[] = [];
@@ -423,9 +424,10 @@ async function startServer(): Promise<void> {
     for (const tenantId of tenantIds) {
       try {
         const escalated = await runWithTenant({ tenantId }, () => runAlarmEscalationForCurrentTenant());
+        await notifyAlarmEscalationRecipients(tenantId, escalated);
         for (const a of escalated) {
-          broadcastToTenant(tenantId, 'alarm:escalated', { id: a.id, title: a.title, escalationLevel: a.escalation_level, siteName: a.site_name });
-          logger.warn({ tenantId, alarmId: a.id, level: a.escalation_level }, `⛰️ [AI-507] Kritik alarm eskalasyonu (kademe ${a.escalation_level}): ${a.title}`);
+          broadcastToTenant(tenantId, 'alarm:escalated', { id: a.id, title: a.title, escalationLevel: a.escalation_level, siteName: a.site_name, notifyRole: a.notify_role, chainExhausted: a.chain_exhausted });
+          logger.warn({ tenantId, alarmId: a.id, level: a.escalation_level, role: a.notify_role }, `⛰️ [NOTIF-1606] Alarm eskalasyonu (kademe ${a.escalation_level} → ${a.notify_role ?? 'ALICI YOK'}): ${a.title}`);
         }
       } catch (err) {
         logger.error({ err, tenantId }, '🚨 [AI-507] Alarm eskalasyon süpürmesi başarısız.');

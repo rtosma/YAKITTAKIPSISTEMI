@@ -20,7 +20,8 @@ import {
   recordWebhookSuccess,
   getUserNotificationPreference,
   isUserNotificationMuted,
-  type NotificationRecord
+  type NotificationRecord,
+  type EscalatedAlarmResult
 } from '../db/tenantDb';
 import { runWithTenant, getTenantId } from '../context/tenantContext';
 import { broadcastToTenant } from '../socket/socketServer';
@@ -360,6 +361,41 @@ export async function sendTestNotification(tenantId: string, channel: 'EMAIL' | 
     return { success: true };
   } catch (err) {
     return { success: false, error: (err as Error).message };
+  }
+}
+
+const ESCALATION_ROLE_LABELS: Record<'SITE_MANAGER' | 'COMPANY_OWNER' | 'SUPER_ADMIN', string> = {
+  SITE_MANAGER: 'Şantiye Şefi',
+  COMPANY_OWNER: 'Firma Yöneticisi',
+  SUPER_ADMIN: 'Süper Admin'
+};
+
+/**
+ * NOTIF-1606 — tenantDb.ts'in runAlarmEscalationForCurrentTenant()'ının
+ * DÖNDÜRDÜĞÜ alıcı listesine gerçekten bildirim GÖNDEREN katman (tenantDb.ts
+ * KENDİSİ notifyEvent'i çağıramaz — notificationService.ts ↔ tenantDb.ts
+ * DAİRESEL import'a yol açar). Her (alarm, kademe, alıcı) üçlüsü için AYRI
+ * bir idempotencyKey — AYNI kademe için süpürücü tekrar çalışsa da (ör. bir
+ * önceki turda updateAlarm/deliver arası çökme) mükerrer bildirim gitmez.
+ * Zincir alıcısız tükenmişse (chain_exhausted) hiç kimseye bildirim YOKTUR —
+ * bu durumun kaydı zaten alarm_events'te (bkz. tenantDb.ts) tutulur.
+ */
+export async function notifyAlarmEscalationRecipients(tenantId: string, escalated: EscalatedAlarmResult[]): Promise<void> {
+  for (const alarm of escalated) {
+    if (alarm.chain_exhausted || !alarm.notify_role) continue;
+    for (const userId of alarm.recipient_user_ids) {
+      await notifyEvent(
+        tenantId,
+        'ALARM_ESCALATED',
+        { alarmTitle: alarm.title, siteName: alarm.site_name ?? '-', level: alarm.escalation_level, roleLabel: ESCALATION_ROLE_LABELS[alarm.notify_role] },
+        {
+          userId,
+          channel: 'IN_APP',
+          priority: alarm.severity === 'CRITICAL' ? 'CRITICAL' : 'NORMAL',
+          idempotencyKey: `alarm-escalation-${alarm.id}-${alarm.escalation_level}-${userId}`
+        }
+      );
+    }
   }
 }
 
