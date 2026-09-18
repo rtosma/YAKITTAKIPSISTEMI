@@ -385,6 +385,12 @@ jobs:
       - name: Run REP-703 Common Report Framework Tests
         run: cd backend && npx tsx test/test_rep703_report_framework.ts
 
+      # REP-711 (#168): rapora özgü davranış (birim fiyat/tutar GENEL TOPLAM'ı,
+      # yetki tipine göre ayrışma+filtreleme, tank/yakıt tipi filtreleri, site
+      # scoping) — ortak motor test_rep703_report_framework.ts'te ayrıca sınanıyor.
+      - name: Run REP-711 Dispense Movement Report Tests
+        run: cd backend && npx tsx test/test_rep711_dispense_movement.ts
+
       # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
       # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte
       # ardışık istekler, sayfa sayısı) BİLEREK ayrı bir dosyada — o dosyanın
