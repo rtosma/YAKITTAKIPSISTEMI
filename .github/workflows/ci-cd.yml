@@ -416,6 +416,11 @@ jobs:
       - name: Run REP-716 Alarm Report Tests
         run: cd backend && npx tsx test/test_rep716_alarm_report.ts
 
+      # REP-717 (#174): presence olaylarından online %/kesinti — elle hesaplı sentetik veri,
+      # IOT-308 getDeviceOnlineSla ile PARİTE, parametre jetonlu pencere.
+      - name: Run REP-717 Device Health Report Tests
+        run: cd backend && npx tsx test/test_rep717_device_health.ts
+
       # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
       # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte
       # ardışık istekler, sayfa sayısı) BİLEREK ayrı bir dosyada — o dosyanın

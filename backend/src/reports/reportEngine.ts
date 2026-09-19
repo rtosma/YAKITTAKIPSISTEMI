@@ -65,6 +65,13 @@ function applyFilter(filter: ReportFilterDef, rawValue: unknown, conditions: str
       conditions.push(`${filter.column} >= $${params.length}::numeric`);
       break;
     }
+    case 'numberLte': {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return;
+      params.push(n);
+      conditions.push(`${filter.column} <= $${params.length}::numeric`);
+      break;
+    }
     case 'in': {
       const values = String(rawValue).split(',').map((v) => v.trim()).filter(Boolean).slice(0, 50);
       if (values.length === 0) return;
@@ -94,8 +101,22 @@ function buildWhereClause(def: ReportDefinition, query: ReportQueryParams, siteS
     applyFilter(filter, query[filter.key], filter.beforeAggregation ? sourceConditions : conditions, params);
   }
 
+  // Parametre jetonları ({{anahtar::tip|varsayılan}}) — bkz. reportTypes.ts. Aynı anahtar birden çok kez geçerse TEK parametre paylaşılır.
+  const tokenParamIndex = new Map<string, number>();
+  const withTokens = def.table.replace(/\{\{(\w+)::(\w+)\|([^}]*)\}\}/g, (_m, key: string, sqlType: string, fallback: string) => {
+    const raw = query[key];
+    if (raw === undefined || raw === null || raw === '') return fallback;
+    let idx = tokenParamIndex.get(key);
+    if (idx === undefined) {
+      params.push(String(raw).slice(0, 200));
+      idx = params.length;
+      tokenParamIndex.set(key, idx);
+    }
+    return `$${idx}::${sqlType}`;
+  });
+
   // beforeAggregation filtreleri table içindeki işaretçiye enjekte edilir (aynı params dizisi → $n numaraları tutarlı).
-  let table = def.table;
+  let table = withTokens;
   if (table.includes(SOURCE_WHERE_MARKER)) {
     table = table.replace(SOURCE_WHERE_MARKER, sourceConditions.length > 0 ? ` AND ${sourceConditions.join(' AND ')}` : '');
   } else if (def.filters.some((f) => f.beforeAggregation)) {

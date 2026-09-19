@@ -23,8 +23,8 @@ import { UserRole } from '../services/tokenService';
  * değil, reportEngine.ts'in tek giriş noktasında garanti edilir.
  */
 
-// 'numberGte' (REP-712): `column >= $n::numeric` — sapma eşiği gibi sayısal alt sınır filtreleri için.
-export type ReportFilterType = 'exact' | 'ilike' | 'dateFrom' | 'dateToExclusiveNextDay' | 'in' | 'numberGte';
+// 'numberGte'/'numberLte' (REP-712/717): `column >= / <= $n::numeric` — sayısal alt/üst sınır filtreleri için.
+export type ReportFilterType = 'exact' | 'ilike' | 'dateFrom' | 'dateToExclusiveNextDay' | 'in' | 'numberGte' | 'numberLte';
 
 export interface ReportFilterDef {
   /** İstemcinin query string'de kullanacağı anahtar (örn. ?siteName=...). */
@@ -89,6 +89,14 @@ export interface ReportDefinition {
    * sütun adı kullanır, örn. `t.vehicle_plate`).
    */
   table: string;
+  /**
+   * REP-717 — istek-zamanı PARAMETRE JETONLARI: `table` içinde
+   * `{{filterKey::sqlTipi|varsayılan SQL}}` yazılırsa, istemci o filtre anahtarını
+   * gönderdiyse `$n::sqlTipi` (PARAMETRELİ — değer asla SQL'e gömülmez), yoksa
+   * `varsayılan SQL` yerine geçer. Sonuç `def.filters`'ta tanımlı OLMASA da
+   * çalışır (ör. pencere başlangıcı/bitişi hesabın İÇİNDE kullanılır).
+   * `varsayılan SQL` ve `sqlTipi` sunucu kodunda sabittir, istemciden gelmez.
+   */
   columns: ReportColumnDef[];
   filters: ReportFilterDef[];
   aggregates?: ReportAggregateDef[];
