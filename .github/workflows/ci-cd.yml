@@ -396,6 +396,11 @@ jobs:
       - name: Run REP-712 Vehicle Consumption Report Tests
         run: cd backend && npx tsx test/test_rep712_vehicle_consumption.ts
 
+      # REP-713 (#170): FUEL-409 mutabakat satırlarını okuyan şantiye/tank stok raporu —
+      # elle hesaplı fixture (2021-03 penceresi), fire/kritik tank/özet=detay tutarlılığı.
+      - name: Run REP-713 Site Stock Report Tests
+        run: cd backend && npx tsx test/test_rep713_site_stock.ts
+
       # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
       # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte
       # ardışık istekler, sayfa sayısı) BİLEREK ayrı bir dosyada — o dosyanın
