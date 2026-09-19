@@ -2,6 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
 import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getVehicleSiteAssignmentHistory, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant, createLabSample, getLabSamples, getLabSample, cancelLabSample, recordLabTestResult, getLabTestResults, getNonConformingLabResults, computeDriverBehaviorScores, getDriverBehaviorScores, getDriverBehaviorScoreHistory, getTankStockForecasts, runTankStockAlertSweepForCurrentTenant, computeDeviceHealthScores, getDeviceHealthScores, getDeviceHealthScoreHistory, getDeviceOnlineSla, getDeviceFirmwareInventory, createFireRecord, getFireRecords, approveFireRecord, rejectFireRecord, getFireRecordSiteComparison, getSmsMonthlyUsageForCurrentTenant, upsertTenantNotificationChannels, getTenantNotificationChannels, setUserNotificationPreference, getUserNotificationPreferencesForCurrentUser, createUserNotificationMute, getActiveUserNotificationMutes } from '../db/tenantDb';
 import { downloadDespatchAdviceDocument } from '../services/despatchAdviceDownloadService';
+import { getExecutiveDashboard } from '../services/executiveDashboardService';
+import { executiveDashboardQuerySchema } from '../schemas/dashboardSchema';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { getReportDefinition, listReportsForRole, runReport, streamReportToCsv, streamReportToPdf, auditReportExport, assertPiiFilterAccess, ReportQueryParams } from '../reports';
 import { reportRunQuerySchema, reportExportQuerySchema, reportIdParamsSchema } from '../schemas/reportSchema';
@@ -6313,6 +6315,39 @@ router.get(
         res.destroy();
         return;
       }
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /dashboard/executive:
+ *   get:
+ *     summary: Yönetici Özet Dashboard'u — KPI, trend, ilk 10, tank özeti (REP-723)
+ *     description: >
+ *       KPI kartları (bugün/ay tüketimi, aylık maliyet, açık alarm, kritik stok, çevrimdışı cihaz), günlük tüketim/maliyet/stok
+ *       trendi, ilk 10 araç ve şantiye, tank doluluk özeti. Her KPI `drilldown` ile ilgili detay raporuna bağlanır. Değerler
+ *       rep-723/rep-723-tank REP-703 raporlarından üretilir (CSV/PDF export'uyla aynı veri). SITE_MANAGER yalnızca kendi şantiyesini görür.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: days
+ *         description: Trend/ilk-10 penceresi (1-90, varsayılan 30).
+ *         schema: { type: integer }
+ */
+router.get(
+  '/dashboard/executive',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ query: executiveDashboardQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { days } = req.query as unknown as { days: number };
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getExecutiveDashboard(siteScopeFor(req.user!), { role: req.user!.role }, days) });
+    } catch (error: any) {
       next(error);
     }
   }

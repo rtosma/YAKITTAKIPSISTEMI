@@ -16,6 +16,7 @@ import './definitions/rep719CostBudget';
 import './definitions/rep720DriverReport';
 import './definitions/rep721DespatchStatus';
 import './definitions/rep722AuditReport';
+import './definitions/rep723ExecutiveSummary';
 
 export { getReportDefinition, listReportsForRole } from './reportRegistry';
 export { runReport, streamReportExport, assertPdfRowLimit, assertPiiFilterAccess } from './reportEngine';

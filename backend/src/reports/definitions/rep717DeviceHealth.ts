@@ -180,6 +180,7 @@ export const rep717Outages: ReportDefinition = {
     { key: 'startDate', column: 'outage_start', type: 'dateFrom', label: 'Başlangıç Tarihi (kesinti başlangıcı)' },
     { key: 'endDate', column: 'outage_start', type: 'dateToExclusiveNextDay', label: 'Bitiş Tarihi (kesinti başlangıcı)' },
     { key: 'deviceId', column: 'device_id', type: 'ilike', label: 'Cihaz (içerir)' },
+    { key: 'ongoing', column: 'CASE WHEN outage_end IS NULL THEN 1 ELSE 0 END', type: 'numberGte', label: 'Yalnız süren kesintiler (1) — REP-723 "çevrimdışı cihaz" bağlantısı için' },
     { key: 'siteName', column: 'site_name', type: 'exact', label: 'Şantiye' }
   ],
   aggregates: [

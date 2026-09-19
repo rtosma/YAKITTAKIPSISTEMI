@@ -147,6 +147,8 @@ async function run() {
     const rep = await rowsOf();
     const r = (t: string) => byTx(rep.body, t);
     const ettn1 = (await q('SELECT ettn::text FROM despatch_advice_documents WHERE id = $1', [docIds[T1]]))[0].ettn;
+    // Arka plan süpürücüsü (dakikada bir) QUEUED satırı testin ortasında göndermesin: KUYRUKTA yalnız Test 1'de (yukarıdaki okumada) doğrulanır, sonra taze SENDING'e sabitlenir.
+    await q(`UPDATE despatch_advice_transmissions SET status = 'SENDING', queued_at = NOW() WHERE despatch_advice_document_id = $1`, [docIds[T9]]);
 
     // === Test 1 (AC1 — hepsi durum + GİB koduyla): dokuz belge, her biri beklenen durum/kod/sebep/litre/tutar/alıcı ===
     check(
@@ -165,10 +167,10 @@ async function run() {
     const dur = await call('GET', `/reports/rep-721-durum?transactionId=${TX.join(',')}&pageSize=50`, owner);
     const cnt = (s: string) => n((dur.body?.data || []).find((x: any) => x.status_code === s)?.document_count ?? 0);
     check(
-      'Test 2 (Kapsam — durum sayaçları): 9 belge; iletilen (SENT) 4 (T1,T2,T3,T8); onaylanan 2 (T1,T8); reddedilen 1; iptal 1; takılı 1 (T5); gönderim hatası 1 (T4); litre 255, tutar 6350.75; rep-721-durum kırılımı: GONDERILDI 2 (T1,T8), REDDEDILDI 1, IPTAL 1, GONDERIM_BASARISIZ 1, GONDERILIYOR 2, URETILDI 1, KUYRUKTA 1',
+      'Test 2 (Kapsam — durum sayaçları): 9 belge; iletilen (SENT) 4 (T1,T2,T3,T8); onaylanan 2 (T1,T8); reddedilen 1; iptal 1; takılı 1 (T5); gönderim hatası 1 (T4); litre 255, tutar 6350.75; rep-721-durum kırılımı: GONDERILDI 2 (T1,T8), REDDEDILDI 1, IPTAL 1, GONDERIM_BASARISIZ 1, GONDERILIYOR 3 (T5,T6,T9; T9 Test 1 sonrası sabitlendi), URETILDI 1',
       n(ag.total_documents) === 9 && n(ag.sent_count) === 4 && n(ag.accepted_count) === 2 && n(ag.rejected_count) === 1 && n(ag.cancelled_count) === 1 && n(ag.stuck_count) === 1 && n(ag.failed_count) === 1 &&
         near(ag.total_liters, 255) && near(ag.total_amount, 6350.75) &&
-        cnt('GONDERILDI') === 2 && cnt('REDDEDILDI') === 1 && cnt('IPTAL') === 1 && cnt('GONDERIM_BASARISIZ') === 1 && cnt('GONDERILIYOR') === 2 && cnt('URETILDI') === 1 && cnt('KUYRUKTA') === 1 &&
+        cnt('GONDERILDI') === 2 && cnt('REDDEDILDI') === 1 && cnt('IPTAL') === 1 && cnt('GONDERIM_BASARISIZ') === 1 && cnt('GONDERILIYOR') === 3 && cnt('URETILDI') === 1 && cnt('KUYRUKTA') === 0 &&
         near(dur.body?.aggregates?.total_amount, 6350.75) && n(dur.body?.aggregates?.total_documents) === 9,
       `agg=${JSON.stringify(ag)}, durum=${(dur.body?.data || []).map((x: any) => `${x.status_code}:${x.document_count}`).join(',')}`
     );
@@ -274,8 +276,8 @@ async function run() {
       })
     );
     check(
-      'Test 7 (AC — CSV/PDF/JSON tutarlılığı): rep-721 CSV 9 satır (=JSON), durum kırılımı CSV 7 (=JSON), boşluk CSV 2 (=JSON); T1 satırında "GÖNDERİLDİ", MOCKREF kodu ve indirme bağlantıları; üç rapor PDF 200 + %PDF-',
-      csvLines(csv.raw) === rep.body.pagination.totalCount && csvLines(csv.raw) === 9 && csvLines(csvDur.raw) === dur.body.pagination.totalCount && csvLines(csvGap.raw) === gaps31.body.pagination.totalCount && csvLines(csvGap.raw) === 2 &&
+      'Test 7 (AC — CSV/PDF/JSON tutarlılığı): rep-721 CSV 9 satır (=JSON), durum kırılımı CSV 6 (=JSON), boşluk CSV 2 (=JSON); T1 satırında "GÖNDERİLDİ", MOCKREF kodu ve indirme bağlantıları; üç rapor PDF 200 + %PDF-',
+      csvLines(csv.raw) === rep.body.pagination.totalCount && csvLines(csv.raw) === 9 && csvLines(csvDur.raw) === dur.body.pagination.totalCount && csvLines(csvDur.raw) === 6 && csvLines(csvGap.raw) === gaps31.body.pagination.totalCount && csvLines(csvGap.raw) === 2 &&
         line1.includes('GÖNDERİLDİ') && line1.includes(`MOCKREF-${ettn1}`) && line1.includes(r(T1).xml_link) && line1.includes(r(T1).pdf_link) && csv.raw.includes('TAKILI') &&
         pdfs.every((p) => p.status === 200 && p.magic === '%PDF-'),
       `csv=${csvLines(csv.raw)}/${rep.body?.pagination?.totalCount}, durum=${csvLines(csvDur.raw)}/${dur.body?.pagination?.totalCount}, gap=${csvLines(csvGap.raw)}, pdf=${pdfs.map((p) => p.status).join('/')}`

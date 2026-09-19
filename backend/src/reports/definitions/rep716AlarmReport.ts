@@ -80,7 +80,7 @@ export const rep716AlarmDetail: ReportDefinition = {
     { key: 'startDate', column: 'first_seen_at', type: 'dateFrom', label: 'Başlangıç Tarihi' },
     { key: 'endDate', column: 'first_seen_at', type: 'dateToExclusiveNextDay', label: 'Bitiş Tarihi' },
     { key: 'category', column: 'category', type: 'exact', label: 'Alarm Tipi' },
-    { key: 'status', column: 'status', type: 'exact', label: 'Durum' },
+    { key: 'status', column: 'status', type: 'in', label: 'Durum (virgülle çoklu — REP-723 "açık alarm" bağlantısı için)' },
     { key: 'severity', column: 'severity', type: 'exact', label: 'Şiddet' },
     { key: 'siteName', column: 'site_name', type: 'exact', label: 'Şantiye' },
     { key: 'assignee', column: 'assignee', type: 'exact', label: 'Atanan (kullanıcı adı)' },
