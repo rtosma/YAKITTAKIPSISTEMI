@@ -108,7 +108,12 @@ SMOKE_USERNAME=... SMOKE_PASSWORD=... node scripts/smoke-test.mjs
 Staging ve production'da `docker-compose.backup.yml` (sürekli WAL arşivi) etkin olmalı ve `deploy/cron/yakittakip-backup.cron` kurulu olmalıdır — RPO 15 dk / RTO 4 saat hedefleri, şifreleme,
 PITR ve çeyreklik restore tatbikatı: [BACKUP_RESTORE.md](BACKUP_RESTORE.md). Staging'e üretim yedeği elle yüklenmez (§5); maskeli kopya prosedürü BACKUP_RESTORE.md'ye eklenecektir.
 
-## 8. Elle geri alma
+## 8. Gözlemlenebilirlik
+
+Staging ve production'da `docker-compose.monitoring.yml` (Prometheus + Grafana + Loki + Promtail + exporter'lar) etkin olmalı ve `GRAFANA_ADMIN_PASSWORD` (+ üretimde `METRICS_TOKEN`) tanımlanmalıdır. Metrik kataloğu, kardinalite politikası,
+dashboard'lar ve log sorguları: [OBSERVABILITY.md](OBSERVABILITY.md). Grafana yalnızca `127.0.0.1:3001`'e bağlanır; uzaktan erişim SSH tüneli veya TLS'li ters proxy ile yapılır.
+
+## 9. Elle geri alma
 
 ```bash
 # sunucuda

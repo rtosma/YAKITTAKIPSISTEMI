@@ -164,6 +164,8 @@ services:
       # (tanımsızsa POST /lorawan/uplink tüm çağrıları 503 ile reddeder).
       LORAWAN_WEBHOOK_TOKEN: ${LORAWAN_WEBHOOK_TOKEN:-}
       TOTP_ENFORCED: ${TOTP_ENFORCED:-false}
+      # OPS-1107: /metrics için opsiyonel Bearer token (boş = yalnızca iç ağ; bkz. config/env.ts).
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
       # TEST_PLAN §5.2: CORS allowlist. BOŞ = CORS tamamen kapalı
       # (same-origin) — nginx SPA'yı ve /api'yi aynı origin'den sunduğu için
       # normal kurulumda boş kalır; yalnızca API'ye BAŞKA bir origin'den

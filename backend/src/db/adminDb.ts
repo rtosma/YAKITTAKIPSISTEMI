@@ -1351,3 +1351,72 @@ export async function getFirmwareArtifact(id: string): Promise<FirmwareArtifactR
   if (res.rows.length === 0) throw new NotFoundError('Firmware artefaktı bulunamadı.', { error: 'ARTIFACT_NOT_FOUND' });
   return res.rows[0];
 }
+
+/**
+ * OPS-1107 — Prometheus iş metrikleri için TENANT-ARASI özet (metrik toplamı tüm platformdur; tenant/cihaz
+ * başına seri ÜRETİLMEZ — kardinalite politikası, bkz. observability/metrics.ts).
+ *
+ * Performans: büyük tablolar (transactions, alarms, despatch_advice_transmissions, notifications) tenant-önce
+ * indekslidir; tenant'sız `SELECT count(*) ... FROM transactions` seq-scan olurdu ve 30 sn'de bir çalışırdı.
+ * Bu yüzden `companies CROSS JOIN LATERAL (... WHERE tenant_id = c.id ...)` kalıbı kullanılır (her tenant için
+ * indeks erişimi). `pool` süper kullanıcıdır → RLS'i atlar (bu dosyanın sözleşmesi); çağıran yalnızca metrik kaydıdır.
+ */
+export interface BusinessMetricsSnapshot {
+  devices: { registered: number; active: number; offline: number; blocked: number };
+  alarmsOpen: Record<string, number>;
+  dispensesToday: number;
+  dispensedLitersToday: number;
+  despatchQueue: Record<string, number>;
+  despatchOldestQueuedAgeSeconds: number;
+  notificationRetryQueue: number;
+}
+
+export async function getBusinessMetricsSnapshot(): Promise<BusinessMetricsSnapshot> {
+  const [dev, off, alarms, disp, despatch, notif] = await Promise.all([
+    pool.query(
+      `SELECT COUNT(*) FILTER (WHERE status = 'AKTİF')::int AS registered,
+              COUNT(*) FILTER (WHERE status = 'AKTİF' AND last_seen_at > NOW() - INTERVAL '10 minutes')::int AS active,
+              COUNT(*) FILTER (WHERE status = 'BLOKE')::int AS blocked
+         FROM companies c CROSS JOIN LATERAL (
+           SELECT h.status, h.last_seen_at FROM hardware_devices h WHERE h.tenant_id = c.id
+         ) d`
+    ),
+    // Son presence olayı OFFLINE olan cihaz (REP-717/723 ile AYNI tanım). DISTINCT ON cihaz başına tek satır.
+    pool.query(
+      `SELECT COUNT(*)::int AS offline FROM companies c CROSS JOIN LATERAL (
+         SELECT x.status FROM (
+           SELECT DISTINCT ON (e.device_id) e.status FROM device_presence_events e WHERE e.tenant_id = c.id
+            ORDER BY e.device_id, e.occurred_at DESC
+         ) x WHERE x.status = 'OFFLINE'
+       ) o`
+    ),
+    pool.query(
+      `SELECT a.severity, SUM(a.n)::int AS n FROM companies c CROSS JOIN LATERAL (
+         SELECT severity, COUNT(*) AS n FROM alarms WHERE tenant_id = c.id AND status NOT IN ('RESOLVED', 'FALSE_POSITIVE') GROUP BY severity
+       ) a GROUP BY a.severity`
+    ),
+    pool.query(
+      `SELECT COALESCE(SUM(t.n), 0)::int AS n, COALESCE(SUM(t.liters), 0)::float8 AS liters FROM companies c CROSS JOIN LATERAL (
+         SELECT COUNT(*) AS n, SUM(amount_liters) AS liters FROM transactions WHERE tenant_id = c.id AND created_at >= NOW()::date
+       ) t`
+    ),
+    pool.query(
+      `SELECT q.status, SUM(q.n)::int AS n, MIN(q.oldest) AS oldest FROM companies c CROSS JOIN LATERAL (
+         SELECT status, COUNT(*) AS n, MIN(queued_at) AS oldest FROM despatch_advice_transmissions
+          WHERE tenant_id = c.id AND status IN ('QUEUED', 'SENDING', 'FAILED') GROUP BY status
+       ) q GROUP BY q.status`
+    ),
+    pool.query(`SELECT COUNT(*)::int AS n FROM notifications WHERE status = 'BAŞARISIZ'`)
+  ]);
+  const byKey = (rows: any[], key: string): Record<string, number> => Object.fromEntries(rows.map((r) => [r[key], Number(r.n)]));
+  const queued = despatch.rows.find((r) => r.status === 'QUEUED');
+  return {
+    devices: { registered: dev.rows[0].registered, active: dev.rows[0].active, offline: off.rows[0].offline, blocked: dev.rows[0].blocked },
+    alarmsOpen: byKey(alarms.rows, 'severity'),
+    dispensesToday: disp.rows[0].n,
+    dispensedLitersToday: disp.rows[0].liters,
+    despatchQueue: byKey(despatch.rows, 'status'),
+    despatchOldestQueuedAgeSeconds: queued?.oldest ? Math.max(0, Math.round((Date.now() - new Date(queued.oldest).getTime()) / 1000)) : 0,
+    notificationRetryQueue: notif.rows[0].n
+  };
+}

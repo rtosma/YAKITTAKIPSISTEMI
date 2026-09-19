@@ -159,7 +159,11 @@ const envSchema = z.object({
   // Farklı bir origin'den (ayrı domain'de barındırılan panel, mobil web,
   // staging) erişim gerekirse buraya açıkça yazılır:
   //   CORS_ALLOWED_ORIGINS=https://panel.ornek.com,https://staging.ornek.com
-  CORS_ALLOWED_ORIGINS: z.string().optional()
+  CORS_ALLOWED_ORIGINS: z.string().optional(),
+
+  // OPS-1107: /metrics uç noktası için opsiyonel taşıyıcı (Bearer) token. Tanımlıysa Prometheus `authorization` ile göndermek ZORUNDA;
+  // tanımsızsa uç yalnızca compose iç ağından erişilebilir (nginx /metrics'i proxy'lemez). Üretimde tanımlamanız önerilir (openssl rand -hex 24).
+  METRICS_TOKEN: z.string().min(16).optional()
 });
 
 type EnvShape = z.infer<typeof envSchema>;
@@ -182,7 +186,7 @@ function failFast(message: string): never {
 // sayılır; zorunlu sırlar (JWT_*, MQTT_*, HW_*, ... ) ve POSTGRES_* boş bırakılırsa hâlâ REDDEDİLİR.
 const OPTIONAL_KEYS_EMPTY_MEANS_UNSET = [
   'GEMINI_API_KEY', 'LORAWAN_WEBHOOK_TOKEN', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_FROM',
-  'SMS_PROVIDER_URL', 'SMS_PROVIDER_API_KEY', 'CORS_ALLOWED_ORIGINS', 'TELEGRAM_API_BASE_URL'
+  'SMS_PROVIDER_URL', 'SMS_PROVIDER_API_KEY', 'CORS_ALLOWED_ORIGINS', 'TELEGRAM_API_BASE_URL', 'METRICS_TOKEN'
 ] as const;
 
 function loadConfig(): AppConfig {

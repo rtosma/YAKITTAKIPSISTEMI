@@ -114,3 +114,11 @@ paket gönderemez (401 `INVALID_HARDWARE_SIGNATURE`). Bu yüzden:
 
 Bu anahtar **yedek deposunda ve backend `.env`'inde bulunmaz** (backend'in bilmesine gerek yok; `env.ts` şemasında değildir). Anahtar kaybı =
 tüm şifreli yedeklerin kaybıdır: kasadaki escrow kopyası olmadan yedek programı canlıya alınmamalıdır.
+
+## Metrik ve izleme sırları (OPS-1107)
+
+| Değişken | Nerede kullanılıyor | Kim erişebilir | Rotasyon |
+|---|---|---|---|
+| `METRICS_TOKEN` | Backend `/metrics` Bearer token'ı (`config/env.ts`, opsiyonel, ≥ 16 karakter); Prometheus (`docker-compose.monitoring.yml`) aynı env'den alır | Backend + Prometheus konteyneri | Sızıntı şüphesinde; değiştirince backend ve Prometheus'u birlikte yeniden başlatın |
+| `GRAFANA_ADMIN_PASSWORD` | Grafana yönetici hesabı (**varsayılan yok**; tanımsızsa Compose reddeder) | Yalnızca izleme yöneticileri | Personel değişikliğinde |
+| `PG_EXPORTER_USER/PASSWORD` | postgres-exporter (öneri: `pg_monitor` rolü — `deploy/monitoring/postgres-monitoring-role.sql`) | Exporter konteyneri | Yıllık |

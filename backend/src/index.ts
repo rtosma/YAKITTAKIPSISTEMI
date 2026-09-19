@@ -6,6 +6,7 @@ import { config } from './config/env';
 import { initSocketServer } from './socket/socketServer';
 import { traceMiddleware, httpLoggerMiddleware } from './middleware/loggerMiddleware';
 import { globalErrorHandler, notFoundHandler, registerProcessExceptionHandlers } from './middleware/errorHandler';
+import { httpMetricsMiddleware, metricsHandler, startBusinessMetricsRefresher } from './observability/metrics';
 import { setupGracefulShutdown, isServerShuttingDown } from './utils/shutdown';
 import { logger } from './utils/logger';
 import { pool } from './db/postgresPool';
@@ -86,6 +87,10 @@ if (corsAllowedOrigins.length > 0) {
 } else {
   logger.info('🌐 [CORS] Kapalı (same-origin). Gerekirse CORS_ALLOWED_ORIGINS ile açın.');
 }
+
+// OPS-1107: HTTP süre/sayaç metrikleri EN ERKEN middleware — kapanma 503'leri ve tüm yollar ölçülür. /metrics API dışıdır (nginx proxy'lemez).
+app.use(httpMetricsMiddleware);
+app.get('/metrics', metricsHandler());
 
 // Graceful Shutdown Check Middleware (returns 503 Service Unavailable if shutting down)
 // RES-906 Kritik Not 3: liveness ve legacy /health bu 503'ten MUAF — süreç
@@ -711,6 +716,9 @@ async function startServer(): Promise<void> {
     }
   }, REPORT_SCHEDULE_SWEEP_MS);
 
+  // OPS-1107: iş metrikleri (cihaz/alarm/ikmal/e-İrsaliye kuyruğu) arka planda 30 sn'de bir yenilenir.
+  const stopBusinessMetricsRefresher = startBusinessMetricsRefresher();
+
   // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
   setupGracefulShutdown(server, {
     timeoutMs: 30000,
@@ -737,6 +745,7 @@ async function startServer(): Promise<void> {
       clearInterval(archiveGenerationSweepInterval);
       clearInterval(archiveCleanupSweepInterval);
       clearInterval(reportScheduleSweepInterval);
+      stopBusinessMetricsRefresher();
 
       // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
       // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters

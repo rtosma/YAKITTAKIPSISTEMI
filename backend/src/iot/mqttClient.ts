@@ -1,3 +1,4 @@
+import { recordMqttMessage, recordMqttRejected, recordMqttError } from '../observability/metrics';
 import mqtt, { MqttClient } from 'mqtt';
 import { config } from '../config/env';
 import { logger } from '../utils/logger';
@@ -100,6 +101,8 @@ class MQTTService {
         // broker teslim ederken mesajın topic'ini asıl (paylaşımsız) haline
         // döndürür, bu yüzden parse mantığı DEĞİŞMİYOR.
         const parts = topic.split('/');
+        // OPS-1107: kind SABİT küme (kardinalite) — topic/cihaz kimliği etiket OLMAZ.
+        recordMqttMessage(parts[0] === 'command' ? 'command_ack' : parts[6] === 'data' ? 'telemetry_data' : parts[6] === 'status' ? 'telemetry_status' : 'other');
 
         // IOT-305: command/v1/{deviceId}/ack — cihazın publishCommand() ile
         // gönderilen bir komutu aldığını doğrulaması. Telemetri topic'inden
@@ -145,10 +148,12 @@ class MQTTService {
         // ne presence'a yansır ne de bir transactions/telemetry olayı üretir.
         const registeredDevice = await getHardwareDeviceByDeviceId(deviceId);
         if (!registeredDevice) {
+          recordMqttRejected('unregistered_device');
           logger.warn({ deviceId, topic }, `🚫 [IOT-304] Kayıtlı olmayan cihazdan MQTT paketi reddedildi: '${deviceId}'.`);
           return;
         }
         if (registeredDevice.status === 'BLOKE') {
+          recordMqttRejected('blocked_device');
           logger.warn({ deviceId, topic }, `🚫 [IOT-304] Bloke edilmiş cihazdan MQTT paketi reddedildi: '${deviceId}'.`);
           return;
         }
@@ -157,6 +162,7 @@ class MQTTService {
         // bir tenant'ın topic'ine (tenantId'yi elle değiştirerek) veri
         // enjekte etmeye çalışmasına karşı ikinci bir savunma hattı.
         if (registeredDevice.tenant_id !== tenantId) {
+          recordMqttRejected('tenant_mismatch');
           logger.error(
             { deviceId, topic, claimedTenantId: tenantId, actualTenantId: registeredDevice.tenant_id },
             `🚨 [IOT-304] Tenant sahtekarlığı şüphesi: '${deviceId}' cihazı '${registeredDevice.tenant_id}'e kayıtlı ama topic '${tenantId}' iddia ediyor.`
@@ -281,6 +287,7 @@ class MQTTService {
           }
         });
       } catch (err) {
+        recordMqttError();
         logger.error({ err, topic, payload: payload.toString() }, '🚨 [MQTT] Mesaj işleme hatası!');
       }
     });

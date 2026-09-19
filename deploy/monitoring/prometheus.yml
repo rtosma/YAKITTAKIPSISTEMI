@@ -1,0 +1,39 @@
+# ==============================================================================
+# OPS-1107 — Prometheus yapılandırması (docker-compose.monitoring.yml).
+# Kural/alarm dosyaları OPS-1108 kapsamındadır (rule_files + Alertmanager orada eklenir).
+# ==============================================================================
+global:
+  scrape_interval: 15s
+  evaluation_interval: 30s
+
+scrape_configs:
+  # Backend: DNS SD ile TÜM replikalar (zero-downtime dağıtımda geçici 2 replika, ölçeklenmiş kurulumda N replika).
+  # /metrics API dışıdır (nginx proxy'lemez). METRICS_TOKEN tanımlıysa Bearer ile kazınır (prometheus giriş komutu dosyayı yazar).
+  - job_name: backend
+    metrics_path: /metrics
+    dns_sd_configs:
+      - names: [backend]
+        type: A
+        port: 5000
+        refresh_interval: 15s
+    authorization:
+      type: Bearer
+      credentials_file: /tmp/metrics_token
+    # KARDİNALİTE KORUMASI (AC): bir hedef bu sınırları aşarsa scrape REDDEDİLİR (up=0) — kod hatası Prometheus'u şişiremez.
+    # Bugünkü beklenen: ~300 seri + (kullanılan route sayısı × 2 sınıf × 14 histogram serisi). 20 000 çok geniş bir tavandır.
+    sample_limit: 20000
+    label_limit: 30
+    label_value_length_limit: 200
+
+  - job_name: node          # CPU / bellek / disk / ağ (host)
+    static_configs: [{ targets: ['node-exporter:9100'] }]
+
+  - job_name: postgres      # DB bağlantıları (pg_stat_activity), boyut, işlem oranı
+    static_configs: [{ targets: ['postgres-exporter:9187'] }]
+    sample_limit: 5000
+
+  - job_name: prometheus
+    static_configs: [{ targets: ['localhost:9090'] }]
+
+  - job_name: loki
+    static_configs: [{ targets: ['loki:3100'] }]

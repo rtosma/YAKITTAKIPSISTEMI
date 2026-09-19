@@ -86,6 +86,11 @@ jobs:
       - name: "OPS-1106: Yedekleme ve Geri Yükleme Testleri (şifreli yedek, PITR, restore tatbikatı)"
         run: node scripts/test-ops1106.mjs
 
+      # OPS-1107: dashboard ↔ metrik kayıt defteri, kardinalite politikası, doküman drift'i, promtool/loki/promtail yapılandırma denetimi, compose güvenliği.
+      # (Canlı uçtan uca: node scripts/test-ops1107.mjs --live — çalışan compose yığını gerektirir.)
+      - name: "OPS-1107: Gözlemlenebilirlik Yığını Testleri (dashboard, kardinalite, yapılandırma)"
+        run: node scripts/test-ops1107.mjs
+
       - name: "ARCH-101.2: Ham pool.query Kullanımı Denetimi (RLS Bypass Koruması)"
         run: node scripts/check-no-raw-pool-query.mjs
 
@@ -471,6 +476,11 @@ jobs:
       # REP-723 (#180): yönetici özet dashboard'u — KPI ↔ detay raporu tutarlılığı (drilldown), trend/ilk-10/tank özeti, rol kapsamı, < 1 sn
       - name: Run REP-723 Executive Dashboard Tests
         run: cd backend && npx tsx test/test_rep723_executive_dashboard.ts
+
+      # OPS-1107 (#184): /metrics — HTTP/DB/iş metrikleri, kardinalite (250 yeni URL → seri sayısı değişmez), arka plan iş metriği yenileyicisi,
+      # METRICS_TOKEN. Bu iş gerçek bir EMQX'e bağlanmaz → MQTT sayaç adımları (MQTT_URL_TEST tanımsız) atlanır.
+      - name: Run OPS-1107 Prometheus Metrics Tests
+        run: cd backend && npx tsx test/test_ops1107_metrics.ts
 
       # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
       # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte

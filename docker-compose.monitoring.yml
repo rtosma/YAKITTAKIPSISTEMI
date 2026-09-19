@@ -1,0 +1,113 @@
+# ==============================================================================
+# OPS-1107 — Gözlemlenebilirlik yığını (Prometheus + Grafana + Loki + Promtail + node/postgres exporter).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#   # sunucuda kalıcı: kök .env'ye  COMPOSE_FILE=docker-compose.yml:docker-compose.monitoring.yml[:docker-compose.backup.yml]
+#
+# Gerekli .env: GRAFANA_ADMIN_PASSWORD (VARSAYILAN YOK — tanımsızsa Compose hata verir). İsteğe bağlı: METRICS_TOKEN (backend /metrics
+# Bearer token'ı; Prometheus AYNI değeri kullanır), PG_EXPORTER_USER/PG_EXPORTER_PASSWORD (öneri: pg_monitor rolü —
+# deploy/monitoring/postgres-monitoring-role.sql), MONITORING_DIR (yapılandırma dizini), DOCKER_SOCK (rootless Docker soketi).
+#
+# Ağ: yalnızca iç compose ağı. DIŞARI açılan TEK port Grafana'dır ve yalnızca 127.0.0.1'e bağlanır (uzaktan erişim için nginx/SSH tüneli).
+# Bellek/disk: Prometheus 15 gün / 5 GB, Loki 14 gün retansiyon (bkz. docs/OBSERVABILITY.md §Kapasite).
+# ==============================================================================
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: yakittakip_prometheus
+    restart: unless-stopped
+    # Backend METRICS_TOKEN'ı env'den alır ve Prometheus'un `credentials_file` yoluna yazar (boşsa boş dosya = başlıksız/boş Bearer).
+    entrypoint: ["/bin/sh", "-c", "printf '%s' \"$$METRICS_TOKEN\" > /tmp/metrics_token && exec /bin/prometheus \"$$@\"", "prometheus"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=5GB
+      - --web.enable-lifecycle
+    environment:
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+    volumes:
+      - ${MONITORING_DIR:-./deploy/monitoring}/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - yakit_network
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: yakittakip_node_exporter
+    restart: unless-stopped
+    pid: host
+    command:
+      - --path.rootfs=/host
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    volumes:
+      - /:/host:ro,rslave
+    networks:
+      - yakit_network
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: yakittakip_postgres_exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${PG_EXPORTER_USER:-${POSTGRES_USER:-postgres}}:${PG_EXPORTER_PASSWORD:-${POSTGRES_PASSWORD:-postgres}}@postgres:5432/${POSTGRES_DB:-yakittakip_db}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - yakit_network
+
+  loki:
+    image: grafana/loki:3.2.1
+    container_name: yakittakip_loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ${MONITORING_DIR:-./deploy/monitoring}/loki.yml:/etc/loki/loki.yml:ro
+      - loki_data:/loki
+    networks:
+      - yakit_network
+
+  promtail:
+    image: grafana/promtail:3.2.1
+    container_name: yakittakip_promtail
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/promtail.yml", "-config.expand-env=true"]
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-yakittakipsistemi}
+    volumes:
+      - ${MONITORING_DIR:-./deploy/monitoring}/promtail.yml:/etc/promtail/promtail.yml:ro
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    networks:
+      - yakit_network
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: yakittakip_grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD .env dosyasında tanımlanmalıdır (varsayılan parola YOKTUR)}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - ${MONITORING_DIR:-./deploy/monitoring}/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ${MONITORING_DIR:-./deploy/monitoring}/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - yakit_network
+
+volumes:
+  prometheus_data:
+  loki_data:
+  grafana_data:
