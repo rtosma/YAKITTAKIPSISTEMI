@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
 import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getVehicleSiteAssignmentHistory, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant, createLabSample, getLabSamples, getLabSample, cancelLabSample, recordLabTestResult, getLabTestResults, getNonConformingLabResults, computeDriverBehaviorScores, getDriverBehaviorScores, getDriverBehaviorScoreHistory, getTankStockForecasts, runTankStockAlertSweepForCurrentTenant, computeDeviceHealthScores, getDeviceHealthScores, getDeviceHealthScoreHistory, getDeviceOnlineSla, getDeviceFirmwareInventory, createFireRecord, getFireRecords, approveFireRecord, rejectFireRecord, getFireRecordSiteComparison, getSmsMonthlyUsageForCurrentTenant, upsertTenantNotificationChannels, getTenantNotificationChannels, setUserNotificationPreference, getUserNotificationPreferencesForCurrentUser, createUserNotificationMute, getActiveUserNotificationMutes } from '../db/tenantDb';
+import { downloadDespatchAdviceDocument } from '../services/despatchAdviceDownloadService';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
 import { getReportDefinition, listReportsForRole, runReport, streamReportToCsv, streamReportToPdf, auditReportExport, assertPiiFilterAccess, ReportQueryParams } from '../reports';
 import { reportRunQuerySchema, reportExportQuerySchema, reportIdParamsSchema } from '../schemas/reportSchema';
@@ -6760,6 +6761,35 @@ router.get(
       res.setHeader('X-Despatch-Advice-ETTN', prep.ettn);
       res.setHeader('X-Delivery-Mode', prep.deliveryMode);
       res.send(xml);
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /despatch-advice-documents/{documentId}/download:
+ *   get:
+ *     summary: e-İrsaliye Belge İndirme — XML Arşivi / PDF Özeti (REP-721)
+ *     description: >
+ *       `?format=xml` iletim kuyruğuna alınırken arşivlenen XSD-doğrulanmış XML'i (yoksa 404 XML_NOT_ARCHIVED),
+ *       `?format=pdf` belge özetini döner. SITE_MANAGER yalnızca kendi şantiyesinin belgesini indirir;
+ *       her indirme audit_logs'a yazılır (yazılamazsa dosya verilmez).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/despatch-advice-documents/:documentId/download',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_VIEW_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const file = await downloadDespatchAdviceDocument(req.params.documentId, req.query.format as any, siteScopeFor(req.user!));
+      res.setHeader('Content-Type', file.contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+      res.set('Cache-Control', 'no-store');
+      res.send(file.body);
     } catch (error: any) {
       next(error);
     }

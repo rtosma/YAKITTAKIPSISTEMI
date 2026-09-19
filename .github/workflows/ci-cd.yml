@@ -435,6 +435,10 @@ jobs:
       - name: Run REP-720 Driver Report Tests
         run: cd backend && npx tsx test/test_rep720_driver_report.ts
 
+      # REP-721 (#178): e-İrsaliye durum raporu — gerçek COMP-601..603 akışları, numara boşluğu tespiti, audit'li XML/PDF indirme
+      - name: Run REP-721 Despatch Advice Status Report Tests
+        run: cd backend && npx tsx test/test_rep721_despatch_status.ts
+
       # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
       # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte
       # ardışık istekler, sayfa sayısı) BİLEREK ayrı bir dosyada — o dosyanın

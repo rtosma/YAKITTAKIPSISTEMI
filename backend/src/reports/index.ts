@@ -14,6 +14,7 @@ import './definitions/rep717DeviceHealth';
 import './definitions/rep718CalibrationHistory';
 import './definitions/rep719CostBudget';
 import './definitions/rep720DriverReport';
+import './definitions/rep721DespatchStatus';
 import './definitions/rep722AuditReport';
 
 export { getReportDefinition, listReportsForRole } from './reportRegistry';
