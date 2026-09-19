@@ -421,6 +421,11 @@ jobs:
       - name: Run REP-717 Device Health Report Tests
         run: cd backend && npx tsx test/test_rep717_device_health.ts
 
+      # REP-718 (#175): calibration_commands'tan K-factor geçmişi — elle hesaplı değişim %,
+      # kayan 30 günlük sık kalibrasyon (filtreden ÖNCE), en son doğrulama alımı sapması.
+      - name: Run REP-718 Calibration History Report Tests
+        run: cd backend && npx tsx test/test_rep718_calibration_history.ts
+
       # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
       # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte
       # ardışık istekler, sayfa sayısı) BİLEREK ayrı bir dosyada — o dosyanın
