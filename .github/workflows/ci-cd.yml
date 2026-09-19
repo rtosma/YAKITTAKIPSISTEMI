@@ -401,6 +401,11 @@ jobs:
       - name: Run REP-713 Site Stock Report Tests
         run: cd backend && npx tsx test/test_rep713_site_stock.ts
 
+      # REP-714 (#171): mutabakat kayıtlarından tank/fire raporu — elle hesaplı fark,
+      # tolerans vurgusu, LAG trend, litre-vs-% filtreleri, fire sınıfı kırılımı.
+      - name: Run REP-714 Tank Reconciliation Report Tests
+        run: cd backend && npx tsx test/test_rep714_tank_reconciliation.ts
+
       # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
       # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte
       # ardışık istekler, sayfa sayısı) BİLEREK ayrı bir dosyada — o dosyanın

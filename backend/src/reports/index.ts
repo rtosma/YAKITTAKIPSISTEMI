@@ -7,6 +7,7 @@
 import './definitions/rep711DispenseMovement';
 import './definitions/rep712VehicleConsumption';
 import './definitions/rep713SiteStock';
+import './definitions/rep714TankReconciliation';
 import './definitions/rep722AuditReport';
 
 export { getReportDefinition, listReportsForRole } from './reportRegistry';
