@@ -2599,3 +2599,54 @@ CREATE POLICY report_deliveries_tenant_isolation_policy ON report_deliveries
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- REP-712 (#169): araç bazlı tüketim raporunun (REP-703 çatısı SQL-tanımlı)
+-- FLEET-1405 motorunu (tenantDb.ts computeVehicleConsumptionWindow, JS)
+-- SQL'de yeniden ifade eden iki YARDIMCI fonksiyon. Çift kaynak riskine karşı
+-- test_rep712_vehicle_consumption.ts, rapor satırlarını JS motorunun
+-- (getFleetConsumptionReport) çıktısıyla karşılaştırır (parite testi).
+-- İkisi de SECURITY INVOKER (varsayılan) — çağıran app_user'ın RLS'i içeride
+-- de geçerli, tenant sızıntısı yok.
+
+-- fleet/meterValidation.ts resolveMeterType ile AYNI kural (açık değer > araç tipi regex'i > KM).
+CREATE OR REPLACE FUNCTION resolve_vehicle_meter_type(p_vehicle_type TEXT, p_explicit TEXT)
+RETURNS TEXT LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE
+    WHEN p_explicit IN ('KM', 'MOTOR_SAAT') THEN p_explicit
+    WHEN lower(coalesce(p_vehicle_type, '')) ~ 'ekskavat|dozer|loader|y[üu]kleyici|greyder|silindir|vin[çc]|forklift|i[şs]\s*makine|kep[çc]e|beko|kompres[öo]r|jenerat[öo]r' THEN 'MOTOR_SAAT'
+    ELSE 'KM'
+  END
+$$;
+
+-- Bir araç için [p_start, p_end) penceresinde sayaç açılış/kapanış + yakıt.
+-- Açılış: pencereden ÖNCEKİ en son okuma; kapanış: pencere içindeki en son
+-- GİRİLEN (created_at) okuma. Eksik → EKSIK_VERI; kullanım (2 haneye
+-- yuvarlanmış) <= 0 → GECERSIZ_VERI (Kritik Not: tahmin/0 üretilmez).
+-- fuel_liters/total_cost sayaç verisinden BAĞIMSIZ, gerçek ikmal toplamıdır.
+CREATE OR REPLACE FUNCTION vehicle_consumption_window(
+  p_vehicle_id VARCHAR, p_plate VARCHAR, p_meter_type TEXT, p_start TIMESTAMPTZ, p_end TIMESTAMPTZ
+) RETURNS TABLE (usage_amount NUMERIC, fuel_liters NUMERIC, total_cost NUMERIC, data_status TEXT)
+LANGUAGE sql STABLE AS $$
+  WITH o AS (
+    SELECT reading_value FROM vehicle_meter_readings
+     WHERE vehicle_id = p_vehicle_id AND meter_type = p_meter_type AND reading_at < p_start
+     ORDER BY reading_at DESC, created_at DESC LIMIT 1
+  ), c AS (
+    SELECT reading_value FROM vehicle_meter_readings
+     WHERE vehicle_id = p_vehicle_id AND meter_type = p_meter_type AND reading_at >= p_start AND reading_at < p_end
+     ORDER BY created_at DESC LIMIT 1
+  ), f AS (
+    SELECT COALESCE(SUM(amount_liters), 0) AS l, SUM(total_cost) AS cost FROM transactions
+     WHERE vehicle_plate = p_plate AND created_at >= p_start AND created_at < p_end
+  )
+  SELECT
+    CASE WHEN o.reading_value IS NOT NULL AND c.reading_value IS NOT NULL THEN round(c.reading_value - o.reading_value, 2) END,
+    round(f.l, 2),
+    f.cost,
+    CASE
+      WHEN o.reading_value IS NULL OR c.reading_value IS NULL THEN 'EKSIK_VERI'
+      WHEN round(c.reading_value - o.reading_value, 2) <= 0 THEN 'GECERSIZ_VERI'
+      ELSE 'HESAPLANDI'
+    END
+  FROM f LEFT JOIN o ON TRUE LEFT JOIN c ON TRUE
+$$;

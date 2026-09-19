@@ -5,6 +5,7 @@
  * ibarettir (AC: "yeni bir rapor yalnızca tanım eklenerek üretilebilmeli").
  */
 import './definitions/rep711DispenseMovement';
+import './definitions/rep712VehicleConsumption';
 import './definitions/rep722AuditReport';
 
 export { getReportDefinition, listReportsForRole } from './reportRegistry';

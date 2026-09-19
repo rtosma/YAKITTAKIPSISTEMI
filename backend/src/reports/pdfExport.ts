@@ -192,7 +192,7 @@ export async function streamReportToPdf(res: Response, def: ReportDefinition, qu
         doc.moveDown(0.5);
         drawRow(columns.map((c) => c.header), { header: true });
       }
-      drawRow(columns.map((c) => (c.format ? c.format(row[c.key]) : String(row[c.key] ?? ''))));
+      drawRow(columns.map((c) => (c.format ? c.format(row[c.key], row) : String(row[c.key] ?? ''))));
       rowCount++;
     }
   });

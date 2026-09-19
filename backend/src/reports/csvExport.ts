@@ -18,7 +18,7 @@ function csvEscape(value: unknown): string {
 }
 
 function formatCsvRow(def: ReportDefinition, row: Record<string, unknown>): string {
-  return def.columns.map((c) => csvEscape(c.format ? c.format(row[c.key]) : row[c.key])).join(',');
+  return def.columns.map((c) => csvEscape(c.format ? c.format(row[c.key], row) : row[c.key])).join(',');
 }
 
 export async function streamReportToCsv(res: Response, def: ReportDefinition, query: ReportQueryParams, siteScope: string | undefined): Promise<void> {

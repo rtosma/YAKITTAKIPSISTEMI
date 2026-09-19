@@ -57,6 +57,13 @@ function applyFilter(filter: ReportFilterDef, rawValue: unknown, conditions: str
       params.push(value);
       conditions.push(`${filter.column} < ($${params.length}::date + INTERVAL '1 day')`);
       break;
+    case 'numberGte': {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return;
+      params.push(n);
+      conditions.push(`${filter.column} >= $${params.length}::numeric`);
+      break;
+    }
     case 'in': {
       const values = String(rawValue).split(',').map((v) => v.trim()).filter(Boolean).slice(0, 50);
       if (values.length === 0) return;

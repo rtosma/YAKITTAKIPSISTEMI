@@ -391,6 +391,11 @@ jobs:
       - name: Run REP-711 Dispense Movement Report Tests
         run: cd backend && npx tsx test/test_rep711_dispense_movement.ts
 
+      # REP-712 (#169): FLEET-1405 JS motorunun SQL'de yeniden ifadesi — Test 2
+      # rapor satırlarını getFleetConsumptionReport ile karşılaştıran PARİTE testidir.
+      - name: Run REP-712 Vehicle Consumption Report Tests
+        run: cd backend && npx tsx test/test_rep712_vehicle_consumption.ts
+
       # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
       # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte
       # ardışık istekler, sayfa sayısı) BİLEREK ayrı bir dosyada — o dosyanın

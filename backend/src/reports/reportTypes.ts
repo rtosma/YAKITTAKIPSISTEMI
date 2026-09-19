@@ -23,7 +23,8 @@ import { UserRole } from '../services/tokenService';
  * değil, reportEngine.ts'in tek giriş noktasında garanti edilir.
  */
 
-export type ReportFilterType = 'exact' | 'ilike' | 'dateFrom' | 'dateToExclusiveNextDay' | 'in';
+// 'numberGte' (REP-712): `column >= $n::numeric` — sapma eşiği gibi sayısal alt sınır filtreleri için.
+export type ReportFilterType = 'exact' | 'ilike' | 'dateFrom' | 'dateToExclusiveNextDay' | 'in' | 'numberGte';
 
 export interface ReportFilterDef {
   /** İstemcinin query string'de kullanacağı anahtar (örn. ?siteName=...). */
@@ -40,8 +41,13 @@ export interface ReportColumnDef {
   header: string;
   /** PDF export'ta oransal sütun genişliği (CSV'de yok sayılır). */
   width?: number;
-  /** CSV/PDF'te gösterim biçimi (örn. tarih/sayı formatlama). Yoksa String(value). */
-  format?: (value: unknown) => string;
+  /**
+   * CSV/PDF'te gösterim biçimi (örn. tarih/sayı formatlama). Yoksa String(value).
+   * `row` (REP-712, opsiyonel): hücrenin anlamı SATIRIN başka alanına bağlıysa
+   * (örn. "veri eksik" durumunda boş yerine açık bir metin) — eski, tek
+   * argümanlı format fonksiyonları etkilenmez.
+   */
+  format?: (value: unknown, row?: Record<string, unknown>) => string;
 }
 
 export interface ReportAggregateDef {
