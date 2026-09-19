@@ -2683,3 +2683,28 @@ CREATE POLICY cross_site_denials_tenant_isolation_policy ON cross_site_denials
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 REVOKE UPDATE, DELETE, TRUNCATE ON cross_site_denials FROM app_user;
+
+-- REP-719 (#176): şantiye bazlı aylık yakıt BÜTÇESİ (TL). Kod tabanında hiçbir
+-- bütçe kavramı yoktu (yalnız litre bazlı kota/limit — FUEL-402/FLEET-1406).
+-- Bütçe SADECE raporlamadır: ikmali engellemez, yalnız REP-719'da aşım
+-- olarak vurgulanır. (tenant_id, site_name, month) benzersiz → PUT upsert.
+CREATE TABLE IF NOT EXISTS fuel_budgets (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    site_name VARCHAR(128) NOT NULL,
+    -- 'YYYY-MM' (Europe/Istanbul takvim ayı — sabit UTC+3, rapordaki ay ile aynı).
+    month VARCHAR(7) NOT NULL,
+    amount_try NUMERIC(14, 2) NOT NULL CHECK (amount_try > 0),
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tenant_id, site_name, month)
+);
+CREATE INDEX IF NOT EXISTS idx_fuel_budgets_lookup ON fuel_budgets(tenant_id, month);
+ALTER TABLE fuel_budgets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fuel_budgets FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS fuel_budgets_tenant_isolation_policy ON fuel_budgets;
+CREATE POLICY fuel_budgets_tenant_isolation_policy ON fuel_budgets
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));

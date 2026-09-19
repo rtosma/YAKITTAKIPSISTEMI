@@ -54,6 +54,8 @@ import {
   verifyAndConsumeReportDeliveryDownload
 } from '../services/reportScheduleService';
 import { createReportScheduleSchema, updateReportScheduleSchema, reportScheduleIdParamsSchema, reportDeliveryDownloadParamsSchema } from '../schemas/reportScheduleSchema';
+import { setFuelBudget, listFuelBudgets, deleteFuelBudget } from '../services/fuelBudgetService';
+import { setFuelBudgetSchema, listFuelBudgetsQuerySchema, fuelBudgetIdParamsSchema } from '../schemas/fuelBudgetSchema';
 import { fuelCostSettingsSchema } from '../schemas/fuelCostSchema';
 import { runLicenseExpiryWarningSweep } from '../services/licenseWarningService';
 import { getUsageMeteringHistory, computeUsageMeteringForCurrentTenant } from '../services/usageMeteringService';
@@ -6300,6 +6302,65 @@ router.get(
         res.destroy();
         return;
       }
+      next(error);
+    }
+  }
+);
+
+// ── REP-719: şantiye × ay yakıt bütçesi (yalnızca raporlama — ikmali engellemez) ──
+const FUEL_BUDGET_ADMIN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /fuel-budgets:
+ *   put:
+ *     summary: Şantiye × Ay Yakıt Bütçesi Tanımla / Güncelle (REP-719)
+ *     description: (site, ay) için bütçe (TL) yoksa yaratır, varsa günceller. Bütçe yalnızca raporlamadır; aşım rep-719'da vurgulanır.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Yakıt Bütçeleri (REP-719)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put(
+  '/fuel-budgets',
+  authenticateJWT,
+  authorizeRoles(...FUEL_BUDGET_ADMIN_ROLES),
+  validateRequest({ body: setFuelBudgetSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await setFuelBudget(req.body, req.user!.userId) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/fuel-budgets',
+  authenticateJWT,
+  authorizeRoles(...FUEL_BUDGET_ADMIN_ROLES),
+  validateRequest({ query: listFuelBudgetsQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await listFuelBudgets(req.query as { month?: string; siteName?: string }) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.delete(
+  '/fuel-budgets/:budgetId',
+  authenticateJWT,
+  authorizeRoles(...FUEL_BUDGET_ADMIN_ROLES),
+  validateRequest({ params: fuelBudgetIdParamsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await deleteFuelBudget(req.params.budgetId, req.user!.userId);
+      res.json({ success: true });
+    } catch (error: any) {
       next(error);
     }
   }

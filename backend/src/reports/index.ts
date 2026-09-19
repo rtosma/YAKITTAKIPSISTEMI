@@ -12,6 +12,7 @@ import './definitions/rep715CrossSite';
 import './definitions/rep716AlarmReport';
 import './definitions/rep717DeviceHealth';
 import './definitions/rep718CalibrationHistory';
+import './definitions/rep719CostBudget';
 import './definitions/rep722AuditReport';
 
 export { getReportDefinition, listReportsForRole } from './reportRegistry';
