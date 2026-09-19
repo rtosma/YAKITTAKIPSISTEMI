@@ -151,6 +151,12 @@ export interface ReportDefinition {
    * denetim kaydı yazılamazsa veri hiç gönderilmez (AUTH-203 ilkesi).
    */
   auditExport?: boolean;
+  /**
+   * REP-722: `true` ise raporun JSON GÖRÜNTÜLEMESİ de (sayfa başına bir kez) `audit_logs`'a
+   * `REPORT_VIEW` olarak yazılır — `auditExport` ile aynı ilkeler (veri çıkmadan önce, yazılamazsa
+   * veri yok). Yalnızca erişimin kendisi hassas olan raporlar için (denetim raporu).
+   */
+  auditAccess?: boolean;
   /** PDF export CPU-yoğun ve kuyruksuz (bkz. reportEngine.ts) — bu satır sınırının üstünde 409 döner. */
   maxPdfRows?: number;
 }

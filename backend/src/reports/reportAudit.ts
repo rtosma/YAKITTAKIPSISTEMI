@@ -17,13 +17,14 @@ import { ReportQueryParams } from './reportEngine';
  * hata fırlar, HİÇ veri gönderilmez (AUTH-203: "audit yazılamazsa işlem
  * başarısız"). Yalnızca `def.filters`'ta tanımlı anahtarlar kaydedilir —
  * istemcinin gönderdiği rastgele parametreler denetim kaydına sızmaz.
+ * REP-722: `format: 'view'` (JSON görüntüleme) `REPORT_VIEW` olarak yazılır (`def.auditAccess`).
  * Zamanlanmış gönderim/arşiv yolu (viewer yok → her zaman MASKELİ) bu kayda
  * dahil DEĞİLDİR: kişisel veri içermeyen çıktı için ayrı bir iz gerekmez.
  */
 export async function auditReportExport(
   def: ReportDefinition,
   viewer: ReportViewer,
-  format: 'csv' | 'pdf',
+  format: 'csv' | 'pdf' | 'view',
   query: ReportQueryParams
 ): Promise<void> {
   const filters: Record<string, string> = {};
@@ -33,7 +34,7 @@ export async function auditReportExport(
   }
   await withTenant(async (client) => {
     await writeAuditLog(client, {
-      action: 'REPORT_EXPORT',
+      action: format === 'view' ? 'REPORT_VIEW' : 'REPORT_EXPORT',
       targetType: 'report',
       targetId: def.id,
       afterValue: { format, filters, role: viewer.role, piiMasked: def.columns.some((c) => c.pii) ? !isPiiVisible(def, viewer) : false }

@@ -439,6 +439,10 @@ jobs:
       - name: Run REP-721 Despatch Advice Status Report Tests
         run: cd backend && npx tsx test/test_rep721_despatch_status.ts
 
+      # REP-722 (#179): denetim raporu — gerçek kritik işlemler, sütun/özet/tam kapsam, değiştirilemezlik, rapor erişim audit'i (fail-closed)
+      - name: Run REP-722 Audit Report Tests
+        run: cd backend && npx tsx test/test_rep722_audit_report.ts
+
       # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
       # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte
       # ardışık istekler, sayfa sayısı) BİLEREK ayrı bir dosyada — o dosyanın

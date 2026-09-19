@@ -6232,7 +6232,13 @@ router.get(
         throw new ForbiddenError('Bu raporu görüntüleme yetkiniz yok.', { error: 'REPORT_FORBIDDEN' });
       }
 
-      const result = await runReport(def, req.query as ReportQueryParams, siteScopeFor(req.user!), { role: req.user!.role });
+      const viewer = { role: req.user!.role };
+      // REP-722: erişimin kendisi hassas raporlarda görüntüleme de audit'lenir (veri çıkmadan önce).
+      if (def.auditAccess) {
+        assertPiiFilterAccess(def, req.query as ReportQueryParams, viewer);
+        await auditReportExport(def, viewer, 'view', req.query as ReportQueryParams);
+      }
+      const result = await runReport(def, req.query as ReportQueryParams, siteScopeFor(req.user!), viewer);
       res.json({
         success: true,
         data: result.data,
