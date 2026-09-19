@@ -188,7 +188,18 @@ async function run() {
       new Set(oks.map((r) => r.body?.data?.sessionId).filter(Boolean)).size === oks.length,
       `benzersiz sessionId=${new Set(oks.map((r) => r.body?.data?.sessionId)).size}, kabul=${oks.length}`
     );
+
+    // === Test 5 (REP-715 — reddedilen denemelerin KALICI izi, cihaz yolu): reddedilen her
+    // istek cross_site_denials'a source=DEVICE / QUOTA_EXHAUSTED olarak yazıldı (kabul
+    // edilenler YAZILMADI); ret yanıtları yukarıda zaten 409 — kayıt davranışı değiştirmedi. ===
+    const denials = await q('SELECT reason, source, target_site, allowed_liters FROM cross_site_denials WHERE vehicle_plate = $1', [plate]);
+    check(
+      `Test 5 (REP-715 — ret izi): ${N_DEVICES - expectedOks} reddedilen cihaz isteği cross_site_denials'a QUOTA_EXHAUSTED/DEVICE olarak yazıldı, kabul edilenler yazılmadı`,
+      denials.length === N_DEVICES - expectedOks && denials.every((d) => d.reason === 'QUOTA_EXHAUSTED' && d.source === 'DEVICE' && d.target_site === targetSite && Number(d.allowed_liters) === QUOTA_LITERS),
+      `kayıt=${denials.length}, beklenen=${N_DEVICES - expectedOks}`
+    );
   } finally {
+    await q('DELETE FROM cross_site_denials WHERE vehicle_plate = $1', [plate]);
     await q('DELETE FROM cross_site_permissions WHERE id = $1', [permId]);
     await q('DELETE FROM tanks WHERE name = $1', [tankName]);
     await q('DELETE FROM vehicles WHERE plate = $1', [plate]);

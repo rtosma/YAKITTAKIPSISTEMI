@@ -93,7 +93,9 @@ function buildWhereClause(def: ReportDefinition, query: ReportQueryParams, siteS
   }
   if (def.siteScopeColumn && siteScope !== undefined) {
     params.push(siteScope);
-    conditions.unshift(`${def.siteScopeColumn} = $${params.length}`);
+    const scopeColumns = [def.siteScopeColumn, ...(def.siteScopeAltColumns ?? [])];
+    const scopeCondition = scopeColumns.map((c) => `${c} = $${params.length}`).join(' OR ');
+    conditions.unshift(scopeColumns.length > 1 ? `(${scopeCondition})` : scopeCondition);
   }
 
   return { whereClause: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '', params };

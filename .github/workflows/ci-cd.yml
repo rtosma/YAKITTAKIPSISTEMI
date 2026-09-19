@@ -406,6 +406,11 @@ jobs:
       - name: Run REP-714 Tank Reconciliation Report Tests
         run: cd backend && npx tsx test/test_rep714_tank_reconciliation.ts
 
+      # REP-715 (#172): çapraz alım/mahsuplaşma + reddedilen deneme izi (cross_site_denials).
+      # Cihaz yolu kaydı test_fuel402_2_quota_concurrency.ts Test 5'te.
+      - name: Run REP-715 Cross-Site Settlement Report Tests
+        run: cd backend && npx tsx test/test_rep715_cross_site.ts
+
       # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
       # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte
       # ardışık istekler, sayfa sayısı) BİLEREK ayrı bir dosyada — o dosyanın

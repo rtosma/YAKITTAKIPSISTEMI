@@ -1144,7 +1144,55 @@ async function getTenantFuelCostMethod(client: import('pg').PoolClient, tenantId
   return (res.rows[0]?.fuel_cost_method as FuelCostMethod) ?? 'AGIRLIKLI_ORTALAMA';
 }
 
-export async function createTransaction(
+/**
+ * REP-715: reddedilen çapraz şantiye ikmal denemelerinin (izin yok / kota
+ * tükenmiş) KALICI izi. Ret noktaları hatayı `crossSiteDenial` bağlamıyla
+ * işaretler; export edilen sarmalayıcılar (createTransaction /
+ * authorizeDispenseRequest) yakalayıp AYRI bir transaction'da yazar (ret
+ * transaction'ı ROLLBACK olduğu için içeride yazılamaz). Best-effort: yazım
+ * başarısız olursa yalnızca loglanır, ORİJİNAL hata değişmeden fırlatılır.
+ */
+interface CrossSiteDenialContext {
+  vehiclePlate: string;
+  homeSite: string | null;
+  targetSite: string;
+  requestedLiters?: number | null;
+  reason: 'NO_SITE_PERMISSION' | 'QUOTA_EXHAUSTED';
+  permissionId?: string | null;
+  allowedLiters?: number | null;
+  usedLiters?: number | null;
+}
+
+function withDenialContext<E extends Error>(err: E, ctx: CrossSiteDenialContext): E {
+  return Object.assign(err, { crossSiteDenial: ctx });
+}
+
+async function recordCrossSiteDenialFromError(err: unknown, source: 'DEVICE' | 'MANUEL'): Promise<void> {
+  const ctx = (err as { crossSiteDenial?: CrossSiteDenialContext } | null)?.crossSiteDenial;
+  if (!ctx) return;
+  try {
+    await withTenant(async (client, tenantId) => {
+      await client.query(
+        `INSERT INTO cross_site_denials (id, tenant_id, vehicle_plate, home_site, target_site, requested_liters, reason, permission_id, allowed_liters, used_liters, source)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [generateId('csden'), tenantId, ctx.vehiclePlate, ctx.homeSite, ctx.targetSite, ctx.requestedLiters ?? null, ctx.reason, ctx.permissionId ?? null, ctx.allowedLiters ?? null, ctx.usedLiters ?? null, source]
+      );
+    });
+  } catch (recordErr) {
+    logger.error({ err: recordErr, vehiclePlate: ctx.vehiclePlate }, '🚨 [REP-715] Reddedilen çapraz şantiye denemesi kaydedilemedi (ret davranışı etkilenmedi).');
+  }
+}
+
+export async function createTransaction(data: Parameters<typeof createTransactionCore>[0]): Promise<TransactionRecord> {
+  try {
+    return await createTransactionCore(data);
+  } catch (err) {
+    await recordCrossSiteDenialFromError(err, 'MANUEL');
+    throw err;
+  }
+}
+
+async function createTransactionCore(
   // idempotency_key/hash_signature/verification_status yalnızca FUEL-401.4'ün
   // finalizeDispenseSession()'ından geçen, cihaz-tetiklemeli otomatik
   // ikmallere özgü (bkz. yukarıdaki alan yorumları) — bu fonksiyon (manuel/
@@ -1183,17 +1231,27 @@ export async function createTransaction(
       );
 
       if (permRes.rows.length === 0) {
-        throw new ForbiddenError(
-          `'${data.vehicle_plate}' plakalı aracın '${data.site_name}' şantiyesinde geçerli bir çapraz şantiye ikmal yetkisi yok.`
+        throw withDenialContext(
+          new ForbiddenError(
+            `'${data.vehicle_plate}' plakalı aracın '${data.site_name}' şantiyesinde geçerli bir çapraz şantiye ikmal yetkisi yok.`,
+            { error: 'NO_SITE_PERMISSION' }
+          ),
+          { vehiclePlate: data.vehicle_plate, homeSite: vehicleRes.rows[0].site_name, targetSite: data.site_name, requestedLiters: Number(data.amount_liters), reason: 'NO_SITE_PERMISSION' }
         );
       }
 
       const perm = permRes.rows[0];
       const remaining = Number(perm.allowed_liters) - Number(perm.used_liters);
       if (remaining < Number(data.amount_liters)) {
-        throw new ConflictError(
-          `Çapraz şantiye kotası yetersiz: kalan ${remaining.toFixed(2)} L, istenen ${Number(data.amount_liters).toFixed(2)} L.`,
-          { error: 'QUOTA_EXHAUSTED' }
+        throw withDenialContext(
+          new ConflictError(
+            `Çapraz şantiye kotası yetersiz: kalan ${remaining.toFixed(2)} L, istenen ${Number(data.amount_liters).toFixed(2)} L.`,
+            { error: 'QUOTA_EXHAUSTED' }
+          ),
+          {
+            vehiclePlate: data.vehicle_plate, homeSite: vehicleRes.rows[0].site_name, targetSite: data.site_name, requestedLiters: Number(data.amount_liters),
+            reason: 'QUOTA_EXHAUSTED', permissionId: perm.id, allowedLiters: Number(perm.allowed_liters), usedLiters: Number(perm.used_liters)
+          }
         );
       }
 
@@ -1278,6 +1336,15 @@ export interface DispenseAuthResult {
   session: DispenseSession;
 }
 
+export async function authorizeDispenseRequest(input: Parameters<typeof authorizeDispenseRequestCore>[0]): Promise<DispenseAuthResult> {
+  try {
+    return await authorizeDispenseRequestCore(input);
+  } catch (err) {
+    await recordCrossSiteDenialFromError(err, 'DEVICE');
+    throw err;
+  }
+}
+
 /**
  * FUEL-401.1 — "request-auth" ucunun yetkilendirme zinciri: kart aktif mi →
  * araç aktif mi → şantiye yetkisi → kota → tank seviyesi. Her ret, ticket'ın
@@ -1291,7 +1358,7 @@ export interface DispenseAuthResult {
  * o kanalın gecikmeli/susmuş olması bu HTTP isteğinin geçerliliğini etkilemez;
  * ayrı bir kontrol eklemek gereksiz bir yanlış-red kaynağı olurdu.
  */
-export async function authorizeDispenseRequest(input: {
+async function authorizeDispenseRequestCore(input: {
   rfidCardId: string;
   tankName: string;
   deviceSiteName: string;
@@ -1488,9 +1555,12 @@ export async function authorizeDispenseRequest(input: {
         [vehicle.plate, input.deviceSiteName]
       );
       if (permRes.rows.length === 0) {
-        throw new ForbiddenError(
-          `'${vehicle.plate}' plakalı aracın '${input.deviceSiteName}' şantiyesinde geçerli bir çapraz şantiye ikmal yetkisi yok.`,
-          { error: 'NO_SITE_PERMISSION' }
+        throw withDenialContext(
+          new ForbiddenError(
+            `'${vehicle.plate}' plakalı aracın '${input.deviceSiteName}' şantiyesinde geçerli bir çapraz şantiye ikmal yetkisi yok.`,
+            { error: 'NO_SITE_PERMISSION' }
+          ),
+          { vehiclePlate: vehicle.plate, homeSite: vehicle.site_name, targetSite: input.deviceSiteName, reason: 'NO_SITE_PERMISSION' }
         );
       }
       const perm = permRes.rows[0];
@@ -1508,7 +1578,10 @@ export async function authorizeDispenseRequest(input: {
           .reduce((sum, s) => sum + Number(s.maxAllowedLiters || 0), 0);
         const remaining = Number(perm.allowed_liters) - Number(perm.used_liters) - reservedLiters;
         if (remaining <= 0) {
-          throw new ConflictError(`Çapraz şantiye kotası tükenmiş.`, { error: 'QUOTA_EXHAUSTED', reservedLiters: round2(reservedLiters) });
+          throw withDenialContext(
+            new ConflictError(`Çapraz şantiye kotası tükenmiş.`, { error: 'QUOTA_EXHAUSTED', reservedLiters: round2(reservedLiters) }),
+            { vehiclePlate: vehicle.plate, homeSite: vehicle.site_name, targetSite: input.deviceSiteName, reason: 'QUOTA_EXHAUSTED', permissionId: perm.id, allowedLiters: Number(perm.allowed_liters), usedLiters: Number(perm.used_liters) }
+          );
         }
         return finishAuthorization(Math.min(initialMaxAllowedLiters, remaining), perm.id);
       });

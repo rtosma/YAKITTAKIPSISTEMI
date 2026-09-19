@@ -91,6 +91,12 @@ export interface ReportDefinition {
    * aynı desen — AUTH-201.4). Rapor bir şantiye kavramı taşımıyorsa undefined.
    */
   siteScopeColumn?: string;
+  /**
+   * REP-715: bir satırın İKİ şantiyeyle ilgili olduğu raporlar (kaynak + çeken
+   * şantiye) — SITE_MANAGER, `siteScopeColumn` VEYA bunlardan biri kendi
+   * şantiyesiyse satırı görür. Yalnızca GENİŞLETİR, asla tek başına kullanılmaz.
+   */
+  siteScopeAltColumns?: string[];
   /** PDF export CPU-yoğun ve kuyruksuz (bkz. reportEngine.ts) — bu satır sınırının üstünde 409 döner. */
   maxPdfRows?: number;
 }

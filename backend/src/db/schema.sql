@@ -2650,3 +2650,36 @@ LANGUAGE sql STABLE AS $$
     END
   FROM f LEFT JOIN o ON TRUE LEFT JOIN c ON TRUE
 $$;
+
+-- REP-715 (#172): reddedilen çapraz şantiye ikmal denemeleri. FUEL-402 bu
+-- ret'leri yalnızca hata olarak fırlatıyordu (hiçbir yerde KALICI değildi) —
+-- "kota aşım denemeleri ve reddedilen talepler" raporu için ayrı, append-only
+-- bir iz. Yazım best-effort'tur (tenantDb.ts recordCrossSiteDenialFromError):
+-- kayıt yazılamazsa ret davranışı DEĞİŞMEZ. Ret transaction'ı ROLLBACK
+-- olduğundan kayıt AYRI bir transaction'da yazılır.
+CREATE TABLE IF NOT EXISTS cross_site_denials (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    vehicle_plate VARCHAR(32) NOT NULL,
+    home_site VARCHAR(128),
+    target_site VARCHAR(128) NOT NULL,
+    -- Manuel yolda istenen litre; cihaz yolunda (oturum açılışında miktar yok) NULL.
+    requested_liters NUMERIC(10, 2),
+    -- 'NO_SITE_PERMISSION' | 'QUOTA_EXHAUSTED'
+    reason VARCHAR(32) NOT NULL,
+    permission_id VARCHAR(64),
+    allowed_liters NUMERIC(10, 2),
+    used_liters NUMERIC(10, 2),
+    -- 'DEVICE' (RFID/request-auth) | 'MANUEL' (POST /dispense)
+    source VARCHAR(16) NOT NULL,
+    occurred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_cross_site_denials_lookup ON cross_site_denials(tenant_id, occurred_at DESC);
+ALTER TABLE cross_site_denials ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cross_site_denials FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS cross_site_denials_tenant_isolation_policy ON cross_site_denials;
+CREATE POLICY cross_site_denials_tenant_isolation_policy ON cross_site_denials
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+REVOKE UPDATE, DELETE, TRUNCATE ON cross_site_denials FROM app_user;
