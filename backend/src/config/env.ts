@@ -25,6 +25,11 @@ const KNOWN_PLACEHOLDER_VALUES = new Set([
   '__CHANGE_ME_RUN_openssl_rand_-hex_32__'
 ]);
 
+// OPS-1104: ortam şablonları (deploy/env/*.env.example) `__CHANGE_ME_<ORTAM>_ONLY_...` biçiminde
+// ortama özel placeholder'lar içerir — tam-eşleşme listesi bunları KAÇIRIRDI. `__CHANGE_ME` önekli
+// her değer "doldurulmamış şablon" sayılır (KNOWN_PLACEHOLDER_VALUES'un üst kümesi).
+const isPlaceholderValue = (v: string): boolean => KNOWN_PLACEHOLDER_VALUES.has(v) || v.startsWith('__CHANGE_ME');
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().int().positive().default(5000),
@@ -170,8 +175,20 @@ function failFast(message: string): never {
   process.exit(1);
 }
 
+// OPS-1104: docker-compose isteğe bağlı değişkenleri `${VAR:-}` ile BOŞ STRING olarak konteynere geçirir
+// (bkz. docker-compose.yml) ve .env şablonları da bu anahtarları boş bırakır (`GEMINI_API_KEY=`). Zod'un
+// `.min(1).optional()` kuralı boş stringi REDDEDER → bu anahtarları hiç yapılandırmayan YENİ bir ortamda
+// (staging/production) backend açılmıyordu. Yalnızca AŞAĞIDAKİ isteğe bağlı anahtarlar için boş = tanımsız
+// sayılır; zorunlu sırlar (JWT_*, MQTT_*, HW_*, ... ) ve POSTGRES_* boş bırakılırsa hâlâ REDDEDİLİR.
+const OPTIONAL_KEYS_EMPTY_MEANS_UNSET = [
+  'GEMINI_API_KEY', 'LORAWAN_WEBHOOK_TOKEN', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_FROM',
+  'SMS_PROVIDER_URL', 'SMS_PROVIDER_API_KEY', 'CORS_ALLOWED_ORIGINS', 'TELEGRAM_API_BASE_URL'
+] as const;
+
 function loadConfig(): AppConfig {
-  const result = envSchema.safeParse(process.env);
+  const rawEnv: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of OPTIONAL_KEYS_EMPTY_MEANS_UNSET) if (rawEnv[key] === '') delete rawEnv[key];
+  const result = envSchema.safeParse(rawEnv);
   if (!result.success) {
     const details = result.error.issues
       .map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`)
@@ -204,7 +221,7 @@ function loadConfig(): AppConfig {
       'JWT_SECRET', 'JWT_REFRESH_SECRET', 'MQTT_PASSWORD',
       'HW_SECRET_ESP32_PUMP_01', 'HW_SECRET_ESP32_TANK_01', 'HW_SECRET_ESP32_FLOW_ISR', // gitleaks:allow
       'TRANSACTION_HASH_SECRET', 'HW_SECRET_ENCRYPTION_KEY', 'TENANT_EXPORT_ENCRYPTION_KEY'
-    ] as const).filter((key) => KNOWN_PLACEHOLDER_VALUES.has(data[key]));
+    ] as const).filter((key) => isPlaceholderValue(data[key]));
 
     if (stillPlaceholder.length > 0) {
       failFast(

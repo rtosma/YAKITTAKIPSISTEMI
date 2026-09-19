@@ -3,6 +3,8 @@ name: Yakıttakip Enterprise CI/CD Pipeline
 on:
   push:
     branches: [ main, master ]
+    # OPS-1104: vX.Y.Z etiketi = ÜRETİM dağıtım talebi (bkz. deploy-production ve docs/ENVIRONMENTS.md).
+    tags: [ 'v[0-9]+.[0-9]+.[0-9]+' ]
   pull_request:
     branches: [ main, master ]
   # TEST-1002: k6 yük/stres testi ~90 saniyelik gerçek yük üretir (100
@@ -39,6 +41,9 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          # OPS-1104: migration güvenlik denetimi taban şema sürümünü git geçmişinden okur.
+          fetch-depth: 0
 
       - name: Setup Node.js 20.x
         uses: actions/setup-node@v4
@@ -60,6 +65,22 @@ jobs:
 
       - name: "ARCH-101.3: Tenant Tablolarında RLS Kapsama Kontrolü"
         run: node scripts/check-rls-coverage.mjs
+
+      # OPS-1104 AC: "Migration'lar dağıtımın parçası olarak güvenli uygulanmalıdır." — schema.sql
+      # blue/green geçişte eski replikayla birlikte çalışacağından yalnızca EKLEYİCİ (expand) olmalı;
+      # yıkıcı ifade `-- MIGRATION-CONTRACT: <gerekçe>` onayı ister (scripts/lib/migrationSafety.mjs).
+      - name: "OPS-1104: Migration Güvenliği (expand/contract) Denetimi"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_REF: ${{ github.base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then BASE="origin/$PR_BASE_REF"; else BASE="$PUSH_BEFORE"; fi
+          case "$BASE" in ""|0000000*) BASE="HEAD~1" ;; esac
+          node scripts/check-migration-safety.mjs --base "$BASE"
+
+      - name: "OPS-1104: Dağıtım Altyapısı Testleri (migration/duman/changelog/workflow)"
+        run: node scripts/test-ops1104.mjs
 
       - name: "ARCH-101.2: Ham pool.query Kullanımı Denetimi (RLS Bypass Koruması)"
         run: node scripts/check-no-raw-pool-query.mjs
@@ -834,47 +855,46 @@ jobs:
   # ----------------------------------------------------------------------------
   # OPS-1102 — Sıfır Kesintili Otomatik Dağıtım
   # ----------------------------------------------------------------------------
-  # main/master'a yapılan HER push, yukarıdaki tüm kalite kapılarından (lint,
-  # tip kontrolü, RES-902/OPS-1101/AUTH-201 testleri, bundle derlemesi, Trivy
-  # CVE taraması) geçtikten SONRA otomatik olarak dağıtılır — ama yalnızca
-  # DEPLOY_HOST secret'ı tanımlıysa. Bu repoda henüz gerçek bir hedef sunucu
-  # (VM/VPS) tanımlı DEĞİL; secret'lar boşken bu job'un `if` koşulu false
-  # olur ve job atlanır (CI kırılmaz) — bir hedef sunucu hazır olduğunda
-  # yalnızca aşağıdaki 4 repository secret'ını eklemek yeterlidir:
-  #   DEPLOY_HOST     — sunucu IP/hostname
-  #   DEPLOY_USER     — SSH kullanıcı adı
-  #   DEPLOY_SSH_KEY  — parolasız SSH private key (PEM)
-  #   DEPLOY_PORT     — (opsiyonel) SSH portu, varsayılan 22
+  # OPS-1104 — ÜÇ ORTAM, İKİ DAĞITIM YOLU (ayrıntı: docs/ENVIRONMENTS.md)
   #
-  # Sunucu tarafında bir kereye mahsus hazırlık: bu repo'yu klonlayın, kök
-  # dizine gerçek .env dosyasını koyun, `docker compose up -d` ile yığını
-  # ayağa kaldırın. Bu job'un yaptığı her şey: sunucuya SSH ile bağlanıp
-  # `git fetch && git reset --hard origin/<branch>` ile en son commit'e
-  # geçmek ve scripts/zero-downtime-deploy.sh'yi çalıştırmak — o script
-  # backend'i (nginx üzerinden atomik bir kesme ile) sıfır kesintiyle
-  # günceller. Bu mekanizma bu oturumda canlı olarak doğrulanmıştır: swap
-  # sırasında sürekli /api/v1/health isteği atan bir döngü, 3 ardışık koşuda
-  # toplam 1000+ istekte 0 başarısızlık gözlemlemiştir (bkz. commit mesajı).
-  deploy-zero-downtime:
-    name: 🚀 Sıfır Kesintili Dağıtım (yalnızca main/master push, DEPLOY_HOST tanımlıysa)
+  #   development : geliştiricinin makinesi (docker compose) — bu workflow dokunmaz.
+  #   staging     : main/master'a HER push → tüm kalite kapıları geçince OTOMATİK dağıtım + duman testi.
+  #   production  : vX.Y.Z ETİKETİ → aynı kapılar + GitHub `production` environment'ının ONAYI
+  #                 (Required reviewers) → dağıtım → duman testi → başarısızsa önceki etikete otomatik geri alma.
+  #
+  # Ortam farkları GitHub Environments'ta tutulur: aynı isimli secret'lar (DEPLOY_HOST, DEPLOY_USER,
+  # DEPLOY_SSH_KEY, DEPLOY_PORT, SMOKE_USERNAME, SMOKE_PASSWORD) ve değişkenler (STAGING_URL / PRODUCTION_URL)
+  # her environment'ta FARKLI değerlerle tanımlanır — staging sırları üretim sunucusuna erişemez
+  # (erişim kısıtı). DEPLOY_HOST tanımsızsa dağıtım adımı atlanır (CI kırılmaz; hedef sunucu hazır olunca
+  # yalnızca secret'lar eklenir). Sunucu hazırlığı: repo klonu + kök dizinde gerçek .env + `docker compose up -d`.
+  # Şema dağıtımın PARÇASIDIR: scripts/zero-downtime-deploy.sh adım 2b schema.sql'i tek transaction'da
+  # uygular (hata → hiçbir konteynere dokunulmaz).
+  # ----------------------------------------------------------------------------
+  deploy-staging:
+    name: 🚀 Staging Dağıtımı (otomatik, main/master push) + duman testi
     needs: [quality-and-tests, auth-integration-test, build-bundle, docker-security-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # TEST_PLAN.md §0.2 — `secrets` bağlamı job seviyesindeki `if:` içinde
-    # KULLANILAMAZ (izinli bağlamlar: github, inputs, needs, vars). Önceden
-    # burada `secrets.DEPLOY_HOST != ''` vardı; bu YAML sözdizimi hatası değil
-    # ANLAMSAL bir hata olduğu için PyYAML/js-yaml geçiriyor, ama GitHub
-    # workflow'u yüklerken tüm dosyayı "Invalid workflow file" diye reddeder
-    # (actionlint: context "secrets" is not allowed here). GitHub'ın önerdiği
-    # desen: secret'ı job env'ine al, koşulu ADIM seviyesinde env ile kontrol et.
-    # Davranış aynı: DEPLOY_HOST tanımsızsa dağıtım adımı atlanır.
+    # TEST_PLAN.md §0.2 — `secrets` bağlamı job seviyesindeki `if:` içinde KULLANILAMAZ (yalnızca github,
+    # inputs, needs, vars); secret job env'ine alınır, koşul ADIM seviyesinde env ile kontrol edilir.
     if: >-
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
     env:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-
+      SMOKE_BASE_URL: ${{ vars.STAGING_URL != '' && format('{0}/api/v1', vars.STAGING_URL) || '' }}
+      SMOKE_USERNAME: ${{ secrets.SMOKE_USERNAME }}
+      SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
     steps:
+      - name: Checkout Repository (duman testi scripti için)
+        uses: actions/checkout@v4
+
       - name: Deploy via SSH (git pull + zero-downtime-deploy.sh)
         if: env.DEPLOY_HOST != ''
         uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
@@ -891,17 +911,146 @@ jobs:
             git reset --hard "origin/${{ github.ref_name }}"
             chmod +x scripts/zero-downtime-deploy.sh
             ./scripts/zero-downtime-deploy.sh
-            # Frontend (nginx statik dosyaları) zero-downtime gerektirmediği için
-            # normal bir 'up -d --build' ile.
-            # DİKKAT (TEST_PLAN §4): bu komut postgres ŞEMASINI UYGULAMAZ. Projede
-            # migration aracı yok; schema.sql yalnızca BOŞ bir volume'da
-            # (docker-entrypoint-initdb.d) çalışır. Mevcut production DB'sine
-            # schema.sql değişiklikleri (ör. REVOKE güvenlik düzeltmeleri) bu
-            # akışla ULAŞMAZ. schema.sql idempotent olduğu (CI'da kilitli) için
-            # elle uygulanabilir:
-            #   docker compose exec -T postgres psql -U postgres -d yakittakip_db \
-            #     -v ON_ERROR_STOP=1 < backend/src/db/schema.sql
+            # Frontend (nginx statik dosyaları) zero-downtime gerektirmediği için normal bir 'up -d --build' ile.
+            # Şema, zero-downtime-deploy.sh adım 2b'de zaten uygulandı (idempotent, tek transaction).
             docker compose up -d --build frontend
+
+      # OPS-1104 AC: "Dağıtım sonrası duman testleri otomatik çalışmalıdır." Başarısız duman testi
+      # dağıtım adımını başarısız yapar (job kırmızı) — bozuk staging fark edilmeden kalmaz.
+      - name: Smoke Test (dağıtım sonrası)
+        if: env.DEPLOY_HOST != '' && env.SMOKE_BASE_URL != ''
+        env:
+          SMOKE_CHECK_FRONTEND: '1'
+          SMOKE_CHECK_HEADERS: '1'
+        run: node scripts/smoke-test.mjs
+
+  deploy-production:
+    name: 🏭 Üretim Dağıtımı (vX.Y.Z etiketi + ONAY) + duman testi + otomatik geri alma
+    needs: [quality-and-tests, auth-integration-test, build-bundle, docker-security-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: >-
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # OPS-1104 AC: "Staging otomatik, üretim onaylı dağıtılmalıdır." Bu environment'ta Settings →
+    # Environments → production → "Required reviewers" TANIMLI olmalıdır; job onay gelene kadar başlamaz.
+    # Onaylayan, aşağıdaki "Onay kaydı" adımıyla iş özetine yazılır ve doğrulanır (yoksa dağıtım DURUR).
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: write   # GitHub Release (değişiklik günlüğü) oluşturmak için
+      actions: read     # onay kayıtlarını okumak için
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      SMOKE_BASE_URL: ${{ vars.PRODUCTION_URL != '' && format('{0}/api/v1', vars.PRODUCTION_URL) || '' }}
+      SMOKE_USERNAME: ${{ secrets.SMOKE_USERNAME }}
+      SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Checkout Repository (tam geçmiş — etiket/changelog için)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Yalnızca main geçmişindeki bir commit üretime çıkabilir (dal/PR commit'i etiketlenip yanlışlıkla dağıtılmasın).
+      - name: Etiket main geçmişinde mi?
+        run: |
+          git fetch origin main --quiet || git fetch origin master --quiet
+          MAIN_REF=$(git rev-parse --verify --quiet origin/main || git rev-parse --verify origin/master)
+          git merge-base --is-ancestor "$GITHUB_SHA" "$MAIN_REF" || { echo "::error::$TAG main/master geçmişinde değil — üretime yalnızca ana daldan sürüm çıkarılır."; exit 1; }
+
+      # Ticket Teknik Notu: "Üretim dağıtımı onay gerektirmeli ve kim onayladı kaydedilmelidir."
+      # Onay kaydı GitHub'ın run-approvals kaydından okunur (değiştirilemez, GitHub tarafında tutulur) ve
+      # iş özetine + GitHub Release notuna yazılır. Onay yoksa (environment'ta reviewer tanımsız) dağıtım DURUR.
+      - name: Onay kaydı (kim onayladı)
+        id: approvals
+        run: |
+          APPROVERS=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/approvals" --jq '[.[] | select(.state=="approved") | .user.login] | unique | join(", ")')
+          if [ -z "$APPROVERS" ]; then
+            echo "::error::Bu çalıştırma için onay kaydı yok. Settings → Environments → production → Required reviewers tanımlayın (OPS-1104)."
+            exit 1
+          fi
+          echo "approvers=$APPROVERS" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Üretim dağıtımı — onay kaydı"
+            echo "- Sürüm: \`$TAG\` (\`${GITHUB_SHA::12}\`)"
+            echo "- Etiketi atan / dağıtımı tetikleyen: @${GITHUB_ACTOR}"
+            echo "- Onaylayan(lar): $APPROVERS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy via SSH (etiketli commit + zero-downtime-deploy.sh)
+        if: env.DEPLOY_HOST != ''
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${DEPLOY_PATH:-~/YAKITTAKIPSISTEMI}"
+            git fetch origin --tags
+            git reset --hard "${{ github.sha }}"
+            chmod +x scripts/zero-downtime-deploy.sh
+            ./scripts/zero-downtime-deploy.sh
+            docker compose up -d --build frontend
+
+      - name: Smoke Test (dağıtım sonrası)
+        id: smoke
+        if: env.DEPLOY_HOST != '' && env.SMOKE_BASE_URL != ''
+        env:
+          SMOKE_CHECK_FRONTEND: '1'
+          SMOKE_CHECK_HEADERS: '1'
+        run: node scripts/smoke-test.mjs
+
+      # Duman testi başarısızsa bir önceki etikete GERİ AL. Şema yalnızca EKLEYİCİ (expand) olduğu için
+      # (check-migration-safety) eski kod yeni şemayla çalışır — geri alma veri kaybettirmez. Job yine KIRMIZI biter.
+      - name: Otomatik geri alma (duman testi başarısızsa)
+        if: failure() && steps.smoke.conclusion == 'failure'
+        run: |
+          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "${TAG}^" 2>/dev/null || true)
+          if [ -z "$PREV" ]; then
+            echo "::error::Duman testi başarısız ve geri alınacak önceki sürüm etiketi yok — MANUEL müdahale gerekli."
+            exit 0
+          fi
+          echo "PREV_TAG=$PREV" >> "$GITHUB_ENV"
+          echo "::warning::Duman testi başarısız — $PREV sürümüne geri alınıyor."
+
+      - name: Geri alma dağıtımı (SSH)
+        if: failure() && steps.smoke.conclusion == 'failure' && env.PREV_TAG != '' && env.DEPLOY_HOST != ''
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${DEPLOY_PATH:-~/YAKITTAKIPSISTEMI}"
+            git fetch origin --tags
+            git reset --hard "${{ env.PREV_TAG }}"
+            chmod +x scripts/zero-downtime-deploy.sh
+            ./scripts/zero-downtime-deploy.sh
+            docker compose up -d --build frontend
+
+      # Başarılı dağıtımın değişiklik günlüğü: önceki etiket → bu etiket arası conventional commit'ler.
+      - name: GitHub Release (değişiklik günlüğü + onaylayan)
+        if: success()
+        env:
+          APPROVERS: ${{ steps.approvals.outputs.approvers }}
+        run: |
+          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "${TAG}^" 2>/dev/null || true)
+          FROM_ARG=""; [ -n "$PREV" ] && FROM_ARG="--from $PREV"
+          # shellcheck disable=SC2086
+          node scripts/generate-changelog.mjs $FROM_ARG --to "$TAG" --version "$TAG" > release-notes.md
+          printf '\n---\nOnaylayan(lar): %s — dağıtımı tetikleyen: @%s\n' "$APPROVERS" "$GITHUB_ACTOR" >> release-notes.md
+          gh release create "$TAG" --title "$TAG" --notes-file release-notes.md --verify-tag
 
   load-test:
     name: 🔥 TEST-1002 k6 Yük ve Stres Testi (yalnızca manuel tetikleme)
