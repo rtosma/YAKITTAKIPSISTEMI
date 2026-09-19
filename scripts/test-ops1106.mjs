@@ -30,7 +30,8 @@ const tmp = mkdtempSync(path.join(tmpdir(), 'ops1106-'));
 const DEST = path.join(tmp, 'yedek-konumu');
 const KEY = randomBytes(32).toString('hex');
 const CRYPTO = path.join(ROOT, 'scripts/lib/backupCrypto.mjs');
-const env = (extra = {}) => ({ ...process.env, BACKUP_DEST_DIR: DEST, BACKUP_ENCRYPTION_KEY: KEY, PG_CONTAINER: `${P}-src`, ...extra });
+const METRICS_DIR = path.join(tmp, 'metrik-textfile');
+const env = (extra = {}) => ({ ...process.env, BACKUP_DEST_DIR: DEST, BACKUP_ENCRYPTION_KEY: KEY, PG_CONTAINER: `${P}-src`, BACKUP_METRICS_DIR: METRICS_DIR, ...extra });
 const script = (name, args = [], extra = {}) => sh('bash', [path.join(ROOT, 'scripts/backup', name), ...args], { env: env(extra), timeout: 600000 });
 const lastJson = (r) => JSON.parse(r.stdout.trim().split('\n').filter((l) => l.startsWith('{')).pop());
 const created = { containers: [], volumes: [] };
@@ -116,10 +117,12 @@ async function main() {
   const idx = existsSync(path.join(bkDir, 'index.json')) ? JSON.parse(readFileSync(path.join(bkDir, 'index.json'), 'utf8')) : {};
   const leak = ['CREATE TABLE', 'PGDMP', 'camsa', 'comp-camsa', 'gebze-santiye', 'argon2', 'INSERT INTO', 'users', 'audit_logs'].filter((needle) => [...allEnc, path.join(bkDir, 'index.json')].some((f) => readFileSync(f).includes(Buffer.from(needle))));
   const shaOk = Object.entries(idx.files || {}).every(([f, m]) => execFileSync('sha256sum', [path.join(bkDir, f)], { encoding: 'utf8' }).startsWith(m.sha256));
-  check('Yedek (AC — günlük, ŞİFRELİ, ayrı konum): backup.sh çıkış 0; klasörde globals/dump/base/manifest .enc + index.json; hepsi "YKB1" başlıklı AES-GCM; konumda düz metin/dump imzası/kullanıcı adı/tablo adı SIZINTISI YOK (index.json dahil); sha256\'lar tutuyor; WAL segmentleri şifreli; heartbeat ve .last_ok yazıldı',
+  check('Yedek (AC — günlük, ŞİFRELİ, ayrı konum): backup.sh çıkış 0; klasörde globals/dump/base/manifest .enc + index.json; hepsi "YKB1" başlıklı AES-GCM; konumda düz metin/dump imzası/kullanıcı adı/tablo adı SIZINTISI YOK (index.json dahil); sha256\'lar tutuyor; WAL segmentleri şifreli; heartbeat ve .last_ok yazıldı; OPS-1108 için node-exporter textfile metrikleri (yedek + WAL son başarı zamanı, spool birikmesi) yazıldı',
     b1.status === 0 && ['base.tar.gz.enc', 'dump.custom.enc', 'globals.sql.enc', 'index.json', 'manifest.json.enc'].every((f) => files.includes(f)) &&
       allEnc.length >= 6 && allEnc.every((f) => readFileSync(f).subarray(0, 4).toString() === 'YKB1') && leak.length === 0 && shaOk && idx.encrypted === true && idx.cipher === 'AES-256-GCM' &&
-      existsSync(path.join(DEST, 'wal/.heartbeat')) && existsSync(path.join(DEST, 'base/.last_ok')) && readdirSync(path.join(DEST, 'wal')).some((f) => f.endsWith('.enc')),
+      existsSync(path.join(DEST, 'wal/.heartbeat')) && existsSync(path.join(DEST, 'base/.last_ok')) &&
+        /yakit_backup_last_success_timestamp_seconds\{kind="base"\} \d{10}/.test(existsSync(path.join(METRICS_DIR, 'yakit_backup_base.prom')) ? readFileSync(path.join(METRICS_DIR, 'yakit_backup_base.prom'), 'utf8') : '') &&
+        /yakit_backup_last_success_timestamp_seconds\{kind="wal"\} \d{10}/.test(existsSync(path.join(METRICS_DIR, 'yakit_backup_wal.prom')) ? readFileSync(path.join(METRICS_DIR, 'yakit_backup_wal.prom'), 'utf8') : '') && /yakit_wal_spool_pending_files \d+/.test(existsSync(path.join(METRICS_DIR, 'yakit_backup_wal.prom')) ? readFileSync(path.join(METRICS_DIR, 'yakit_backup_wal.prom'), 'utf8') : '') && readdirSync(path.join(DEST, 'wal')).some((f) => f.endsWith('.enc')),
     `çıkış=${b1.status}, dosyalar=${files.join(',')}, sızıntı=[${leak}], WAL=${readdirSync(path.join(DEST, 'wal')).filter((f) => f.endsWith('.enc')).length}${b1.status !== 0 ? ' ' + b1.stderr.slice(-300) : ''}`);
 
   // ── 4. dump yolu geri yükleme ──────────────────────────────────────────────

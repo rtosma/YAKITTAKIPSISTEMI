@@ -101,7 +101,7 @@ if (dockerOk) {
   spawnSync('chmod', ['-R', 'a+rX', tmp]);
   const run = (image, args, extra = []) => spawnSync('docker', ['run', '--rm', '-v', `${tmp}/monitoring:/cfg:ro`, ...extra, image, ...args], { encoding: 'utf8', timeout: 120000 });
   const emptyTok = path.join(tmp, 'metrics_token'); execFileSync('sh', ['-c', `: > ${emptyTok} && chmod a+r ${emptyTok}`]);
-  const pt = run('prom/prometheus:v2.55.1', ['check', 'config', '/cfg/prometheus.yml'], ['--entrypoint', 'promtool', '-v', `${emptyTok}:/tmp/metrics_token:ro`]);
+  const pt = run('prom/prometheus:v2.55.1', ['check', 'config', '/cfg/prometheus.yml'], ['--entrypoint', 'promtool', '-v', `${emptyTok}:/tmp/metrics_token:ro`, '-v', `${tmp}/monitoring/rules:/etc/prometheus/rules:ro`]);
   const lk = run('grafana/loki:3.2.1', ['-config.file=/cfg/loki.yml', '-verify-config']);
   const pl = run('grafana/promtail:3.2.1', ['-config.file=/cfg/promtail.yml', '-config.expand-env=true', '-check-syntax'], ['-e', 'COMPOSE_PROJECT_NAME=x']);
   check('Araç doğrulaması (docker): promtool check config, loki -verify-config, promtail -check-syntax gerçek imajlarla geçer', pt.status === 0 && lk.status === 0 && pl.status === 0,

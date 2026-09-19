@@ -43,3 +43,6 @@ frontend/playwright-report/
 # bu proje NFS üzerinde barındığı için oluşuyor, versiyonlanmamalı)
 .nfs*
 **/.nfs*
+
+# OPS-1108: node-exporter textfile metrikleri (yedek betikleri yazar; depoya girmez)
+deploy/monitoring/textfile/*.prom

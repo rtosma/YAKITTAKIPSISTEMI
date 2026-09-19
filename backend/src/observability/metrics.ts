@@ -145,6 +145,7 @@ const dispensedLitersToday = new client.Gauge({ name: 'yakit_dispensed_liters_to
 const despatchQueue = new client.Gauge({ name: 'yakit_despatch_queue', help: 'e-İrsaliye iletim kuyruğu derinliği: status = QUEUED | SENDING | FAILED.', labelNames: ['status'] as const, registers: [registry] });
 const despatchOldest = new client.Gauge({ name: 'yakit_despatch_oldest_queued_age_seconds', help: 'Kuyrukta (QUEUED) bekleyen en eski e-İrsaliyenin yaşı (sn); kuyruk boşsa 0.', registers: [registry] });
 const notificationRetry = new client.Gauge({ name: 'yakit_notifications_retry_queue', help: 'Yeniden deneme bekleyen (BAŞARISIZ) bildirim sayısı.', registers: [registry] });
+const notificationCircuitOpen = new client.Gauge({ name: 'yakit_notification_circuit_open', help: 'Devre kesicisi AÇIK (ardışık başarısızlık nedeniyle otomatik devre dışı) bildirim webhook kanalı sayısı — tenant sayısı, tenant etiketi YOK.', registers: [registry] });
 const businessLastRefresh = new client.Gauge({ name: 'yakit_business_metrics_last_refresh_timestamp_seconds', help: 'İş metriklerinin son BAŞARILI yenilenme zamanı (unix sn) — bayat veriyi yakalamak için.', registers: [registry] });
 const businessRefreshErrors = new client.Counter({ name: 'yakit_business_metrics_refresh_errors_total', help: 'İş metriği yenileme hatası sayısı.', registers: [registry] });
 
@@ -161,6 +162,7 @@ export async function refreshBusinessMetrics(): Promise<void> {
     for (const status of ['QUEUED', 'SENDING', 'FAILED'] as const) despatchQueue.set({ status }, s.despatchQueue[status] ?? 0);
     despatchOldest.set(s.despatchOldestQueuedAgeSeconds);
     notificationRetry.set(s.notificationRetryQueue);
+    notificationCircuitOpen.set(s.notificationCircuitOpen);
     businessLastRefresh.set(Date.now() / 1000);
   } catch (err) {
     businessRefreshErrors.inc();

@@ -105,4 +105,13 @@ done
 date +%s > "$BACKUP_DEST_DIR/base/.last_ok"
 if [ -n "${BACKUP_UPLOAD_CMD:-}" ]; then log "yükleme kancası çalıştırılıyor"; BACKUP_DEST_DIR="$BACKUP_DEST_DIR" bash -c "$BACKUP_UPLOAD_CMD"; fi
 DURATION=$(( $(date +%s) - STARTED_EPOCH ))
+write_backup_metrics yakit_backup_base.prom "# HELP yakit_backup_last_success_timestamp_seconds Son BAŞARILI tam yedeğin unix zamanı (OPS-1106).
+# TYPE yakit_backup_last_success_timestamp_seconds gauge
+yakit_backup_last_success_timestamp_seconds{kind=\"base\"} $(date +%s)
+# HELP yakit_backup_last_duration_seconds Son tam yedeğin süresi (sn).
+# TYPE yakit_backup_last_duration_seconds gauge
+yakit_backup_last_duration_seconds $DURATION
+# HELP yakit_backup_last_size_bytes Son yedeklenen veritabanı boyutu.
+# TYPE yakit_backup_last_size_bytes gauge
+yakit_backup_last_size_bytes $DB_BYTES"
 echo "{\"backup\":\"$TS\",\"startWal\":\"$START_WAL\",\"dbSizeBytes\":$DB_BYTES,\"durationSeconds\":$DURATION}"

@@ -4,6 +4,10 @@
 #   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 #   # sunucuda kalıcı: kök .env'ye  COMPOSE_FILE=docker-compose.yml:docker-compose.monitoring.yml[:docker-compose.backup.yml]
 #
+# OPS-1108: Alertmanager + kurallar. NÖBET KANALI ZORUNLU: ALERT_TELEGRAM_* / ALERT_EMAIL_* / ALERT_WEBHOOK_URL_ONCALL'den en az biri — yoksa
+# `alertmanager-config` servisi BAŞARISIZ olur ve Alertmanager başlamaz (kanalsız izleme sessizce hiçbir şey göndermez). Geliştirmede ALERT_ALLOW_NO_CHANNELS=true.
+# Tüm ALERT_* değişkenleri ve şiddet/yönlendirme modeli: docs/ALERTING.md.
+#
 # Gerekli .env: GRAFANA_ADMIN_PASSWORD (VARSAYILAN YOK — tanımsızsa Compose hata verir). İsteğe bağlı: METRICS_TOKEN (backend /metrics
 # Bearer token'ı; Prometheus AYNI değeri kullanır), PG_EXPORTER_USER/PG_EXPORTER_PASSWORD (öneri: pg_monitor rolü —
 # deploy/monitoring/postgres-monitoring-role.sql), MONITORING_DIR (yapılandırma dizini), DOCKER_SOCK (rootless Docker soketi).
@@ -29,6 +33,7 @@ services:
       METRICS_TOKEN: ${METRICS_TOKEN:-}
     volumes:
       - ${MONITORING_DIR:-./deploy/monitoring}/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${MONITORING_DIR:-./deploy/monitoring}/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
     networks:
       - yakit_network
@@ -41,8 +46,56 @@ services:
     command:
       - --path.rootfs=/host
       - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+      # OPS-1108: yedek betikleri (BACKUP_METRICS_DIR) yakit_backup_*.prom yazar → BackupTooOld / WalShippingStalled uyarıları.
+      - --collector.textfile.directory=/textfile
     volumes:
       - /:/host:ro,rslave
+      - ${BACKUP_METRICS_DIR:-./deploy/monitoring/textfile}:/textfile:ro
+    networks:
+      - yakit_network
+
+  # Ortam değişkenlerinden Alertmanager yapılandırmasını (kanallar, yönlendirme, susturma, bastırma) üretir; sırlar *_file dosyalarına yazılır.
+  alertmanager-config:
+    image: node:20-alpine
+    container_name: yakittakip_alertmanager_config
+    restart: "no"
+    command: ["node", "/work/render-alertmanager.mjs", "/out"]
+    environment:
+      ALERT_TELEGRAM_BOT_TOKEN: ${ALERT_TELEGRAM_BOT_TOKEN:-}
+      ALERT_TELEGRAM_CHAT_ONCALL: ${ALERT_TELEGRAM_CHAT_ONCALL:-}
+      ALERT_TELEGRAM_CHAT_TEAM: ${ALERT_TELEGRAM_CHAT_TEAM:-}
+      ALERT_SMTP_HOST: ${ALERT_SMTP_HOST:-}
+      ALERT_SMTP_FROM: ${ALERT_SMTP_FROM:-}
+      ALERT_SMTP_USER: ${ALERT_SMTP_USER:-}
+      ALERT_SMTP_PASSWORD: ${ALERT_SMTP_PASSWORD:-}
+      ALERT_EMAIL_ONCALL: ${ALERT_EMAIL_ONCALL:-}
+      ALERT_EMAIL_TEAM: ${ALERT_EMAIL_TEAM:-}
+      ALERT_WEBHOOK_URL_ONCALL: ${ALERT_WEBHOOK_URL_ONCALL:-}
+      ALERT_WEBHOOK_URL_TEAM: ${ALERT_WEBHOOK_URL_TEAM:-}
+      ALERT_HEARTBEAT_URL: ${ALERT_HEARTBEAT_URL:-}
+      ALERT_ALLOW_NO_CHANNELS: ${ALERT_ALLOW_NO_CHANNELS:-false}
+      ALERT_TIMEZONE: ${ALERT_TIMEZONE:-Europe/Istanbul}
+      ALERT_MUTE_WARNINGS_NIGHT: ${ALERT_MUTE_WARNINGS_NIGHT:-true}
+    volumes:
+      - ${MONITORING_SCRIPTS_DIR:-./scripts/monitoring}/render-alertmanager.mjs:/work/render-alertmanager.mjs:ro
+      - alertmanager_config:/out
+    networks:
+      - yakit_network
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: yakittakip_alertmanager
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --cluster.listen-address=
+    depends_on:
+      alertmanager-config:
+        condition: service_completed_successfully
+    volumes:
+      - alertmanager_config:/etc/alertmanager:ro
+      - alertmanager_data:/alertmanager
     networks:
       - yakit_network
 
@@ -108,6 +161,8 @@ services:
       - yakit_network
 
 volumes:
+  alertmanager_config:
+  alertmanager_data:
   prometheus_data:
   loki_data:
   grafana_data:

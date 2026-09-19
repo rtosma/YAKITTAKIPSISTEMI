@@ -214,13 +214,16 @@ async function run() {
       `dispense=${disp.status}/${JSON.stringify(disp.body).slice(0, 80)}, api+${dm('yakit_dispense_completed_total', { source: 'api' })}, data+${dm('yakit_mqtt_messages_total', { kind: 'telemetry_data' })}, status+${dm('yakit_mqtt_messages_total', { kind: 'telemetry_status' })}, red+${dm('yakit_mqtt_rejected_total', { reason: 'unregistered_device' })}${MQTT_URL ? '' : ' (MQTT adımları atlandı: MQTT_URL_TEST yok)'}`
     );
 
-    // === Test 6: DB havuzu gauge'ı ===
+    // === Test 6: DB havuzu gauge'ı + devre kesici gauge'ı (OPS-1108) ===
     const poolS = parse((await scrape()).text);
+    const circuitDb = Number((await q('SELECT COUNT(*)::int AS n FROM tenant_notification_channels WHERE webhook_disabled_at IS NOT NULL'))[0].n);
+    let circuitLive = -1;
+    for (let i = 0; i < 20; i++) { circuitLive = val(parse((await scrape()).text), 'yakit_notification_circuit_open'); if (circuitLive === circuitDb) break; await sleep(2000); }
     check(
-      'Test 6 (altyapı — DB bağlantıları): yakit_db_pool_connections total/idle/waiting üç durumla var; total ≥ 1 ve idle ≤ total; waiting = 0 (havuz doygun değil)',
+      'Test 6 (altyapı — DB bağlantıları): yakit_db_pool_connections total/idle/waiting üç durumla var; total ≥ 1 ve idle ≤ total; waiting = 0 (havuz doygun değil); yakit_notification_circuit_open (devre kesicisi açık webhook kanalı) DB sayısıyla aynı (OPS-1108 uyarı girdisi)',
       ['total', 'idle', 'waiting'].every((st) => poolS.some((x) => x.name === 'yakit_db_pool_connections' && x.labels.state === st)) && val(poolS, 'yakit_db_pool_connections', { state: 'total' }) >= 1 &&
-        val(poolS, 'yakit_db_pool_connections', { state: 'idle' }) <= val(poolS, 'yakit_db_pool_connections', { state: 'total' }) && val(poolS, 'yakit_db_pool_connections', { state: 'waiting' }) === 0,
-      `total=${val(poolS, 'yakit_db_pool_connections', { state: 'total' })}, idle=${val(poolS, 'yakit_db_pool_connections', { state: 'idle' })}, waiting=${val(poolS, 'yakit_db_pool_connections', { state: 'waiting' })}`
+        val(poolS, 'yakit_db_pool_connections', { state: 'idle' }) <= val(poolS, 'yakit_db_pool_connections', { state: 'total' }) && val(poolS, 'yakit_db_pool_connections', { state: 'waiting' }) === 0 && circuitLive === circuitDb,
+      `circuit=${circuitLive}/${circuitDb}, total=${val(poolS, 'yakit_db_pool_connections', { state: 'total' })}, idle=${val(poolS, 'yakit_db_pool_connections', { state: 'idle' })}, waiting=${val(poolS, 'yakit_db_pool_connections', { state: 'waiting' })}`
     );
 
     // === Test 7: METRICS_TOKEN (süreç-içi Express) ===

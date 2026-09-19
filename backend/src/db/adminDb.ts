@@ -1369,10 +1369,12 @@ export interface BusinessMetricsSnapshot {
   despatchQueue: Record<string, number>;
   despatchOldestQueuedAgeSeconds: number;
   notificationRetryQueue: number;
+  /** webhook_disabled_at dolu (NOTIF-1604 devre kesici AÇIK) kanal sayısı. */
+  notificationCircuitOpen: number;
 }
 
 export async function getBusinessMetricsSnapshot(): Promise<BusinessMetricsSnapshot> {
-  const [dev, off, alarms, disp, despatch, notif] = await Promise.all([
+  const [dev, off, alarms, disp, despatch, notif, circuit] = await Promise.all([
     pool.query(
       `SELECT COUNT(*) FILTER (WHERE status = 'AKTİF')::int AS registered,
               COUNT(*) FILTER (WHERE status = 'AKTİF' AND last_seen_at > NOW() - INTERVAL '10 minutes')::int AS active,
@@ -1406,7 +1408,8 @@ export async function getBusinessMetricsSnapshot(): Promise<BusinessMetricsSnaps
           WHERE tenant_id = c.id AND status IN ('QUEUED', 'SENDING', 'FAILED') GROUP BY status
        ) q GROUP BY q.status`
     ),
-    pool.query(`SELECT COUNT(*)::int AS n FROM notifications WHERE status = 'BAŞARISIZ'`)
+    pool.query(`SELECT COUNT(*)::int AS n FROM notifications WHERE status = 'BAŞARISIZ'`),
+    pool.query(`SELECT COUNT(*)::int AS n FROM tenant_notification_channels WHERE webhook_disabled_at IS NOT NULL`)
   ]);
   const byKey = (rows: any[], key: string): Record<string, number> => Object.fromEntries(rows.map((r) => [r[key], Number(r.n)]));
   const queued = despatch.rows.find((r) => r.status === 'QUEUED');
@@ -1417,6 +1420,7 @@ export async function getBusinessMetricsSnapshot(): Promise<BusinessMetricsSnaps
     dispensedLitersToday: disp.rows[0].liters,
     despatchQueue: byKey(despatch.rows, 'status'),
     despatchOldestQueuedAgeSeconds: queued?.oldest ? Math.max(0, Math.round((Date.now() - new Date(queued.oldest).getTime()) / 1000)) : 0,
-    notificationRetryQueue: notif.rows[0].n
+    notificationRetryQueue: notif.rows[0].n,
+    notificationCircuitOpen: circuit.rows[0].n
   };
 }

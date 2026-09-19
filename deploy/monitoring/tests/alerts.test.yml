@@ -1,0 +1,1629 @@
+# OPS-1108 — ÜRETİLDİ (scripts/monitoring/generate-rule-tests.mjs; kaynak: rules/*.yml + alert-scenarios.mjs). ELLE DÜZENLEMEYİN.
+# Çalıştırma: promtool test rules deploy/monitoring/tests/alerts.test.yml
+rule_files:
+  - "../rules/api.yml"
+  - "../rules/infra.yml"
+  - "../rules/field.yml"
+  - "../rules/meta.yml"
+evaluation_interval: "1m"
+tests:
+  - interval: "1m"
+    input_series:
+      - series: "http_requests_total{status=\"200\",route=\"/x\"}"
+        values: "0+1000x60"
+
+      - series: "http_requests_total{status=\"500\",route=\"/x\"}"
+        values: "0+50x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "ApiErrorRate"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "api"
+            exp_annotations:
+              summary: "API 5xx hata oranı %2'yi aştı"
+              description: "Son 5 dk 5xx oranı 0.048 (eşik 0.02, ≥0.2 istek/sn trafikte)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#apierrorrate"
+
+
+    name: "ApiErrorRate: warning: %4.8 hata"
+
+  - interval: "1m"
+    input_series:
+      - series: "http_requests_total{status=\"200\",route=\"/x\"}"
+        values: "0+1000x60"
+
+      - series: "http_requests_total{status=\"500\",route=\"/x\"}"
+        values: "0+150x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "ApiErrorRate"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "api"
+            exp_annotations:
+              summary: "API 5xx hata oranı %10'u aştı — kullanıcılar etkileniyor"
+              description: "Son 5 dk 5xx oranı 0.130 (eşik 0.10)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#apierrorrate"
+
+          - exp_labels:
+              severity: "warning"
+              domain: "api"
+            exp_annotations:
+              summary: "API 5xx hata oranı %2'yi aştı"
+              description: "Son 5 dk 5xx oranı 0.130 (eşik 0.02, ≥0.2 istek/sn trafikte)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#apierrorrate"
+
+
+    name: "ApiErrorRate: critical: %14.3 hata (warning de aktif; Alertmanager bastırır)"
+
+  - interval: "1m"
+    input_series:
+      - series: "http_requests_total{status=\"200\",route=\"/x\"}"
+        values: "0+1000x60"
+
+      - series: "http_requests_total{status=\"500\",route=\"/x\"}"
+        values: "0+10x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "ApiErrorRate"
+        exp_alerts: []
+
+    name: "ApiErrorRate: sessiz: %1 hata"
+
+  - interval: "1m"
+    input_series:
+      - series: "http_requests_total{status=\"200\",route=\"/x\"}"
+        values: "0+2x60"
+
+      - series: "http_requests_total{status=\"500\",route=\"/x\"}"
+        values: "0+1x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "ApiErrorRate"
+        exp_alerts: []
+
+    name: "ApiErrorRate: sessiz: asgari trafik koruması (oran %33 ama 0.05 istek/sn)"
+
+  - interval: "1m"
+    input_series:
+      - series: "http_requests_total{status=\"200\",route=\"/x\"}"
+        values: "0+1000x60"
+
+      - series: "http_requests_total{status=\"500\",route=\"/x\"}"
+        values: "0+50x60"
+
+    alert_rule_test:
+      - eval_time: "9m"
+        alertname: "ApiErrorRate"
+        exp_alerts: []
+
+    name: "ApiErrorRate: sessiz: `for` dolmadı (9 dk)"
+
+  - interval: "1m"
+    input_series:
+      - series: "http_requests_total{status=\"200\",route=\"/x\"}"
+        values: "0+1000x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"0.5\"}"
+        values: "0+900x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"1\"}"
+        values: "0+900x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"2.5\"}"
+        values: "0+1000x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"5\"}"
+        values: "0+1000x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"10\"}"
+        values: "0+1000x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"+Inf\"}"
+        values: "0+1000x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "ApiLatencyP95"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "api"
+            exp_annotations:
+              summary: "API p95 gecikmesi 1 sn'yi aştı"
+              description: "Son 5 dk p95 = 1.75 sn (eşik 1)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#apilatencyp95"
+
+
+    name: "ApiLatencyP95: warning: p95 = 1.75 sn"
+
+  - interval: "1m"
+    input_series:
+      - series: "http_requests_total{status=\"200\",route=\"/x\"}"
+        values: "0+1000x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"0.5\"}"
+        values: "0+900x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"1\"}"
+        values: "0+900x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"2.5\"}"
+        values: "0+900x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"5\"}"
+        values: "0+900x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"10\"}"
+        values: "0+1000x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"+Inf\"}"
+        values: "0+1000x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "ApiLatencyP95"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "api"
+            exp_annotations:
+              summary: "API p95 gecikmesi 3 sn'yi aştı — sistem fiilen yanıt vermiyor"
+              description: "Son 5 dk p95 = 7.50 sn (eşik 3)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#apilatencyp95"
+
+          - exp_labels:
+              severity: "warning"
+              domain: "api"
+            exp_annotations:
+              summary: "API p95 gecikmesi 1 sn'yi aştı"
+              description: "Son 5 dk p95 = 7.50 sn (eşik 1)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#apilatencyp95"
+
+
+    name: "ApiLatencyP95: critical: p95 = 7.5 sn"
+
+  - interval: "1m"
+    input_series:
+      - series: "http_requests_total{status=\"200\",route=\"/x\"}"
+        values: "0+1000x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"0.5\"}"
+        values: "0+1000x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"1\"}"
+        values: "0+1000x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"2.5\"}"
+        values: "0+1000x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"5\"}"
+        values: "0+1000x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"10\"}"
+        values: "0+1000x60"
+
+      - series: "http_request_duration_seconds_bucket{le=\"+Inf\"}"
+        values: "0+1000x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "ApiLatencyP95"
+        exp_alerts: []
+
+    name: "ApiLatencyP95: sessiz: hepsi ≤0.5 sn"
+
+  - interval: "1m"
+    input_series:
+      - series: "nodejs_eventloop_lag_p99_seconds"
+        values: "0.75+0x60"
+
+    alert_rule_test:
+      - eval_time: "10m"
+        alertname: "EventLoopLag"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "api"
+            exp_annotations:
+              summary: "Node.js event loop gecikmesi p99 > 500 ms"
+              description: "Event loop p99 gecikmesi 0.75 sn — senkron/CPU-yoğun iş tüm istekleri geciktiriyor."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#eventlooplag"
+
+
+    name: "EventLoopLag: warning: p99 = 0.75 sn"
+
+  - interval: "1m"
+    input_series:
+      - series: "nodejs_eventloop_lag_p99_seconds"
+        values: "0.75+0x60"
+
+    alert_rule_test:
+      - eval_time: "4m"
+        alertname: "EventLoopLag"
+        exp_alerts: []
+
+    name: "EventLoopLag: warning: p99 = 0.75 sn — for dolmadan (4 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "nodejs_eventloop_lag_p99_seconds"
+        values: "0.05+0x60"
+
+    alert_rule_test:
+      - eval_time: "10m"
+        alertname: "EventLoopLag"
+        exp_alerts: []
+
+    name: "EventLoopLag: sessiz: 50 ms"
+
+  - interval: "1m"
+    input_series:
+      - series: "up{job=\"backend\",instance=\"b1:5000\"}"
+        values: "0+0x60"
+
+    alert_rule_test:
+      - eval_time: "5m"
+        alertname: "BackendDown"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "api"
+              job: "backend"
+              instance: "b1:5000"
+            exp_annotations:
+              summary: "Backend örneği kazınamıyor (uptime)"
+              description: "b1:5000 2 dk'dır /metrics'e yanıt vermiyor: süreç çökmüş, yeniden başlıyor veya ağ kopuk."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#backenddown"
+
+
+    name: "BackendDown: critical: up=0"
+
+  - interval: "1m"
+    input_series:
+      - series: "up{job=\"backend\",instance=\"b1:5000\"}"
+        values: "1+0x60"
+
+    alert_rule_test:
+      - eval_time: "5m"
+        alertname: "BackendDown"
+        exp_alerts: []
+
+    name: "BackendDown: sessiz: up=1"
+
+  - interval: "1m"
+    input_series:
+      - series: "up{job=\"backend\",instance=\"b1:5000\"}"
+        values: "0+0x60"
+
+    alert_rule_test:
+      - eval_time: "1m"
+        alertname: "BackendDown"
+        exp_alerts: []
+
+    name: "BackendDown: sessiz: `for` dolmadı (1 dk)"
+
+  - interval: "1m"
+    input_series:
+      - series: "up{job=\"node\",instance=\"n1:9100\"}"
+        values: "1+0x60"
+
+    alert_rule_test:
+      - eval_time: "10m"
+        alertname: "BackendMissing"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "api"
+              job: "backend"
+            exp_annotations:
+              summary: "Backend hedefi Prometheus'tan tamamen kayboldu"
+              description: "up{job=\"backend\"} serisi 5 dk'dır yok: servis keşfi (DNS) boş — tüm replikalar kapalı olabilir. (up==0 bu durumda ateşlemez.)"
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#backendmissing"
+
+
+    name: "BackendMissing: critical: backend serisi yok (DNS SD boş)"
+
+  - interval: "1m"
+    input_series:
+      - series: "up{job=\"backend\",instance=\"b1:5000\"}"
+        values: "1+0x60"
+
+    alert_rule_test:
+      - eval_time: "10m"
+        alertname: "BackendMissing"
+        exp_alerts: []
+
+    name: "BackendMissing: sessiz: backend var"
+
+  - interval: "1m"
+    input_series:
+      - series: "process_resident_memory_bytes{job=\"backend\"}"
+        values: "2000000000+0x60"
+
+    alert_rule_test:
+      - eval_time: "25m"
+        alertname: "BackendMemoryHigh"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "api"
+            exp_annotations:
+              summary: "Backend RSS belleği 1.5 GB'ı aştı (sızıntı şüphesi)"
+              description: "RSS 2000000000 bayt; kalıcı artış OOM-kill riskidir."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#backendmemoryhigh"
+
+
+    name: "BackendMemoryHigh: warning: 2 GB RSS"
+
+  - interval: "1m"
+    input_series:
+      - series: "process_resident_memory_bytes{job=\"backend\"}"
+        values: "500000000+0x60"
+
+    alert_rule_test:
+      - eval_time: "25m"
+        alertname: "BackendMemoryHigh"
+        exp_alerts: []
+
+    name: "BackendMemoryHigh: sessiz: 500 MB"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_db_pool_connections{state=\"waiting\"}"
+        values: "3+0x60"
+
+    alert_rule_test:
+      - eval_time: "5m"
+        alertname: "DbPoolSaturated"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "database"
+            exp_annotations:
+              summary: "Uygulama DB havuzunda bağlantı bekleyen istek var"
+              description: "3 istek havuzdan bağlantı bekliyor (havuz 10 bağlantı)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/database.md#dbpoolsaturated"
+
+
+    name: "DbPoolSaturated: warning: 3 bekleyen"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_db_pool_connections{state=\"waiting\"}"
+        values: "3+0x60"
+
+    alert_rule_test:
+      - eval_time: "1m"
+        alertname: "DbPoolSaturated"
+        exp_alerts: []
+
+    name: "DbPoolSaturated: warning: 3 bekleyen — for dolmadan (1 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_db_pool_connections{state=\"waiting\"}"
+        values: "8+0x60"
+
+    alert_rule_test:
+      - eval_time: "5m"
+        alertname: "DbPoolSaturated"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "database"
+            exp_annotations:
+              summary: "DB bağlantı havuzu doygun — istekler zaman aşımına düşüyor"
+              description: "8 istek bekliyor; connectionTimeout (10 sn) sonrası 503 üretilir."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/database.md#dbpoolsaturated"
+
+          - exp_labels:
+              severity: "warning"
+              domain: "database"
+            exp_annotations:
+              summary: "Uygulama DB havuzunda bağlantı bekleyen istek var"
+              description: "8 istek havuzdan bağlantı bekliyor (havuz 10 bağlantı)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/database.md#dbpoolsaturated"
+
+
+    name: "DbPoolSaturated: critical: 8 bekleyen"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_db_pool_connections{state=\"waiting\"}"
+        values: "0+0x60"
+
+    alert_rule_test:
+      - eval_time: "5m"
+        alertname: "DbPoolSaturated"
+        exp_alerts: []
+
+    name: "DbPoolSaturated: sessiz: bekleyen yok"
+
+  - interval: "1m"
+    input_series:
+      - series: "pg_stat_activity_count{state=\"active\"}"
+        values: "85+0x60"
+
+      - series: "pg_settings_max_connections"
+        values: "100+0x60"
+
+    alert_rule_test:
+      - eval_time: "10m"
+        alertname: "PostgresConnectionsHigh"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "database"
+            exp_annotations:
+              summary: "PostgreSQL bağlantıları max_connections'ın %80'ini aştı"
+              description: "Kullanım oranı 0.85 (eşik 0.80)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/database.md#postgresconnectionshigh"
+
+
+    name: "PostgresConnectionsHigh: warning: %85"
+
+  - interval: "1m"
+    input_series:
+      - series: "pg_stat_activity_count{state=\"active\"}"
+        values: "85+0x60"
+
+      - series: "pg_settings_max_connections"
+        values: "100+0x60"
+
+    alert_rule_test:
+      - eval_time: "4m"
+        alertname: "PostgresConnectionsHigh"
+        exp_alerts: []
+
+    name: "PostgresConnectionsHigh: warning: %85 — for dolmadan (4 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "pg_stat_activity_count{state=\"active\"}"
+        values: "95+0x60"
+
+      - series: "pg_settings_max_connections"
+        values: "100+0x60"
+
+    alert_rule_test:
+      - eval_time: "10m"
+        alertname: "PostgresConnectionsHigh"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "database"
+            exp_annotations:
+              summary: "PostgreSQL bağlantıları max_connections'ın %90'ını aştı — yeni bağlantılar reddedilecek"
+              description: "Kullanım oranı 0.95 (eşik 0.90)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/database.md#postgresconnectionshigh"
+
+          - exp_labels:
+              severity: "warning"
+              domain: "database"
+            exp_annotations:
+              summary: "PostgreSQL bağlantıları max_connections'ın %80'ini aştı"
+              description: "Kullanım oranı 0.95 (eşik 0.80)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/database.md#postgresconnectionshigh"
+
+
+    name: "PostgresConnectionsHigh: critical: %95"
+
+  - interval: "1m"
+    input_series:
+      - series: "pg_stat_activity_count{state=\"active\"}"
+        values: "30+0x60"
+
+      - series: "pg_settings_max_connections"
+        values: "100+0x60"
+
+    alert_rule_test:
+      - eval_time: "10m"
+        alertname: "PostgresConnectionsHigh"
+        exp_alerts: []
+
+    name: "PostgresConnectionsHigh: sessiz: %30"
+
+  - interval: "1m"
+    input_series:
+      - series: "pg_up"
+        values: "0+0x60"
+
+    alert_rule_test:
+      - eval_time: "5m"
+        alertname: "PostgresDown"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "database"
+            exp_annotations:
+              summary: "PostgreSQL'e ulaşılamıyor"
+              description: "postgres-exporter veritabanına bağlanamıyor (pg_up=0) — DB durmuş veya erişim/kimlik hatası."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/database.md#postgresdown"
+
+
+    name: "PostgresDown: critical: pg_up=0"
+
+  - interval: "1m"
+    input_series:
+      - series: "pg_up"
+        values: "0+0x60"
+
+    alert_rule_test:
+      - eval_time: "1m"
+        alertname: "PostgresDown"
+        exp_alerts: []
+
+    name: "PostgresDown: critical: pg_up=0 — for dolmadan (1 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "pg_up"
+        values: "1+0x60"
+
+    alert_rule_test:
+      - eval_time: "5m"
+        alertname: "PostgresDown"
+        exp_alerts: []
+
+    name: "PostgresDown: sessiz: pg_up=1"
+
+  - interval: "1m"
+    input_series:
+      - series: "node_filesystem_avail_bytes{mountpoint=\"/\",fstype=\"ext4\"}"
+        values: "10+0x60"
+
+      - series: "node_filesystem_size_bytes{mountpoint=\"/\",fstype=\"ext4\"}"
+        values: "100+0x60"
+
+    alert_rule_test:
+      - eval_time: "15m"
+        alertname: "DiskSpace"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "infra"
+              mountpoint: "/"
+              fstype: "ext4"
+            exp_annotations:
+              summary: "Disk %85 doldu (/)"
+              description: "/ boş oranı 0.10 (eşik 0.15)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/infrastructure.md#diskspace"
+
+
+    name: "DiskSpace: warning: %10 boş"
+
+  - interval: "1m"
+    input_series:
+      - series: "node_filesystem_avail_bytes{mountpoint=\"/\",fstype=\"ext4\"}"
+        values: "10+0x60"
+
+      - series: "node_filesystem_size_bytes{mountpoint=\"/\",fstype=\"ext4\"}"
+        values: "100+0x60"
+
+    alert_rule_test:
+      - eval_time: "9m"
+        alertname: "DiskSpace"
+        exp_alerts: []
+
+    name: "DiskSpace: warning: %10 boş — for dolmadan (9 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "node_filesystem_avail_bytes{mountpoint=\"/\",fstype=\"ext4\"}"
+        values: "3+0x60"
+
+      - series: "node_filesystem_size_bytes{mountpoint=\"/\",fstype=\"ext4\"}"
+        values: "100+0x60"
+
+    alert_rule_test:
+      - eval_time: "15m"
+        alertname: "DiskSpace"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "infra"
+              mountpoint: "/"
+              fstype: "ext4"
+            exp_annotations:
+              summary: "Disk %95 doldu (/) — yazma hataları/veritabanı durması yakın"
+              description: "/ boş oranı 0.03 (eşik 0.05)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/infrastructure.md#diskspace"
+
+          - exp_labels:
+              severity: "warning"
+              domain: "infra"
+              mountpoint: "/"
+              fstype: "ext4"
+            exp_annotations:
+              summary: "Disk %85 doldu (/)"
+              description: "/ boş oranı 0.03 (eşik 0.15)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/infrastructure.md#diskspace"
+
+
+    name: "DiskSpace: critical: %3 boş"
+
+  - interval: "1m"
+    input_series:
+      - series: "node_filesystem_avail_bytes{mountpoint=\"/\",fstype=\"ext4\"}"
+        values: "40+0x60"
+
+      - series: "node_filesystem_size_bytes{mountpoint=\"/\",fstype=\"ext4\"}"
+        values: "100+0x60"
+
+    alert_rule_test:
+      - eval_time: "15m"
+        alertname: "DiskSpace"
+        exp_alerts: []
+
+    name: "DiskSpace: sessiz: %40 boş"
+
+  - interval: "1m"
+    input_series:
+      - series: "node_filesystem_avail_bytes{mountpoint=\"/run\",fstype=\"tmpfs\"}"
+        values: "1+0x60"
+
+      - series: "node_filesystem_size_bytes{mountpoint=\"/run\",fstype=\"tmpfs\"}"
+        values: "100+0x60"
+
+    alert_rule_test:
+      - eval_time: "15m"
+        alertname: "DiskSpace"
+        exp_alerts: []
+
+    name: "DiskSpace: sessiz: tmpfs yok sayılır"
+
+  - interval: "1m"
+    input_series:
+      - series: "node_filesystem_avail_bytes{mountpoint=\"/\",fstype=\"ext4\"}"
+        values: "800000000-5000000x120"
+
+      - series: "node_filesystem_size_bytes{mountpoint=\"/\",fstype=\"ext4\"}"
+        values: "2000000000+0x120"
+
+    alert_rule_test:
+      - eval_time: "90m"
+        alertname: "DiskWillFillSoon"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "infra"
+              mountpoint: "/"
+              fstype: "ext4"
+            exp_annotations:
+              summary: "Disk bu hızla ~4 saat içinde dolacak (/)"
+              description: "Son 2 saatlik eğilim 4 saat sonra boş alanı sıfırın altına düşürüyor (boş oran şu an < 0.40)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/infrastructure.md#diskwillfillsoon"
+
+
+    name: "DiskWillFillSoon: warning: eğilim 4 saatte doldurur"
+
+  - interval: "1m"
+    input_series:
+      - series: "node_filesystem_avail_bytes{mountpoint=\"/\",fstype=\"ext4\"}"
+        values: "800000000+0x120"
+
+      - series: "node_filesystem_size_bytes{mountpoint=\"/\",fstype=\"ext4\"}"
+        values: "2000000000+0x120"
+
+    alert_rule_test:
+      - eval_time: "90m"
+        alertname: "DiskWillFillSoon"
+        exp_alerts: []
+
+    name: "DiskWillFillSoon: sessiz: düz eğim"
+
+  - interval: "1m"
+    input_series:
+      - series: "node_memory_MemAvailable_bytes"
+        values: "5+0x60"
+
+      - series: "node_memory_MemTotal_bytes"
+        values: "100+0x60"
+
+    alert_rule_test:
+      - eval_time: "15m"
+        alertname: "HostMemoryLow"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "infra"
+            exp_annotations:
+              summary: "Host kullanılabilir belleği %10'un altında"
+              description: "Kullanılabilir bellek oranı 0.05."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/infrastructure.md#hostmemorylow"
+
+
+    name: "HostMemoryLow: warning: %5"
+
+  - interval: "1m"
+    input_series:
+      - series: "node_memory_MemAvailable_bytes"
+        values: "5+0x60"
+
+      - series: "node_memory_MemTotal_bytes"
+        values: "100+0x60"
+
+    alert_rule_test:
+      - eval_time: "9m"
+        alertname: "HostMemoryLow"
+        exp_alerts: []
+
+    name: "HostMemoryLow: warning: %5 — for dolmadan (9 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "node_memory_MemAvailable_bytes"
+        values: "50+0x60"
+
+      - series: "node_memory_MemTotal_bytes"
+        values: "100+0x60"
+
+    alert_rule_test:
+      - eval_time: "15m"
+        alertname: "HostMemoryLow"
+        exp_alerts: []
+
+    name: "HostMemoryLow: sessiz: %50"
+
+  - interval: "1m"
+    input_series:
+      - series: "node_cpu_seconds_total{mode=\"idle\",cpu=\"0\"}"
+        values: "0+3x60"
+
+    alert_rule_test:
+      - eval_time: "30m"
+        alertname: "HostCpuHigh"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "infra"
+            exp_annotations:
+              summary: "Host CPU kullanımı 15 dk'dır %90'ın üzerinde"
+              description: "CPU kullanımı %95."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/infrastructure.md#hostcpuhigh"
+
+
+    name: "HostCpuHigh: warning: CPU %95"
+
+  - interval: "1m"
+    input_series:
+      - series: "node_cpu_seconds_total{mode=\"idle\",cpu=\"0\"}"
+        values: "0+42x60"
+
+    alert_rule_test:
+      - eval_time: "30m"
+        alertname: "HostCpuHigh"
+        exp_alerts: []
+
+    name: "HostCpuHigh: sessiz: CPU %30"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_devices{state=\"offline\"}"
+        values: "4+0x60"
+
+      - series: "yakit_devices{state=\"registered\"}"
+        values: "10+0x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "DevicesOfflineRatio"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "Kayıtlı cihazların %30'undan fazlası çevrimdışı"
+              description: "Çevrimdışı oranı 0.40 (eşik 0.30, ≥5 kayıtlı cihazda)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#devicesofflineratio"
+
+
+    name: "DevicesOfflineRatio: warning: %40 çevrimdışı"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_devices{state=\"offline\"}"
+        values: "4+0x60"
+
+      - series: "yakit_devices{state=\"registered\"}"
+        values: "10+0x60"
+
+    alert_rule_test:
+      - eval_time: "14m"
+        alertname: "DevicesOfflineRatio"
+        exp_alerts: []
+
+    name: "DevicesOfflineRatio: warning: %40 çevrimdışı — for dolmadan (14 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_devices{state=\"offline\"}"
+        values: "6+0x60"
+
+      - series: "yakit_devices{state=\"registered\"}"
+        values: "10+0x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "DevicesOfflineRatio"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "field"
+            exp_annotations:
+              summary: "Kayıtlı cihazların yarısından fazlası çevrimdışı — saha genelinde kesinti şüphesi"
+              description: "Çevrimdışı oranı 0.60 (eşik 0.50): tek tek cihaz arızası değil, broker/ağ/altyapı sorunu olası."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#devicesofflineratio"
+
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "Kayıtlı cihazların %30'undan fazlası çevrimdışı"
+              description: "Çevrimdışı oranı 0.60 (eşik 0.30, ≥5 kayıtlı cihazda)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#devicesofflineratio"
+
+
+    name: "DevicesOfflineRatio: critical: %60 çevrimdışı"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_devices{state=\"offline\"}"
+        values: "1+0x60"
+
+      - series: "yakit_devices{state=\"registered\"}"
+        values: "10+0x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "DevicesOfflineRatio"
+        exp_alerts: []
+
+    name: "DevicesOfflineRatio: sessiz: %10"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_devices{state=\"offline\"}"
+        values: "4+0x60"
+
+      - series: "yakit_devices{state=\"registered\"}"
+        values: "4+0x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "DevicesOfflineRatio"
+        exp_alerts: []
+
+    name: "DevicesOfflineRatio: sessiz: küçük filo (4 cihaz, hepsi çevrimdışı) — oran koruması"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_devices{state=\"active\"}"
+        values: "0+0x60"
+
+      - series: "yakit_devices{state=\"registered\"}"
+        values: "10+0x60"
+
+    alert_rule_test:
+      - eval_time: "40m"
+        alertname: "NoActiveDevices"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "Son 30 dk'dır hiçbir cihaz telemetri göndermedi"
+              description: "Kayıtlı cihaz var ama son 10 dk içinde görülen (aktif) cihaz sayısı sıfır — MQTT hattı veya cihaz filosu sessiz."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#noactivedevices"
+
+
+    name: "NoActiveDevices: warning: kayıtlı 10, aktif 0"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_devices{state=\"active\"}"
+        values: "3+0x60"
+
+      - series: "yakit_devices{state=\"registered\"}"
+        values: "10+0x60"
+
+    alert_rule_test:
+      - eval_time: "40m"
+        alertname: "NoActiveDevices"
+        exp_alerts: []
+
+    name: "NoActiveDevices: sessiz: 3 aktif"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_despatch_queue{status=\"QUEUED\"}"
+        values: "60+0x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "DespatchQueueBacklog"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "e-İrsaliye iletim kuyruğunda birikme (>50)"
+              description: "60 belge kuyrukta (QUEUED) bekliyor."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchqueuebacklog"
+
+
+    name: "DespatchQueueBacklog: warning: 60 bekleyen"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_despatch_queue{status=\"QUEUED\"}"
+        values: "60+0x60"
+
+    alert_rule_test:
+      - eval_time: "14m"
+        alertname: "DespatchQueueBacklog"
+        exp_alerts: []
+
+    name: "DespatchQueueBacklog: warning: 60 bekleyen — for dolmadan (14 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_despatch_queue{status=\"QUEUED\"}"
+        values: "250+0x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "DespatchQueueBacklog"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "field"
+            exp_annotations:
+              summary: "e-İrsaliye kuyruğu ciddi biriktı (>200) — yasal belge gecikmesi"
+              description: "250 belge kuyrukta; entegratör/süpürücü çalışmıyor olabilir."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchqueuebacklog"
+
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "e-İrsaliye iletim kuyruğunda birikme (>50)"
+              description: "250 belge kuyrukta (QUEUED) bekliyor."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchqueuebacklog"
+
+
+    name: "DespatchQueueBacklog: critical: 250 bekleyen"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_despatch_queue{status=\"QUEUED\"}"
+        values: "5+0x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "DespatchQueueBacklog"
+        exp_alerts: []
+
+    name: "DespatchQueueBacklog: sessiz: 5 bekleyen"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_despatch_oldest_queued_age_seconds"
+        values: "2000+0x60"
+
+    alert_rule_test:
+      - eval_time: "15m"
+        alertname: "DespatchQueueStuck"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "En eski e-İrsaliye 30 dk'dır gönderilemedi"
+              description: "En eski bekleyen belge 2000 sn'dir kuyrukta."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchqueuestuck"
+
+
+    name: "DespatchQueueStuck: warning: en eski 2000 sn"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_despatch_oldest_queued_age_seconds"
+        values: "2000+0x60"
+
+    alert_rule_test:
+      - eval_time: "9m"
+        alertname: "DespatchQueueStuck"
+        exp_alerts: []
+
+    name: "DespatchQueueStuck: warning: en eski 2000 sn — for dolmadan (9 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_despatch_oldest_queued_age_seconds"
+        values: "4000+0x60"
+
+    alert_rule_test:
+      - eval_time: "15m"
+        alertname: "DespatchQueueStuck"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "field"
+            exp_annotations:
+              summary: "e-İrsaliye iletimi 1 saattir ilerlemiyor — entegratör erişilemez/süpürücü durmuş"
+              description: "En eski bekleyen belge 4000 sn'dir kuyrukta (eşik 3600)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchqueuestuck"
+
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "En eski e-İrsaliye 30 dk'dır gönderilemedi"
+              description: "En eski bekleyen belge 4000 sn'dir kuyrukta."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchqueuestuck"
+
+
+    name: "DespatchQueueStuck: critical: en eski 4000 sn"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_despatch_oldest_queued_age_seconds"
+        values: "60+0x60"
+
+    alert_rule_test:
+      - eval_time: "15m"
+        alertname: "DespatchQueueStuck"
+        exp_alerts: []
+
+    name: "DespatchQueueStuck: sessiz: 60 sn"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_despatch_queue{status=\"FAILED\"}"
+        values: "3+0x60"
+
+    alert_rule_test:
+      - eval_time: "15m"
+        alertname: "DespatchDeadLetter"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "Kalıcı başarısız (DLQ) e-İrsaliye var"
+              description: "3 belge 5 denemeden sonra FAILED — otomatik yeniden denenmez, muhasebe/operasyon müdahalesi gerekir."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchdeadletter"
+
+
+    name: "DespatchDeadLetter: warning: 3 FAILED"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_despatch_queue{status=\"FAILED\"}"
+        values: "3+0x60"
+
+    alert_rule_test:
+      - eval_time: "9m"
+        alertname: "DespatchDeadLetter"
+        exp_alerts: []
+
+    name: "DespatchDeadLetter: warning: 3 FAILED — for dolmadan (9 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_despatch_queue{status=\"FAILED\"}"
+        values: "15+0x60"
+
+    alert_rule_test:
+      - eval_time: "15m"
+        alertname: "DespatchDeadLetter"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "field"
+            exp_annotations:
+              summary: "Çok sayıda kalıcı başarısız e-İrsaliye (>10) — sistemik entegratör sorunu"
+              description: "15 belge FAILED."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchdeadletter"
+
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "Kalıcı başarısız (DLQ) e-İrsaliye var"
+              description: "15 belge 5 denemeden sonra FAILED — otomatik yeniden denenmez, muhasebe/operasyon müdahalesi gerekir."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchdeadletter"
+
+
+    name: "DespatchDeadLetter: critical: 15 FAILED"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_despatch_queue{status=\"FAILED\"}"
+        values: "0+0x60"
+
+    alert_rule_test:
+      - eval_time: "15m"
+        alertname: "DespatchDeadLetter"
+        exp_alerts: []
+
+    name: "DespatchDeadLetter: sessiz: 0 FAILED"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_notifications_retry_queue"
+        values: "150+0x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "NotificationRetryBacklog"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "Yeniden deneme bekleyen bildirim birikti (>100)"
+              description: "150 bildirim BAŞARISIZ durumda — e-posta/SMS/Telegram sağlayıcısı sorunlu olabilir."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#notificationretrybacklog"
+
+
+    name: "NotificationRetryBacklog: warning: 150"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_notifications_retry_queue"
+        values: "150+0x60"
+
+    alert_rule_test:
+      - eval_time: "14m"
+        alertname: "NotificationRetryBacklog"
+        exp_alerts: []
+
+    name: "NotificationRetryBacklog: warning: 150 — for dolmadan (14 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_notifications_retry_queue"
+        values: "20+0x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "NotificationRetryBacklog"
+        exp_alerts: []
+
+    name: "NotificationRetryBacklog: sessiz: 20"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_notification_circuit_open"
+        values: "2+0x60"
+
+    alert_rule_test:
+      - eval_time: "35m"
+        alertname: "NotificationWebhookCircuitOpen"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "Bildirim webhook devre kesicisi AÇIK (kanal otomatik devre dışı)"
+              description: "2 tenant webhook'u ardışık başarısızlık nedeniyle devre dışı — müşteri uç noktası erişilemez/yanlış."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#notificationwebhookcircuitopen"
+
+
+    name: "NotificationWebhookCircuitOpen: warning: 2 kanal"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_notification_circuit_open"
+        values: "2+0x60"
+
+    alert_rule_test:
+      - eval_time: "29m"
+        alertname: "NotificationWebhookCircuitOpen"
+        exp_alerts: []
+
+    name: "NotificationWebhookCircuitOpen: warning: 2 kanal — for dolmadan (29 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_notification_circuit_open"
+        values: "0+0x60"
+
+    alert_rule_test:
+      - eval_time: "35m"
+        alertname: "NotificationWebhookCircuitOpen"
+        exp_alerts: []
+
+    name: "NotificationWebhookCircuitOpen: sessiz: 0"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_mqtt_rejected_total{reason=\"blocked_device\"}"
+        values: "0+120x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "MqttRejectSpike"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "Reddedilen MQTT mesajı hızı yüksek (kayıtsız/bloke/sahte cihaz)"
+              description: "Saniyede 2.00 mesaj reddediliyor (eşik 1/sn)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#mqttrejectspike"
+
+
+    name: "MqttRejectSpike: warning: 2 ret/sn"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_mqtt_rejected_total{reason=\"blocked_device\"}"
+        values: "0+6x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "MqttRejectSpike"
+        exp_alerts: []
+
+    name: "MqttRejectSpike: sessiz: 0.1 ret/sn"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_mqtt_processing_errors_total"
+        values: "0+12x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "MqttProcessingErrors"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "MQTT mesaj işleme hataları sürüyor"
+              description: "Saniyede 0.20 işleme hatası (eşik 0.1/sn)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#mqttprocessingerrors"
+
+
+    name: "MqttProcessingErrors: warning: 0.2 hata/sn"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_mqtt_processing_errors_total"
+        values: "0+0.6x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "MqttProcessingErrors"
+        exp_alerts: []
+
+    name: "MqttProcessingErrors: sessiz: 0.01 hata/sn"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_alarms_open{severity=\"CRITICAL\"}"
+        values: "25+0x60"
+
+    alert_rule_test:
+      - eval_time: "35m"
+        alertname: "CriticalFieldAlarmsOpen"
+        exp_alerts:
+          - exp_labels:
+              severity: "info"
+              domain: "field"
+            exp_annotations:
+              summary: "Çok sayıda açık KRİTİK saha alarmı (>20)"
+              description: "25 açık kritik alarm — ürün içi alarm kuyruğu birikiyor (REP-716); sayfalama yapılmaz, ekip panosunda görünür."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#criticalfieldalarmsopen"
+
+
+    name: "CriticalFieldAlarmsOpen: info: 25 açık kritik alarm"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_alarms_open{severity=\"CRITICAL\"}"
+        values: "25+0x60"
+
+    alert_rule_test:
+      - eval_time: "29m"
+        alertname: "CriticalFieldAlarmsOpen"
+        exp_alerts: []
+
+    name: "CriticalFieldAlarmsOpen: info: 25 açık kritik alarm — for dolmadan (29 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_alarms_open{severity=\"CRITICAL\"}"
+        values: "5+0x60"
+
+    alert_rule_test:
+      - eval_time: "35m"
+        alertname: "CriticalFieldAlarmsOpen"
+        exp_alerts: []
+
+    name: "CriticalFieldAlarmsOpen: sessiz: 5"
+
+  - interval: "1m"
+    input_series:
+      - series: "dummy_metric"
+        values: "1+0x60"
+
+    alert_rule_test:
+      - eval_time: "3m"
+        alertname: "Watchdog"
+        exp_alerts:
+          - exp_labels:
+              severity: "none"
+              domain: "meta"
+            exp_annotations:
+              summary: "Watchdog — bildirim zinciri canlı (SÜREKLİ ateşlenir, normaldir)"
+              description: "Bu uyarı HER ZAMAN ateşlenir; Alertmanager onu dış bir 'kalp atışı' servisine (ALERT_HEARTBEAT_URL) düzenli gönderir. Gönderim KESİLİRSE izleme/bildirim hattı ölmüş demektir."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/monitoring.md#watchdog"
+
+
+    name: "Watchdog: her zaman ateşler (kalp atışı)"
+
+  - interval: "1m"
+    input_series:
+      - series: "up{job=\"node\",instance=\"n1:9100\"}"
+        values: "0+0x60"
+
+    alert_rule_test:
+      - eval_time: "10m"
+        alertname: "ScrapeTargetDown"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "meta"
+              job: "node"
+              instance: "n1:9100"
+            exp_annotations:
+              summary: "İzleme hedefi kazınamıyor (node)"
+              description: "node hedefi 5 dk'dır up=0 — o bileşenin metrikleri/uyarıları körleşmiş olabilir."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/monitoring.md#scrapetargetdown"
+
+
+    name: "ScrapeTargetDown: warning: node hedefi down"
+
+  - interval: "1m"
+    input_series:
+      - series: "up{job=\"node\",instance=\"n1:9100\"}"
+        values: "1+0x60"
+
+    alert_rule_test:
+      - eval_time: "10m"
+        alertname: "ScrapeTargetDown"
+        exp_alerts: []
+
+    name: "ScrapeTargetDown: sessiz: hedefler up"
+
+  - interval: "1m"
+    input_series:
+      - series: "up{job=\"backend\",instance=\"b1:5000\"}"
+        values: "0+0x60"
+
+    alert_rule_test:
+      - eval_time: "10m"
+        alertname: "ScrapeTargetDown"
+        exp_alerts: []
+
+    name: "ScrapeTargetDown: sessiz: backend down bu kuralın konusu DEĞİL (BackendDown)"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_business_metrics_last_refresh_timestamp_seconds"
+        values: "100+0x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "BusinessMetricsStale"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "meta"
+            exp_annotations:
+              summary: "İş metrikleri 5 dk'dır yenilenmiyor (cihaz/alarm/kuyruk uyarıları bayat veriye bakıyor)"
+              description: "Son başarılı yenilemeden bu yana 1100 sn geçti."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/monitoring.md#businessmetricsstale"
+
+
+    name: "BusinessMetricsStale: warning: son yenileme 1100 sn önce"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_business_metrics_last_refresh_timestamp_seconds"
+        values: "0+60x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "BusinessMetricsStale"
+        exp_alerts: []
+
+    name: "BusinessMetricsStale: sessiz: taze (zamanla artan)"
+
+  - interval: "1m"
+    input_series:
+      - series: "up{job=\"loki\",instance=\"l1:3100\"}"
+        values: "0+0x60"
+
+    alert_rule_test:
+      - eval_time: "10m"
+        alertname: "LogPipelineDown"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "meta"
+              job: "loki"
+              instance: "l1:3100"
+            exp_annotations:
+              summary: "Merkezi log deposu (Loki) erişilemiyor"
+              description: "Loki 5 dk'dır kazınamıyor — loglar toplanmıyor/aranamıyor olabilir."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/monitoring.md#logpipelinedown"
+
+
+    name: "LogPipelineDown: warning: loki down"
+
+  - interval: "1m"
+    input_series:
+      - series: "up{job=\"loki\",instance=\"l1:3100\"}"
+        values: "1+0x60"
+
+    alert_rule_test:
+      - eval_time: "10m"
+        alertname: "LogPipelineDown"
+        exp_alerts: []
+
+    name: "LogPipelineDown: sessiz: loki up"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_backup_last_success_timestamp_seconds{kind=\"base\"}"
+        values: "0+0x1600"
+
+    alert_rule_test:
+      - eval_time: "1600m"
+        alertname: "BackupTooOld"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "backup"
+            exp_annotations:
+              summary: "Son başarılı günlük yedek 26 saatten eski"
+              description: "Son başarılı tam yedekten bu yana 96000 sn geçti — günlük yedek çalışmıyor/başarısız (OPS-1106)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/backup.md#backuptooold"
+
+
+    name: "BackupTooOld: critical: son yedek 96000 sn önce"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_backup_last_success_timestamp_seconds{kind=\"base\"}"
+        values: "0+0x100"
+
+    alert_rule_test:
+      - eval_time: "60m"
+        alertname: "BackupTooOld"
+        exp_alerts: []
+
+    name: "BackupTooOld: sessiz: taze yedek"
+
+  - interval: "1m"
+    input_series:
+      - series: "dummy_metric"
+        values: "1+0x60"
+
+    alert_rule_test:
+      - eval_time: "90m"
+        alertname: "BackupMetricsMissing"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "backup"
+              kind: "base"
+            exp_annotations:
+              summary: "Yedek metrikleri hiç görünmüyor (yedek programı kurulu değil olabilir)"
+              description: "yakit_backup_last_success_timestamp_seconds{kind=\"base\"} yok: BACKUP_METRICS_DIR/textfile toplayıcı yapılandırılmamış veya yedek hiç çalışmadı."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/backup.md#backupmetricsmissing"
+
+
+    name: "BackupMetricsMissing: warning: yedek metriği hiç yok"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_backup_last_success_timestamp_seconds{kind=\"base\"}"
+        values: "0+0x100"
+
+    alert_rule_test:
+      - eval_time: "90m"
+        alertname: "BackupMetricsMissing"
+        exp_alerts: []
+
+    name: "BackupMetricsMissing: sessiz: metrik var"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_backup_last_success_timestamp_seconds{kind=\"wal\"}"
+        values: "0+0x60"
+
+    alert_rule_test:
+      - eval_time: "30m"
+        alertname: "WalShippingStalled"
+        exp_alerts:
+          - exp_labels:
+              severity: "critical"
+              domain: "backup"
+            exp_annotations:
+              summary: "WAL arşiv gönderimi 15 dk'dır durdu — RPO hedefi (15 dk) aşılıyor"
+              description: "Son başarılı WAL gönderiminden bu yana 1800 sn geçti (RPO 900 sn)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/backup.md#walshippingstalled"
+
+
+    name: "WalShippingStalled: critical: son WAL gönderimi 1800 sn önce"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_backup_last_success_timestamp_seconds{kind=\"wal\"}"
+        values: "0+60x60"
+
+    alert_rule_test:
+      - eval_time: "30m"
+        alertname: "WalShippingStalled"
+        exp_alerts: []
+
+    name: "WalShippingStalled: sessiz: taze WAL gönderimi"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_wal_spool_pending_files"
+        values: "25+0x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "WalSpoolBacklog"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "backup"
+            exp_annotations:
+              summary: "WAL spool'unda taşınmamış segment birikti (>20)"
+              description: "25 segment volume'da bekliyor — gönderici çalışmıyor; volume dolarsa arşiv durur ve DB yazmayı durdurabilir."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/backup.md#walspoolbacklog"
+
+
+    name: "WalSpoolBacklog: warning: 25 bekleyen segment"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_wal_spool_pending_files"
+        values: "25+0x60"
+
+    alert_rule_test:
+      - eval_time: "14m"
+        alertname: "WalSpoolBacklog"
+        exp_alerts: []
+
+    name: "WalSpoolBacklog: warning: 25 bekleyen segment — for dolmadan (14 dk) ateşlemez"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_wal_spool_pending_files"
+        values: "2+0x60"
+
+    alert_rule_test:
+      - eval_time: "20m"
+        alertname: "WalSpoolBacklog"
+        exp_alerts: []
+
+    name: "WalSpoolBacklog: sessiz: 2 segment"
+

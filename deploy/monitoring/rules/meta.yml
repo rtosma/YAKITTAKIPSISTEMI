@@ -1,0 +1,74 @@
+# OPS-1108 — İzleme hattının kendisi + yedekleme (OPS-1106) uyarıları. Watchdog: bildirim zincirinin YAŞADIĞININ kanıtı (ölü adam anahtarı).
+groups:
+  - name: meta
+    rules:
+      - alert: Watchdog
+        expr: vector(1)
+        labels: { severity: none, domain: meta }
+        annotations:
+          summary: "Watchdog — bildirim zinciri canlı (SÜREKLİ ateşlenir, normaldir)"
+          description: "Bu uyarı HER ZAMAN ateşlenir; Alertmanager onu dış bir 'kalp atışı' servisine (ALERT_HEARTBEAT_URL) düzenli gönderir. Gönderim KESİLİRSE izleme/bildirim hattı ölmüş demektir."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/monitoring.md#watchdog"
+
+      - alert: ScrapeTargetDown
+        expr: up{job=~"node|postgres|loki|alertmanager"} == 0
+        for: 5m
+        labels: { severity: warning, domain: meta }
+        annotations:
+          summary: "İzleme hedefi kazınamıyor ({{ $labels.job }})"
+          description: "{{ $labels.job }} hedefi 5 dk'dır up=0 — o bileşenin metrikleri/uyarıları körleşmiş olabilir."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/monitoring.md#scrapetargetdown"
+
+      - alert: BusinessMetricsStale
+        expr: (time() - max(yakit_business_metrics_last_refresh_timestamp_seconds)) > 300
+        for: 5m
+        labels: { severity: warning, domain: meta }
+        annotations:
+          summary: "İş metrikleri 5 dk'dır yenilenmiyor (cihaz/alarm/kuyruk uyarıları bayat veriye bakıyor)"
+          description: "Son başarılı yenilemeden bu yana {{ $value | printf \"%.0f\" }} sn geçti."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/monitoring.md#businessmetricsstale"
+
+      - alert: LogPipelineDown
+        expr: up{job="loki"} == 0
+        for: 5m
+        labels: { severity: warning, domain: meta }
+        annotations:
+          summary: "Merkezi log deposu (Loki) erişilemiyor"
+          description: "Loki 5 dk'dır kazınamıyor — loglar toplanmıyor/aranamıyor olabilir."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/monitoring.md#logpipelinedown"
+
+      - alert: BackupTooOld
+        expr: (time() - max(yakit_backup_last_success_timestamp_seconds{kind="base"})) > 26 * 3600
+        for: 10m
+        labels: { severity: critical, domain: backup }
+        annotations:
+          summary: "Son başarılı günlük yedek 26 saatten eski"
+          description: "Son başarılı tam yedekten bu yana {{ $value | printf \"%.0f\" }} sn geçti — günlük yedek çalışmıyor/başarısız (OPS-1106)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/backup.md#backuptooold"
+
+      - alert: BackupMetricsMissing
+        expr: absent(yakit_backup_last_success_timestamp_seconds{kind="base"})
+        for: 1h
+        labels: { severity: warning, domain: backup }
+        annotations:
+          summary: "Yedek metrikleri hiç görünmüyor (yedek programı kurulu değil olabilir)"
+          description: "yakit_backup_last_success_timestamp_seconds{kind=\"base\"} yok: BACKUP_METRICS_DIR/textfile toplayıcı yapılandırılmamış veya yedek hiç çalışmadı."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/backup.md#backupmetricsmissing"
+
+      - alert: WalShippingStalled
+        expr: (time() - max(yakit_backup_last_success_timestamp_seconds{kind="wal"})) > 900
+        for: 5m
+        labels: { severity: critical, domain: backup }
+        annotations:
+          summary: "WAL arşiv gönderimi 15 dk'dır durdu — RPO hedefi (15 dk) aşılıyor"
+          description: "Son başarılı WAL gönderiminden bu yana {{ $value | printf \"%.0f\" }} sn geçti (RPO 900 sn)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/backup.md#walshippingstalled"
+
+      - alert: WalSpoolBacklog
+        expr: max(yakit_wal_spool_pending_files) > 20
+        for: 15m
+        labels: { severity: warning, domain: backup }
+        annotations:
+          summary: "WAL spool'unda taşınmamış segment birikti (>20)"
+          description: "{{ $value | printf \"%.0f\" }} segment volume'da bekliyor — gönderici çalışmıyor; volume dolarsa arşiv durur ve DB yazmayı durdurabilir."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/backup.md#walspoolbacklog"

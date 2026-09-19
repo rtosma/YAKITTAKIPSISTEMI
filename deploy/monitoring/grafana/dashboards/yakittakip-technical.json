@@ -59,7 +59,7 @@
       "gridPos": {
         "x": 0,
         "y": 1,
-        "w": 6,
+        "w": 5,
         "h": 4
       },
       "targets": [
@@ -118,9 +118,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 6,
+        "x": 5,
         "y": 1,
-        "w": 6,
+        "w": 5,
         "h": 4
       },
       "targets": [
@@ -184,9 +184,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
+        "x": 10,
         "y": 1,
-        "w": 6,
+        "w": 5,
         "h": 4
       },
       "targets": [
@@ -242,9 +242,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 18,
+        "x": 15,
         "y": 1,
-        "w": 6,
+        "w": 4,
         "h": 4
       },
       "targets": [
@@ -299,6 +299,71 @@
     },
     {
       "id": 6,
+      "type": "stat",
+      "title": "Ateşleyen uyarı (critical/warning)",
+      "description": "Prometheus'ta ateşleyen uyarılar (docs/ALERTING.md). Watchdog ve info sayılmaz.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 19,
+        "y": 1,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "count(ALERTS{alertstate=\"firing\", severity=~\"critical|warning\"}) or vector(0)",
+          "legendFormat": "__auto"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 7,
       "type": "row",
       "title": "HTTP",
       "collapsed": false,
@@ -311,7 +376,7 @@
       "panels": []
     },
     {
-      "id": 7,
+      "id": 8,
       "type": "timeseries",
       "title": "İstek hızı (durum sınıfı)",
       "description": "",
@@ -360,7 +425,7 @@
       }
     },
     {
-      "id": 8,
+      "id": 9,
       "type": "timeseries",
       "title": "Gecikme p50 / p95 / p99",
       "description": "",
@@ -427,7 +492,7 @@
       }
     },
     {
-      "id": 9,
+      "id": 10,
       "type": "timeseries",
       "title": "En yavaş 10 route (p95)",
       "description": "route = eşleşen Express yol kalıbı (ham URL değil).",
@@ -476,7 +541,7 @@
       }
     },
     {
-      "id": 10,
+      "id": 11,
       "type": "timeseries",
       "title": "5xx (route, ilk 10)",
       "description": "",
@@ -525,7 +590,7 @@
       }
     },
     {
-      "id": 11,
+      "id": 12,
       "type": "row",
       "title": "Çalışma zamanı (Node.js)",
       "collapsed": false,
@@ -538,7 +603,7 @@
       "panels": []
     },
     {
-      "id": 12,
+      "id": 13,
       "type": "timeseries",
       "title": "Event loop gecikmesi",
       "description": "Sürekli yüksek p99 = event loop blokajı (CPU-yoğun iş / senkron çağrı).",
@@ -596,7 +661,7 @@
       }
     },
     {
-      "id": 13,
+      "id": 14,
       "type": "timeseries",
       "title": "Bellek",
       "description": "",
@@ -654,7 +719,7 @@
       }
     },
     {
-      "id": 14,
+      "id": 15,
       "type": "timeseries",
       "title": "Süreç CPU",
       "description": "",
@@ -703,7 +768,7 @@
       }
     },
     {
-      "id": 15,
+      "id": 16,
       "type": "row",
       "title": "Veritabanı",
       "collapsed": false,
@@ -716,7 +781,7 @@
       "panels": []
     },
     {
-      "id": 16,
+      "id": 17,
       "type": "timeseries",
       "title": "Uygulama bağlantı havuzu",
       "description": "waiting > 0 sürekli = havuz doygun (max 10).",
@@ -765,7 +830,7 @@
       }
     },
     {
-      "id": 17,
+      "id": 18,
       "type": "timeseries",
       "title": "PostgreSQL bağlantıları (durum)",
       "description": "",
@@ -823,7 +888,7 @@
       }
     },
     {
-      "id": 18,
+      "id": 19,
       "type": "timeseries",
       "title": "Veritabanı boyutu / işlem hızı",
       "description": "",
@@ -872,7 +937,7 @@
       }
     },
     {
-      "id": 19,
+      "id": 20,
       "type": "row",
       "title": "MQTT",
       "collapsed": false,
@@ -885,7 +950,7 @@
       "panels": []
     },
     {
-      "id": 20,
+      "id": 21,
       "type": "timeseries",
       "title": "MQTT mesaj hızı (tür)",
       "description": "",
@@ -934,7 +999,7 @@
       }
     },
     {
-      "id": 21,
+      "id": 22,
       "type": "timeseries",
       "title": "Reddedilen / hata",
       "description": "",
@@ -992,7 +1057,7 @@
       }
     },
     {
-      "id": 22,
+      "id": 23,
       "type": "row",
       "title": "Altyapı (host)",
       "collapsed": false,
@@ -1005,7 +1070,7 @@
       "panels": []
     },
     {
-      "id": 23,
+      "id": 24,
       "type": "timeseries",
       "title": "CPU kullanımı",
       "description": "",
@@ -1055,7 +1120,7 @@
       }
     },
     {
-      "id": 24,
+      "id": 25,
       "type": "timeseries",
       "title": "Bellek kullanımı",
       "description": "",
@@ -1105,7 +1170,7 @@
       }
     },
     {
-      "id": 25,
+      "id": 26,
       "type": "timeseries",
       "title": "Disk doluluk (bağlama noktası)",
       "description": "",
@@ -1155,7 +1220,7 @@
       }
     },
     {
-      "id": 26,
+      "id": 27,
       "type": "timeseries",
       "title": "Ağ (alınan / gönderilen)",
       "description": "",
@@ -1213,7 +1278,7 @@
       }
     },
     {
-      "id": 27,
+      "id": 28,
       "type": "row",
       "title": "Loglar (Loki) — merkezi, aranabilir",
       "collapsed": false,
@@ -1226,7 +1291,7 @@
       "panels": []
     },
     {
-      "id": 28,
+      "id": 29,
       "type": "timeseries",
       "title": "Log hacmi (seviye)",
       "description": "Etiketler: service, container, level. traceId/tenantId structured metadata (aranabilir, indekslenmez).",
@@ -1276,7 +1341,7 @@
       }
     },
     {
-      "id": 29,
+      "id": 30,
       "type": "logs",
       "title": "Hata logları (error/fatal)",
       "datasource": {
@@ -1309,7 +1374,7 @@
       }
     },
     {
-      "id": 30,
+      "id": 31,
       "type": "logs",
       "title": "Log arama ($search)",
       "datasource": {

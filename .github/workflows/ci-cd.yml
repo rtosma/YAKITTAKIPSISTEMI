@@ -17,7 +17,8 @@ jobs:
   quality-and-tests:
     name: 🧪 Quality Check & Integration Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # OPS-1106/1107/1108 testleri gerçek Postgres/Prometheus/Alertmanager konteynerleri çalıştırır (yedek+PITR ≈ 2 dk, canlı uyarı tatbikatı ≈ 3 dk).
+    timeout-minutes: 30
     # ARCH-110: backend/src/config/env.ts artık JWT_SECRET/JWT_REFRESH_SECRET/
     # MQTT_USERNAME/MQTT_PASSWORD'ü HER modül import zincirinde (test_res902.ts
     # ve test_ops1101.ts dahil — logger.ts üzerinden transitif olarak) zorunlu
@@ -90,6 +91,13 @@ jobs:
       # (Canlı uçtan uca: node scripts/test-ops1107.mjs --live — çalışan compose yığını gerektirir.)
       - name: "OPS-1107: Gözlemlenebilirlik Yığını Testleri (dashboard, kardinalite, yapılandırma)"
         run: node scripts/test-ops1107.mjs
+
+      # OPS-1108: uyarı kuralları (promtool birim testleri GERÇEK `for` süreleriyle), runbook'lar, Alertmanager yapılandırması (amtool) + CANLI bildirim zinciri
+      # tatbikatı (yalıtılmış Prometheus + Alertmanager + sahte alıcı; tüm kritik uyarılar yapay tetiklenir). Yalnızca docker + resmi imajlar gerekir.
+      - name: "OPS-1108: Uyarı Kuralları, Runbook'lar ve Yapılandırma Testleri"
+        run: node scripts/test-ops1108.mjs
+      - name: "OPS-1108: Bildirim Zinciri Tatbikatı (kritik uyarılar yapay tetiklenir)"
+        run: node scripts/test-ops1108.mjs --live
 
       - name: "ARCH-101.2: Ham pool.query Kullanımı Denetimi (RLS Bypass Koruması)"
         run: node scripts/check-no-raw-pool-query.mjs

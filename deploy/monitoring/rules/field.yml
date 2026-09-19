@@ -1,0 +1,129 @@
+# ==============================================================================
+# OPS-1108 — SAHA uyarıları (cihaz, e-İrsaliye, bildirim, MQTT). Metrikler PLATFORM toplamıdır (tenant/şantiye etiketi yok — kardinalite
+# politikası, docs/OBSERVABILITY.md): bu yüzden cihaz uyarısı TEK TEK cihaz değil ORAN bazlıdır (Teknik Not: "şantiyenin %50'si offline"
+# gibi oran anlamlıdır). Şantiye kırılımı rep-717 / Grafana iş dashboard'undadır; runbook oradan tanıya yönlendirir.
+# ==============================================================================
+groups:
+  - name: field
+    rules:
+      - alert: DevicesOfflineRatio
+        expr: (max(yakit_devices{state="offline"}) / clamp_min(max(yakit_devices{state="registered"}), 1)) > 0.3 and max(yakit_devices{state="registered"}) >= 5
+        for: 15m
+        labels: { severity: warning, domain: field }
+        annotations:
+          summary: "Kayıtlı cihazların %30'undan fazlası çevrimdışı"
+          description: "Çevrimdışı oranı {{ $value | printf \"%.2f\" }} (eşik 0.30, ≥5 kayıtlı cihazda)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#devicesofflineratio"
+      - alert: DevicesOfflineRatio
+        expr: (max(yakit_devices{state="offline"}) / clamp_min(max(yakit_devices{state="registered"}), 1)) > 0.5 and max(yakit_devices{state="registered"}) >= 5
+        for: 10m
+        labels: { severity: critical, domain: field }
+        annotations:
+          summary: "Kayıtlı cihazların yarısından fazlası çevrimdışı — saha genelinde kesinti şüphesi"
+          description: "Çevrimdışı oranı {{ $value | printf \"%.2f\" }} (eşik 0.50): tek tek cihaz arızası değil, broker/ağ/altyapı sorunu olası."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#devicesofflineratio"
+
+      - alert: NoActiveDevices
+        expr: max(yakit_devices{state="active"}) == 0 and max(yakit_devices{state="registered"}) > 0
+        for: 30m
+        labels: { severity: warning, domain: field }
+        annotations:
+          summary: "Son 30 dk'dır hiçbir cihaz telemetri göndermedi"
+          description: "Kayıtlı cihaz var ama son 10 dk içinde görülen (aktif) cihaz sayısı sıfır — MQTT hattı veya cihaz filosu sessiz."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#noactivedevices"
+
+      - alert: DespatchQueueBacklog
+        expr: max(yakit_despatch_queue{status="QUEUED"}) > 50
+        for: 15m
+        labels: { severity: warning, domain: field }
+        annotations:
+          summary: "e-İrsaliye iletim kuyruğunda birikme (>50)"
+          description: "{{ $value | printf \"%.0f\" }} belge kuyrukta (QUEUED) bekliyor."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchqueuebacklog"
+      - alert: DespatchQueueBacklog
+        expr: max(yakit_despatch_queue{status="QUEUED"}) > 200
+        for: 15m
+        labels: { severity: critical, domain: field }
+        annotations:
+          summary: "e-İrsaliye kuyruğu ciddi biriktı (>200) — yasal belge gecikmesi"
+          description: "{{ $value | printf \"%.0f\" }} belge kuyrukta; entegratör/süpürücü çalışmıyor olabilir."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchqueuebacklog"
+
+      - alert: DespatchQueueStuck
+        expr: max(yakit_despatch_oldest_queued_age_seconds) > 1800
+        for: 10m
+        labels: { severity: warning, domain: field }
+        annotations:
+          summary: "En eski e-İrsaliye 30 dk'dır gönderilemedi"
+          description: "En eski bekleyen belge {{ $value | printf \"%.0f\" }} sn'dir kuyrukta."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchqueuestuck"
+      - alert: DespatchQueueStuck
+        expr: max(yakit_despatch_oldest_queued_age_seconds) > 3600
+        for: 10m
+        labels: { severity: critical, domain: field }
+        annotations:
+          summary: "e-İrsaliye iletimi 1 saattir ilerlemiyor — entegratör erişilemez/süpürücü durmuş"
+          description: "En eski bekleyen belge {{ $value | printf \"%.0f\" }} sn'dir kuyrukta (eşik 3600)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchqueuestuck"
+
+      - alert: DespatchDeadLetter
+        expr: max(yakit_despatch_queue{status="FAILED"}) > 0
+        for: 10m
+        labels: { severity: warning, domain: field }
+        annotations:
+          summary: "Kalıcı başarısız (DLQ) e-İrsaliye var"
+          description: "{{ $value | printf \"%.0f\" }} belge 5 denemeden sonra FAILED — otomatik yeniden denenmez, muhasebe/operasyon müdahalesi gerekir."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchdeadletter"
+      - alert: DespatchDeadLetter
+        expr: max(yakit_despatch_queue{status="FAILED"}) > 10
+        for: 10m
+        labels: { severity: critical, domain: field }
+        annotations:
+          summary: "Çok sayıda kalıcı başarısız e-İrsaliye (>10) — sistemik entegratör sorunu"
+          description: "{{ $value | printf \"%.0f\" }} belge FAILED."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchdeadletter"
+
+      - alert: NotificationRetryBacklog
+        expr: max(yakit_notifications_retry_queue) > 100
+        for: 15m
+        labels: { severity: warning, domain: field }
+        annotations:
+          summary: "Yeniden deneme bekleyen bildirim birikti (>100)"
+          description: "{{ $value | printf \"%.0f\" }} bildirim BAŞARISIZ durumda — e-posta/SMS/Telegram sağlayıcısı sorunlu olabilir."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#notificationretrybacklog"
+
+      - alert: NotificationWebhookCircuitOpen
+        expr: max(yakit_notification_circuit_open) > 0
+        for: 30m
+        labels: { severity: warning, domain: field }
+        annotations:
+          summary: "Bildirim webhook devre kesicisi AÇIK (kanal otomatik devre dışı)"
+          description: "{{ $value | printf \"%.0f\" }} tenant webhook'u ardışık başarısızlık nedeniyle devre dışı — müşteri uç noktası erişilemez/yanlış."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#notificationwebhookcircuitopen"
+
+      - alert: MqttRejectSpike
+        expr: sum(rate(yakit_mqtt_rejected_total[5m])) > 1
+        for: 10m
+        labels: { severity: warning, domain: field }
+        annotations:
+          summary: "Reddedilen MQTT mesajı hızı yüksek (kayıtsız/bloke/sahte cihaz)"
+          description: "Saniyede {{ $value | printf \"%.2f\" }} mesaj reddediliyor (eşik 1/sn)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#mqttrejectspike"
+
+      - alert: MqttProcessingErrors
+        expr: sum(rate(yakit_mqtt_processing_errors_total[5m])) > 0.1
+        for: 10m
+        labels: { severity: warning, domain: field }
+        annotations:
+          summary: "MQTT mesaj işleme hataları sürüyor"
+          description: "Saniyede {{ $value | printf \"%.2f\" }} işleme hatası (eşik 0.1/sn)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#mqttprocessingerrors"
+
+      - alert: CriticalFieldAlarmsOpen
+        expr: max(yakit_alarms_open{severity="CRITICAL"}) > 20
+        for: 30m
+        labels: { severity: info, domain: field }
+        annotations:
+          summary: "Çok sayıda açık KRİTİK saha alarmı (>20)"
+          description: "{{ $value | printf \"%.0f\" }} açık kritik alarm — ürün içi alarm kuyruğu birikiyor (REP-716); sayfalama yapılmaz, ekip panosunda görünür."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#criticalfieldalarmsopen"

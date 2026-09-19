@@ -58,6 +58,7 @@ Tek bir tenant-arası sorgu (`adminDb.getBusinessMetricsSnapshot`, tenant-önce 
 | `yakit_despatch_queue` | gauge | `status` = QUEUED \| SENDING \| FAILED | e-İrsaliye iletim kuyruğu derinliği |
 | `yakit_despatch_oldest_queued_age_seconds` | gauge | — | Kuyrukta bekleyen en eski e-İrsaliyenin yaşı |
 | `yakit_notifications_retry_queue` | gauge | — | Yeniden deneme bekleyen (BAŞARISIZ) bildirim |
+| `yakit_notification_circuit_open` | gauge | — | Devre kesicisi açık (otomatik devre dışı) bildirim webhook kanalı sayısı (NOTIF-1604) |
 | `yakit_business_metrics_last_refresh_timestamp_seconds` | gauge | — | Son başarılı yenileme (bayat veri tespiti) |
 | `yakit_business_metrics_refresh_errors_total` | counter | — | Yenileme hatası |
 

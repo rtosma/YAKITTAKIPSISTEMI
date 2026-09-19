@@ -11,6 +11,7 @@
 #   WAL_ARCHIVE_DIR              konteyner içi arşiv dizini (varsayılan /wal_archive)
 #   BACKUP_RETENTION_DAYS        varsayılan 14
 #   BACKUP_UPLOAD_CMD            isteğe bağlı: yedek sonrası çalışan kanca (örn. rclone sync "$BACKUP_DEST_DIR" uzak:kova)
+#   BACKUP_METRICS_DIR           isteğe bağlı (OPS-1108): node-exporter textfile dizini — yedek/WAL metrikleri buraya yazılır (alarm: BackupTooOld, WalShippingStalled)
 #   RPO_TARGET_SECONDS (900) / RTO_TARGET_SECONDS (14400) / WAL_ARCHIVE_TIMEOUT_SECONDS (300) / WAL_SHIP_INTERVAL_SECONDS (300)
 # ==============================================================================
 set -euo pipefail
@@ -58,4 +59,13 @@ table_stats() {
   [ -n "$sql" ] || { echo '{}'; return; }
   if [ -n "$snap" ]; then pre="BEGIN ISOLATION LEVEL REPEATABLE READ; SET TRANSACTION SNAPSHOT '$snap';"; fi
   docker exec -i "$c" psql -U "$u" -d "$d" -v ON_ERROR_STOP=1 -X -At -q -F'|' <<<"${pre}${sql};" | "${TOOLS[@]}" stats-json
+}
+
+# OPS-1108 — node-exporter textfile toplayıcısı için metrik dosyası (atomik: geçici dosya + mv). BACKUP_METRICS_DIR yoksa no-op.
+# Yalnızca BAŞARIDA güncellenen zaman damgaları: betik çalışmayı bıraksa/başarısız olsa değer BAYATLAR → Prometheus "çok eski" alarmı üretir
+# (ölü adam anahtarı mantığı; başarısızlık bildirimine bağımlı değil).
+write_backup_metrics() { # $1=dosya adı (örn. yakit_backup_base.prom) $2=metin
+  [ -n "${BACKUP_METRICS_DIR:-}" ] || return 0
+  mkdir -p "$BACKUP_METRICS_DIR"
+  printf '%s\n' "$2" > "$BACKUP_METRICS_DIR/$1.tmp" && mv "$BACKUP_METRICS_DIR/$1.tmp" "$BACKUP_METRICS_DIR/$1"
 }

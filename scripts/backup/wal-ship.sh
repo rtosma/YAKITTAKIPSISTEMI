@@ -36,5 +36,13 @@ for f in "${FILES[@]}"; do
 done
 
 if [ "$failed" -eq 0 ]; then date +%s > "$BACKUP_DEST_DIR/wal/.heartbeat"; fi
+pending="$(docker exec "$PG_CONTAINER" sh -c "ls -1 '$WAL_DIR' 2>/dev/null | grep -vc '\\.tmp\$'" || true)"; pending="${pending:-0}"
+hb=0; [ -f "$BACKUP_DEST_DIR/wal/.heartbeat" ] && hb="$(cat "$BACKUP_DEST_DIR/wal/.heartbeat")"
+write_backup_metrics yakit_backup_wal.prom "# HELP yakit_backup_last_success_timestamp_seconds Son BAŞARILI WAL gönderiminin unix zamanı (OPS-1106; RPO göstergesi).
+# TYPE yakit_backup_last_success_timestamp_seconds gauge
+yakit_backup_last_success_timestamp_seconds{kind=\"wal\"} $hb
+# HELP yakit_wal_spool_pending_files Yedek konumuna henüz taşınmamış WAL segmenti (volume'da bekleyen).
+# TYPE yakit_wal_spool_pending_files gauge
+yakit_wal_spool_pending_files $pending"
 log "$shipped segment gönderildi, $failed başarısız."
 [ "$failed" -eq 0 ] || exit 2
