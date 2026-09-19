@@ -411,6 +411,11 @@ jobs:
       - name: Run REP-715 Cross-Site Settlement Report Tests
         run: cd backend && npx tsx test/test_rep715_cross_site.ts
 
+      # REP-716 (#173): AI-507 alarmlarından rapor — elle hesaplı YP oranı/çözüm süresi,
+      # gerçek raiseAlarm ile tekrar gruplaması, gruplamadan ÖNCE tarih filtresi.
+      - name: Run REP-716 Alarm Report Tests
+        run: cd backend && npx tsx test/test_rep716_alarm_report.ts
+
       # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
       # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte
       # ardışık istekler, sayfa sayısı) BİLEREK ayrı bir dosyada — o dosyanın

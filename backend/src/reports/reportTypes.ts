@@ -33,6 +33,14 @@ export interface ReportFilterDef {
   column: string;
   type: ReportFilterType;
   label: string;
+  /**
+   * REP-716: `true` ise koşul dış sorguya DEĞİL, `table`'ın içindeki
+   * SOURCE_WHERE_MARKER işaretçisine (reportEngine.ts; `WHERE TRUE <işaretçi>`
+   * biçiminde) enjekte edilir — GRUPLAMADAN ÖNCE uygulanması gereken filtreler
+   * (tarih aralığı gibi) için. `column` bu durumda `table` İÇİNDEKİ kaynak
+   * sorgunun sütunudur.
+   */
+  beforeAggregation?: boolean;
 }
 
 export interface ReportColumnDef {
@@ -53,7 +61,8 @@ export interface ReportColumnDef {
 export interface ReportAggregateDef {
   key: string;
   column: string;
-  fn: 'SUM' | 'COUNT';
+  // 'AVG' (REP-716): eşleşen satır yoksa 0 döner — n'yi ayrıca bir COUNT/SUM toplamıyla verin.
+  fn: 'SUM' | 'COUNT' | 'AVG';
   label: string;
 }
 

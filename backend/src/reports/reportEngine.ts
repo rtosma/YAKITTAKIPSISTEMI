@@ -20,6 +20,7 @@ import { ReportDefinition, ReportFilterDef, ReportRunResult } from './reportType
  * tutarlı bir sözleşme, ayrıca tek bir sayfada sınırsız satır çekilip
  * bellek/CPU'yu zorlamasın diye.
  */
+export const SOURCE_WHERE_MARKER = '/*SRC_WHERE*/';
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_PAGE_SIZE = 20;
 const DEFAULT_MAX_PDF_ROWS = 2000;
@@ -81,15 +82,24 @@ function applyFilter(filter: ReportFilterDef, rawValue: unknown, conditions: str
  * verilirse (SITE_MANAGER kısıtlaması, AUTH-201.4 ile aynı desen) istemcinin
  * kendi filtre değerini EZER — istemci girdisine güvenilmez.
  */
-function buildWhereClause(def: ReportDefinition, query: ReportQueryParams, siteScope?: string): { whereClause: string; params: unknown[] } {
+function buildWhereClause(def: ReportDefinition, query: ReportQueryParams, siteScope?: string): { whereClause: string; params: unknown[]; table: string } {
   const conditions: string[] = [];
+  const sourceConditions: string[] = [];
   const params: unknown[] = [];
 
   for (const filter of def.filters) {
     if (def.siteScopeColumn && filter.column === def.siteScopeColumn && siteScope !== undefined) {
       continue; // siteScope aşağıda ayrıca ve önce eklenir, istemci değeri yok sayılır
     }
-    applyFilter(filter, query[filter.key], conditions, params);
+    applyFilter(filter, query[filter.key], filter.beforeAggregation ? sourceConditions : conditions, params);
+  }
+
+  // beforeAggregation filtreleri table içindeki işaretçiye enjekte edilir (aynı params dizisi → $n numaraları tutarlı).
+  let table = def.table;
+  if (table.includes(SOURCE_WHERE_MARKER)) {
+    table = table.replace(SOURCE_WHERE_MARKER, sourceConditions.length > 0 ? ` AND ${sourceConditions.join(' AND ')}` : '');
+  } else if (def.filters.some((f) => f.beforeAggregation)) {
+    throw new Error(`Rapor tanımı '${def.id}' beforeAggregation filtresi kullanıyor ama table içinde ${SOURCE_WHERE_MARKER} işaretçisi yok (programlama hatası).`);
   }
   if (def.siteScopeColumn && siteScope !== undefined) {
     params.push(siteScope);
@@ -98,7 +108,7 @@ function buildWhereClause(def: ReportDefinition, query: ReportQueryParams, siteS
     conditions.unshift(scopeColumns.length > 1 ? `(${scopeCondition})` : scopeCondition);
   }
 
-  return { whereClause: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '', params };
+  return { whereClause: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '', params, table };
 }
 
 function parsePagination(query: ReportQueryParams): { page: number; pageSize: number } {
@@ -136,12 +146,12 @@ function resolveSort(def: ReportDefinition, query: ReportQueryParams): { column:
   return { column, direction };
 }
 
-async function runAggregates(client: PoolClient, def: ReportDefinition, whereClause: string, params: unknown[]): Promise<{ totalCount: number; aggregates: Record<string, number> }> {
+async function runAggregates(client: PoolClient, def: ReportDefinition, table: string, whereClause: string, params: unknown[]): Promise<{ totalCount: number; aggregates: Record<string, number> }> {
   const selectParts = ['COUNT(*)::int AS __count'];
   for (const agg of def.aggregates ?? []) {
     selectParts.push(`COALESCE(${agg.fn}(${agg.column}), 0)::numeric AS ${agg.key}`);
   }
-  const result = await client.query(`SELECT ${selectParts.join(', ')} FROM ${def.table} ${whereClause}`, params);
+  const result = await client.query(`SELECT ${selectParts.join(', ')} FROM ${table} ${whereClause}`, params);
   const row = result.rows[0] ?? {};
   const aggregates: Record<string, number> = {};
   for (const agg of def.aggregates ?? []) {
@@ -153,17 +163,17 @@ async function runAggregates(client: PoolClient, def: ReportDefinition, whereCla
 /** AC: "Sunucu taraflı sayfalama ve sıralama" — tek rapor tanımından tek çağrıyla çalışır. */
 export async function runReport(def: ReportDefinition, query: ReportQueryParams, siteScope?: string): Promise<ReportRunResult> {
   const { page, pageSize } = parsePagination(query);
-  const { whereClause, params } = buildWhereClause(def, query, siteScope);
+  const { whereClause, params, table } = buildWhereClause(def, query, siteScope);
   const sort = resolveSort(def, query);
   const columnList = def.columns.map((c) => c.key).join(', ');
 
   return withTenant(async (client) => {
-    const { totalCount, aggregates } = await runAggregates(client, def, whereClause, params);
+    const { totalCount, aggregates } = await runAggregates(client, def, table, whereClause, params);
 
     const offset = (page - 1) * pageSize;
     const dataParams = [...params, pageSize, offset];
     const dataResult = await client.query(
-      `SELECT ${columnList} FROM ${def.table} ${whereClause} ORDER BY ${sort.column} ${sort.direction} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      `SELECT ${columnList} FROM ${table} ${whereClause} ORDER BY ${sort.column} ${sort.direction} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       dataParams
     );
 
@@ -198,13 +208,13 @@ export async function streamReportExport(
   if (!def.columns.some((c) => c.key === 'id')) {
     throw new Error(`Rapor tanımı '${def.id}' export için gereken 'id' sütununu içermiyor (programlama hatası).`);
   }
-  const { whereClause, params } = buildWhereClause(def, query, siteScope);
+  const { whereClause, params, table } = buildWhereClause(def, query, siteScope);
   const columnList = def.columns.map((c) => c.key).join(', ');
   const { direction } = def.defaultSort;
   const cmp = direction === 'DESC' ? '<' : '>';
 
   return withTenant(async (client) => {
-    const { totalCount, aggregates } = await runAggregates(client, def, whereClause, params);
+    const { totalCount, aggregates } = await runAggregates(client, def, table, whereClause, params);
 
     let cursor: { sortValue: unknown; id: unknown } | null = null;
     while (true) {
@@ -217,7 +227,7 @@ export async function streamReportExport(
       const where = cursorConditions.length > 0 ? `WHERE ${cursorConditions.join(' AND ')}` : '';
       cursorParams.push(EXPORT_BATCH_SIZE);
       const result = await client.query(
-        `SELECT ${columnList} FROM ${def.table} ${where} ORDER BY ${def.defaultSort.column} ${direction}, id ${direction} LIMIT $${cursorParams.length}`,
+        `SELECT ${columnList} FROM ${table} ${where} ORDER BY ${def.defaultSort.column} ${direction}, id ${direction} LIMIT $${cursorParams.length}`,
         cursorParams
       );
       if (result.rows.length === 0) break;
