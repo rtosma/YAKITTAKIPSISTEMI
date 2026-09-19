@@ -431,6 +431,10 @@ jobs:
       - name: Run REP-719 Cost and Budget Report Tests
         run: cd backend && npx tsx test/test_rep719_cost_budget.ts
 
+      # REP-720 (#177): sürücü raporu — PII maskesi (rol bazlı), orakül koruması, audit'li indirme (fail-closed), AI-506 skor bileşenleri
+      - name: Run REP-720 Driver Report Tests
+        run: cd backend && npx tsx test/test_rep720_driver_report.ts
+
       # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
       # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte
       # ardışık istekler, sayfa sayısı) BİLEREK ayrı bir dosyada — o dosyanın

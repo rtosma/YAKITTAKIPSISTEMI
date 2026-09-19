@@ -7,7 +7,7 @@ import PDFDocument from 'pdfkit';
 import fs from 'fs';
 import path from 'path';
 import { Response } from 'express';
-import { ReportDefinition } from './reportTypes';
+import { ReportDefinition, ReportViewer } from './reportTypes';
 import { streamReportExport, ReportQueryParams, assertPdfRowLimit, runReport } from './reportEngine';
 
 /**
@@ -131,14 +131,14 @@ function drawSignatureBlock(doc: PDFKit.PDFDocument): void {
   doc.text('Onaylayan', rightX, y + 28);
 }
 
-export async function streamReportToPdf(res: Response, def: ReportDefinition, query: ReportQueryParams, siteScope: string | undefined): Promise<void> {
+export async function streamReportToPdf(res: Response, def: ReportDefinition, query: ReportQueryParams, siteScope: string | undefined, viewer?: ReportViewer): Promise<void> {
   // Satır sınırını, akışı BAŞLATMADAN önce (aggregate sorgusuyla) kontrol et
   // — aksi halde HTTP başlıkları gönderildikten SONRA 400 döndürmeye
   // çalışırdık (imkânsız, response zaten commit edilmiş olur). Bu, aynı
   // COUNT(*) sorgusunu (aşağıdaki streamReportExport'un içinde) iki kez
   // çalıştırır — kabul edilen bir maliyet: indeksli bir COUNT ms
   // mertebesindedir, PDF'in kendisi zaten dakikalar sürebilecek bir işlem.
-  const preflight = await runReport(def, { ...query, page: 1, pageSize: 1 }, siteScope);
+  const preflight = await runReport(def, { ...query, page: 1, pageSize: 1 }, siteScope, viewer);
   assertPdfRowLimit(def, preflight.totalCount);
 
   const filenameDate = new Date().toISOString().slice(0, 10);
@@ -195,7 +195,7 @@ export async function streamReportToPdf(res: Response, def: ReportDefinition, qu
       drawRow(columns.map((c) => (c.format ? c.format(row[c.key], row) : String(row[c.key] ?? ''))));
       rowCount++;
     }
-  });
+  }, viewer);
 
   if (rowCount === 0) {
     doc.moveDown(1).font(FONT_REGULAR).fontSize(10).fillColor('#888').text('Bu filtrelerle eşleşen kayıt bulunamadı.');

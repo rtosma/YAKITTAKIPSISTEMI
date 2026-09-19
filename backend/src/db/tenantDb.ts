@@ -8585,7 +8585,7 @@ const DRIVER_SCORE_MIN_TRANSACTIONS_DEFAULT = 5;
 // AI-503'teki CONSUMPTION_ANOMALY_ZSCORE_THRESHOLD ile AYNI eşik.
 const DRIVER_SCORE_CONSUMPTION_ZSCORE_THRESHOLD = 2;
 // Skor 100'den başlar, her girdi (0-1 oran) kendi ağırlığı kadar düşürür.
-const DRIVER_SCORE_WEIGHTS = {
+export const DRIVER_SCORE_WEIGHTS = {
   offhours: 25,
   rapidRepeat: 20,
   consumptionDeviation: 20,

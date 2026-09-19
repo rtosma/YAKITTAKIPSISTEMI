@@ -41,7 +41,26 @@ export interface ReportFilterDef {
    * sorgunun sütunudur.
    */
   beforeAggregation?: boolean;
+  /**
+   * REP-720: filtre KİŞİSEL VERİ sütunu üzerindeyse (örn. sürücü adı) `true` —
+   * PII'yi görme yetkisi OLMAYAN görüntüleyici bu filtreyi gönderirse 403 alır.
+   * Sebep: maskeli bir sütunda serbest filtre bir ORAKÜL'dür ("adı 'Ah' ile
+   * başlayan var mı?" → satır geldi/gelmedi → maskenin arkasındaki değer sızar).
+   */
+  requiresPiiAccess?: boolean;
 }
+
+/**
+ * REP-720: raporu isteyen kullanıcının bağlamı. Motor bu bilgiyle PII maskesine
+ * karar verir. VERİLMEZSE (zamanlanmış gönderim, arşiv, dahili çağrılar)
+ * görüntüleyici "yetkisiz" sayılır → maske UYGULANIR (fail-closed).
+ */
+export interface ReportViewer {
+  role: UserRole;
+}
+
+/** 'name': kişi adı → "A*** Y***" (bkz. piiMask.ts). */
+export type ReportPiiKind = 'name';
 
 export interface ReportColumnDef {
   /** SELECT'in döndürdüğü satırdaki (ya da alias'lı) anahtar. */
@@ -56,6 +75,13 @@ export interface ReportColumnDef {
    * argümanlı format fonksiyonları etkilenmez.
    */
   format?: (value: unknown, row?: Record<string, unknown>) => string;
+  /**
+   * REP-720: kişisel veri sütunu. `def.piiViewerRoles` dışındaki (ya da
+   * görüntüleyicisi bilinmeyen) her tüketici için değer, `format`'tan ÖNCE
+   * maskelenir — tek geçiş noktası motor olduğundan JSON, CSV ve PDF birebir
+   * aynı maskeyi görür.
+   */
+  pii?: ReportPiiKind;
 }
 
 export interface ReportAggregateDef {
@@ -114,6 +140,17 @@ export interface ReportDefinition {
    * şantiyesiyse satırı görür. Yalnızca GENİŞLETİR, asla tek başına kullanılmaz.
    */
   siteScopeAltColumns?: string[];
+  /**
+   * REP-720: `pii` sütunlarını MASKESİZ görebilen roller. Tanımda `pii`
+   * sütunu varsa ve bu liste yoksa herkes için maskelenir (güvenli varsayılan).
+   */
+  piiViewerRoles?: UserRole[];
+  /**
+   * REP-720: `true` ise bu raporun HER dışa aktarımı (CSV/PDF) `audit_logs`'a
+   * `REPORT_EXPORT` olarak yazılır — akış BAŞLAMADAN önce, aynı istek içinde;
+   * denetim kaydı yazılamazsa veri hiç gönderilmez (AUTH-203 ilkesi).
+   */
+  auditExport?: boolean;
   /** PDF export CPU-yoğun ve kuyruksuz (bkz. reportEngine.ts) — bu satır sınırının üstünde 409 döner. */
   maxPdfRows?: number;
 }

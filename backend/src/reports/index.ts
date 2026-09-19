@@ -13,10 +13,13 @@ import './definitions/rep716AlarmReport';
 import './definitions/rep717DeviceHealth';
 import './definitions/rep718CalibrationHistory';
 import './definitions/rep719CostBudget';
+import './definitions/rep720DriverReport';
 import './definitions/rep722AuditReport';
 
 export { getReportDefinition, listReportsForRole } from './reportRegistry';
-export { runReport, streamReportExport, assertPdfRowLimit } from './reportEngine';
+export { runReport, streamReportExport, assertPdfRowLimit, assertPiiFilterAccess } from './reportEngine';
 export type { ReportQueryParams } from './reportEngine';
 export { streamReportToCsv } from './csvExport';
 export { streamReportToPdf } from './pdfExport';
+export { auditReportExport } from './reportAudit';
+export type { ReportViewer } from './reportTypes';

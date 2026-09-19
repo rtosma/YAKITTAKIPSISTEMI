@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { ReportDefinition } from './reportTypes';
+import { ReportDefinition, ReportViewer } from './reportTypes';
 import { streamReportExport, ReportQueryParams } from './reportEngine';
 
 /**
@@ -21,7 +21,7 @@ function formatCsvRow(def: ReportDefinition, row: Record<string, unknown>): stri
   return def.columns.map((c) => csvEscape(c.format ? c.format(row[c.key], row) : row[c.key])).join(',');
 }
 
-export async function streamReportToCsv(res: Response, def: ReportDefinition, query: ReportQueryParams, siteScope: string | undefined): Promise<void> {
+export async function streamReportToCsv(res: Response, def: ReportDefinition, query: ReportQueryParams, siteScope: string | undefined, viewer?: ReportViewer): Promise<void> {
   const filenameDate = new Date().toISOString().slice(0, 10);
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="${def.id}-${filenameDate}.csv"`);
@@ -34,7 +34,7 @@ export async function streamReportToCsv(res: Response, def: ReportDefinition, qu
     for (const row of rows) {
       res.write(formatCsvRow(def, row) + '\r\n');
     }
-  });
+  }, viewer);
 
   res.end();
 }

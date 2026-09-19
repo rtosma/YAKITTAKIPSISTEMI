@@ -1,7 +1,8 @@
 import { PoolClient } from 'pg';
 import { withTenant } from '../db/withTenant';
-import { BadRequestError } from '../utils/errors';
-import { ReportDefinition, ReportFilterDef, ReportRunResult } from './reportTypes';
+import { BadRequestError, ForbiddenError } from '../utils/errors';
+import { ReportDefinition, ReportFilterDef, ReportRunResult, ReportViewer } from './reportTypes';
+import { isPiiVisible, maskRowsForViewer } from './piiMask';
 
 /**
  * REP-703 — filtre/sayfalama/export motoru, TÜM raporlar için ortak.
@@ -89,7 +90,23 @@ function applyFilter(filter: ReportFilterDef, rawValue: unknown, conditions: str
  * verilirse (SITE_MANAGER kısıtlaması, AUTH-201.4 ile aynı desen) istemcinin
  * kendi filtre değerini EZER — istemci girdisine güvenilmez.
  */
-function buildWhereClause(def: ReportDefinition, query: ReportQueryParams, siteScope?: string): { whereClause: string; params: unknown[]; table: string } {
+/**
+ * REP-720: maskeli sütunda filtre = orakül (bkz. reportTypes.ts `requiresPiiAccess`). Sessizce yok saymak yerine AÇIKÇA
+ * reddedilir — aksi halde kullanıcı filtrelenmemiş listeyi "filtrelenmiş" sanırdı. Route, denetim kaydını yazmadan ÖNCE
+ * de çağırır (veri çıkmayan reddedilmiş bir istek "indirme" olarak audit'e girmesin).
+ */
+export function assertPiiFilterAccess(def: ReportDefinition, query: ReportQueryParams, viewer?: ReportViewer): void {
+  if (isPiiVisible(def, viewer)) return;
+  for (const filter of def.filters) {
+    const v = query[filter.key];
+    if (filter.requiresPiiAccess && v !== undefined && v !== null && v !== '') {
+      throw new ForbiddenError(`'${filter.key}' filtresi kişisel veri içerir; bu rol için kullanılamaz.`, { error: 'REPORT_PII_FILTER_FORBIDDEN', filter: filter.key });
+    }
+  }
+}
+
+function buildWhereClause(def: ReportDefinition, query: ReportQueryParams, siteScope: string | undefined, viewer?: ReportViewer): { whereClause: string; params: unknown[]; table: string } {
+  assertPiiFilterAccess(def, query, viewer);
   const conditions: string[] = [];
   const sourceConditions: string[] = [];
   const params: unknown[] = [];
@@ -157,9 +174,11 @@ function parsePagination(query: ReportQueryParams): { page: number; pageSize: nu
  * export araçlarında yaygın bir tercihtir (ekranda sıralı, dışa aktarımda
  * kanonik sıra).
  */
-function resolveSort(def: ReportDefinition, query: ReportQueryParams): { column: string; direction: 'ASC' | 'DESC' } {
+function resolveSort(def: ReportDefinition, query: ReportQueryParams, piiVisible: boolean): { column: string; direction: 'ASC' | 'DESC' } {
   const requestedColumn = typeof query.sortBy === 'string' ? query.sortBy : undefined;
-  const column = requestedColumn && def.columns.some((c) => c.key === requestedColumn) ? requestedColumn : def.defaultSort.column;
+  // REP-720: maskeli (pii) bir sütuna göre sıralama, maskenin arkasındaki sırayı sızdırır → yetkisiz görüntüleyicide varsayılana düşer.
+  const isHiddenPii = (key: string) => !piiVisible && def.columns.some((c) => c.key === key && c.pii);
+  const column = requestedColumn && def.columns.some((c) => c.key === requestedColumn) && !isHiddenPii(requestedColumn) ? requestedColumn : def.defaultSort.column;
 
   const requestedDir = typeof query.sortDir === 'string' ? query.sortDir.toUpperCase() : undefined;
   const direction: 'ASC' | 'DESC' = requestedDir === 'ASC' || requestedDir === 'DESC' ? requestedDir : def.defaultSort.direction;
@@ -182,10 +201,11 @@ async function runAggregates(client: PoolClient, def: ReportDefinition, table: s
 }
 
 /** AC: "Sunucu taraflı sayfalama ve sıralama" — tek rapor tanımından tek çağrıyla çalışır. */
-export async function runReport(def: ReportDefinition, query: ReportQueryParams, siteScope?: string): Promise<ReportRunResult> {
+export async function runReport(def: ReportDefinition, query: ReportQueryParams, siteScope?: string, viewer?: ReportViewer): Promise<ReportRunResult> {
   const { page, pageSize } = parsePagination(query);
-  const { whereClause, params, table } = buildWhereClause(def, query, siteScope);
-  const sort = resolveSort(def, query);
+  const piiVisible = isPiiVisible(def, viewer);
+  const { whereClause, params, table } = buildWhereClause(def, query, siteScope, viewer);
+  const sort = resolveSort(def, query, piiVisible);
   const columnList = def.columns.map((c) => c.key).join(', ');
 
   return withTenant(async (client) => {
@@ -199,7 +219,7 @@ export async function runReport(def: ReportDefinition, query: ReportQueryParams,
     );
 
     return {
-      data: dataResult.rows,
+      data: maskRowsForViewer(def, dataResult.rows, piiVisible),
       page,
       pageSize,
       totalCount,
@@ -224,12 +244,14 @@ export async function streamReportExport(
   def: ReportDefinition,
   query: ReportQueryParams,
   siteScope: string | undefined,
-  onBatch: (rows: Record<string, unknown>[]) => Promise<void> | void
+  onBatch: (rows: Record<string, unknown>[]) => Promise<void> | void,
+  viewer?: ReportViewer
 ): Promise<{ totalCount: number; aggregates: Record<string, number> }> {
   if (!def.columns.some((c) => c.key === 'id')) {
     throw new Error(`Rapor tanımı '${def.id}' export için gereken 'id' sütununu içermiyor (programlama hatası).`);
   }
-  const { whereClause, params, table } = buildWhereClause(def, query, siteScope);
+  const piiVisible = isPiiVisible(def, viewer);
+  const { whereClause, params, table } = buildWhereClause(def, query, siteScope, viewer);
   const columnList = def.columns.map((c) => c.key).join(', ');
   const { direction } = def.defaultSort;
   const cmp = direction === 'DESC' ? '<' : '>';
@@ -252,7 +274,8 @@ export async function streamReportExport(
         cursorParams
       );
       if (result.rows.length === 0) break;
-      await onBatch(result.rows);
+      // İmleç HAM son satırdan alınır (maske sıralama değerini bozmasın); tüketiciye maskeli kopya gider.
+      await onBatch(maskRowsForViewer(def, result.rows, piiVisible));
       const last = result.rows[result.rows.length - 1];
       cursor = { sortValue: last[def.defaultSort.column], id: last.id };
       if (result.rows.length < EXPORT_BATCH_SIZE) break;
