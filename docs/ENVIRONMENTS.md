@@ -103,7 +103,12 @@ SMOKE_BASE_URL=https://staging.ornek.com/api/v1 SMOKE_CHECK_FRONTEND=1 SMOKE_CHE
 SMOKE_USERNAME=... SMOKE_PASSWORD=... node scripts/smoke-test.mjs
 ```
 
-## 7. Elle geri alma
+## 7. Yedekleme
+
+Staging ve production'da `docker-compose.backup.yml` (sürekli WAL arşivi) etkin olmalı ve `deploy/cron/yakittakip-backup.cron` kurulu olmalıdır — RPO 15 dk / RTO 4 saat hedefleri, şifreleme,
+PITR ve çeyreklik restore tatbikatı: [BACKUP_RESTORE.md](BACKUP_RESTORE.md). Staging'e üretim yedeği elle yüklenmez (§5); maskeli kopya prosedürü BACKUP_RESTORE.md'ye eklenecektir.
+
+## 8. Elle geri alma
 
 ```bash
 # sunucuda
@@ -111,4 +116,4 @@ git fetch origin --tags && git reset --hard vX.Y.(Z-1) && ./scripts/zero-downtim
 ```
 
 Şema expand-only olduğundan önceki sürüm yeni şemayla çalışır. Bir *contract* adımı yapılmışsa geri alma önceki şemayı GERİ GETİRMEZ —
-o durumda yedekten geri yükleme gerekir (OPS-1106).
+o durumda yedekten geri yükleme gerekir ([BACKUP_RESTORE.md](BACKUP_RESTORE.md)).

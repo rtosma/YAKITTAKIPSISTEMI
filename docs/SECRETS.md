@@ -105,3 +105,12 @@ paket gönderemez (401 `INVALID_HARDWARE_SIGNATURE`). Bu yüzden:
    herkesin yerel kopyasını bozar).
 4. Etkilenen sistemin (JWT → tüm oturumlar, MQTT → broker, donanım → tek
    cihaz) kapsamını bu belgedeki envanter tablosundan doğrulayın.
+
+## Yedek şifreleme anahtarı (OPS-1106)
+
+| Değişken | Nerede kullanılıyor | Kim erişebilir | Rotasyon |
+|---|---|---|---|
+| `BACKUP_ENCRYPTION_KEY` / `BACKUP_ENCRYPTION_KEY_FILE` | `scripts/backup/*` — yedek ve WAL arşivini AES-256-GCM ile şifreler/çözer (64 hex, `node scripts/lib/backupCrypto.mjs genkey`) | Yalnızca yedek betiklerini çalıştıran dağıtım kullanıcısı (`/etc/yakittakip/backup.env`, `chmod 600`) + **çevrimdışı escrow** (parola yöneticisi/kasa) | Yıllık ve sızıntı şüphesinde — bkz. [BACKUP_RESTORE.md §Anahtar yönetimi](BACKUP_RESTORE.md) |
+
+Bu anahtar **yedek deposunda ve backend `.env`'inde bulunmaz** (backend'in bilmesine gerek yok; `env.ts` şemasında değildir). Anahtar kaybı =
+tüm şifreli yedeklerin kaybıdır: kasadaki escrow kopyası olmadan yedek programı canlıya alınmamalıdır.

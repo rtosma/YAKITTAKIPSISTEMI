@@ -82,6 +82,10 @@ jobs:
       - name: "OPS-1104: Dağıtım Altyapısı Testleri (migration/duman/changelog/workflow)"
         run: node scripts/test-ops1104.mjs
 
+      # OPS-1106: GERÇEK Postgres konteynerleriyle yedek → WAL gönderimi → geri yükleme (dump + PITR) → tatbikat; şifreleme/kurcalama/retansiyon.
+      - name: "OPS-1106: Yedekleme ve Geri Yükleme Testleri (şifreli yedek, PITR, restore tatbikatı)"
+        run: node scripts/test-ops1106.mjs
+
       - name: "ARCH-101.2: Ham pool.query Kullanımı Denetimi (RLS Bypass Koruması)"
         run: node scripts/check-no-raw-pool-query.mjs
 

@@ -1,0 +1,47 @@
+# ==============================================================================
+# OPS-1106 — Sürekli WAL arşivi (PITR) için docker-compose ÜZERİNE-YAZMA dosyası.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.backup.yml up -d
+#   # sunucuda kalıcı olsun diye kök .env'ye:  COMPOSE_FILE=docker-compose.yml:docker-compose.backup.yml
+#
+# NEDEN AYRI DOSYA (varsayılan yığında DEĞİL): archive_timeout her 5 dakikada bir 16 MB'lık WAL
+# segmenti üretir (yazma varsa) — geliştirici makinesinde disk şişirir ve bu segmentleri boşaltacak bir
+# gönderici (scripts/backup/wal-ship.sh, cron) olmadan arşiv hacmi sınırsız büyür. Staging/production'da
+# bu dosya AÇIKÇA etkinleştirilir (bkz. docs/BACKUP_RESTORE.md, docs/ENVIRONMENTS.md).
+#
+# WAL segmentleri `wal_archive` volume'una atomik (tmp + mv) yazılır; wal-ship.sh onları AES-256-GCM ile
+# şifreleyip AYRI yedek konumuna taşır ve volume'dan siler. RPO ≈ archive_timeout (300 sn) + gönderim
+# aralığı (5 dk) ≈ 10 dk ≤ 15 dk hedefi.
+# ==============================================================================
+
+services:
+  # Named volume kök sahipli açılır; postgres (uid 70) yazabilsin diye bir kereye mahsus sahiplik düzeltilir.
+  wal-archive-init:
+    image: postgres:16-alpine
+    user: root
+    restart: "no"
+    command: ["sh", "-c", "chown postgres:postgres /wal_archive && chmod 700 /wal_archive"]
+    volumes:
+      - wal_archive:/wal_archive
+
+  postgres:
+    depends_on:
+      wal-archive-init:
+        condition: service_completed_successfully
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=5
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_timeout=300
+      - -c
+      - archive_command=test ! -f /wal_archive/%f && cp %p /wal_archive/%f.tmp && mv /wal_archive/%f.tmp /wal_archive/%f
+    volumes:
+      - wal_archive:/wal_archive
+
+volumes:
+  wal_archive:
