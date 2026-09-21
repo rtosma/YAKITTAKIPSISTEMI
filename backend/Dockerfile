@@ -88,6 +88,11 @@ COPY --chown=node:node src/compliance ./src/compliance
 # AYNI process.cwd() deseniyle okur.
 COPY --chown=node:node src/reports/assets ./src/reports/assets
 
+# OPS-1110: sürüm etiketi (GET /api/v1/health → version). Bilerek EN SON ve ayrı katman:
+# her dağıtımda değişen bu değer önceki (bağımlılık/derleme) katman önbelleğini bozmaz.
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+
 # Switch to unprivileged non-root user
 USER node
 

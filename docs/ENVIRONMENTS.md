@@ -113,12 +113,14 @@ PITR ve çeyreklik restore tatbikatı: [BACKUP_RESTORE.md](BACKUP_RESTORE.md). S
 Staging ve production'da `docker-compose.monitoring.yml` (Prometheus + Grafana + Loki + Promtail + exporter'lar) etkin olmalı ve `GRAFANA_ADMIN_PASSWORD` (+ üretimde `METRICS_TOKEN`) tanımlanmalıdır. Metrik kataloğu, kardinalite politikası,
 dashboard'lar ve log sorguları: [OBSERVABILITY.md](OBSERVABILITY.md). Grafana yalnızca `127.0.0.1:3001`'e bağlanır; uzaktan erişim SSH tüneli veya TLS'li ters proxy ile yapılır.
 
-## 9. Elle geri alma
+## 9. Geri alma
 
 ```bash
-# sunucuda
-git fetch origin --tags && git reset --hard vX.Y.(Z-1) && ./scripts/zero-downtime-deploy.sh && docker compose up -d --build frontend
+# sunucuda — backend: tek komut, sıfır kesinti, yeniden derleme yok (ayrıntı, sınırlar ve tatbikat: DEPLOY_ROLLBACK.md)
+./scripts/rollback.sh            # bir önceki sürüme  ·  ./scripts/rollback.sh vX.Y.Z  ·  ./scripts/rollback.sh --list
+# frontend (nginx statik dosyaları) git ağacından gelir:
+git fetch origin --tags && git checkout vX.Y.(Z-1) -- frontend nginx && docker compose up -d --build frontend
 ```
 
-Şema expand-only olduğundan önceki sürüm yeni şemayla çalışır. Bir *contract* adımı yapılmışsa geri alma önceki şemayı GERİ GETİRMEZ —
-o durumda yedekten geri yükleme gerekir ([BACKUP_RESTORE.md](BACKUP_RESTORE.md)).
+Şema expand-only olduğundan önceki uygulama sürümü yeni şemayla çalışır; **iki sürüm arasında bir *contract* adımı varsa `rollback.sh` reddeder** (yalnızca uygulama geri alınamaz) — o durumda ileri düzeltme
+veya yedekten geri yükleme gerekir ([DEPLOY_ROLLBACK.md §5](DEPLOY_ROLLBACK.md), [BACKUP_RESTORE.md](BACKUP_RESTORE.md)).

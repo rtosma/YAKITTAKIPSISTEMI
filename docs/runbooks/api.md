@@ -1,7 +1,7 @@
 # Runbook — API / uygulama uyarıları
 
 > Genel kurallar: [ALERTING.md](../ALERTING.md). Her uyarının bildirimi bu sayfadaki ilgili başlığa bağlanır. **Önce durumu sakinleştir, sonra kök nedeni ara**;
-> şüphede: son dağıtımı geri al ([ENVIRONMENTS.md §Elle geri alma](../ENVIRONMENTS.md)).
+> şüphede: son dağıtımı geri al (`./scripts/rollback.sh` — [DEPLOY_ROLLBACK.md](../DEPLOY_ROLLBACK.md), [ENVIRONMENTS.md §Geri alma](../ENVIRONMENTS.md)).
 
 Ortak tanı araçları: Grafana → "Yakıt Takip — Teknik Sağlık"; loglar Loki'de (`{service="backend", level=~"error|fatal"}`); bir isteğin tüm izi `{service="backend"} | traceId="<X-Trace-ID>"`;
 sağlık: `curl -s localhost:3000/api/v1/health/ready` (DB + Redis + MQTT).
@@ -19,7 +19,7 @@ Kullanıcı isteklerinin %2'den (warning) / %10'dan (critical) fazlası 5xx dön
 
 ### Müdahale
 - Bağımlılık kaynaklıysa ilgili runbook'a geçin ([database.md](database.md), [infrastructure.md](infrastructure.md)).
-- Son dağıtımdan sonra başladıysa **geri alın**: sunucuda `git reset --hard <önceki-etiket> && ./scripts/zero-downtime-deploy.sh`.
+- Son dağıtımdan sonra başladıysa **geri alın**: sunucuda **`./scripts/rollback.sh`** (tek komut, sıfır kesinti, yeniden derleme yok; iki sürüm arasında geri dönüşsüz şema değişikliği varsa reddeder — bkz. [DEPLOY_ROLLBACK.md §5](../DEPLOY_ROLLBACK.md)).
 - Tek route'ta ve kod hatası ise ilgili özelliği (varsa) kapatın veya düzeltme dağıtın; kullanıcıya etki çoksa önce geri alma.
 
 ### Doğrulama

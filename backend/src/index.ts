@@ -16,7 +16,7 @@ import routes from './routes/routes';
 import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing, sweepTimedOutCalibrations, getAllTenantIdsWithAiAnomalyEnabled, getAllTenantIds, listCompaniesDueForPeriodicArchive, sweepExpiredArchives, touchArchiveLastGenerated } from './db/adminDb';
 import { generateArchiveForTenant } from './services/tenantArchiveService';
 import { sweepTimedOutSessions } from './services/dispenseSessionService';
-import { broadcastToTenant } from './socket/socketServer';
+import { broadcastToTenant, drainSocketClients } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
 import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant, runTankStockAlertSweepForCurrentTenant, runDriverBehaviorScoreSweepForCurrentTenant, runDeviceHealthScoreSweepForCurrentTenant } from './db/tenantDb';
@@ -720,8 +720,12 @@ async function startServer(): Promise<void> {
   const stopBusinessMetricsRefresher = startBusinessMetricsRefresher();
 
   // Setup Graceful Shutdown listeners (SIGTERM, SIGINT)
+  const SOCKET_DRAIN_WINDOW_MS = 8000;
   setupGracefulShutdown(server, {
     timeoutMs: 30000,
+    // OPS-1110: WebSocket istemcilerini 8 sn'ye yayarak kopar (bkz. drainSocketClients);
+    // aksi halde server.close() tamamlanmaz ve 30 sn zorla-çıkışa takılır.
+    onShutdownStart: async () => { await drainSocketClients(SOCKET_DRAIN_WINDOW_MS); },
     onShutdown: async () => {
       logger.info(`🔌 [Shutdown] Eknak kaynak temizliği çalıştırılıyor...`);
 

@@ -10,6 +10,8 @@
 //   node scripts/check-migration-safety.mjs                    # taban: origin/main (yoksa main, yoksa HEAD~1)
 //   node scripts/check-migration-safety.mjs --base <git-ref>
 //   node scripts/check-migration-safety.mjs --old a.sql --new b.sql   # dosya modu (testler için)
+//   ... --strict   # OPS-1110 ROLLBACK KAPISI: onaylı olsa bile HERHANGİ bir contract ifadesi varsa exit 3
+//                  # (old→new arasında geri dönüşsüz şema değişikliği var: önceki uygulama sürümü çalışmayabilir)
 //
 // Taban sürüm bulunamazsa (ilk commit / sığ klon) UYARIYLA çıkar (exit 0) — CI'da
 // fetch-depth: 0 kullanın; sessizce geçmesi güvenliği düşürür, bu yüzden açıkça loglanır.
@@ -60,6 +62,17 @@ console.log(`[check-migration-safety] taban: ${baseLabel} — ${added} yeni/değ
 
 for (const a of approved) {
   console.log(`  ✔ ONAYLI contract adımı: ${a.sql}\n      gerekçe: ${a.reason}`);
+}
+if (process.argv.includes('--strict')) {
+  // Rollback kapısı: ONAY, dağıtım için "bilinçli" demektir; geri alma için ise yine de güvensizdir —
+  // contract adımı (DROP/RENAME/NOT NULL...) eski uygulama sürümünün beklediği yapıyı bozmuş olabilir.
+  const risky = violations.length + approved.length;
+  if (risky > 0) {
+    console.error(`[check-migration-safety] ROLLBACK GÜVENSİZ: ${baseLabel} → güncel arasında ${risky} geriye uyumsuz (contract) şema ifadesi var — yalnızca uygulama geri alınamaz.`);
+    process.exit(3);
+  }
+  console.log('[check-migration-safety] ROLLBACK GÜVENLİ: aradaki şema değişiklikleri yalnızca genişletici (expand) — önceki uygulama sürümü yeni şemayla çalışır.');
+  process.exit(0);
 }
 if (violations.length > 0) {
   console.error(`\n[check-migration-safety] HATA: ${violations.length} geriye uyumsuz (contract) ifade onaysız:\n`);

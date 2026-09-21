@@ -116,6 +116,14 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      # OPS-1110: sürüm etiketi imaja gömülür (Dockerfile ENV APP_VERSION; runtime env'i bilerek YOK —
+      # sürümün tek kaynağı imajdır, böylece geri alınan imaj kendi etiketini taşır).
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    # OPS-1110: SIGTERM ile SIGKILL arası süre. Uygulamanın kendi kapanış zaman aşımı 30 sn
+    # (backend/src/index.ts); bu değer ondan BÜYÜK olmalı ki uygulama kendi çıkışını yapsın,
+    # Docker onu kesmesin (docker stop -t varsayılanı 10 sn idi → devam eden istekler kesilirdi).
+    stop_grace_period: 45s
     # OPS-1102: kasıtlı olarak sabit bir container_name YOK. Docker Compose,
     # container_name sabitlenmiş bir servisi 1'in üzerinde ölçeklendirmeyi
     # reddeder ("cannot scale service to more than 1"); scripts/zero-downtime-deploy.sh

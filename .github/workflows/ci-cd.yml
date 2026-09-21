@@ -99,6 +99,11 @@ jobs:
       - name: "OPS-1108: Bildirim Zinciri Tatbikatı (kritik uyarılar yapay tetiklenir)"
         run: node scripts/test-ops1108.mjs --live
 
+      # OPS-1110: drain/grace-period sözleşmesi, rolling sırası, readiness, sürüm kaydı + GERÇEK rollback.sh/migrasyon kapısı senaryoları (sahte docker).
+      # (Canlı tatbikat: node scripts/test-ops1110.mjs --live — çalışan compose yığını gerekir; sonuç docs/deploy-drills/ altında.)
+      - name: "OPS-1110: Rolling Deploy / Rollback Testleri (drain, readiness, migrasyon kapısı)"
+        run: node scripts/test-ops1110.mjs
+
       - name: "ARCH-101.2: Ham pool.query Kullanımı Denetimi (RLS Bypass Koruması)"
         run: node scripts/check-no-raw-pool-query.mjs
 
@@ -1056,9 +1061,23 @@ jobs:
             set -euo pipefail
             cd "${DEPLOY_PATH:-~/YAKITTAKIPSISTEMI}"
             git fetch origin --tags
-            git reset --hard "${{ env.PREV_TAG }}"
-            chmod +x scripts/zero-downtime-deploy.sh
-            ./scripts/zero-downtime-deploy.sh
+            # OPS-1110: önce TEK KOMUTLA imaj-tabanlı geri alma (yeniden derleme yok, sıfır kesinti, migrasyon kapısı).
+            # Çıkış 3 = migrasyon kapısı reddetti (contract adımı var) → yanlış sürümü zorlamayız, iş KIRMIZI kalır (MANUEL: hotfix/yedek).
+            # Çıkış 1 = bu sunucuda kayıt/imaj yok (ilk kurulum, imaj temizlenmiş) → eski yol: etiketi çekip yeniden derleyerek dağıt.
+            chmod +x scripts/rollback.sh scripts/zero-downtime-deploy.sh
+            rc=0
+            ./scripts/rollback.sh "${{ env.PREV_TAG }}" || rc=$?
+            if [ "$rc" = "0" ]; then
+              git checkout "${{ env.PREV_TAG }}" -- frontend nginx
+            elif [ "$rc" = "1" ]; then
+              echo "rollback.sh kayıt/imaj bulamadı — etiketten yeniden dağıtılıyor."
+              git reset --hard "${{ env.PREV_TAG }}"
+              chmod +x scripts/zero-downtime-deploy.sh
+              ./scripts/zero-downtime-deploy.sh
+            else
+              echo "rollback.sh reddetti (çıkış $rc) — MANUEL müdahale: docs/DEPLOY_ROLLBACK.md §5"
+              exit "$rc"
+            fi
             docker compose up -d --build frontend
 
       # Başarılı dağıtımın değişiklik günlüğü: önceki etiket → bu etiket arası conventional commit'ler.

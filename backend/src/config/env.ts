@@ -35,6 +35,10 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().positive().default(5000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
 
+  // OPS-1110: çalışan sürümün etiketi (git tag/kısa SHA) — GET /api/v1/health `version` alanında görünür;
+  // zero-downtime-deploy.sh/rollback.sh derleme sırasında `APP_VERSION` build-arg olarak geçirir. Yerelde 'dev'.
+  APP_VERSION: z.string().regex(/^[A-Za-z0-9._+-]{1,64}$/, 'APP_VERSION en fazla 64 karakter; yalnızca harf/rakam/._+- içerebilir.').default('dev'),
+
   POSTGRES_HOST: z.string().min(1).default('localhost'),
   POSTGRES_PORT: z.coerce.number().int().positive().default(5432),
   POSTGRES_USER: z.string().min(1).default('postgres'),
@@ -186,7 +190,7 @@ function failFast(message: string): never {
 // sayılır; zorunlu sırlar (JWT_*, MQTT_*, HW_*, ... ) ve POSTGRES_* boş bırakılırsa hâlâ REDDEDİLİR.
 const OPTIONAL_KEYS_EMPTY_MEANS_UNSET = [
   'GEMINI_API_KEY', 'LORAWAN_WEBHOOK_TOKEN', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_FROM',
-  'SMS_PROVIDER_URL', 'SMS_PROVIDER_API_KEY', 'CORS_ALLOWED_ORIGINS', 'TELEGRAM_API_BASE_URL', 'METRICS_TOKEN'
+  'SMS_PROVIDER_URL', 'SMS_PROVIDER_API_KEY', 'CORS_ALLOWED_ORIGINS', 'TELEGRAM_API_BASE_URL', 'METRICS_TOKEN', 'APP_VERSION'
 ] as const;
 
 function loadConfig(): AppConfig {

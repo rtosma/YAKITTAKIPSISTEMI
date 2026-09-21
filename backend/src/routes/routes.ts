@@ -158,6 +158,8 @@ router.get('/health', (_req: Request, res: Response) => {
   res.json({
     status: 'UP',
     timestamp: new Date().toISOString(),
+    // OPS-1110: dağıtım/rollback sonrası "hangi sürüm trafik alıyor?" sorusunun tek adımlı cevabı.
+    version: config.APP_VERSION,
     service: 'Yakıttakip Backend API [ARCH-101 / RES-901 / AUTH-201 (PostgreSQL Connected)]'
   });
 });

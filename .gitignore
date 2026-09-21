@@ -46,3 +46,6 @@ frontend/playwright-report/
 
 # OPS-1108: node-exporter textfile metrikleri (yedek betikleri yazar; depoya girmez)
 deploy/monitoring/textfile/*.prom
+
+# OPS-1110: sürüm kayıt defteri (zero-downtime-deploy.sh) — sunucuya özgü, repoya girmez
+.deploy/
