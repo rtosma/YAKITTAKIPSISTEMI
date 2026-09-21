@@ -139,6 +139,10 @@ jobs:
       - name: "DOC-1203: Proje Rehberi Sözleşme Testleri (kurulum, modül haritası, diyagramlar, roller)"
         run: node scripts/test-doc1203.mjs
 
+      # DOC-1204 (#41): sunum rehberi — 12-15 slayt + konuşma metni, ≥ 8 SSS, 60 sn özet, teknik terim/uydurma oran yok, fiyat/menü/eşikler kodla aynı.
+      - name: "DOC-1204: Sunum Rehberi Testleri"
+        run: node scripts/test-doc1204.mjs
+
       # DOC-1205 (#42): sözlük — ≥ 30 terim, TR–EN karşılıklar, "projede nerede" yolları gerçek, sayısal iddialar kodla aynı, rehberde ilk geçişte bağlı.
       - name: "DOC-1205: Terim Sözlüğü Testleri"
         run: node scripts/test-doc1205.mjs
@@ -427,6 +431,10 @@ jobs:
 
       - name: Run FUEL-401 RFID Dispense Session State Machine Tests
         run: cd backend && npx tsx test/test_fuel401_dispense_session.ts
+
+      # DOC-1204 (#41): sunum demo senaryosunun GERÇEK sistemde provası (kart reddi, ikmal, panelde görünme, çevrimdışı kuyruk, rapor, firma yalıtımı).
+      - name: Run DOC-1204 Demo Rehearsal (Sunum Senaryosu Gerçek Sistemde)
+        run: cd backend && npx tsx test/test_doc1204_demo_rehearsal.ts
 
       - name: Run AUTH-202.3 Hardware Device Secret Lifecycle Tests
         run: cd backend && npx tsx test/test_auth2023_hardware_device_lifecycle.ts

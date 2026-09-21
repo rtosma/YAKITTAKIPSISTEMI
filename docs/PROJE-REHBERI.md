@@ -4,7 +4,7 @@
 > Bu rehber kodla birlikte güncellenir: veritabanı şeması, rol matrisi, uç sayıları ve rapor kataloğu **koddan üretilir** ve CI'da güncel mi diye denetlenir (`node scripts/generate-project-guide.mjs --check`). Eskimiş rehber, rehber olmamasından kötüdür.
 
 **Hızlı yol (30 dakika):** [§7 Ortam kurulumu](#7-ortam-kurulumu-adım-adım) → [§6 Çalışma kuralları](#6-repo-yapısı-branch-commit-ve-pr-kuralları) → [§2 Modül haritası](#2-modül-haritası-18-grup) → bir issue seç.
-Terimler için [SOZLUK.md](SOZLUK.md). Diğer belgeler: [Donanım entegrasyonu](HARDWARE_INTEGRATION_GUIDE.md) · [Saha kurulum](SAHA_KURULUM.md) · [Operatör kitabı](OPERATOR_EL_KITABI.md) · [Ortamlar](ENVIRONMENTS.md) · [Dağıtım/geri alma](DEPLOY_ROLLBACK.md) · [Gözlemlenebilirlik](OBSERVABILITY.md) · [Uyarılar/runbook](ALERTING.md) · [[KVKK](SOZLUK.md#pii)](KVKK_ENVANTER.md) · [Saklama](DATA_RETENTION.md) · [Yedekleme](BACKUP_RESTORE.md) · [Kaos testi](CHAOS_TESTING.md) · [Sırlar](SECRETS.md) · [Test planı](../TEST_PLAN.md).
+Terimler için [SOZLUK.md](SOZLUK.md) · projeyi teknik olmayan birine anlatmak için [SUNUM-REHBERI.md](SUNUM-REHBERI.md). Diğer belgeler: [Donanım entegrasyonu](HARDWARE_INTEGRATION_GUIDE.md) · [Saha kurulum](SAHA_KURULUM.md) · [Operatör kitabı](OPERATOR_EL_KITABI.md) · [Ortamlar](ENVIRONMENTS.md) · [Dağıtım/geri alma](DEPLOY_ROLLBACK.md) · [Gözlemlenebilirlik](OBSERVABILITY.md) · [Uyarılar/runbook](ALERTING.md) · [[KVKK](SOZLUK.md#pii)](KVKK_ENVANTER.md) · [Saklama](DATA_RETENTION.md) · [Yedekleme](BACKUP_RESTORE.md) · [Kaos testi](CHAOS_TESTING.md) · [Sırlar](SECRETS.md) · [Test planı](../TEST_PLAN.md).
 
 ---
 
