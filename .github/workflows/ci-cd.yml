@@ -139,6 +139,10 @@ jobs:
       - name: "DOC-1203: Proje Rehberi Sözleşme Testleri (kurulum, modül haritası, diyagramlar, roller)"
         run: node scripts/test-doc1203.mjs
 
+      # TEST-1001 (#193): E2E altyapısının sözleşmesi — orkestratör bütçesi, izolasyon kuralı (tohum tenant'ına dokunma), CI işi ve deploy geçidi.
+      - name: "TEST-1001: E2E Altyapı Sözleşmesi Testleri"
+        run: node scripts/test-test1001.mjs
+
       # DOC-1204 (#41): sunum rehberi — 12-15 slayt + konuşma metni, ≥ 8 SSS, 60 sn özet, teknik terim/uydurma oran yok, fiyat/menü/eşikler kodla aynı.
       - name: "DOC-1204: Sunum Rehberi Testleri"
         run: node scripts/test-doc1204.mjs
@@ -777,6 +781,25 @@ jobs:
         if: failure()
         run: cat /tmp/backend-ci.log || true
 
+  # TEST-1001 (#193): uçtan uca ikmal döngüsü — GERÇEK PostgreSQL + Redis + EMQX + backend, dosyalar PARALEL, ayrı iş (yukarıdaki uzun sıralı işle
+  # eşzamanlı koşar → toplam CI süresine eklenmez). timeout-minutes AC'nin "10 dakikanın altında" bütçesidir; orkestratör ayrıca --budget-sec ile
+  # kendi süresini denetler ve aşarsa BAŞARISIZ olur. Testcontainers yerine docker CLI orkestratörü (bkz. scripts/e2e/run-e2e.mjs başlığı: KAPSAM UYARLAMASI).
+  e2e-fuel-cycle:
+    name: 🔄 TEST-1001 E2E İkmal Döngüsü (Postgres + Redis + EMQX, paralel, < 10 dk)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run E2E suite (izole konteynerler, paralel dosyalar, süre bütçesi)
+        run: node scripts/e2e/run-e2e.mjs --budget-sec 540
+
   secret-scan:
     # DİKKAT: bu satırdaki iki nokta üst üste ("OPS-1105:") YAML'da bir mapping
     # ayırıcısı olarak yorumlanır — tırnaksız bırakılırsa TÜM workflow dosyası
@@ -971,7 +994,7 @@ jobs:
   # ----------------------------------------------------------------------------
   deploy-staging:
     name: 🚀 Staging Dağıtımı (otomatik, main/master push) + duman testi
-    needs: [quality-and-tests, auth-integration-test, build-bundle, docker-security-scan]
+    needs: [quality-and-tests, auth-integration-test, e2e-fuel-cycle, build-bundle, docker-security-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # TEST_PLAN.md §0.2 — `secrets` bağlamı job seviyesindeki `if:` içinde KULLANILAMAZ (yalnızca github,
@@ -1025,7 +1048,7 @@ jobs:
 
   deploy-production:
     name: 🏭 Üretim Dağıtımı (vX.Y.Z etiketi + ONAY) + duman testi + otomatik geri alma
-    needs: [quality-and-tests, auth-integration-test, build-bundle, docker-security-scan]
+    needs: [quality-and-tests, auth-integration-test, e2e-fuel-cycle, build-bundle, docker-security-scan]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     if: >-

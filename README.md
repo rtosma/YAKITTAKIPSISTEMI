@@ -101,6 +101,7 @@ npm run dev          # http://localhost:3000
 | Belge | Açıklama |
 | ----- | -------- |
 | [docs/PROJE-REHBERI.md](docs/PROJE-REHBERI.md) | **Buradan başlayın** — ekip çalışma rehberi: modül haritası, mimari ve kararların gerekçeleri, Mermaid diyagramları, ortam kurulumu (30 dk), rol matrisi, rapor kataloğu, şema, test stratejisi, riskler |
+| [docs/E2E_TEST.md](docs/E2E_TEST.md) | Uçtan uca ikmal döngüsü testleri: tek komutla izole Postgres+Redis+EMQX+backend, paralel dosyalar, süre bütçesi |
 | [docs/AYLIK_YONETIM_RAPORU.md](docs/AYLIK_YONETIM_RAPORU.md) | AI destekli aylık yönetim raporu: ölçülen veri / model yorumu ayrımı, çapraz doğrulama, otomatik e-posta |
 | [docs/SUNUM-REHBERI.md](docs/SUNUM-REHBERI.md) | Sunum rehberi: 15 slayt + konuşma metni, asansör konuşması, SSS, canlı demo senaryosu (`node scripts/demo-provasi.mjs`) |
 | [docs/SOZLUK.md](docs/SOZLUK.md) | Terim sözlüğü (~65 terim, Türkçe–İngilizce karşılıklar ve projede kullanıldığı yer) |
