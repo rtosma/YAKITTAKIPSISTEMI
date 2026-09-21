@@ -8,6 +8,8 @@ MQTT) ve her akışın tam sözleşmesini tanımlar. REST uçlarının etkileşi
 referansı ayrıca Swagger UI'da: **`/api-docs`** (dev) — bu belge o referansın
 "donanım tarafı nasıl uygular" tamamlayıcısıdır (DOC-1201).
 
+> **Sahaya kurulum / devreye alma:** adım adım prosedür, sayısal kabul kriterleri ve imzalı form için [SAHA_KURULUM.md](SAHA_KURULUM.md) (DOC-1206).
+>
 > **Sürüm politikası:** bu v1.0. Kırıcı bir protokol değişikliği yeni bir major
 > sürüm (`telemetry/v2/...`, `Hardware Integration Guide v2.0`) ile gelir;
 > v1 en az bir major sürüm daha desteklenir.

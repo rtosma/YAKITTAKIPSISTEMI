@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Saha Devreye Alma ve Kabul Formu</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 13px; color: #111; margin: 0; padding: 24px; background: #fff; }
+  main { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; } h2 { font-size: 15px; margin: 22px 0 8px; border-bottom: 2px solid #222; padding-bottom: 3px; }
+  .meta { color: #444; margin-bottom: 14px; }
+  table { border-collapse: collapse; width: 100%; margin-bottom: 10px; }
+  th, td { border: 1px solid #555; padding: 6px 8px; vertical-align: top; text-align: left; }
+  th { background: #eee; }
+  td.k { width: 62px; font-weight: bold; white-space: nowrap; }
+  td.ok { width: 92px; white-space: nowrap; }
+  input[type=text], input[type=date], input[type=number] { border: 0; border-bottom: 1px solid #333; width: 100%; padding: 3px 2px; font-size: 13px; background: transparent; }
+  .sig { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 10px; }
+  .sig div { border: 1px solid #555; padding: 8px; min-height: 130px; }
+  .sig .line { border-bottom: 1px solid #333; height: 44px; margin: 6px 0; }
+  .note { font-size: 12px; color: #333; }
+  .warn { border: 2px solid #b00; padding: 8px 10px; margin: 12px 0; }
+  button { padding: 8px 14px; font-size: 14px; }
+  @media print { .noprint { display: none; } body { padding: 0; } h2 { break-after: avoid; } tr, .sig div { break-inside: avoid; } }
+  @media (max-width: 640px) { .sig { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+<h1>Saha Devreye Alma ve Kabul Formu</h1>
+<p class="meta">Prosedür: <strong>docs/SAHA_KURULUM.md</strong> — form numarası <strong>KRT-xx</strong> ile belgedeki kabul kriterleriyle birebir eşleşir. Ölçülen değerleri yazın, uygun kutuyu işaretleyin. <span class="noprint">Bu form yazdırılıp (veya PDF'e çevrilip) imzalanır.</span></p>
+<p class="noprint"><button type="button" onclick="window.print()">Yazdır / PDF</button></p>
+
+<div class="warn"><strong>İmzalı form olmadan şantiye canlıya alınmaz.</strong> Herhangi bir kriter "HAYIR" ise devreye alma <strong>kabul edilmez</strong>; neden ve düzeltici işlem "Notlar" bölümüne yazılır, ilgili kriter yeniden ölçülür.</div>
+
+<h2>1. Tanımlama</h2>
+<table>
+  <tr><th style="width:26%">Firma / Şantiye</th><td><input type="text" name="site" aria-label="Firma ve şantiye"></td><th style="width:16%">Tarih</th><td><input type="date" name="date" aria-label="Tarih"></td></tr>
+  <tr><th>Cihaz kimliği (deviceId)</th><td><input type="text" name="deviceId" aria-label="Cihaz kimliği"></td><th>Firmware sürümü</th><td><input type="text" name="fw" aria-label="Firmware sürümü"></td></tr>
+  <tr><th>Tank adı / kapasite (L)</th><td><input type="text" name="tank" aria-label="Tank"></td><th>Akışmetre K (pals/L)</th><td><input type="text" name="k" aria-label="K faktör"></td></tr>
+  <tr><th>Referans kap seri no / hacim (L) / sertifika tarihi</th><td colspan="3"><input type="text" name="refcan" aria-label="Referans kap"></td></tr>
+  <tr><th>Toprak direnci (Ω) / ölçüm cihazı</th><td colspan="3"><input type="text" name="earth" aria-label="Toprak direnci"></td></tr>
+</table>
+
+<h2>2. Kabul kriterleri</h2>
+<table>
+  <tr><th>Kod</th><th>Kriter ve eşik</th><th>Ölçülen / not</th><th>Sonuç</th></tr>
+  <tr data-krt="KRT-01"><td class="k">KRT-01</td><td>Cihaz claim edildi; doğru şantiye + tank eşlemesi (<code>GET /hardware-devices</code>)</td><td><input type="text" aria-label="KRT-01 ölçülen"></td><td class="ok"><label><input type="checkbox"> EVET</label><br><label><input type="checkbox"> HAYIR</label></td></tr>
+  <tr data-krt="KRT-02"><td class="k">KRT-02</td><td>Cihaz saati sapması <strong>≤ ±30 sn</strong></td><td>Sapma: <input type="number" aria-label="KRT-02 sapma sn" style="width:90px"> sn</td><td class="ok"><label><input type="checkbox"> EVET</label><br><label><input type="checkbox"> HAYIR</label></td></tr>
+  <tr data-krt="KRT-03"><td class="k">KRT-03</td><td>İki <strong>ardışık</strong> referans kap alımı, her birinde sapma <strong>≤ %0,5</strong></td><td>1. alım: ref <input type="text" style="width:60px" aria-label="Alım 1 referans"> L / ölç. <input type="text" style="width:60px" aria-label="Alım 1 ölçülen"> L → %<input type="text" style="width:50px" aria-label="Alım 1 sapma"><br>2. alım: ref <input type="text" style="width:60px" aria-label="Alım 2 referans"> L / ölç. <input type="text" style="width:60px" aria-label="Alım 2 ölçülen"> L → %<input type="text" style="width:50px" aria-label="Alım 2 sapma"></td><td class="ok"><label><input type="checkbox"> EVET</label><br><label><input type="checkbox"> HAYIR</label></td></tr>
+  <tr data-krt="KRT-04"><td class="k">KRT-04</td><td>Son kalibrasyon komutu <code>ONAYLANDI</code> (cihaz ACK); doğrulama alımı <code>verifiesCalibrationCommandId</code> ile yapıldı; K: eski → yeni</td><td>Komut: <input type="text" aria-label="KRT-04 komut"> K: <input type="text" style="width:70px" aria-label="Eski K"> → <input type="text" style="width:70px" aria-label="Yeni K"></td><td class="ok"><label><input type="checkbox"> EVET</label><br><label><input type="checkbox"> HAYIR</label></td></tr>
+  <tr data-krt="KRT-05"><td class="k">KRT-05</td><td>Uçtan uca ikmal: kayıt <code>DOĞRULANDI</code>; tank düşümü = ikmal litresi; olumsuz testler (bilinmeyen kart, izinsiz araç, acil durdurma) geçti</td><td>İkmal: <input type="text" style="width:70px" aria-label="İkmal litre"> L, tank Δ: <input type="text" style="width:70px" aria-label="Tank delta"> L</td><td class="ok"><label><input type="checkbox"> EVET</label><br><label><input type="checkbox"> HAYIR</label></td></tr>
+  <tr data-krt="KRT-06"><td class="k">KRT-06</td><td>Offline senaryosu: WAN <strong>≥ 10 dk</strong> kesik, <strong>≥ 3 ikmal</strong>; bağlantı gelince <strong>3/3 ACCEPTED</strong>, mükerrer <strong>0</strong>, tank Δ = toplam litre</td><td>Kesinti: <input type="text" style="width:60px" aria-label="Kesinti süresi"> dk; ikmal: <input type="text" style="width:40px" aria-label="İkmal sayısı"> ; kabul: <input type="text" style="width:60px" aria-label="Kabul edilen"> ; mükerrer: <input type="text" style="width:40px" aria-label="Mükerrer"></td><td class="ok"><label><input type="checkbox"> EVET</label><br><label><input type="checkbox"> HAYIR</label></td></tr>
+  <tr data-krt="KRT-07"><td class="k">KRT-07</td><td><strong>24 saat kesintisiz online</strong>: <code>online-sla</code> → offlineSeconds = <strong>0</strong>, totalSeconds ≥ <strong>86400</strong></td><td>offlineSeconds: <input type="text" style="width:70px" aria-label="offlineSeconds"> totalSeconds: <input type="text" style="width:80px" aria-label="totalSeconds"></td><td class="ok"><label><input type="checkbox"> EVET</label><br><label><input type="checkbox"> HAYIR</label></td></tr>
+  <tr data-krt="KRT-08"><td class="k">KRT-08</td><td>Gürültü: röle açık, <strong>10 dk</strong> → totalizatör artışı <strong>0 pals</strong>; 24 sa içinde yeniden başlatma <strong>0</strong></td><td>Pals artışı: <input type="text" style="width:60px" aria-label="Pals artışı"> Reset sayısı: <input type="text" style="width:40px" aria-label="Reset sayısı"></td><td class="ok"><label><input type="checkbox"> EVET</label><br><label><input type="checkbox"> HAYIR</label></td></tr>
+  <tr data-krt="KRT-09"><td class="k">KRT-09</td><td>Güvenlik: geçici parolalar değiştirildi; claim kodu kullanıldı/açık kod yok; secret kayıt/ekran görüntüsü olarak SAKLANMADI</td><td><input type="text" aria-label="KRT-09 not"></td><td class="ok"><label><input type="checkbox"> EVET</label><br><label><input type="checkbox"> HAYIR</label></td></tr>
+  <tr data-krt="KRT-10"><td class="k">KRT-10</td><td>Şantiye şefi ve pompa operatörü eğitildi (DOC-1207); bu form üç imzayla tamamlandı</td><td>Eğitilen: <input type="text" aria-label="Eğitilen kişiler"></td><td class="ok"><label><input type="checkbox"> EVET</label><br><label><input type="checkbox"> HAYIR</label></td></tr>
+</table>
+
+<h2>3. Montaj / güvenlik kontrolleri</h2>
+<table>
+  <tr><td><label><input type="checkbox"> İş izni alındı, pompa kilitli-etiketli çalışıldı, yanıcı ortam önlemleri uygulandı</label></td></tr>
+  <tr><td><label><input type="checkbox"> Ekran yalnızca kabin ucunda topraklı; sinyal kablosu güç kablosundan ≥ 30 cm ayrı; kontaktörde snubber/varistör var</label></td></tr>
+  <tr><td><label><input type="checkbox"> Kablolar etiketli, kabin kapatıldı, fotoğraflar (FOTO-01…14) arşive eklendi</label></td></tr>
+  <tr><td><label><input type="checkbox"> Röle arızada pompayı kesecek (fail-safe) yapıda; fiziksel acil durdurma çalışıyor</label></td></tr>
+</table>
+
+<h2>4. Notlar / düzeltici işlemler</h2>
+<table><tr><td style="height:90px"><input type="text" name="notes" aria-label="Notlar"></td></tr></table>
+
+<h2>5. Kabul kararı ve imzalar</h2>
+<p><label><input type="checkbox"> <strong>KABUL</strong> — KRT-01…KRT-10'un tamamı "EVET"; şantiye canlıya alınabilir.</label><br>
+<label><input type="checkbox"> <strong>RED</strong> — en az bir kriter "HAYIR"; düzeltici işlem sonrası yeniden ölçülecek.</label></p>
+<div class="sig">
+  <div><strong>Devreye alma teknisyeni</strong><div class="line"></div><span class="note">Ad Soyad / İmza / Tarih</span></div>
+  <div><strong>Şantiye şefi</strong><div class="line"></div><span class="note">Ad Soyad / İmza / Tarih</span></div>
+  <div><strong>Müşteri / yönetici yetkilisi</strong><div class="line"></div><span class="note">Ad Soyad / İmza / Tarih</span></div>
+</div>
+<p class="note">Formda kişisel veri (TCKN, kart numarası, secret, claim kodu) <strong>yazılmaz</strong>. İmzalı form firma arşivine eklenir; sürüm: DOC-1206.</p>
+</main>
+</body>
+</html>

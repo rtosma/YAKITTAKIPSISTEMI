@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 340" font-family="Arial, sans-serif" font-size="13" role="img" aria-label="Topraklama ve ekran (shield) bağlantı şeması">
+  <title>Topraklama ve ekran bağlantısı</title>
+  <rect width="900" height="340" fill="#ffffff"/>
+  <text x="450" y="24" text-anchor="middle" font-weight="bold">Tek noktadan topraklama — ekran (shield) yalnızca kabin ucundan topraklanır</text>
+  <g stroke="#222" stroke-width="1.5" fill="#f4f6f8">
+    <rect x="40" y="60" width="330" height="200" rx="8"/><rect x="560" y="90" width="300" height="140" rx="8"/>
+  </g>
+  <text x="205" y="82" text-anchor="middle" font-weight="bold">Pompa kabini</text><text x="710" y="112" text-anchor="middle" font-weight="bold">Akışmetre / sensör</text>
+  <g stroke="#222" fill="#fff"><rect x="60" y="100" width="130" height="50" rx="4"/><rect x="220" y="100" width="130" height="50" rx="4"/><rect x="60" y="190" width="290" height="40" rx="4"/><rect x="600" y="140" width="220" height="50" rx="4"/></g>
+  <g text-anchor="middle"><text x="125" y="130">ESP32 ünitesi</text><text x="285" y="130">Besleme (DC-DC)</text><text x="205" y="215">Kabin toprak barası (PE)</text><text x="710" y="170">Pals çıkışı (açık kollektör)</text></g>
+  <g stroke="#c00" stroke-width="2" fill="none"><path d="M370 165 L560 165" stroke-dasharray="0"/></g>
+  <text x="465" y="155" text-anchor="middle" font-size="12" fill="#c00">Ekranlı bükümlü kablo (sinyal + GND)</text>
+  <g stroke="#0a5" stroke-width="2.5" fill="none"><path d="M205 230 L205 300 L60 300"/></g>
+  <text x="120" y="292" font-size="12" fill="#0a5">Şantiye topraklama hattı</text>
+  <text x="380" y="222" font-size="12">Ekran burada PE'ye bağlanır ✔</text>
+  <text x="640" y="212" font-size="12" fill="#c00">Ekran bu uçta BAĞLANMAZ (havada) ✘</text>
+  <text x="450" y="325" text-anchor="middle" font-size="12">Yüksek akım kabloları (pompa motoru, kontaktör) sinyal kablosundan ayrı kanalda ve en az 30 cm uzakta; kesiştirmeler 90° ile.</text>
+</svg>

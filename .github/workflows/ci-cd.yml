@@ -123,6 +123,10 @@ jobs:
       - name: "TEST-1007: Kaos Paketi Sözleşme Testleri"
         run: node scripts/test-test1007.mjs
 
+      # DOC-1206 (#188): saha kurulum prosedürü kodla çelişemez — API uçları, eşikler (±30 sn, %20, TTL, limit), form ↔ belge kriterleri.
+      - name: "DOC-1206: Saha Kurulum Belgesi ve Devreye Alma Formu Tutarlılık Testi"
+        run: node scripts/test-doc1206.mjs
+
       - name: "ARCH-110: Ham process.env Kullanımı Denetimi (Tipli Config Zorunluluğu)"
         run: node scripts/check-no-direct-process-env.mjs
 

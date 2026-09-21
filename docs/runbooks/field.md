@@ -8,6 +8,8 @@
 ### Etki
 Kayıtlı cihazların %30'undan (warning) / %50'sinden (critical) fazlası çevrimdışı. Tek tek cihaz arızasından çok **ortak neden** (broker, ağ, sahada elektrik/GSM, dağıtım) olasıdır; çevrimdışı cihazlar ikmali yerelde tamponlar (IOT-303) ama anlık kota/yetkilendirme çalışmaz.
 
+> Yeni kurulan şantiyede sorun: önce [SAHA_KURULUM.md §6](../SAHA_KURULUM.md) (topraklama/gürültü, saat, claim, sinyal).
+
 ### Tanı
 1. Grafana iş dashboard'u "Çevrimdışı" + teknik dashboard "MQTT mesaj hızı": mesaj hızı da sıfıra yakın mı? Öyleyse broker/backend sorunu.
 2. `docker compose ps emqx` / `docker compose logs --tail 100 emqx`; backend log'unda MQTT bağlantı hataları (`{service="backend"} |~ "MQTT"`).
