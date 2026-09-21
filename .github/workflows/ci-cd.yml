@@ -119,6 +119,10 @@ jobs:
       - name: "RES-907: Frontend Source Map Derleme Testi (okunabilir stack)"
         run: node scripts/test-res907.mjs --build
 
+      # TEST-1007 (#198): kaos paketi sözleşmesi (docker gerektiren kaos koşusu CI dışı: docs/CHAOS_TESTING.md).
+      - name: "TEST-1007: Kaos Paketi Sözleşme Testleri"
+        run: node scripts/test-test1007.mjs
+
       - name: "ARCH-110: Ham process.env Kullanımı Denetimi (Tipli Config Zorunluluğu)"
         run: node scripts/check-no-direct-process-env.mjs
 
@@ -724,6 +728,10 @@ jobs:
       # temizlenir), örnekleme, uçtan uca trace_id korelasyonu. Canlı Sentry'ye HİÇBİR şey gitmez.
       - name: Run RES-907 Sentry Error Tracking Tests
         run: cd backend && npx tsx test/test_res907_sentry.ts
+
+      # TEST-1007 (#198): DB erişilemezken 503 DB_UNAVAILABLE sınıflandırması (kaos testinde bulunan boşluk).
+      - name: Run TEST-1007 DB Unavailable Error Mapping Tests
+        run: cd backend && npx tsx test/test_test1007_error_mapping.ts
 
       - name: Run HR-1801 Personnel Leave Tracking Tests
         run: cd backend && npx tsx test/test_hr1801_personnel_leave.ts

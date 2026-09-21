@@ -118,6 +118,21 @@ export const globalErrorHandler = (
   // aşımı (57014 query_canceled) ya da havuzdan bağlantı alınamaması. Bunlar
   // kalıcı bir sunucu hatası değil, yeniden denenebilir geçici yoğunluk —
   // istemci 500 yerine 503 alır (bkz. postgresPool.ts zaman aşımları).
+  // TEST-1007: veritabanına HİÇ ulaşılamıyorsa (konteyner durdu/ağ koptu/yeniden başlıyor) da aynı sınıf: yeniden denenebilir 503.
+  // Önceden opak bir 500 + "CRITICAL_UNHANDLED_EXCEPTION" (Sentry'de sahte kritik alarm) dönüyordu.
+  const dbUnreachable = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'ECONNRESET', '57P01', '57P02', '57P03', '08000', '08001', '08003', '08004', '08006'].includes(err?.code)
+    || /Connection terminated|connection.*(refused|reset|closed)|getaddrinfo (ENOTFOUND|EAI_AGAIN)|the database system is (starting up|shutting down)/i.test(String(err?.message));
+  if (dbUnreachable) {
+    logger.warn({ err, traceId, tenantId, userId, path: req.originalUrl, method: req.method }, '[DB_UNAVAILABLE] Veritabanına ulaşılamıyor.');
+    res.setHeader('Retry-After', '5');
+    res.status(503).json({
+      success: false,
+      traceId,
+      error: 'DB_UNAVAILABLE',
+      message: 'Veritabanına şu anda ulaşılamıyor. Lütfen birkaç saniye sonra tekrar deneyin.'
+    });
+    return;
+  }
   if (err?.code === '55P03' || err?.code === '57014' || /timeout exceeded when trying to connect/i.test(String(err?.message))) {
     logger.warn({ err, traceId, tenantId, userId, path: req.originalUrl, method: req.method }, '[DB_BUSY] Veritabanı geçici olarak meşgul.');
     res.status(503).json({

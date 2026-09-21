@@ -21,6 +21,12 @@ import { logger } from '../utils/logger';
  */
 
 const READINESS_CACHE_MS = 3000;
+// TEST-1007: bağımlılık ÇÖKTÜĞÜNDE probe asılı kalmamalı. pool.query bağlantı havuzunun 10 sn'lik connectionTimeoutMillis'ine kadar
+// bekliyordu → /health/ready docker/orkestratör probe zaman aşımını (5 sn) aşıp 503 yerine "yanıt yok" veriyordu (kaos testinde ölçüldü).
+const CHECK_TIMEOUT_MS = 2000;
+function withTimeout<T>(p: Promise<T>, label: string): Promise<T> {
+  return Promise.race([p, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`${label} kontrolü ${CHECK_TIMEOUT_MS} ms içinde yanıt vermedi`)), CHECK_TIMEOUT_MS).unref())]);
+}
 
 export interface DependencyStatus {
   name: 'postgres' | 'redis' | 'mqtt';
@@ -39,7 +45,7 @@ let cached: { at: number; result: ReadinessResult } | null = null;
 
 async function checkPostgres(): Promise<DependencyStatus> {
   try {
-    await pool.query('SELECT 1');
+    await withTimeout(pool.query('SELECT 1'), 'postgres');
     return { name: 'postgres', ok: true };
   } catch (err) {
     return { name: 'postgres', ok: false, detail: (err as Error).message.slice(0, 160) };
@@ -48,7 +54,7 @@ async function checkPostgres(): Promise<DependencyStatus> {
 
 async function checkRedis(): Promise<DependencyStatus> {
   try {
-    const pong = await redisPool.client.ping();
+    const pong = await withTimeout(redisPool.client.ping(), 'redis');
     return { name: 'redis', ok: pong === 'PONG' };
   } catch (err) {
     return { name: 'redis', ok: false, detail: (err as Error).message.slice(0, 160) };
