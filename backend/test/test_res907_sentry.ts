@@ -19,7 +19,8 @@ import { scrubString } from '../src/privacy/piiScrub';
 const TC = '10000000146';
 const PHONE = '05321112233';
 const EMAIL = 'ahmet.yilmaz@firma.com.tr';
-const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOiJhYmMxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36P';
+// Sahte (test) JWT — gerçek bir sır değil; JWT maskeleme kuralını sınamak için. gitleaks:allow
+const JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOiJhYmMxMjMifQ.SflKxwRJSMeKKF2QT4fwpMeJf36P'; // gitleaks:allow
 const COOKIE = 'refresh=cookie-secret-value-777';
 const BEARER = 'Bearer abcdefghijklmnop1234567890';
 const PUBKEY = 'pubkey123';

@@ -10,7 +10,8 @@ const TC = '10000000146';
 
 describe('scrubText', () => {
   it('geçerli TCKN, telefon, e-posta, JWT ve Bearer maskelenir; rastgele 11 haneli sayı ve zaman damgası dokunulmaz', () => {
-    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOiJhYmMifQ.SflKxwRJSMeKKF2QT4fw';
+    // Sahte (test) JWT — gerçek bir sır değil. gitleaks:allow
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJ1c2VySWQiOiJhYmMifQ.SflKxwRJSMeKKF2QT4fw'; // gitleaks:allow
     const out = scrubText(`tc ${TC} tel 0532 111 22 33 mail a@b.co ${jwt} Authorization: Bearer abcdefghijklmnop1234 ref 12345678901 ts 2026-09-21T08:18:24.665Z`);
     expect(out).toBe('tc [TCKN] tel [TEL] mail [EMAIL] [JWT] Authorization: Bearer [TOKEN] ref 12345678901 ts 2026-09-21T08:18:24.665Z');
     expect(isValidTcNo(TC)).toBe(true);
