@@ -1,0 +1,709 @@
+{
+  "_readme": "Cihaz ekran ve buzzer mesajlarının TEK KAYNAĞI (DOC-1207 ↔ FW-1316). Firmware bu dosyayı derleme zamanında gömer; el kitabı ve özet kart bu dosyadan üretilir (scripts/generate-operator-manual.mjs). Mesaj değişecekse YALNIZCA burada değiştirin.",
+  "version": 1,
+  "display": {
+    "cols": 16,
+    "rows": 4,
+    "charset": "Türkçe (ğ ü ş ı ö ç Ğ Ü Ş İ Ö Ç) — özel font tablosu gerekir (FW-1316)"
+  },
+  "placeholders": {
+    "plaka": "34 ABC 1234",
+    "litre": "9999.9",
+    "debi": "99.9"
+  },
+  "screens": [
+    "BEKLEME",
+    "KART_OKUNDU",
+    "YETKI_BEKLENIYOR",
+    "YETKI_VERILDI",
+    "AKIS",
+    "TAMAMLANDI",
+    "HATA",
+    "CEVRIMDISI"
+  ],
+  "buzzer": {
+    "KABUL": {
+      "desc": "1 uzun bip",
+      "pattern": [
+        600
+      ]
+    },
+    "RET": {
+      "desc": "3 kısa bip",
+      "pattern": [
+        150,
+        100,
+        150,
+        100,
+        150
+      ]
+    },
+    "UYARI": {
+      "desc": "2 orta bip",
+      "pattern": [
+        300,
+        150,
+        300
+      ]
+    },
+    "HATA": {
+      "desc": "1 uzun alçak bip + 2 kısa",
+      "pattern": [
+        900,
+        150,
+        150,
+        150,
+        150
+      ]
+    },
+    "KISA": {
+      "desc": "1 çok kısa bip",
+      "pattern": [
+        80
+      ]
+    },
+    "YOK": {
+      "desc": "sessiz",
+      "pattern": []
+    }
+  },
+  "messages": [
+    {
+      "id": "BEKLEME",
+      "screen": "BEKLEME",
+      "source": {
+        "type": "device",
+        "code": "BEKLEME"
+      },
+      "lines": [
+        "HAZIR",
+        "Kartınızı okutun"
+      ],
+      "buzzer": "YOK",
+      "meaning": "Pompa hazır, kart bekliyor.",
+      "action": "Kartınızı okuyucuya yaklaştırın."
+    },
+    {
+      "id": "KART_OKUNDU",
+      "screen": "KART_OKUNDU",
+      "source": {
+        "type": "device",
+        "code": "KART_OKUNDU"
+      },
+      "lines": [
+        "Kart okundu",
+        "Bekleyin..."
+      ],
+      "buzzer": "KISA",
+      "meaning": "Kart okundu, sunucuya soruluyor.",
+      "action": "Bekleyin; birkaç saniye sürer. Kartı çekmeyin."
+    },
+    {
+      "id": "YETKI_BEKLENIYOR",
+      "screen": "YETKI_BEKLENIYOR",
+      "source": {
+        "type": "device",
+        "code": "YETKI_BEKLENIYOR"
+      },
+      "lines": [
+        "Yetki kontrol",
+        "ediliyor..."
+      ],
+      "buzzer": "YOK",
+      "meaning": "Sistem araç, sürücü ve kotayı kontrol ediyor.",
+      "action": "Bekleyin. 10 saniyeden uzun sürerse 'Sunucu meşgul' bölümüne bakın."
+    },
+    {
+      "id": "YETKI_VERILDI",
+      "screen": "YETKI_VERILDI",
+      "source": {
+        "type": "backend",
+        "code": "OK"
+      },
+      "lines": [
+        "Yetki verildi",
+        "{plaka}",
+        "En çok {litre} L",
+        "Pompayı açın"
+      ],
+      "buzzer": "KABUL",
+      "meaning": "İkmal onaylandı. Araç ve en çok alabileceği miktar ekranda.",
+      "action": "Tabancayı aracın deposuna takın, pompayı açın. Ekrandaki plakanın sizin aracınız olduğunu kontrol edin."
+    },
+    {
+      "id": "AKIS",
+      "screen": "AKIS",
+      "source": {
+        "type": "device",
+        "code": "AKIS"
+      },
+      "lines": [
+        "İkmal sürüyor",
+        "{litre} L",
+        "{debi} L/dk"
+      ],
+      "buzzer": "YOK",
+      "meaning": "Yakıt akıyor; litre ve debi canlı güncellenir.",
+      "action": "Tabancayı bırakmayın. Bitince tabancayı kapatın."
+    },
+    {
+      "id": "TAMAMLANDI",
+      "screen": "TAMAMLANDI",
+      "source": {
+        "type": "device",
+        "code": "TAMAMLANDI"
+      },
+      "lines": [
+        "İkmal bitti",
+        "{litre} L",
+        "İyi çalışmalar"
+      ],
+      "buzzer": "KABUL",
+      "meaning": "İkmal kaydedildi.",
+      "action": "Tabancayı yerine asın. Ekrandaki litre ile aracınızın deposunu kontrol edin."
+    },
+    {
+      "id": "CARD_UNKNOWN",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "CARD_UNKNOWN"
+      },
+      "lines": [
+        "Kart tanımsız",
+        "Yöneticiye",
+        "başvurun"
+      ],
+      "buzzer": "RET",
+      "meaning": "Bu kart sisteme kayıtlı değil.",
+      "action": "Başka bir pompaya gitmeyin. Kartı şantiye şefine gösterin; kart kaydı yönetici tarafından yapılır."
+    },
+    {
+      "id": "RFID_CARD_BLOCKED",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "RFID_CARD_BLOCKED"
+      },
+      "lines": [
+        "Kart bloke",
+        "Kayıp/çalıntı",
+        "Şefe bildirin"
+      ],
+      "buzzer": "RET",
+      "meaning": "Kart kara listede (kayıp, çalıntı veya değiştirilmiş).",
+      "action": "Kartı kullanmaya çalışmayın. Şantiye şefine haber verin; yeni kart yönetici tarafından verilir."
+    },
+    {
+      "id": "DRIVER_INACTIVE",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "DRIVER_INACTIVE"
+      },
+      "lines": [
+        "Sürücü aktif",
+        "değil (izinli",
+        "veya pasif)"
+      ],
+      "buzzer": "RET",
+      "meaning": "Sürücü kaydı aktif değil (izinli veya pasif).",
+      "action": "Şantiye şefine haber verin; sürücü durumu yönetici tarafından güncellenir."
+    },
+    {
+      "id": "NO_VEHICLE_ASSIGNED",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "NO_VEHICLE_ASSIGNED"
+      },
+      "lines": [
+        "Araç atanmamış",
+        "Şefe bildirin"
+      ],
+      "buzzer": "RET",
+      "meaning": "Kartın sahibine bir araç atanmamış.",
+      "action": "Şantiye şefine haber verin; araç ataması yönetici tarafından yapılır."
+    },
+    {
+      "id": "VEHICLE_BLOCKED",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "VEHICLE_BLOCKED"
+      },
+      "lines": [
+        "Araç kullanıma",
+        "kapalı",
+        "Şefe bildirin"
+      ],
+      "buzzer": "RET",
+      "meaning": "Araç kaydı aktif değil (bakımda veya kapalı).",
+      "action": "Şantiye şefine haber verin. Başka bir araca ikmal yapmayın."
+    },
+    {
+      "id": "VEHICLE_FUEL_LIMIT_EXCEEDED",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "VEHICLE_FUEL_LIMIT_EXCEEDED"
+      },
+      "lines": [
+        "Araç limiti",
+        "doldu",
+        "Şefe bildirin"
+      ],
+      "buzzer": "RET",
+      "meaning": "Aracın dönemlik yakıt limiti bitti.",
+      "action": "Şantiye şefine haber verin; gerekirse yönetici geçici artış verir. Zorlamayın."
+    },
+    {
+      "id": "QUOTA_EXHAUSTED",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "QUOTA_EXHAUSTED"
+      },
+      "lines": [
+        "Kota doldu",
+        "Çapraz şantiye",
+        "kotası bitti"
+      ],
+      "buzzer": "RET",
+      "meaning": "Aracın başka şantiyeden alım kotası bitti.",
+      "action": "Kendi şantiyenizin pompasını kullanın veya şantiye şefine haber verin."
+    },
+    {
+      "id": "NO_SITE_PERMISSION",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "NO_SITE_PERMISSION"
+      },
+      "lines": [
+        "Bu şantiyede",
+        "alım izni yok"
+      ],
+      "buzzer": "RET",
+      "meaning": "Araç bu şantiyeden yakıt alma iznine sahip değil.",
+      "action": "Kendi şantiyenizin pompasını kullanın; izin için şantiye şefine haber verin."
+    },
+    {
+      "id": "DEVICE_TANK_MISMATCH",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "DEVICE_TANK_MISMATCH"
+      },
+      "lines": [
+        "Yanlış tank",
+        "Pompa başka",
+        "tanka bağlı"
+      ],
+      "buzzer": "HATA",
+      "meaning": "Pompa, istenen tanka bağlı değil (kayıt hatası).",
+      "action": "İkmal yapmayın. Şantiye şefine ve teknik servise haber verin."
+    },
+    {
+      "id": "FUEL_TYPE_MISMATCH",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "FUEL_TYPE_MISMATCH"
+      },
+      "lines": [
+        "Yakıt türü",
+        "uyumsuz",
+        "İkmal yapmayın"
+      ],
+      "buzzer": "RET",
+      "meaning": "Aracın yakıt türü bu tanktakiyle uyuşmuyor.",
+      "action": "İKMAL YAPMAYIN (yanlış yakıt araca zarar verir). Şantiye şefine haber verin."
+    },
+    {
+      "id": "TANK_LOW",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "TANK_LOW"
+      },
+      "lines": [
+        "Tankta yakıt",
+        "yok",
+        "Şefe bildirin"
+      ],
+      "buzzer": "RET",
+      "meaning": "Tankta yakıt kalmamış.",
+      "action": "Şantiye şefine haber verin; tank dolumu bekleyin."
+    },
+    {
+      "id": "TANK_NOT_FOUND",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "TANK_NOT_FOUND"
+      },
+      "lines": [
+        "Tank tanımsız",
+        "Teknik servis"
+      ],
+      "buzzer": "HATA",
+      "meaning": "Pompaya bağlı tank sistemde bulunamadı (kurulum hatası).",
+      "action": "İkmal yapmayın. Teknik servise haber verin."
+    },
+    {
+      "id": "SESSION_ALREADY_ACTIVE",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "SESSION_ALREADY_ACTIVE"
+      },
+      "lines": [
+        "Açık ikmal var",
+        "Önce bitirin"
+      ],
+      "buzzer": "RET",
+      "meaning": "Bu araç için zaten açık bir ikmal var.",
+      "action": "Önceki ikmali bitirin; 15 saniye sonra tekrar deneyin. Sürerse şantiye şefine haber verin."
+    },
+    {
+      "id": "SESSION_NOT_FOUND",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "SESSION_NOT_FOUND"
+      },
+      "lines": [
+        "Oturum kapandı",
+        "Kartı tekrar",
+        "okutun"
+      ],
+      "buzzer": "UYARI",
+      "meaning": "İkmal oturumu süresi dolduğu için kapandı.",
+      "action": "Kartı yeniden okutup ikmali baştan başlatın."
+    },
+    {
+      "id": "INVALID_STATE_TRANSITION",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "INVALID_STATE_TRANSITION"
+      },
+      "lines": [
+        "İşlem sırası",
+        "hatalı",
+        "Kartı yeniden",
+        "okutun"
+      ],
+      "buzzer": "UYARI",
+      "meaning": "Cihaz ile sistem arasında işlem sırası tutmadı.",
+      "action": "Kartı yeniden okutun; sürerse teknik servise haber verin."
+    },
+    {
+      "id": "DEVICE_ID_REQUIRED",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "DEVICE_ID_REQUIRED"
+      },
+      "lines": [
+        "Cihaz hatası",
+        "Teknik servis"
+      ],
+      "buzzer": "HATA",
+      "meaning": "Cihaz kimliği eksik (kurulum/yazılım hatası).",
+      "action": "İkmal yapmayın. Teknik servise haber verin."
+    },
+    {
+      "id": "MAX_LITERS_EXCEEDED",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "MAX_LITERS_EXCEEDED"
+      },
+      "lines": [
+        "En çok litreye",
+        "ulaşıldı",
+        "Pompa durdu"
+      ],
+      "buzzer": "UYARI",
+      "meaning": "İzin verilen en çok litre alındı; pompa otomatik durdu.",
+      "action": "Normaldir. Tabancayı kapatın. Daha fazlası gerekiyorsa şantiye şefine haber verin."
+    },
+    {
+      "id": "MAX_DURATION_EXCEEDED",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "MAX_DURATION_EXCEEDED"
+      },
+      "lines": [
+        "En çok süre",
+        "doldu",
+        "Pompa durdu"
+      ],
+      "buzzer": "UYARI",
+      "meaning": "İkmal olağan süreden uzun sürdü; pompa otomatik durdu.",
+      "action": "Tabancayı kapatın. Depo ya da hortumda sorun olabilir; tekrar denemeden önce kontrol edin."
+    },
+    {
+      "id": "UNAUTHORIZED_DEVICE",
+      "screen": "HATA",
+      "source": {
+        "type": "system",
+        "code": "UNAUTHORIZED_DEVICE",
+        "codes": [
+          "UNAUTHORIZED_DEVICE"
+        ]
+      },
+      "lines": [
+        "Cihaz yetkisiz",
+        "Teknik servis"
+      ],
+      "buzzer": "HATA",
+      "meaning": "Cihazın sunucuyla kimlik doğrulaması başarısız (saat/kimlik hatası).",
+      "action": "İkmal yapmayın. Teknik servise haber verin."
+    },
+    {
+      "id": "TOO_MANY_REQUESTS",
+      "screen": "HATA",
+      "source": {
+        "type": "system",
+        "code": "TOO_MANY_REQUESTS",
+        "codes": [
+          "TOO_MANY_REQUESTS"
+        ]
+      },
+      "lines": [
+        "Çok fazla istek",
+        "30 sn bekleyin"
+      ],
+      "buzzer": "UYARI",
+      "meaning": "Cihaz kısa sürede çok fazla istek gönderdi.",
+      "action": "30 saniye bekleyip kartı tekrar okutun."
+    },
+    {
+      "id": "SERVER_BUSY",
+      "screen": "HATA",
+      "source": {
+        "type": "system",
+        "code": "SERVER_BUSY",
+        "codes": [
+          "SERVER_BUSY",
+          "NONCE_STORE_UNAVAILABLE",
+          "DB_UNAVAILABLE",
+          "DB_BUSY",
+          "SERVICE_UNAVAILABLE"
+        ]
+      },
+      "lines": [
+        "Sunucu meşgul",
+        "Tekrar deneyin"
+      ],
+      "buzzer": "UYARI",
+      "meaning": "Sunucu geçici olarak yanıt veremiyor.",
+      "action": "Bir dakika bekleyip kartı tekrar okutun. Sürerse çevrimdışı moda bakın."
+    },
+    {
+      "id": "CARD_READ_ERROR",
+      "screen": "HATA",
+      "source": {
+        "type": "device",
+        "code": "CARD_READ_ERROR"
+      },
+      "lines": [
+        "Kart okunamadı",
+        "Tekrar okutun"
+      ],
+      "buzzer": "UYARI",
+      "meaning": "Kart okunamadı.",
+      "action": "Kartı düz ve yavaşça okuyucuya yaklaştırın; 3 denemede olmazsa 'Kart okunmuyor' bölümüne bakın."
+    },
+    {
+      "id": "OFFLINE",
+      "screen": "CEVRIMDISI",
+      "source": {
+        "type": "device",
+        "code": "OFFLINE"
+      },
+      "lines": [
+        "ÇEVRİMDIŞI MOD",
+        "Sınırlı yetki",
+        "Limit: {litre} L"
+      ],
+      "buzzer": "UYARI",
+      "meaning": "İnternet yok. Cihaz kayıtlı kartlara sınırlı miktarda ikmal verir.",
+      "action": "İkmal yapabilirsiniz ama limiti aşmayın. Bağlantı gelince kayıtlar otomatik gönderilir; cihazı kapatmayın."
+    },
+    {
+      "id": "OFFLINE_LIMIT",
+      "screen": "CEVRIMDISI",
+      "source": {
+        "type": "device",
+        "code": "OFFLINE_LIMIT"
+      },
+      "lines": [
+        "Çevrimdışı limit",
+        "doldu",
+        "Pompa durdu"
+      ],
+      "buzzer": "RET",
+      "meaning": "Çevrimdışıyken verilen limit doldu.",
+      "action": "Bağlantı gelene kadar ikmal yapılamaz. Şantiye şefine haber verin."
+    },
+    {
+      "id": "OFFLINE_CARD_UNKNOWN",
+      "screen": "CEVRIMDISI",
+      "source": {
+        "type": "device",
+        "code": "OFFLINE_CARD_UNKNOWN"
+      },
+      "lines": [
+        "Çevrimdışı: kart",
+        "önbellekte yok"
+      ],
+      "buzzer": "RET",
+      "meaning": "İnternet yokken bu kart doğrulanamıyor.",
+      "action": "Bağlantı gelene kadar bekleyin; şantiye şefine haber verin."
+    },
+    {
+      "id": "CONNECTION_LOST",
+      "screen": "CEVRIMDISI",
+      "source": {
+        "type": "device",
+        "code": "CONNECTION_LOST"
+      },
+      "lines": [
+        "Bağlantı koptu",
+        "Kayıt cihazda",
+        "saklanıyor"
+      ],
+      "buzzer": "UYARI",
+      "meaning": "İkmal sırasında bağlantı koptu; ikmal cihazda saklanıyor.",
+      "action": "İkmali normal bitirin. Kayıt bağlantı gelince sunucuya gider; cihazı kapatmayın."
+    },
+    {
+      "id": "SYNCING",
+      "screen": "CEVRIMDISI",
+      "source": {
+        "type": "device",
+        "code": "SYNCING"
+      },
+      "lines": [
+        "Veri gönderilir",
+        "Kapatmayın"
+      ],
+      "buzzer": "YOK",
+      "meaning": "Çevrimdışıyken yapılan ikmaller sunucuya gönderiliyor.",
+      "action": "Cihazı kapatmayın; birkaç dakika sürebilir."
+    },
+    {
+      "id": "FLOW_FAULT",
+      "screen": "HATA",
+      "source": {
+        "type": "device",
+        "code": "FLOW_FAULT"
+      },
+      "lines": [
+        "Akış yok",
+        "Pompa durdu",
+        "Hortumu kontrol"
+      ],
+      "buzzer": "HATA",
+      "meaning": "Pompa açık ama yakıt akmıyor (tank boş, hortum tıkalı veya sensör arızası).",
+      "action": "Tabancayı kapatın. Hortum/vana ve tank durumunu kontrol edin; çözülmezse şantiye şefine ve teknik servise haber verin."
+    },
+    {
+      "id": "EMERGENCY_STOP",
+      "screen": "HATA",
+      "source": {
+        "type": "device",
+        "code": "EMERGENCY_STOP"
+      },
+      "lines": [
+        "ACİL DURDURMA",
+        "Pompa kapalı"
+      ],
+      "buzzer": "HATA",
+      "meaning": "Acil durdurma düğmesine basıldı; pompa enerjisi kesildi.",
+      "action": "Güvenli hâle gelene kadar düğmeyi bırakmayın. Neden ortadan kalkınca şantiye şefi düğmeyi serbest bırakır."
+    },
+    {
+      "id": "DEVICE_FAULT",
+      "screen": "HATA",
+      "source": {
+        "type": "device",
+        "code": "DEVICE_FAULT"
+      },
+      "lines": [
+        "Cihaz arızası",
+        "Kullanmayın",
+        "Teknik servis"
+      ],
+      "buzzer": "HATA",
+      "meaning": "Cihaz kendi kendini denetlerken arıza buldu.",
+      "action": "Pompayı kullanmayın; şantiye şefine ve teknik servise haber verin."
+    },
+    {
+      "id": "DEVICE_BLOCKED",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "DEVICE_BLOCKED",
+        "codes": [
+          "DEVICE_BLOCKED"
+        ]
+      },
+      "lines": [
+        "Cihaz bloke",
+        "Teknik servis"
+      ],
+      "buzzer": "HATA",
+      "meaning": "Bu cihaz yönetici tarafından bloke edilmiş.",
+      "action": "İkmal yapmayın. Şantiye şefine ve teknik servise haber verin; cihaz yönetici tarafından açılır."
+    },
+    {
+      "id": "CLOCK_DRIFT",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "CLOCK_DRIFT",
+        "codes": [
+          "CLOCK_DRIFT"
+        ]
+      },
+      "lines": [
+        "Cihaz saati",
+        "hatalı",
+        "Teknik servis"
+      ],
+      "buzzer": "HATA",
+      "meaning": "Cihazın saati sunucudan çok farklı; sunucu istekleri reddediyor.",
+      "action": "İkmal yapmayın (çevrimdışı moda geçebilir). Teknik servise haber verin; cihaz saati düzeltilir."
+    },
+    {
+      "id": "SECURITY_ERROR",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "INVALID_TIMESTAMP_FORMAT",
+        "codes": [
+          "INVALID_TIMESTAMP_FORMAT",
+          "INVALID_SIGNATURE_FORMAT",
+          "INVALID_HARDWARE_SIGNATURE",
+          "NONCE_REUSED",
+          "REPLAY_ATTACK_DETECTED",
+          "MISSING_HARDWARE_HEADERS"
+        ]
+      },
+      "lines": [
+        "Güvenlik hatası",
+        "Tekrar deneyin",
+        "Sürerse servis"
+      ],
+      "buzzer": "UYARI",
+      "meaning": "Cihaz ile sunucu arasındaki güvenlik doğrulaması başarısız oldu.",
+      "action": "Kartı bir kez daha okutun. Tekrarlarsa teknik servise haber verin."
+    }
+  ]
+}

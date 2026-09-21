@@ -2,7 +2,7 @@
 
 > **Amaç:** yeni bir şantiyenin devreye alınmasını kişiye bağlı olmaktan çıkarıp tekrarlanabilir bir prosedüre dönüştürmek.
 > **Kural:** [imzalı devreye alma formu](saha-kurulum/DEVREYE_ALMA_FORMU.html) tamamlanmadan şantiye **canlıya alınmaz** (bkz. §8).
-> Cihaz/protokol ayrıntıları: [HARDWARE_INTEGRATION_GUIDE.md](HARDWARE_INTEGRATION_GUIDE.md) · sırlar: [SECRETS.md](SECRETS.md) · sorun anında: [runbooks/field.md](runbooks/field.md) · operatör eğitimi için: DOC-1207.
+> Cihaz/protokol ayrıntıları: [HARDWARE_INTEGRATION_GUIDE.md](HARDWARE_INTEGRATION_GUIDE.md) · sırlar: [SECRETS.md](SECRETS.md) · sorun anında: [runbooks/field.md](runbooks/field.md) · operatör eğitimi için: [OPERATOR_EL_KITABI.md](OPERATOR_EL_KITABI.md) (DOC-1207).
 
 **Kim, ne kadar sürede?** 1 saha teknisyeni + 1 yetkili elektrikçi (elektrik işleri) + portalda yetkili kullanıcı (`COMPANY_OWNER`/`SUPER_ADMIN`). Kurulum + kalibrasyon + kabul testleri ≈ 1 iş günü; **24 saatlik izleme** sonrası imza (toplam ≈ 2 gün).
 

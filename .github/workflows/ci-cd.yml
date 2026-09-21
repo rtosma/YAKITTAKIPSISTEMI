@@ -127,6 +127,12 @@ jobs:
       - name: "DOC-1206: Saha Kurulum Belgesi ve Devreye Alma Formu Tutarlılık Testi"
         run: node scripts/test-doc1206.mjs
 
+      # DOC-1207 (#189): operatör el kitabı ↔ cihaz ekran mesajı kataloğu birebir (kataloğdan üretilir), her hata kodunun karşılığı, tek sayfalık özet kart.
+      - name: "DOC-1207: El Kitabı ↔ Cihaz Mesaj Kataloğu Uyumu (üretilmiş belge güncel mi?)"
+        run: node scripts/generate-operator-manual.mjs --check
+      - name: "DOC-1207: Operatör El Kitabı ve Özet Kart Testleri"
+        run: node scripts/test-doc1207.mjs
+
       - name: "ARCH-110: Ham process.env Kullanımı Denetimi (Tipli Config Zorunluluğu)"
         run: node scripts/check-no-direct-process-env.mjs
 

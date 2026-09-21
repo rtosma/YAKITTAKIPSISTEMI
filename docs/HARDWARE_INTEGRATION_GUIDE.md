@@ -451,6 +451,13 @@ JWT ile korunur, `HARDWARE_DEVICE_MANAGER_ROLES` (`SUPER_ADMIN`,
 
 ---
 
+## 10.1 Cihaz ekran ve buzzer mesajları (FW-1316 ↔ DOC-1207)
+
+Pompa ekranı/buzzer mesajlarının **tek kaynağı** [operator/device-messages.json](operator/device-messages.json)'dır (16 harf × 4 satır, Türkçe karakter dahil; her mesajın ekran satırları, buzzer kalıbı, anlamı ve operatörün ne yapacağı).
+Firmware bu dosyayı **derleme zamanında gömer**; [Operatör El Kitabı](OPERATOR_EL_KITABI.md) ve pompa özet kartı **bu dosyadan üretilir** — ekran metni yalnızca burada değiştirilir. Sunucunun cihaza döndürdüğü her hata kodu (`error`) bu katalogda bir mesaja karşılık gelir (CI'da doğrulanır).
+
+---
+
 ## 11. Firmware kontrol listesi
 
 - [ ] Claim akışı: kod al → `POST /devices/claim` → secret'ı güvenli sakla
@@ -465,6 +472,7 @@ JWT ile korunur, `HARDWARE_DEVICE_MANAGER_ROLES` (`SUPER_ADMIN`,
 - [ ] Çevrimdışı kuyruk: monotonik `localSequenceId`; yalnızca `ACCEPTED`/`DUPLICATE_SKIPPED` silinir
 - [ ] `fail-open-policy`'yi `whitelistFreshnessHours`'tan sık çek ve önbelleğe al
 - [ ] Kalibrasyon: yeni K-faktörü yaz → `calibration-ack` (`ACK` + `appliedKFactor`)
+- [ ] Ekran/buzzer: `operator/device-messages.json` mesajlarını birebir göster (Türkçe karakterli özel font; 16×4)
 
 ---
 
