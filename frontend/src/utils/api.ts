@@ -1,3 +1,5 @@
+import { TRACE_ID_HEADER, newTraceId, reportApiFailure, setLastApiTraceId } from './sentry';
+
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
 
 /**
@@ -69,9 +71,15 @@ async function refreshAccessToken(): Promise<string | null> {
  * and handles basic JSON parsing/error throwing.
  */
 export async function apiFetch(endpoint: string, options: RequestInit = {}) {
+  // RES-907: her çağrı kendi trace_id'sini taşır; backend bunu korur (loglar, hata yanıtı, Sentry etiketi) — bir tarayıcı hatasıyla
+  // sunucu hatası Sentry'de aynı trace_id ile eşleşir. Sessiz yenileme sonrası tekrar denenen istek AYNI trace_id'yi kullanır.
+  const traceId = newTraceId();
+  setLastApiTraceId(traceId);
+  const method = (options.method || 'GET').toUpperCase();
   const doFetch = async (accessToken: string | null) => {
     const headers: HeadersInit = {
       'Content-Type': 'application/json',
+      [TRACE_ID_HEADER]: traceId,
       ...options.headers,
     };
     if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
@@ -84,7 +92,13 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
   };
 
   const token = localStorage.getItem('YAKIT_ACCESS_TOKEN');
-  let response = await doFetch(token);
+  let response: Response;
+  try {
+    response = await doFetch(token);
+  } catch (networkError: any) {
+    reportApiFailure({ traceId, endpoint, method, message: String(networkError?.message ?? networkError) });
+    throw networkError;
+  }
 
   // Yalnızca "bir token GÖNDERDİYSEK ve yine de 401 aldıysak" sessiz
   // yenilemeyi dene — token'sız bir 401 (örn. giriş öncesi bir çağrı)
@@ -102,7 +116,14 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
 
   if (!response.ok) {
     const errorMsg = data?.message || response.statusText || 'Bilinmeyen API Hatası';
-    throw new Error(errorMsg);
+    // Sunucu yanıtındaki traceId (varsa) esas alınır; yoksa bu istekte biz ürettik.
+    const serverTraceId: string = response.headers?.get?.(TRACE_ID_HEADER) || data?.traceId || traceId;
+    setLastApiTraceId(serverTraceId);
+    if (response.status >= 500) reportApiFailure({ traceId: serverTraceId, endpoint, method, status: response.status, message: errorMsg });
+    const err: Error & { traceId?: string; status?: number } = new Error(errorMsg);
+    err.traceId = serverTraceId;
+    err.status = response.status;
+    throw err;
   }
 
   return data;

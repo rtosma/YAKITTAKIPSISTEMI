@@ -174,6 +174,11 @@ services:
       TOTP_ENFORCED: ${TOTP_ENFORCED:-false}
       # OPS-1107: /metrics için opsiyonel Bearer token (boş = yalnızca iç ağ; bkz. config/env.ts).
       METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # RES-907: Sentry (boş DSN = kapalı). Sürüm etiketi APP_VERSION imajdan gelir.
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ERROR_SAMPLE_RATE: ${SENTRY_ERROR_SAMPLE_RATE:-1}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
       # TEST_PLAN §5.2: CORS allowlist. BOŞ = CORS tamamen kapalı
       # (same-origin) — nginx SPA'yı ve /api'yi aynı origin'den sunduğu için
       # normal kurulumda boş kalır; yalnızca API'ye BAŞKA bir origin'den
@@ -208,6 +213,16 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_BASE_URL: /api/v1
+        # RES-907: Sentry (boş DSN = tarayıcı hata izleme kapalı). Sürüm etiketi backend `release` ile AYNI (APP_VERSION).
+        VITE_SENTRY_DSN: ${SENTRY_DSN:-}
+        VITE_SENTRY_SAMPLE_RATE: ${SENTRY_ERROR_SAMPLE_RATE:-1}
+        VITE_APP_VERSION: ${APP_VERSION:-dev}
+        SENTRY_ORG: ${SENTRY_ORG:-}
+        SENTRY_PROJECT: ${SENTRY_PROJECT:-}
+        SENTRY_URL: ${SENTRY_URL:-}
+      # Source map yükleme token'ı derleme SIRRI olarak geçer (ARG değil): SENTRY_AUTH_TOKEN ortam değişkeninden okunur; tanımsızsa boş dosya.
+      secrets:
+        - sentry_auth_token
     container_name: yakittakip_frontend
     restart: unless-stopped
     ports:
@@ -228,6 +243,10 @@ services:
 # ==============================================================================
 # Docker Volumes & Networks
 # ==============================================================================
+secrets:
+  sentry_auth_token:
+    environment: SENTRY_AUTH_TOKEN
+
 volumes:
   pgdata:
     driver: local

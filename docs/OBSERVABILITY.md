@@ -103,3 +103,7 @@ Backend her satırı **pino JSON** yazar (`level`, `time`, `msg`, `traceId`, `te
 - Kuyruk derinlikleri veritabanı tablolarından okunur (BullMQ/Redis Streams yoktur): e-İrsaliye iletimi ve bildirim yeniden denemesi. Yeni bir kuyruk eklenirse metriği `getBusinessMetricsSnapshot`'a ve bu kataloğa eklenmelidir.
 - `node-exporter` host dosya sistemine `/:/host:ro` bağlar; kısıtlı (ör. bazı yönetilen konteyner) ortamlarda bu servis devre dışı bırakılıp bulut sağlayıcının host metrikleri kullanılmalıdır.
 - Alarm/uyarı kuralları ve bildirim kanalları: OPS-1108.
+
+## Hata izleme (Sentry)
+
+İstemci + sunucu hata izleme, `trace_id` korelasyonu ve source map: [ERROR_TRACKING.md](ERROR_TRACKING.md) (RES-907). Sentry'deki `trace_id` etiketi, yukarıdaki log sorgularındaki `traceId` ile aynı değerdir.

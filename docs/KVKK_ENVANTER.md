@@ -53,6 +53,7 @@ Yanıt kopyası maskelenir, kaynak nesne değişmez. **e-İrsaliye XML'i** yasal
   resmî sağlama toplamıyla ayrıştırılır; telefon → `[TEL]`; e-posta → `[EMAIL]`), kullanıcı adı/ad-soyad alanları takma ad (`pii:xxxxxxxx`, korelasyon korunur). Hata mesajları ve stack izleri de temizlenir (hata TÜRÜ korunur).
 - **Otomatik kontrol:** `node scripts/check-no-pii-logging.mjs` (CI) — `logger.*(...)` çağrısında `tcNo/phone/email/password…` geçerse kırmızı. İstisna: aynı satıra `// pii-log:allow <gerekçe>`.
 - **Gemini (AI-502):** şoför adları prompt'a **girmez** (`Sürücü-1`, `Sürücü-2` takma adları; yanıttaki takma adlar geri çevrilir). TCKN/telefon zaten istatistik verisinde yoktur. Plaka analiz için gider (yukarıdaki yarı-tanımlayıcı notu).
+- **Sentry (RES-907):** hata olayları göndermeden önce aynı kural motoruyla (TCKN/telefon/e-posta/JWT maskesi, kullanıcı yalnızca id, URL sorgusuz, istek gövdesi/çerez yok) hem SDK `beforeSend`'inde hem sunucu tünelinde temizlenir; replay/tracing kapalı. Ayrıntı: [ERROR_TRACKING.md](ERROR_TRACKING.md).
 - **Diğer dış servisler:** SMS/e-posta/Telegram sağlayıcıları yalnızca bildirimin alıcı adresini (telefon/e-posta) ve metnini alır — teslimat amacıyla zorunlu; bildirim şablonlarında TCKN yoktur.
 - **Serbest metin sınırı:** kullanıcı girdisi serbest metin alanları (ör. `alarms.resolution_note`, arıza açıklamaları) otomatik taranamaz; kullanıcılara kişisel veri girmemeleri hatırlatılmalıdır.
 

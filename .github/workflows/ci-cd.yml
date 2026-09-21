@@ -113,6 +113,12 @@ jobs:
       - name: "COMP-606: KVKK Statik Testleri (envanter belgesi, guard fixture, bağlantılar)"
         run: node scripts/test-comp606.mjs
 
+      # RES-907 (#192): Sentry — statik sözleşme + frontend derlemesi (source map üretimi ve orijinal kaynağa geri çözme). Backend davranış testi API job'unda.
+      - name: "RES-907: Sentry Statik Sözleşme Testleri"
+        run: node scripts/test-res907.mjs
+      - name: "RES-907: Frontend Source Map Derleme Testi (okunabilir stack)"
+        run: node scripts/test-res907.mjs --build
+
       - name: "ARCH-110: Ham process.env Kullanımı Denetimi (Tipli Config Zorunluluğu)"
         run: node scripts/check-no-direct-process-env.mjs
 
@@ -714,6 +720,11 @@ jobs:
       - name: Run COMP-606 KVKK Personal Data Tests
         run: cd backend && npx tsx test/test_comp606_kvkk.ts
 
+      # RES-907 (#192): GERÇEK @sentry/node SDK'sı → yerel sahte alıcı: backend olayı (trace_id/release/PII), tarayıcı tüneli (açık röle yok, PII sunucuda
+      # temizlenir), örnekleme, uçtan uca trace_id korelasyonu. Canlı Sentry'ye HİÇBİR şey gitmez.
+      - name: Run RES-907 Sentry Error Tracking Tests
+        run: cd backend && npx tsx test/test_res907_sentry.ts
+
       - name: Run HR-1801 Personnel Leave Tracking Tests
         run: cd backend && npx tsx test/test_hr1801_personnel_leave.ts
 
@@ -956,7 +967,7 @@ jobs:
             ./scripts/zero-downtime-deploy.sh
             # Frontend (nginx statik dosyaları) zero-downtime gerektirmediği için normal bir 'up -d --build' ile.
             # Şema, zero-downtime-deploy.sh adım 2b'de zaten uygulandı (idempotent, tek transaction).
-            docker compose up -d --build frontend
+            APP_VERSION="$(git describe --tags --always --dirty=-dirty | tr -c 'A-Za-z0-9._+-' '-' | cut -c1-64)" docker compose up -d --build frontend
 
       # OPS-1104 AC: "Dağıtım sonrası duman testleri otomatik çalışmalıdır." Başarısız duman testi
       # dağıtım adımını başarısız yapar (job kırmızı) — bozuk staging fark edilmeden kalmaz.
@@ -1041,7 +1052,7 @@ jobs:
             git reset --hard "${{ github.sha }}"
             chmod +x scripts/zero-downtime-deploy.sh
             ./scripts/zero-downtime-deploy.sh
-            docker compose up -d --build frontend
+            APP_VERSION="$(git describe --tags --always --dirty=-dirty | tr -c 'A-Za-z0-9._+-' '-' | cut -c1-64)" docker compose up -d --build frontend
 
       - name: Smoke Test (dağıtım sonrası)
         id: smoke
@@ -1094,7 +1105,8 @@ jobs:
               echo "rollback.sh reddetti (çıkış $rc) — MANUEL müdahale: docs/DEPLOY_ROLLBACK.md §5"
               exit "$rc"
             fi
-            docker compose up -d --build frontend
+            # RES-907: frontend sürüm etiketi = geri alınan sürüm (backend release ile aynı)
+            APP_VERSION="${{ env.PREV_TAG }}" docker compose up -d --build frontend
 
       # Başarılı dağıtımın değişiklik günlüğü: önceki etiket → bu etiket arası conventional commit'ler.
       - name: GitHub Release (değişiklik günlüğü + onaylayan)

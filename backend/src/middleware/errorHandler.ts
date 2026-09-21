@@ -4,6 +4,7 @@ import { AppError, getZodIssues } from '../utils/errors';
 import { logger } from '../utils/logger';
 import { getTraceId, getLoggingTenantContext } from '../utils/requestContext';
 import { redactSensitiveFields } from '../utils/redaction';
+import { captureServerError } from '../observability/sentry';
 
 /**
  * 404 Not Found Middleware for unhandled routes
@@ -34,6 +35,8 @@ export const globalErrorHandler = (
   // Handle Operational AppError (4xx or explicit operational 5xx)
   if (err instanceof AppError) {
     if (err.statusCode >= 500) {
+      // RES-907: 503 "geçici/beklenen" (AI anahtarı yok, DB meşgul...) — Sentry'yi kirletmesin; 500/502 gerçek arıza sayılır.
+      if (err.statusCode !== 503) captureServerError(err, { traceId, tenantId, userId, method: req.method, path: req.originalUrl });
       logger.error({
         err,
         traceId,
@@ -127,6 +130,7 @@ export const globalErrorHandler = (
   }
 
   // Handle Unhandled Unexpected 500 Internal Server Errors
+  captureServerError(err, { traceId, tenantId, userId, method: req.method, path: req.originalUrl });
   logger.error({
     err,
     stack: err.stack,
@@ -156,10 +160,12 @@ export const globalErrorHandler = (
  */
 export const registerProcessExceptionHandlers = (): void => {
   process.on('uncaughtException', (error: Error) => {
+    captureServerError(error, {});
     logger.fatal({ err: error, stack: error.stack }, `🔥 [UNCAUGHT_EXCEPTION] İşlenmeyen İstisna: ${error.message}`);
   });
 
   process.on('unhandledRejection', (reason: any) => {
+    captureServerError(reason instanceof Error ? reason : new Error(String(reason)), {});
     logger.fatal({ reason }, `🔥 [UNHANDLED_REJECTION] İşlenmeyen Promise Reddi`);
   });
 };

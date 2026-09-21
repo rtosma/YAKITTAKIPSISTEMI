@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@google/genai": "^2.21.0",
+    "@sentry/node": "^10.75.0",
     "archiver": "^7.0.1",
     "archiver-zip-encrypted": "^2.0.0",
     "argon2": "^0.45.1",

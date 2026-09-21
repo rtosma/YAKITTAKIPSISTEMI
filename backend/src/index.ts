@@ -16,6 +16,9 @@ import routes from './routes/routes';
 import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing, sweepTimedOutCalibrations, getAllTenantIdsWithAiAnomalyEnabled, getAllTenantIds, listCompaniesDueForPeriodicArchive, sweepExpiredArchives, touchArchiveLastGenerated } from './db/adminDb';
 import { generateArchiveForTenant } from './services/tenantArchiveService';
 import { sweepTimedOutSessions } from './services/dispenseSessionService';
+import { initSentry, flushSentry } from './observability/sentry';
+import { createSentryTunnelHandlers } from './observability/sentryTunnel';
+import { sentryTunnelRateLimiter } from './middleware/rateLimitMiddleware';
 import { runRetentionPurge, purgeColdArchives } from './services/retentionService';
 import { anonymizeExpiredSubjects } from './services/privacyService';
 import { broadcastToTenant, drainSocketClients } from './socket/socketServer';
@@ -36,6 +39,8 @@ import { runUsageMeteringSweepForPreviousMonth } from './services/usageMeteringS
 
 // Register process-level uncaughtException and unhandledRejection handlers
 registerProcessExceptionHandlers();
+// RES-907: hata izleme (DSN yoksa no-op). Sürüm etiketi APP_VERSION (OPS-1110). Kişisel veri: observability/sentryScrub.ts.
+initSentry();
 
 const app = express();
 const PORT = config.PORT;
@@ -180,6 +185,8 @@ app.use('/api-docs', swaggerUi.serve, (req: express.Request, res: express.Respon
 );
 
 // Mount Routes
+// RES-907: tarayıcı hata olayları için same-origin Sentry tüneli (kimliksiz; IP limitli; yalnızca yapılandırılmış DSN'e iletir, PII sunucuda temizlenir).
+app.post('/api/v1/monitoring/sentry-tunnel', sentryTunnelRateLimiter, ...createSentryTunnelHandlers());
 app.use('/api/v1', routes);
 
 // 404 Handler for Unmatched API Endpoints
@@ -787,6 +794,7 @@ async function startServer(): Promise<void> {
       clearInterval(retentionPurgeSweepInterval);
       clearInterval(reportScheduleSweepInterval);
       stopBusinessMetricsRefresher();
+      await flushSentry(2000); // RES-907: kapanırken bekleyen hata olaylarını gönder
 
       // RES-906 Kritik Not 2: ÖNCE MQTT abonelikleri kapanmalı (yeni telemetri
       // girişi dursun), SONRA tamponlar boşalıp kaynaklar kapatılmalı — ters

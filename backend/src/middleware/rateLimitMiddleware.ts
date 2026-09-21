@@ -204,3 +204,23 @@ export const passwordResetSubmitLimiter = rateLimit({
     });
   }
 });
+
+/**
+ * RES-907 — POST /api/v1/monitoring/sentry-tunnel (kimliksiz; tarayıcı hatası oturum öncesinde de olabilir). IP başına dakikada 120:
+ * bir hata döngüsündeki tarayıcı sayfası sunucuyu/Sentry kotasını boğmasın (SDK ayrıca kendi içinde tekrarları eler).
+ */
+export const sentryTunnelRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
+  keyGenerator: (req: Request) => ipKeyGenerator(req.ip || 'unknown-browser'),
+  store: new RedisStore({
+    prefix: 'rl:sentry-tunnel:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({ success: false, error: 'TOO_MANY_REQUESTS', message: 'Hata bildirimi limiti aşıldı.' });
+  }
+});

@@ -39,6 +39,14 @@ const envSchema = z.object({
   // zero-downtime-deploy.sh/rollback.sh derleme sırasında `APP_VERSION` build-arg olarak geçirir. Yerelde 'dev'.
   APP_VERSION: z.string().regex(/^[A-Za-z0-9._+-]{1,64}$/, 'APP_VERSION en fazla 64 karakter; yalnızca harf/rakam/._+- içerebilir.').default('dev'),
 
+  // RES-907: Sentry hata izleme. DSN BOŞ/TANIMSIZ = kapalı (bu durumda backend olay göndermez ve tarayıcı tüneli 204 döner).
+  // Örnekleme (maliyet kontrolü): hata olaylarının yüzdesi ve performans izlerinin yüzdesi AYRI ayarlanır; performans izi
+  // varsayılan KAPALI (0) — açılırsa maliyeti örnekleme oranı belirler.
+  SENTRY_DSN: z.string().url('SENTRY_DSN geçerli bir URL olmalıdır (örn. https://<key>@o0.ingest.sentry.io/<proje>).').optional(),
+  SENTRY_ERROR_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0),
+  SENTRY_ENVIRONMENT: z.string().min(1).max(64).optional(),
+
   POSTGRES_HOST: z.string().min(1).default('localhost'),
   POSTGRES_PORT: z.coerce.number().int().positive().default(5432),
   POSTGRES_USER: z.string().min(1).default('postgres'),
@@ -190,7 +198,8 @@ function failFast(message: string): never {
 // sayılır; zorunlu sırlar (JWT_*, MQTT_*, HW_*, ... ) ve POSTGRES_* boş bırakılırsa hâlâ REDDEDİLİR.
 const OPTIONAL_KEYS_EMPTY_MEANS_UNSET = [
   'GEMINI_API_KEY', 'LORAWAN_WEBHOOK_TOKEN', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_FROM',
-  'SMS_PROVIDER_URL', 'SMS_PROVIDER_API_KEY', 'CORS_ALLOWED_ORIGINS', 'TELEGRAM_API_BASE_URL', 'METRICS_TOKEN', 'APP_VERSION'
+  'SMS_PROVIDER_URL', 'SMS_PROVIDER_API_KEY', 'CORS_ALLOWED_ORIGINS', 'TELEGRAM_API_BASE_URL', 'METRICS_TOKEN', 'APP_VERSION',
+  'SENTRY_DSN', 'SENTRY_ERROR_SAMPLE_RATE', 'SENTRY_TRACES_SAMPLE_RATE', 'SENTRY_ENVIRONMENT'
 ] as const;
 
 function loadConfig(): AppConfig {

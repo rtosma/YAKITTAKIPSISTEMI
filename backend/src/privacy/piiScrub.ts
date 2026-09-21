@@ -11,7 +11,7 @@
  */
 import crypto from 'crypto';
 
-const PII_KEY = /^(tc_?no|tckn|tc_?kimlik(_?no)?|national_?id|phone|telefon|gsm|mobile|email|e_?mail|password|passwd|new_?password|temp_?password|token|secret)$/i;
+const PII_KEY = /^(tc_?no|tckn|tc_?kimlik(_?no)?|national_?id|phone|telefon|gsm|mobile|email|e_?mail|password|passwd|new_?password|temp_?password|token|secret|authorization|proxy-authorization|cookie|set-cookie|(access|refresh|id)_?token|api_?key|x-api-key|jwt|x-hardware-signature|x-device-secret|signature)$/i;
 const PSEUDONYM_KEY = /^(username|user_?name|driver_?name|full_?name|assigned_?driver_?name|owner_?name)$/i;
 
 /** Resmî TCKN doğrulaması: 11 hane, ilk hane ≠ 0, 10. ve 11. hane sağlama toplamları. */
@@ -26,6 +26,9 @@ export function isValidTcNo(s: string): boolean {
 // +90 5xx xxx xx xx | 0 5xx xxx xx xx | 5xx xxx xx xx (boşluk/tire/nokta/parantez serbest)
 const PHONE_RE = /(?<![\d])(?:\+?90[\s.-]?|0[\s.-]?)?\(?5\d{2}\)?[\s.-]?\d{3}[\s.-]?\d{2}[\s.-]?\d{2}(?![\d])/g;
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+// RES-907: JWT (üç parça, base64url) ve `Bearer <token>` — hata metinlerine/URL'lere sızan oturum belirteçleri.
+const JWT_RE = /eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g;
+const BEARER_RE = /\bBearer\s+[A-Za-z0-9._~+\/=-]{12,}/gi;
 const TC_RE = /(?<![\d])[1-9]\d{10}(?![\d])/g;
 
 export function pseudonym(value: string): string {
@@ -36,6 +39,8 @@ export function pseudonym(value: string): string {
 export function scrubString(input: string): string {
   if (input.length < 7) return input;
   return input
+    .replace(JWT_RE, '[JWT]')
+    .replace(BEARER_RE, 'Bearer [TOKEN]')
     .replace(EMAIL_RE, '[EMAIL]')
     .replace(TC_RE, (m) => (isValidTcNo(m) ? '[TCKN]' : m))
     .replace(PHONE_RE, '[TEL]');
