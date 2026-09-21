@@ -35,7 +35,9 @@ const ALLOWLIST = new Set([
   path.join(SRC_ROOT, 'db', 'withTenant.ts'),
   path.join(SRC_ROOT, 'db', 'adminDb.ts'),
   path.join(SRC_ROOT, 'routes', 'routes.ts'),
-  path.join(SRC_ROOT, 'services', 'readinessService.ts')
+  path.join(SRC_ROOT, 'services', 'readinessService.ts'),
+  // ARCH-107: tüm tenant'lara bakan retention turu; audit_logs DELETE'i yalnızca yönetim bağlantısıyla mümkün (AUTH-203).
+  path.join(SRC_ROOT, 'services', 'retentionService.ts')
 ]);
 
 function walk(dir, out = []) {

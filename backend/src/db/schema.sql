@@ -2708,3 +2708,52 @@ CREATE POLICY fuel_budgets_tenant_isolation_policy ON fuel_budgets
     FOR ALL
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- ARCH-107 (#123): veri saklama (retention). Tenant bazlı saklama süresi ayarı — yalnızca `retentionCatalog.ts`
+-- içindeki PURGEABLE sınıflar için satır açılabilir (varsayılan koddadır; satır yoksa varsayılan geçerli).
+-- Koruma: mali kayıt tabloları için ayar YOKTUR (asla otomatik silinmezler). Tabloya yalnızca yönetim
+-- bağlantısı (retentionService.ts) erişir; uygulama rolünün (app_user) doğrudan erişimi kapalıdır.
+CREATE TABLE IF NOT EXISTS tenant_retention_settings (
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    data_class VARCHAR(32) NOT NULL,
+    retention_days INTEGER NOT NULL CHECK (retention_days > 0),
+    updated_by VARCHAR(64),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (tenant_id, data_class)
+);
+ALTER TABLE tenant_retention_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tenant_retention_settings FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_retention_settings_tenant_isolation_policy ON tenant_retention_settings;
+CREATE POLICY tenant_retention_settings_tenant_isolation_policy ON tenant_retention_settings
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+REVOKE ALL ON tenant_retention_settings FROM app_user;
+
+-- ARCH-107 AC: "Purge işlemi öncesi arşiv üretimi zorunlu olmalıdır." Silinecek satırlar (gzip NDJSON, AES-256-GCM
+-- ile — TENANT_EXPORT_ENCRYPTION_KEY, ARCH-108 deseni) buraya YAZILIR ve silme AYNI transaction'da yapılır:
+-- arşiv yazılamazsa silme de geri alınır (arşivsiz silinmiş satır hiçbir durumda oluşamaz). `sha256`, şifrelenmemiş
+-- gzip içeriğinin özetidir (bütünlük). Soğuk arşiv süresiz tutulur (docs/DATA_RETENTION.md).
+CREATE TABLE IF NOT EXISTS retention_archives (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    data_class VARCHAR(32) NOT NULL,
+    cutoff_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    retention_days INTEGER NOT NULL,
+    row_count INTEGER NOT NULL,
+    oldest_at TIMESTAMP WITH TIME ZONE,
+    newest_at TIMESTAMP WITH TIME ZONE,
+    file_data BYTEA NOT NULL,
+    file_size_bytes BIGINT NOT NULL,
+    sha256 VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_retention_archives_tenant ON retention_archives(tenant_id, created_at DESC);
+ALTER TABLE retention_archives ENABLE ROW LEVEL SECURITY;
+ALTER TABLE retention_archives FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS retention_archives_tenant_isolation_policy ON retention_archives;
+CREATE POLICY retention_archives_tenant_isolation_policy ON retention_archives
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+REVOKE ALL ON retention_archives FROM app_user;

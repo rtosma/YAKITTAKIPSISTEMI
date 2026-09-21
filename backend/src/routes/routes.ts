@@ -47,6 +47,8 @@ import { getNotifications, markNotificationRead, sendTestNotification, notifyAla
 import { listNotificationQuerySchema, updateNotificationChannelsSchema, sendTestNotificationSchema, setUserNotificationPreferenceSchema, createUserNotificationMuteSchema } from '../schemas/notificationSchema';
 import { createFirmwareArtifactSchema, listFirmwareArtifactQuerySchema, startFirmwareRolloutSchema, listFirmwareRolloutQuerySchema, reportRolloutRollbackSchema } from '../schemas/firmwareRolloutSchema';
 import { generateArchiveForTenant, listTenantArchives, verifyAndConsumeArchiveDownload } from '../services/tenantArchiveService';
+import { getRetentionPolicies, setRetentionDays, listRetentionArchives, runRetentionPurge } from '../services/retentionService';
+import { retentionClassParamsSchema, retentionPolicyUpdateSchema, retentionRunSchema } from '../schemas/retentionSchema';
 import { archiveSettingsSchema, createArchiveSchema, archiveIdParamsSchema, archiveDownloadParamsSchema } from '../schemas/archiveSchema';
 import {
   createReportSchedule,
@@ -6609,6 +6611,83 @@ router.patch(
     try {
       const updated = await updateArchiveSettings(req.user!.tenantId, req.body.periodDays, req.user!.userId);
       res.json({ success: true, data: updated });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /retention/policies:
+ *   get:
+ *     summary: Veri Saklama (Retention) Politikaları (ARCH-107)
+ *     description: >
+ *       Her PURGEABLE veri sınıfı için varsayılan/taban/etkin saklama süresi; mali kayıt (asla silinmez) ve harici
+ *       (tablosu olmayan) sınıflar bilgi amaçlı listelenir.
+ *     security:
+ *       - bearerAuth: []
+ * /retention/policies/{dataClass}:
+ *   patch:
+ *     summary: Tenant Saklama Süresini Ayarla (ARCH-107)
+ *     description: >
+ *       `retentionDays` sınıfın tabanı (minDays) ile 3650 gün arasında olmalıdır; `null` özelleştirmeyi kaldırır.
+ *       Mali kayıt tabloları için ayar YOKTUR (400). Değişiklik audit log'a yazılır.
+ *     security:
+ *       - bearerAuth: []
+ * /retention/archives:
+ *   get:
+ *     summary: Purge Öncesi Alınan Soğuk Arşivlerin Listesi (ARCH-107)
+ *     description: Yalnızca üst veri (dosya içeriği DÖNMEZ). Arşivler AES-256-GCM ile şifrelidir.
+ *     security:
+ *       - bearerAuth: []
+ * /admin/retention/run:
+ *   post:
+ *     summary: Retention Purge Turunu Elle Çalıştır (SUPER_ADMIN, ARCH-107)
+ *     description: '`dryRun: true` yalnızca silinecek satır sayılarını döner. Günlük zamanlanmış tur ile aynı kodu kullanır.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/retention/policies', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await getRetentionPolicies(req.user!.tenantId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.patch(
+  '/retention/policies/:dataClass',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  validateRequest({ params: retentionClassParamsSchema, body: retentionPolicyUpdateSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const updated = await setRetentionDays(req.user!.tenantId, String(req.params.dataClass), req.body.retentionDays, req.user!.userId);
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get('/retention/archives', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await listRetentionArchives(req.user!.tenantId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.post(
+  '/admin/retention/run',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  validateRequest({ body: retentionRunSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await runRetentionPurge({ dryRun: req.body.dryRun ?? false, tenantId: req.body.tenantId, batchSize: req.body.batchSize });
+      res.json({ success: true, data: result });
     } catch (error: any) {
       next(error);
     }

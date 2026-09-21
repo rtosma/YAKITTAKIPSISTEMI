@@ -16,6 +16,7 @@ import routes from './routes/routes';
 import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing, sweepTimedOutCalibrations, getAllTenantIdsWithAiAnomalyEnabled, getAllTenantIds, listCompaniesDueForPeriodicArchive, sweepExpiredArchives, touchArchiveLastGenerated } from './db/adminDb';
 import { generateArchiveForTenant } from './services/tenantArchiveService';
 import { sweepTimedOutSessions } from './services/dispenseSessionService';
+import { runRetentionPurge } from './services/retentionService';
 import { broadcastToTenant, drainSocketClients } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
@@ -690,6 +691,24 @@ async function startServer(): Promise<void> {
     }
   }, ARCHIVE_CLEANUP_SWEEP_MS);
 
+  // ARCH-107 AC: "Her veri sınıfı için saklama süresi yapılandırılabilir" + "Purge öncesi arşiv zorunlu" + "Mali kayıtlar
+  // asla silinmez". Ticket BullMQ repeatable job/@nestjs/schedule öneriyor — yok; yukarıdakilerle AYNI düz setInterval.
+  // Günlük tur (saklama süreleri gün granülaritesinde); asıl iş retentionService.runRetentionPurge (arşiv+silme aynı
+  // transaction'da, parti parti, advisory lock ile tek replikada). Bir sınıfın hatası diğerlerini durdurmaz.
+  const RETENTION_PURGE_SWEEP_MS = 24 * 60 * 60 * 1000;
+  const retentionPurgeSweepInterval = setInterval(async () => {
+    try {
+      const run = await runRetentionPurge();
+      if (run.skippedLocked) return;
+      for (const r of run.results) {
+        if (r.cancelled) logger.error({ ...r }, '🚨 [ARCH-107] Retention purge iptal edildi.');
+        else logger.info({ ...r }, `🗄️ [ARCH-107] Retention purge: ${r.dataClass} — ${r.rows} satır arşivlenip silindi.`);
+      }
+    } catch (err) {
+      logger.error({ err }, '🚨 [ARCH-107] Retention purge turu başarısız.');
+    }
+  }, RETENTION_PURGE_SWEEP_MS);
+
   // REP-705 AC: "Zamanlanan rapor belirlenen periyotta üretilip
   // gönderilmelidir." Ticket BullMQ repeatable job öneriyor — yukarıdaki
   // süpürücülerle AYNI düz setInterval. Saatlik tur yeterli: zamanlamalar
@@ -748,6 +767,7 @@ async function startServer(): Promise<void> {
       clearInterval(notificationRetrySweepInterval);
       clearInterval(archiveGenerationSweepInterval);
       clearInterval(archiveCleanupSweepInterval);
+      clearInterval(retentionPurgeSweepInterval);
       clearInterval(reportScheduleSweepInterval);
       stopBusinessMetricsRefresher();
 

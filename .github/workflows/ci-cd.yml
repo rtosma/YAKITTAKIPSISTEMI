@@ -698,6 +698,11 @@ jobs:
       - name: Run ARCH-108 Tenant Freeze/Delete/Export Lifecycle Tests
         run: cd backend && npx tsx test/test_arch108_tenant_lifecycle.ts
 
+      # ARCH-107 (#123): saklama politikası (RBAC/doğrulama/audit), şema-katalog sınıflandırma denetimi ve arşivleyerek parti parti
+      # purge (mali kayıt koruması, arşiv-başarısızsa-iptal, advisory lock) — bu teste özel geçici tenant'larda çalışır.
+      - name: Run ARCH-107 Data Retention Policy and Purge Tests
+        run: cd backend && npx tsx test/test_arch107_retention.ts
+
       - name: Run HR-1801 Personnel Leave Tracking Tests
         run: cd backend && npx tsx test/test_hr1801_personnel_leave.ts
 
