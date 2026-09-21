@@ -3,6 +3,7 @@ import { useNavigate, Navigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useApp } from '../../context/AppContext';
 import { usePermissions } from '../../hooks/usePermissions';
+import { API_BASE_URL } from '../../utils/api';
 
 export const SiteOperatorPanel: React.FC = () => {
   const navigate = useNavigate();
@@ -34,6 +35,27 @@ export const SiteOperatorPanel: React.FC = () => {
     return <Navigate to="/parola-degistir" replace />;
   }
 
+  // TEST-1004: şantiye yöneticisi kendi şantiyesinin ikmal raporunu (REP-711, CSV) indirebilir — sunucu kapsamı JWT'deki şantiyeye zorlar.
+  const handleDownloadReport = async () => {
+    setReportError(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/reports/rep-711/export?format=csv`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('YAKIT_ACCESS_TOKEN') ?? ''}` }
+      });
+      if (!res.ok) throw new Error(`Rapor indirilemedi (HTTP ${res.status}).`);
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ikmal-raporu-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setReportError(err?.message ?? 'Rapor indirilemedi.');
+    }
+  };
+
   const activeSiteName = currentUser?.siteName || (selectedSiteFilter !== 'TÜMÜ' ? selectedSiteFilter : 'Gebze Ana Şantiye');
 
   // Filter site-specific tanks & vehicles
@@ -47,6 +69,7 @@ export const SiteOperatorPanel: React.FC = () => {
   const [selectedDriverId, setSelectedDriverId] = useState<string>(siteDrivers[0]?.id || '');
   const [amountLiters, setAmountLiters] = useState<number>(150);
   const [isPumpActive, setIsPumpActive] = useState<boolean>(false);
+  const [reportError, setReportError] = useState<string | null>(null);
   // TEST_PLAN §2.2 — POST /dispense'in sunucuda doğal tekrar anahtarı yok;
   // `disabled={isPumpActive}` yalnızca bir SONRAKİ render'da yansır. Aynı
   // render içindeki ikinci submit'i senkron ref durdurur (OverviewPage ile aynı
@@ -93,7 +116,7 @@ export const SiteOperatorPanel: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#131313] text-[#e5e2e1] flex flex-col font-sans antialiased">
+    <div data-testid="site-panel" className="min-h-screen bg-[#131313] text-[#e5e2e1] flex flex-col font-sans antialiased">
       
       {/* Top Header */}
       <header className="h-16 bg-[#1c1b1b] border-b border-[#353535] px-6 flex items-center justify-between sticky top-0 z-30 select-none">
@@ -106,7 +129,7 @@ export const SiteOperatorPanel: React.FC = () => {
             <h1 className="font-extrabold text-[#e5e2e1] text-xs tracking-wider uppercase">
               ŞANTİYE SAHA OPERATÖR PANELİ
             </h1>
-            <p className="text-[10px] text-[#a1e8a2] font-mono font-bold">{activeSiteName}</p>
+            <p data-testid="site-panel-site-name" className="text-[10px] text-[#a1e8a2] font-mono font-bold">{activeSiteName}</p>
           </div>
         </div>
 
@@ -127,6 +150,7 @@ export const SiteOperatorPanel: React.FC = () => {
 
           {/* Logout button */}
           <button
+            data-testid="site-logout"
             onClick={() => {
               logoutCompany();
               navigate('/santiye-login');
@@ -181,6 +205,9 @@ export const SiteOperatorPanel: React.FC = () => {
                 return (
                   <motion.div
                     key={tank.id}
+                    data-testid="site-tank"
+                    data-tank-name={tank.name}
+                    data-level-liters={tank.currentLevelLiters}
                     whileHover={{ y: -2 }}
                     className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-5 space-y-4 relative overflow-hidden"
                   >
@@ -335,7 +362,19 @@ export const SiteOperatorPanel: React.FC = () => {
               <span className="material-symbols-outlined text-base text-[#a1e8a2]">receipt_long</span>
               <span>Son Saha İkmal Kayıtları ({siteTransactions.length})</span>
             </h2>
-            <span className="text-xs font-mono text-[#d5c4ab]">Şantiye: {activeSiteName}</span>
+            <div className="flex items-center space-x-3">
+              <span className="text-xs font-mono text-[#d5c4ab]">Şantiye: {activeSiteName}</span>
+              <button
+                type="button"
+                data-testid="site-report-download"
+                onClick={handleDownloadReport}
+                className="flex items-center space-x-1.5 bg-[#20201f] hover:bg-[#282726] border border-[#353535] text-[#a1e8a2] px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-sm">download</span>
+                <span>İkmal Raporunu İndir (CSV)</span>
+              </button>
+            </div>
+            {reportError && <span data-testid="site-report-error" className="text-xs text-[#ffb4ab]">{reportError}</span>}
           </div>
 
           <div className="overflow-x-auto">
@@ -352,7 +391,7 @@ export const SiteOperatorPanel: React.FC = () => {
               </thead>
               <tbody className="divide-y divide-[#353535] text-xs">
                 {siteTransactions.slice(0, 8).map((tx) => (
-                  <tr key={tx.id} className="hover:bg-[#20201f] transition-colors">
+                  <tr key={tx.id} data-testid="site-tx-row" data-tx-id={tx.id} data-plate={tx.vehiclePlate} data-liters={tx.amountLiters} className="hover:bg-[#20201f] transition-colors">
                     <td className="py-3 px-3 font-mono text-[#d5c4ab]">{tx.timestamp}</td>
                     <td className="py-3 px-3 font-extrabold text-[#e5e2e1]">{tx.vehiclePlate}</td>
                     <td className="py-3 px-3 text-[#d5c4ab]">{tx.driverName}</td>

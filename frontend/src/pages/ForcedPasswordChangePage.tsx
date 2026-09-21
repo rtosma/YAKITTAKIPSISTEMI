@@ -100,6 +100,7 @@ export const ForcedPasswordChangePage: React.FC = () => {
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
+            data-testid="pwchange-error"
             className="bg-[#ffb4ab]/10 border border-[#ffb4ab]/30 p-3.5 rounded-xl flex items-start space-x-3 text-xs text-[#ffb4ab]"
           >
             <span className="material-symbols-outlined text-lg shrink-0 mt-0.5">error</span>
@@ -112,6 +113,7 @@ export const ForcedPasswordChangePage: React.FC = () => {
             <label className="text-xs font-bold text-[#d5c4ab] block">Geçici Parola</label>
             <input
               type={showPasswords ? 'text' : 'password'}
+              data-testid="pwchange-current"
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
               placeholder="••••••••"
@@ -132,6 +134,7 @@ export const ForcedPasswordChangePage: React.FC = () => {
             </div>
             <input
               type={showPasswords ? 'text' : 'password'}
+              data-testid="pwchange-new"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               placeholder="En az 8 karakter"
@@ -143,6 +146,7 @@ export const ForcedPasswordChangePage: React.FC = () => {
             <label className="text-xs font-bold text-[#d5c4ab] block">Yeni Parola (Tekrar)</label>
             <input
               type={showPasswords ? 'text' : 'password'}
+              data-testid="pwchange-confirm"
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               placeholder="••••••••"
@@ -152,6 +156,7 @@ export const ForcedPasswordChangePage: React.FC = () => {
 
           <button
             type="submit"
+            data-testid="pwchange-submit"
             disabled={isLoading}
             className="w-full py-3.5 px-4 bg-[#ffdca1] hover:bg-[#ffe5b8] active:scale-[0.99] text-[#412d00] font-extrabold rounded-xl text-xs flex items-center justify-center space-x-2 transition-all shadow-lg cursor-pointer disabled:opacity-50"
           >

@@ -19,6 +19,8 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './e2e',
+  // TEST-1004: e2e/critical/ ayrı yapılandırmayla (playwright.critical.config.ts) ve orkestratörün izole yığınında koşar.
+  testIgnore: '**/critical/**',
   // Aynı kullanıcı hesaplarıyla giriş yapan testler paralel koşarsa
   // hesap kilitleme (AUTH-209) ve login rate limit birbirini tetikler.
   workers: 1,

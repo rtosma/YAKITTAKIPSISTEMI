@@ -112,6 +112,7 @@ export const DriversPage: React.FC = () => {
         </div>
 
         <button
+          data-testid="driver-add-open"
           onClick={handleOpenAdd}
           className="px-5 py-3 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] hover:from-[#ffdca1] hover:to-[#ffb77f] text-[#412d00] font-black rounded-md text-xs flex items-center space-x-2 transition-all cursor-pointer shadow-sm shrink-0"
         >
@@ -158,7 +159,7 @@ export const DriversPage: React.FC = () => {
           </thead>
           <tbody className="divide-y divide-[#514532]/20 font-mono">
             {filteredDrivers.map(d => (
-              <tr key={d.id} className="hover:bg-[#20201f] transition-colors">
+              <tr key={d.id} data-testid="driver-row" data-driver-name={d.name} className="hover:bg-[#20201f] transition-colors">
                 <td className="py-3.5 px-4 font-bold text-[#e5e2e1]">{d.name}</td>
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{d.phone}</td>
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{d.siteName}</td>
@@ -230,6 +231,7 @@ export const DriversPage: React.FC = () => {
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
+                  data-testid="driver-name-input"
                   placeholder="örn. Mustafa Demir"
                   className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                   required
@@ -243,6 +245,7 @@ export const DriversPage: React.FC = () => {
                     type="text"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
+                    data-testid="driver-phone-input"
                     placeholder="0532 000 00 00"
                     className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] font-mono text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                   />
@@ -253,6 +256,7 @@ export const DriversPage: React.FC = () => {
                     type="text"
                     value={tcNo}
                     onChange={(e) => setTcNo(e.target.value)}
+                    data-testid="driver-tc-input"
                     placeholder="11 haneli TC"
                     className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] font-mono text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                   />
@@ -279,6 +283,7 @@ export const DriversPage: React.FC = () => {
                   <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Bağlı Şantiye</label>
                   {isManagerMode ? (
                     <select
+                      data-testid="driver-site-select"
                       value={siteName}
                       onChange={(e) => setSiteName(e.target.value)}
                       className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
@@ -301,6 +306,7 @@ export const DriversPage: React.FC = () => {
               <div>
                 <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Atanmış Araç Plakası</label>
                 <select
+                  data-testid="driver-vehicle-select"
                   value={assignedVehiclePlate}
                   onChange={(e) => setAssignedVehiclePlate(e.target.value)}
                   className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs font-mono rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
@@ -326,6 +332,7 @@ export const DriversPage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
+                  data-testid="driver-save"
                   className="px-5 py-2 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] text-[#412d00] rounded-md text-xs font-black"
                 >
                   Şoförü Kaydet

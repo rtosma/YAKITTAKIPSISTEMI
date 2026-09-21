@@ -124,6 +124,7 @@ export const TenantDetailModal: React.FC = () => {
                 return (
                   <button
                     key={status}
+                    data-testid={`license-status-${status}`}
                     onClick={() => updateCompanyStatus(tenant.id, status)}
                     className={`py-2 px-3 rounded-xl border text-xs font-mono text-center transition-all cursor-pointer ${colorClass}`}
                   >
@@ -166,6 +167,8 @@ export const TenantDetailModal: React.FC = () => {
 
                     {canManageModules ? (
                       <button
+                        data-testid={`module-toggle-${mod.key}`}
+                        data-enabled={isEnabled ? 'true' : 'false'}
                         onClick={() => toggleCompanyModule(tenant.id, mod.key)}
                         className={`px-3.5 py-1.5 rounded-xl text-xs font-mono font-bold transition-all cursor-pointer shrink-0 ${
                           isEnabled

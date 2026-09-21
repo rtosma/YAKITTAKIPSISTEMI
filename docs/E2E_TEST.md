@@ -10,7 +10,7 @@ node scripts/e2e/run-e2e.mjs --budget-sec 300                   # süre bütçes
 
 ## Ne ayağa kalkar
 
-Her koşuda **rastgele son ekli, tek kullanımlık** bir Docker ağı ve dört konteyner (sabit host portu yayınlanmaz → paralel koşular/CI çakışmaz):
+Her koşuda **rastgele son ekli, tek kullanımlık** bir Docker ağı ve dört konteyner (sabit host portu yayınlanmaz; yalnızca `--browser` kipinde frontend 127.0.0.1'de rastgele portla → paralel koşular/CI çakışmaz):
 
 | Konteyner | İmaj | Not |
 |---|---|---|
@@ -48,3 +48,31 @@ Sentetik cihaz istemcisi firmware'in yaptığını yapar: HMAC imzalı HTTP (`X-
 ## Yeni E2E testi eklemek
 
 `backend/test/e2e/e2e_<ad>.ts` oluşturun, `createTenant` ile kendi tenant'ınızı yaratın, `Reporter` ile bitirin (`finish(minChecks)`); orkestratör `e2e_*.ts` dosyalarını otomatik paralel koşar. Tohum verisine dokunmayın (sözleşme testi başarısız olur).
+
+## Tarayıcı E2E (TEST-1004)
+
+Kullanıcının gerçekten yapacağı işlerin **gerçek tarayıcıda** (Playwright, headless Chromium) uçtan uca çalıştığını doğrular. Aynı izole yığın (Postgres + Redis + EMQX + backend) kurulur; ayrıca **frontend üretim derlemesi nginx'te** sunulur ve Playwright ona bağlanır.
+
+```bash
+node scripts/e2e/run-e2e.mjs --browser                              # tarayıcı paketi (yalnızca Docker + Node + Playwright Chromium)
+node scripts/e2e/run-e2e.mjs --browser --pw-args "--repeat-each=5"  # determinizm ölçümü: her testi 5× tekrarla
+cd frontend && npx playwright show-report                            # son koşunun HTML raporu
+```
+
+| Dosya (`frontend/e2e/critical/`) | Akış |
+|---|---|
+| `developer-panel.spec.ts` | Geliştirici: **firma oluştur → modül aç/kapa (+ lisans, sunucuda kalıcı) → cihaz sağlığı** (cihaz MQTT ile ONLINE olur, panel gösterir) |
+| `manager-panel.spec.ts` | Yönetici: **iki şantiye → sürücü → araç (aynı plaka reddi) → çapraz alım yetkisi** |
+| `site-panel.spec.ts` | Şantiye: **canlı ikmal izleme** (sentetik ikmal enjekte edilir, tank 10000 → 9940 L sayfa yenilenmeden) **→ hareket listesi → rapor indirme** (CSV) |
+| `identity.spec.ts` | Kimlik: **geçici parola → zorunlu değişiklik → eski parola geçersiz**; **yetkisiz erişim** (oturumsuz / şantiye yöneticisi / firma sahibi → 403) |
+
+**Kurallar (ticket):**
+- **Seçici = yalnızca `data-testid`** — metin/rol-adı/CSS seçici yok (arayüzde ~60 kanca; `scripts/test-test1004.mjs` her CI koşusunda hem bunu hem kancaların arayüzde var olduğunu denetler).
+- **Deterministik:** `waitForTimeout`/uyku yok; her bekleme koşula bağlı (yanıt, öznitelik, `expect.poll`). `retries: 0` — yeniden deneme rastgele başarısızlığı maskeler. Canlı akış **sentetik olay enjeksiyonu**dur: cihaz olarak HMAC imzalı tam ikmal döngüsü, tarayıcının WebSocket'i bağlandıktan sonra (`html[data-socket=connected]`) tetiklenir. Tank seviyesi animasyonlu sayaçtan değil ham `data-level-liters` niteliğinden okunur.
+- **İzole:** her test kendi taze firmasını API ile kurar; asıl akış arayüzle yapılır. Sunucu durumu API ile ayrıca doğrulanır ("ekranda göründü ama kaydedilmedi" yanlış yeşilini önler).
+- **Hata kanıtı (AC):** başarısız testte **ekran görüntüsü + video + trace** `frontend/test-results/` altında; CI `if: always()` ile `playwright-evidence` artifact'ı olarak yükler (HTML rapor dahil).
+- **Ne zaman koşar:** merge öncesi (`ci-cd.yml` → `e2e-browser`, dağıtım geçidi) ve **gece** (`e2e-nightly.yml`, her testi 3× tekrar ederek flake avlar) — her PR'da değil (süre yönetimi).
+
+Eski `frontend/e2e/*.spec.ts` (docker-compose yığınına bağlı yerel paket, `npm run test:e2e`) değişmedi; `playwright.config.ts` artık `critical/` dizinini yok sayar.
+
+**Testin bulduğu (düzeltilmeyen) gözlemler:** SUPER_ADMIN girişi `/admin` yerine `/panel`'e iniyor (geliştirici paneline elle gidiliyor); şantiye panelinden çıkış `/santiye-login` yerine `/login`'e yönlendiriyor; site oluşturulurken sunucunun ürettiği geçici parola arayüzde gösterilmiyor (yalnızca API yanıtında var).

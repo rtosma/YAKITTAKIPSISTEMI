@@ -74,6 +74,7 @@ export const SitesPage: React.FC = () => {
 
           {isManagerMode && (
             <button
+              data-testid="site-add-open"
               onClick={() => setIsAddModalOpen(true)}
               className="px-4 py-3 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] hover:from-[#ffa800] hover:to-[#e67e00] text-[#412d00] font-black rounded-lg text-xs flex items-center space-x-2 transition-all shadow-md cursor-pointer shrink-0"
             >
@@ -101,6 +102,8 @@ export const SitesPage: React.FC = () => {
         {filteredSites.map(site => (
           <div
             key={site.id}
+            data-testid="site-card"
+            data-site-name={site.name}
             className="bg-[#20201f] hover:bg-[#2a2a2a] border border-[#514532]/25 rounded-xl p-6 space-y-4 transition-all duration-150 flex flex-col justify-between"
           >
             <div className="space-y-3">
@@ -179,6 +182,7 @@ export const SitesPage: React.FC = () => {
                 <input
                   type="text"
                   placeholder="Örn: Silivri Tesisleri, Ankara Şantiyesi"
+                  data-testid="site-name-input"
                   value={newSiteName}
                   onChange={(e) => setNewSiteName(e.target.value)}
                   className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
@@ -200,6 +204,7 @@ export const SitesPage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
+                  data-testid="site-save"
                   className="px-5 py-2 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] text-[#412d00] rounded-md text-xs font-black"
                 >
                   Şantiyeyi Kaydet

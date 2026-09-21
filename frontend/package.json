@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "clean": "rm -rf dist",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:critical": "playwright test --config playwright.critical.config.ts"
   },
   "dependencies": {
     "@sentry/react": "^10.75.0",

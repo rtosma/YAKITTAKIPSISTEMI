@@ -43,6 +43,7 @@ export const TenantsPage: React.FC = () => {
         </div>
 
         <button
+          data-testid="tenant-add-open"
           onClick={() => setIsAddOpen(true)}
           className="bg-[#ffb77f] text-[#412d00] font-black px-4 py-2.5 rounded-xl text-xs flex items-center space-x-2 transition-all cursor-pointer shadow"
         >
@@ -68,7 +69,7 @@ export const TenantsPage: React.FC = () => {
           </thead>
           <tbody className="divide-y divide-[#353535] font-mono">
             {companies.map(c => (
-              <tr key={c.id} className="hover:bg-[#282726] transition-colors">
+              <tr key={c.id} data-testid="tenant-row" data-tenant-name={c.name} data-tenant-id={c.id} className="hover:bg-[#282726] transition-colors">
                 <td className="py-3.5 px-4 font-black text-[#ffb77f] text-sm">{c.code}</td>
                 <td className="py-3.5 px-4 font-bold text-[#e5e2e1] text-sm">{c.name}</td>
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{c.city} / {c.taxNumber}</td>
@@ -84,6 +85,7 @@ export const TenantsPage: React.FC = () => {
                 </td>
                 <td className="py-3.5 px-4 text-right">
                   <button
+                    data-testid="tenant-detail-open"
                     onClick={() => setSelectedTenantForDetail(c)}
                     className="px-3 py-1.5 bg-[#20201f] hover:bg-[#282726] border border-[#353535] text-[#ffb77f] font-bold text-xs rounded-xl cursor-pointer"
                   >
@@ -115,6 +117,7 @@ export const TenantsPage: React.FC = () => {
                 <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Firma Ünvanı</label>
                 <input
                   type="text"
+                  data-testid="tenant-name-input"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="örn. Yılmaz İnşaat A.Ş."
@@ -127,6 +130,7 @@ export const TenantsPage: React.FC = () => {
                 <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Şehir</label>
                 <input
                   type="text"
+                  data-testid="tenant-city-input"
                   value={city}
                   onChange={(e) => setCity(e.target.value)}
                   placeholder="örn. Ankara"
@@ -138,6 +142,7 @@ export const TenantsPage: React.FC = () => {
                 <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Vergi Numarası</label>
                 <input
                   type="text"
+                  data-testid="tenant-tax-input"
                   value={taxNumber}
                   onChange={(e) => setTaxNumber(e.target.value)}
                   placeholder="10 haneli VKN"
@@ -155,6 +160,7 @@ export const TenantsPage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
+                  data-testid="tenant-save"
                   className="px-5 py-2.5 bg-[#ffb77f] text-[#412d00] rounded-xl text-xs font-black"
                 >
                   Firmayı Kaydet

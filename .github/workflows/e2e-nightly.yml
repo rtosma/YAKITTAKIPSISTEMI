@@ -1,0 +1,45 @@
+name: E2E Nightly (Playwright)
+
+# TEST-1004 (#196): tarayıcı E2E testleri her PR'da değil, merge öncesi (ci-cd.yml → e2e-browser) ve GECELİK çalışır (süre yönetimi).
+# Gece koşusu her testi 3 KEZ tekrarlar (--repeat-each=3): bir test rastgele başarısız oluyorsa (flaky) burada yakalanır — retries=0 olduğundan
+# hiçbir tekrar başarısızlığı maskelemez. Hata kanıtı (ekran görüntüsü/video/trace) artifact olarak saklanır.
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  playwright-nightly:
+    name: 🌙 Playwright nightly (3× tekrar, flake avı)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Frontend Dependencies (Playwright)
+        run: cd frontend && npm ci
+
+      - name: Install Chromium (Playwright)
+        run: cd frontend && npx playwright install --with-deps chromium
+
+      - name: Run Playwright critical flows ×3
+        run: node scripts/e2e/run-e2e.mjs --browser --budget-sec 1800 --pw-args "--repeat-each=3"
+
+      - name: Upload failure evidence (screenshot + video + trace + HTML report)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-nightly-evidence
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+          retention-days: 14
+          if-no-files-found: ignore

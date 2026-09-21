@@ -53,6 +53,7 @@ export const CrossSitePage: React.FC = () => {
         </div>
 
         <button
+          data-testid="crosssite-add-open"
           onClick={() => setIsModalOpen(true)}
           className="bg-[#ffdca1] text-[#412d00] font-black px-4 py-2.5 rounded-xl text-xs flex items-center space-x-2 transition-all cursor-pointer shadow"
         >
@@ -79,7 +80,7 @@ export const CrossSitePage: React.FC = () => {
           </thead>
           <tbody className="divide-y divide-[#353535] font-mono">
             {visiblePermissions.map(p => (
-              <tr key={p.id} className="hover:bg-[#282726] transition-colors">
+              <tr key={p.id} data-testid="crosssite-row" data-plate={p.vehiclePlate} data-target-site={p.targetSite} data-permission-status={p.status} className="hover:bg-[#282726] transition-colors">
                 <td className="py-3.5 px-4 font-black text-[#ffdca1] text-sm">{p.vehiclePlate}</td>
                 <td className="py-3.5 px-4 text-[#e5e2e1] font-bold">{p.driverName}</td>
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{p.homeSite}</td>
@@ -126,6 +127,7 @@ export const CrossSitePage: React.FC = () => {
               <div>
                 <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Araç Plakası</label>
                 <select
+                  data-testid="crosssite-plate-select"
                   value={selectedPlate}
                   onChange={(e) => setSelectedPlate(e.target.value)}
                   className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
@@ -139,6 +141,7 @@ export const CrossSitePage: React.FC = () => {
               <div>
                 <label className="text-xs font-mono text-[#d5c4ab] block mb-1">İkmal Yapacağı Şantiye</label>
                 <select
+                  data-testid="crosssite-target-select"
                   value={targetSite}
                   onChange={(e) => setTargetSite(e.target.value)}
                   className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
@@ -153,6 +156,7 @@ export const CrossSitePage: React.FC = () => {
                 <label className="text-xs font-mono text-[#d5c4ab] block mb-1">İzin Verilen Miktar (Litre)</label>
                 <input
                   type="number"
+                  data-testid="crosssite-liters-input"
                   value={allowedLiters}
                   onChange={(e) => setAllowedLiters(Number(e.target.value))}
                   min={50}
@@ -172,6 +176,7 @@ export const CrossSitePage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
+                  data-testid="crosssite-save"
                   className="px-5 py-2.5 bg-[#ffdca1] text-[#412d00] rounded-xl text-xs font-black"
                 >
                   Yetkiyi Oluştur

@@ -25,9 +25,12 @@ const opt = (n, d) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] :
 export const DEFAULT_BUDGET_SEC = 600;
 const BUDGET_SEC = Number(opt('--budget-sec', String(DEFAULT_BUDGET_SEC)));
 const KEEP = flag('--keep');
+// --browser: TEST-1004 — Playwright (3 panel kritik akışı) izole yığında; yalnızca tarayıcı paketi koşar (API E2E dosyaları koşmaz).
+const BROWSER = flag('--browser');
 const RUN = crypto.randomBytes(3).toString('hex');
 const NET = `e2e-net-${RUN}`;
-const N = { pg: `e2e-pg-${RUN}`, redis: `e2e-redis-${RUN}`, emqx: `e2e-emqx-${RUN}`, be: `e2e-be-${RUN}` };
+const N = { pg: `e2e-pg-${RUN}`, redis: `e2e-redis-${RUN}`, emqx: `e2e-emqx-${RUN}`, be: `e2e-be-${RUN}`, fe: `e2e-fe-${RUN}` };
+const IMG_FRONTEND = 'yakittakip-e2e-frontend';
 const IMG_RUNNER = 'yakittakip-e2e-runner';
 const IMG_EMQX = 'yakittakip-e2e-emqx';
 const rnd = (n = 32) => crypto.randomBytes(n).toString('hex');
@@ -65,16 +68,17 @@ async function main() {
   if ((await sh('docker', ['version', '--format', '{{.Server.Version}}'], { quiet: true })).code !== 0) throw new Error('docker erişilemiyor');
   const testDir = path.join(ROOT, 'backend', 'test', 'e2e');
   const requested = opt('--files', '');
-  const files = (requested ? requested.split(',') : readdirSync(testDir).filter((f) => /^e2e_.*\.ts$/.test(f))).sort();
-  if (files.length === 0) throw new Error('koşulacak E2E dosyası yok');
+  const files = BROWSER ? [] : (requested ? requested.split(',') : readdirSync(testDir).filter((f) => /^e2e_.*\.ts$/.test(f))).sort();
+  if (!BROWSER && files.length === 0) throw new Error('koşulacak E2E dosyası yok');
 
   // 1) imajlar (paralel; katman önbelleği varsa saniyeler)
   await stage('imajları hazırla (backend/test koşucusu, EMQX)', async () => {
-    const [a, b] = await Promise.all([
+    const [a, b, c] = await Promise.all([
       sh('docker', ['build', '-q', '--target', 'builder', '-t', IMG_RUNNER, 'backend/']),
-      sh('docker', ['build', '-q', '-t', IMG_EMQX, 'docker/emqx'])
+      sh('docker', ['build', '-q', '-t', IMG_EMQX, 'docker/emqx']),
+      BROWSER ? sh('docker', ['build', '-q', '-t', IMG_FRONTEND, 'frontend/']) : Promise.resolve({ code: 0 })
     ]);
-    if (a.code || b.code) throw new Error('imaj derlenemedi');
+    if (a.code || b.code || c.code) throw new Error('imaj derlenemedi');
   });
 
   // 2) bağımlılıklar
@@ -127,7 +131,7 @@ async function main() {
   });
 
   // 5) E2E dosyaları PARALEL
-  const results = await stage(`E2E testlerini paralel koş (${files.length} dosya)`, async () => Promise.all(files.map(async (f) => {
+  const results = files.length === 0 ? [] : await stage(`E2E testlerini paralel koş (${files.length} dosya)`, async () => Promise.all(files.map(async (f) => {
     const t = Date.now();
     const r = await sh('docker', ['run', '--rm', '--network', NET, '-v', `${path.join(ROOT, 'backend/test')}:/app/test:ro`,
       '-e', `E2E_API_URL=http://${N.be}:5000/api/v1`, '-e', `E2E_MQTT_URL=mqtt://${N.emqx}:1883`,
@@ -136,6 +140,32 @@ async function main() {
     const line = (r.out.match(/SONUÇ: .*/) ?? ['(SONUÇ satırı yok)'])[0];
     return { file: f, code: r.code, secs: (Date.now() - t) / 1000, line, out: r.out, err: r.err };
   })));
+
+  // 5b) TEST-1004: tarayıcı paketi. Frontend (nginx + üretim derlemesi) aynı ağda, backend'e upstream olarak bağlanır; yalnızca 127.0.0.1'de rastgele
+  // bir host portu yayınlanır (paralel koşular çakışmaz). Playwright ana makinede koşar (CI'da `npx playwright install --with-deps chromium`).
+  let browserRun = null;
+  if (BROWSER) {
+    browserRun = await stage('frontend (nginx) başlat + Playwright kritik akışları koş', async () => {
+      const r = await sh('docker', ['run', '-d', '--name', N.fe, '--network', NET, '-p', '127.0.0.1::80', '--entrypoint', 'sh', IMG_FRONTEND, '-c',
+        `echo 'server ${N.be}:5000;' > /etc/nginx/backend_upstream.conf && exec nginx -g 'daemon off;'`]);
+      if (r.code) throw new Error('frontend başlatılamadı');
+      const port = (await sh('docker', ['port', N.fe, '80'], { quiet: true })).out.trim().split('\n')[0].split(':').pop();
+      const base = `http://127.0.0.1:${port}`;
+      await until('frontend', async () => (await sh('curl', ['-sf', '-o', '/dev/null', `${base}/`], { quiet: true })).code === 0, 30);
+      await until('frontend → backend proxy', async () => (await sh('curl', ['-sf', `${base}/api/v1/health`], { quiet: true })).out.includes('UP'), 30);
+      const t = Date.now();
+      const pw = await new Promise((resolve) => {
+        const p = spawn('npx', ['playwright', 'test', '--config', 'playwright.critical.config.ts', ...(opt('--pw-args', '') ? opt('--pw-args', '').split(' ') : [])], {
+          cwd: path.join(ROOT, 'frontend'), stdio: 'inherit',
+          env: { ...process.env, CI: process.env.CI ?? '', E2E_BASE_URL: base, E2E_REDIS_CONTAINER: N.redis, E2E_BACKEND_CONTAINER: N.be }
+        });
+        p.on('close', (code) => resolve(code));
+        p.on('error', () => resolve(127));
+      });
+      return { file: 'playwright (3 panel kritik akışı)', code: pw, secs: (Date.now() - t) / 1000, line: pw === 0 ? 'SONUÇ: tarayıcı akışları geçti' : 'SONUÇ: tarayıcı akışları BAŞARISIZ (bkz. frontend/test-results, frontend/playwright-report)', out: '', err: '' };
+    });
+    results.push(browserRun);
+  }
 
   for (const r of results) {
     console.log(`\n──────── ${r.file} ────────`);

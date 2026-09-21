@@ -132,6 +132,7 @@ export const VehiclesPage: React.FC = () => {
         </div>
 
         <button
+          data-testid="vehicle-add-open"
           onClick={handleOpenAdd}
           className="px-5 py-3 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] hover:from-[#ffdca1] hover:to-[#ffb77f] text-[#412d00] font-black rounded-md text-xs flex items-center space-x-2 transition-all cursor-pointer shadow-sm shrink-0"
         >
@@ -178,7 +179,7 @@ export const VehiclesPage: React.FC = () => {
           </thead>
           <tbody className="divide-y divide-[#514532]/20 font-mono">
             {filteredVehicles.map(v => (
-              <tr key={v.id} className="hover:bg-[#20201f] transition-colors">
+              <tr key={v.id} data-testid="vehicle-row" data-plate={v.plate} data-vehicle-status={v.status} className="hover:bg-[#20201f] transition-colors">
                 <td className="py-3.5 px-4 font-black text-[#ffdca1] text-sm">{v.plate}</td>
                 <td className="py-3.5 px-4 text-[#e5e2e1] font-bold">{v.brandModel}</td>
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{v.type}</td>
@@ -256,6 +257,7 @@ export const VehiclesPage: React.FC = () => {
                     setPlate(e.target.value);
                     if (plateError) setPlateError('');
                   }}
+                  data-testid="vehicle-plate-input"
                   placeholder="örn. 34 CTP 99 ya da EKS-04"
                   className={`w-full bg-[#0e0e0e] border ${plateError ? 'border-[#ffb4ab]' : 'border-[#514532]/30'} text-[#e5e2e1] font-mono text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]`}
                   required
@@ -274,6 +276,7 @@ export const VehiclesPage: React.FC = () => {
                   type="text"
                   value={brandModel}
                   onChange={(e) => setBrandModel(e.target.value)}
+                  data-testid="vehicle-brand-input"
                   placeholder="örn. Volvo FMX 460 Damperli"
                   className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                   required
@@ -301,6 +304,7 @@ export const VehiclesPage: React.FC = () => {
                   <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Bağlı Şantiye</label>
                   {isManagerMode ? (
                     <select
+                      data-testid="vehicle-site-select"
                       value={siteName}
                       onChange={(e) => setSiteName(e.target.value)}
                       className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
@@ -335,6 +339,7 @@ export const VehiclesPage: React.FC = () => {
                 <div>
                   <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Sorumlu Şoför</label>
                   <select
+                    data-testid="vehicle-driver-select"
                     value={assignedDriver}
                     onChange={(e) => setAssignedDriver(e.target.value)}
                     className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
@@ -359,6 +364,7 @@ export const VehiclesPage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
+                  data-testid="vehicle-save"
                   className="px-5 py-2 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] text-[#412d00] rounded-md text-xs font-black"
                 >
                   Aracı Kaydet

@@ -12,7 +12,7 @@ export const ForbiddenPage: React.FC = () => {
   const backPath = isAuthenticated ? homePathForRole(currentUser?.role) : '/';
 
   return (
-    <div className="min-h-screen bg-[#131313] text-[#e5e2e1] flex flex-col items-center justify-center p-6 text-center select-none font-sans antialiased">
+    <div data-testid="forbidden-page" className="min-h-screen bg-[#131313] text-[#e5e2e1] flex flex-col items-center justify-center p-6 text-center select-none font-sans antialiased">
       <div className="max-w-md w-full bg-[#1c1b1b] border border-[#353535] p-8 rounded-3xl shadow-2xl space-y-6">
 
         {/* 403 Icon & Badge */}

@@ -39,7 +39,7 @@ export const DevicesPage: React.FC = () => {
       {/* Devices Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {hardwareDevices.map(dev => (
-          <div key={dev.id} className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-6 space-y-4 flex flex-col justify-between">
+          <div key={dev.id} data-testid="device-card" data-device-code={dev.deviceCode} data-device-status={dev.status} className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-6 space-y-4 flex flex-col justify-between">
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-mono text-[#ffb77f] font-bold uppercase">
@@ -78,6 +78,7 @@ export const DevicesPage: React.FC = () => {
             </div>
 
             <button
+              data-testid="device-ping"
               onClick={() => handlePingDevice(dev.deviceCode)}
               className="w-full bg-[#20201f] hover:bg-[#282726] border border-[#353535] text-[#ffb77f] py-2.5 rounded-xl text-xs font-bold font-mono transition-colors cursor-pointer flex items-center justify-center space-x-2"
             >

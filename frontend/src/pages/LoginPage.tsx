@@ -123,6 +123,7 @@ export const LoginPage: React.FC = () => {
           {/* Error Alert Box */}
           {errorMessage && (
             <motion.div
+              data-testid="login-error"
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               className="bg-[#ffb4ab]/10 border border-[#ffb4ab]/30 p-3.5 rounded-xl flex items-start space-x-3 text-xs text-[#ffb4ab]"
@@ -146,6 +147,7 @@ export const LoginPage: React.FC = () => {
                 </span>
                 <input
                   type="text"
+                  data-testid="login-username"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="Firma Adı"
@@ -173,6 +175,7 @@ export const LoginPage: React.FC = () => {
                   lock
                 </span>
                 <input
+                  data-testid="login-password"
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -203,6 +206,7 @@ export const LoginPage: React.FC = () => {
             {/* Submit Button */}
             <button
               type="submit"
+              data-testid="login-submit"
               disabled={isLoading}
               className="w-full py-3.5 px-4 bg-[#ffdca1] hover:bg-[#ffe5b8] active:scale-[0.99] text-[#412d00] font-extrabold rounded-xl text-xs flex items-center justify-center space-x-2 transition-all shadow-lg cursor-pointer disabled:opacity-50"
             >

@@ -512,6 +512,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // utils/socket.ts). Kasıtlı (logout / sekme gizlenme) kopmalarda toast
     // gösterilmez — yalnızca gerçek bağlantı sorunlarında.
     const handleConnect = () => {
+      // TEST-1004: e2e testleri canlı olay enjekte etmeden ÖNCE gerçek bağlantıyı bu işaretten bekler (isSocketConnected başlangıçta iyimser true).
+      document.documentElement.dataset.socket = 'connected';
       if (wasConnectedRef.current) {
         showToast('Canlı bağlantı yeniden sağlandı.', 'success');
       }
@@ -519,6 +521,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setIsSocketConnected(true);
     };
     const handleDisconnect = (reason: string) => {
+      document.documentElement.dataset.socket = 'disconnected';
       // FE-801 AC: "Eski veri açıkça işaretlenmelidir." Nedeni ne olursa
       // olsun (kasıtlı sekme gizlenmesi dahil) — bağlantı canlı DEĞİLKEN
       // ekranda duran veri artık kanıtlanmış-güncel değildir, bu yüzden
@@ -556,6 +559,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     socket.on('telemetry:data', handleTelemetryData);
     socket.on('device:status', handleDeviceStatusChanged);
 
+    document.documentElement.dataset.socket = socket.connected ? 'connected' : 'connecting';
     connectSocket();
 
     // FE-801 AC: sekme arka plana alındığında bağlantıyı kapatıp gereksiz
