@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { TURKISH_PLATE_REGEX, isValidPlate } from './validation';
+import { vehicleFactory } from '@test-support/factories';
 
 /**
  * TEST_PLAN.md §3.2 — form doğrulamasının backend ile tutarlılığı.
@@ -27,5 +28,13 @@ describe('plaka doğrulaması ↔ backend vehicleSchema', () => {
 
   it.each(['', '00 ABC 12', '82 AB 123', '34 ABCD 12', '34 E2E 1036', '34 CTP 1'])('geçersiz: "%s"', (plate) => {
     expect(isValidPlate(plate)).toBe(false);
+  });
+});
+
+/** TEST-1006: ortak veri fabrikaları (backend birim testleriyle AYNI dosya) ön yüzde de kullanılır. */
+describe('ortak test fabrikaları ↔ plaka doğrulaması', () => {
+  it('vehicleFactory\'nin ürettiği tüm plakalar (50 adet) geçerli; ezilen geçersiz plaka reddedilir', () => {
+    for (const v of vehicleFactory.buildMany(50)) expect(isValidPlate(v.plate)).toBe(true);
+    expect(isValidPlate(vehicleFactory.build({ plate: '99 XX 1' }).plate)).toBe(false);
   });
 });

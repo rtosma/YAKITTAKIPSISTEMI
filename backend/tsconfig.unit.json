@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "baseUrl": ".",
+    "paths": { "@test-support/*": ["../test-support/*"] }
+  },
+  "include": ["unit/**/*.ts", "vitest.config.ts", "../test-support/**/*.ts", "src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "test"]
+}

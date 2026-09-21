@@ -198,8 +198,38 @@ jobs:
       # olarak dar: oturum zinciri (401 → sessiz token yenileme → otomatik
       # çıkış). Backend'den farklı olarak bunlar gerçek servis GEREKTİRMEZ
       # (jsdom + mock fetch), bu yüzden hızlı `quality-and-tests` işinde.
-      - name: "TEST_PLAN §3: Frontend Birim Testleri (Vitest)"
-        run: cd frontend && npm run test
+      - name: "TEST_PLAN §3 + TEST-1006: Birim Testleri + Coverage Eşiği (backend + frontend, vitest)"
+        # TEST-1006 (#47): `npm test` kökten iki paketin birim testlerini koşturur; `test:coverage` ayrıca v8 coverage ölçer ve EŞİK ALTINDA
+        # sıfır olmayan çıkış koduyla build'i KIRAR (backend hesap motorları %90, kapsamdaki tüm dosyalar %70; frontend genel %20 taban, mantık
+        # modülleri %70). Bu testler DB/Redis/ağ gerektirmez → hızlı quality-and-tests işinde.
+        run: npm run test:coverage
+
+      - name: "TEST-1006: Birim Testleri Tip Denetimi (backend/unit + test-support)"
+        run: npm run test:unit:typecheck
+
+      - name: "TEST-1006: Coverage Eşiği Davranış Testi + Altyapı Sözleşmesi"
+        run: node scripts/test-test1006.mjs
+
+      - name: "TEST-1006: Coverage Özeti (iş özeti + artifact)"
+        if: always()
+        run: |
+          {
+            echo "### Birim test coverage (TEST-1006)"
+            for pkg in backend frontend; do
+              f="$pkg/coverage/coverage-summary.json"
+              [ -f "$f" ] && node -e "const t=require('./$f').total;console.log('- **$pkg**: satır %'+t.lines.pct+' · dal %'+t.branches.pct+' · fonksiyon %'+t.functions.pct+' · ifade %'+t.statements.pct)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "TEST-1006: Coverage Raporları (lcov)"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-coverage
+          path: |
+            backend/coverage/lcov.info
+            frontend/coverage/lcov.info
+          if-no-files-found: ignore
 
       - name: Run RES-902 Exception Filter & Logging Tests
         run: cd backend && npx tsx test/test_res902.ts

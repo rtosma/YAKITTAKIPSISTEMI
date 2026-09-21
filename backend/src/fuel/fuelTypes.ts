@@ -1,4 +1,4 @@
-import { resolveGtip } from '../compliance/despatchAdviceXmlService';
+import { resolveGtip } from '../compliance/gtip';
 
 /**
  * FUEL-407 — serbest metin yakıt tipini normalize eden yardımcı. Şantiyelerde

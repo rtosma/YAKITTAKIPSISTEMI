@@ -9,6 +9,10 @@
     "build": "esbuild src/bootstrap.ts --bundle --platform=node --target=node20 --format=cjs --external:argon2 --external:pg-native --external:swagger-ui-express --external:swagger-jsdoc --external:libxmljs2 --external:pdfkit --external:esbuild --outfile=dist/server.cjs && esbuild src/iot/payloadValidationWorker.ts --bundle --platform=node --target=node20 --format=cjs --outfile=dist/payloadValidationWorker.cjs",
     "seed": "tsx src/db/seed.ts",
     "lint": "tsc --noEmit",
+    "typecheck:unit": "tsc --noEmit -p tsconfig.unit.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -53,10 +57,12 @@
     "@types/smtp-server": "^3.5.13",
     "@types/swagger-jsdoc": "^6.0.4",
     "@types/swagger-ui-express": "^4.1.8",
+    "@vitest/coverage-v8": "^4.1.11",
     "esbuild": "^0.25.0",
     "smtp-server": "^3.19.13",
     "socket.io-client": "^4.8.3",
     "tsx": "^4.21.0",
-    "typescript": "~5.8.2"
+    "typescript": "~5.8.2",
+    "vitest": "^4.1.11"
   }
 }

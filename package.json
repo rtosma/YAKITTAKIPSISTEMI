@@ -9,6 +9,9 @@
     "install:all": "cd backend && npm install && cd ../frontend && npm install",
     "build": "cd backend && npm run build && cd ../frontend && npm run build",
     "lint": "cd backend && npm run lint && cd ../frontend && npm run lint",
+    "test": "npm --prefix backend test && npm --prefix frontend test",
+    "test:coverage": "npm --prefix backend run test:coverage && npm --prefix frontend run test:coverage",
+    "test:unit:typecheck": "npm --prefix backend run typecheck:unit",
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down"
   },
