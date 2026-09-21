@@ -6,10 +6,12 @@ import { recordDispenseCompleted } from '../observability/metrics';
 import { getExecutiveDashboard } from '../services/executiveDashboardService';
 import { executiveDashboardQuerySchema } from '../schemas/dashboardSchema';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
-import { getReportDefinition, listReportsForRole, runReport, streamReportToCsv, streamReportToPdf, auditReportExport, assertPiiFilterAccess, ReportQueryParams } from '../reports';
+import { getReportDefinition, listReportsForRole, runReport, streamReportToCsv, streamReportToPdf, streamReportToXlsx, auditReportExport, assertPiiFilterAccess, assertReportQueryValid, ReportQueryParams } from '../reports';
 import { reportRunQuerySchema, reportExportQuerySchema, reportIdParamsSchema } from '../schemas/reportSchema';
 import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
 import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
+import { monthParamsSchema, generateMonthlyReportBodySchema, GenerateMonthlyReportDTO } from '../schemas/monthlyManagementReportSchema';
+import { generateMonthlyManagementReport, deliverMonthlyManagementReport, getMonthlyReportRecord, listMonthlyReportRecords, compileMonthlyFacts, buildMonthlyReportPdfForViewer, previousMonthOf } from '../services/monthlyManagementReportService';
 import { generateDespatchAdviceXml } from '../compliance/despatchAdviceXmlService';
 import { setStrappingTableSchema, tankVolumeQuerySchema, parseStrappingCsv } from '../schemas/strappingTableSchema';
 import { blockRfidCardSchema, replaceRfidCardSchema } from '../schemas/rfidCardSchema';
@@ -6258,7 +6260,7 @@ router.get(
  * @swagger
  * /reports/{reportId}/export:
  *   get:
- *     summary: Bir Raporu CSV/PDF Olarak Dışa Aktar (REP-703)
+ *     summary: Bir Raporu CSV/PDF/XLSX Olarak Dışa Aktar (REP-703, XLSX: REP-724)
  *     description: >
  *       Sayfalama YOKTUR — filtreye uyan TÜM kayıtlar akışla indirilir.
  *       PDF, kuyruksuz bir süreçte CPU'yu bloklamamak için satır sayısı
@@ -6274,10 +6276,10 @@ router.get(
  *       - in: query
  *         name: format
  *         required: true
- *         schema: { type: string, enum: [csv, pdf] }
+ *         schema: { type: string, enum: [csv, pdf, xlsx] }
  *     responses:
  *       200:
- *         description: CSV ya da PDF dosyası stream olarak döner.
+ *         description: CSV, PDF ya da XLSX dosyası stream olarak döner.
  *       400:
  *         description: PDF için satır sayısı sınırı aşıldı.
  *       403:
@@ -6297,13 +6299,16 @@ router.get(
         throw new ForbiddenError('Bu raporu görüntüleme yetkiniz yok.', { error: 'REPORT_FORBIDDEN' });
       }
 
-      const { format, ...query } = req.query as unknown as ReportQueryParams & { format: 'csv' | 'pdf' };
+      const { format, ...query } = req.query as unknown as ReportQueryParams & { format: 'csv' | 'pdf' | 'xlsx' };
       const viewer = { role: req.user!.role };
       // REP-720: denetimli raporlarda kayıt akıştan ÖNCE yazılır; yazılamazsa veri gönderilmez.
       assertPiiFilterAccess(def, query, viewer); // reddedilecek istek 'indirme' olarak audit'e girmesin
+      assertReportQueryValid(def, query); // akış başlamadan (başlıklar gönderilmeden) → istemci 400 alır, kopmuş bağlantı değil
       if (def.auditExport) await auditReportExport(def, viewer, format, query);
       if (format === 'csv') {
         await streamReportToCsv(res, def, query, siteScopeFor(req.user!), viewer);
+      } else if (format === 'xlsx') {
+        await streamReportToXlsx(res, def, query, siteScopeFor(req.user!), viewer);
       } else {
         await streamReportToPdf(res, def, query, siteScopeFor(req.user!), viewer);
       }
@@ -6347,6 +6352,135 @@ router.get(
       const { days } = req.query as unknown as { days: number };
       res.set('Cache-Control', 'no-store');
       res.json({ success: true, data: await getExecutiveDashboard(siteScopeFor(req.user!), { role: req.user!.role }, days) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── REP-724: AI destekli aylık yönetim raporu ──
+const MANAGEMENT_REPORT_GENERATE_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/** SITE_MANAGER için kapsam ZORUNLU: şantiyesi tanımsız bir site yöneticisine firma geneli veri (=başka şantiyeler) sızdırılmaz. */
+function managementReportScopeFor(user: JwtUserPayload): string | undefined {
+  if (user.role === 'SITE_MANAGER') {
+    if (!user.siteName) throw new ForbiddenError('Şantiye kapsamı tanımsız kullanıcı yönetim raporunu görüntüleyemez.', { error: 'SITE_SCOPE_REQUIRED' });
+    return user.siteName;
+  }
+  return undefined;
+}
+
+/**
+ * @swagger
+ * /management-reports:
+ *   get:
+ *     summary: Üretilmiş aylık yönetim raporlarını listele (REP-724)
+ *     description: Yalnızca SUPER_ADMIN/COMPANY_OWNER (firma geneli). Ay, yapay zekâ durumu ve e-posta durumu döner.
+ *     security:
+ *       - bearerAuth: []
+ *   post:
+ *     summary: Aylık yönetim raporunu şimdi üret (REP-724)
+ *     description: >
+ *       Ölçülen veri (rep-724) + Gemini yorumu (sistem verisiyle çapraz doğrulanmış) üretir ve kaydeder. Model erişilemezse rapor yine
+ *       ölçülen veri bölümüyle üretilir (`aiStatus: MODEL_ERISILEMEDI`). Aynı ay için tekrar çağrı `regenerate:true` olmadıkça mevcut raporu döner.
+ *       `sendEmail:true` raporu e-postayla da gönderir. Süpürücü her ayın 1'inde önceki ayı otomatik üretip gönderir.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/management-reports',
+  authenticateJWT,
+  authorizeRoles(...MANAGEMENT_REPORT_GENERATE_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await listMonthlyReportRecords() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/management-reports',
+  authenticateJWT,
+  authorizeRoles(...MANAGEMENT_REPORT_GENERATE_ROLES),
+  validateRequest({ body: generateMonthlyReportBodySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { month, regenerate, sendEmail } = req.body as GenerateMonthlyReportDTO;
+      const target = month ?? previousMonthOf(new Date());
+      const { record, created } = await generateMonthlyManagementReport(target, { generatedBy: req.user!.userId, regenerate });
+      const delivery = sendEmail ? await deliverMonthlyManagementReport(target) : null;
+      res.status(created ? 201 : 200).json({
+        success: true,
+        data: { id: record.id, month: record.period_month, created, aiStatus: record.ai_status, rejectedStatements: record.ai_rejected.length, emailStatus: record.email_status },
+        delivery
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /management-reports/{month}:
+ *   get:
+ *     summary: Aylık yönetim raporu — ölçülen veri ve model yorumu AYRI alanlarda (REP-724)
+ *     description: >
+ *       `measured` sistem kayıtlarından hesaplanan veridir; `aiCommentary` modelin yorumudur (yalnızca sistem verisiyle doğrulanan
+ *       ifadeler; doğrulanamayanlar `rejectedCount`). SITE_MANAGER yalnızca kendi şantiyesinin ölçülen verisini görür; `aiCommentary`
+ *       ona `SITE_SCOPE_RESTRICTED` döner (yorum firma geneli veriyle yazılmıştır).
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: month
+ *         required: true
+ *         schema: { type: string, example: "2026-02" }
+ */
+router.get(
+  '/management-reports/:month',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ params: monthParamsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const scope = managementReportScopeFor(req.user!);
+      const record = await getMonthlyReportRecord(req.params.month);
+      if (!record) throw new NotFoundError('Bu ay için yönetim raporu henüz üretilmedi.', { error: 'REPORT_NOT_GENERATED', month: req.params.month });
+      const measured = scope === undefined ? record.facts : await compileMonthlyFacts(req.params.month, scope);
+      const aiCommentary = scope === undefined
+        ? { status: record.ai_status, origin: 'MODEL', narrative: record.ai_narrative, rejectedCount: record.ai_rejected.length, modelName: record.model_name }
+        : { status: 'SITE_SCOPE_RESTRICTED', origin: 'MODEL', narrative: null, rejectedCount: 0, modelName: null };
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: { month: record.period_month, measured: { origin: 'MEASURED', ...measured }, aiCommentary, emailStatus: scope === undefined ? record.email_status : undefined } });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /management-reports/{month}/pdf:
+ *   get:
+ *     summary: Aylık yönetim raporu PDF'i (A: ölçülen veri, B: yapay zekâ yorumu — görsel olarak ayrı) (REP-724)
+ *     description: Firma yöneticisi tam raporu, SITE_MANAGER yalnızca kendi şantiyesinin ölçülen verisini alır. Veri bölümünün CSV/XLSX/PDF tablosu için /reports/rep-724/export?month=YYYY-MM&format=csv|xlsx|pdf.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/management-reports/:month/pdf',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ params: monthParamsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const pdf = await buildMonthlyReportPdfForViewer(req.params.month, managementReportScopeFor(req.user!));
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="yonetim-raporu-${req.params.month}.pdf"`);
+      res.send(pdf);
     } catch (error: any) {
       next(error);
     }

@@ -105,8 +105,17 @@ export function assertPiiFilterAccess(def: ReportDefinition, query: ReportQueryP
   }
 }
 
+/**
+ * REP-724: rapora özgü ham-değer doğrulaması (bkz. reportTypes.ts `validateQuery`). Export route'ları bunu akış BAŞLAMADAN önce de çağırır —
+ * aksi halde (CSV/XLSX başlıkları ve BOM yazıldıktan sonra) doğrulama hatası akışı yarıda keser, istemci 400 yerine kopmuş bağlantı görür.
+ */
+export function assertReportQueryValid(def: ReportDefinition, query: ReportQueryParams): void {
+  def.validateQuery?.(query);
+}
+
 function buildWhereClause(def: ReportDefinition, query: ReportQueryParams, siteScope: string | undefined, viewer?: ReportViewer): { whereClause: string; params: unknown[]; table: string } {
   assertPiiFilterAccess(def, query, viewer);
+  assertReportQueryValid(def, query);
   const conditions: string[] = [];
   const sourceConditions: string[] = [];
   const params: unknown[] = [];

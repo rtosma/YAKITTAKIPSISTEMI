@@ -24,7 +24,7 @@ import { ReportQueryParams } from './reportEngine';
 export async function auditReportExport(
   def: ReportDefinition,
   viewer: ReportViewer,
-  format: 'csv' | 'pdf' | 'view',
+  format: 'csv' | 'pdf' | 'xlsx' | 'view',
   query: ReportQueryParams
 ): Promise<void> {
   const filters: Record<string, string> = {};

@@ -27,6 +27,7 @@ import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyServ
 import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant, runTankStockAlertSweepForCurrentTenant, runDriverBehaviorScoreSweepForCurrentTenant, runDeviceHealthScoreSweepForCurrentTenant } from './db/tenantDb';
 import { runNotificationRetrySweepForCurrentTenant, notifyAlarmEscalationRecipients } from './services/notificationService';
 import { runReportScheduleSweepForCurrentTenant } from './services/reportScheduleService';
+import { runMonthlyManagementReportSweepForCurrentTenant } from './services/monthlyManagementReportService';
 import { runLicenseExpiryWarningSweep } from './services/licenseWarningService';
 import { runUsageMeteringSweepForPreviousMonth } from './services/usageMeteringService';
 
@@ -759,6 +760,30 @@ async function startServer(): Promise<void> {
     }
   }, REPORT_SCHEDULE_SWEEP_MS);
 
+  // REP-724 AC: "Aylık özet otomatik üretilip gönderilmelidir." Yukarıdakilerle AYNI düz saatlik setInterval (BullMQ yok). Her ayın 1'inde
+  // 08:00'dan (Europe/Istanbul sabit UTC+3) itibaren bir önceki ayın raporu üretilir + e-postalanır; UNIQUE(tenant, ay) ve teslim izi
+  // sayesinde sonraki turlar yeni rapor/çift e-posta üretmez, yalnızca başarısız/eksik alıcılara yeniden dener (bkz. monthlyManagementReportService.ts).
+  const MONTHLY_REPORT_SWEEP_MS = 60 * 60 * 1000;
+  const monthlyManagementReportSweepInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [REP-724] Tenant listesi alınamadı, bu tur atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const r = await runWithTenant({ tenantId }, () => runMonthlyManagementReportSweepForCurrentTenant());
+        if (r.generated || r.delivery) {
+          logger.info({ tenantId, month: r.month, generated: r.generated, delivery: r.delivery }, '📈 [REP-724] Aylık yönetim raporu turu.');
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [REP-724] Aylık yönetim raporu süpürmesi başarısız.');
+      }
+    }
+  }, MONTHLY_REPORT_SWEEP_MS);
+
   // OPS-1107: iş metrikleri (cihaz/alarm/ikmal/e-İrsaliye kuyruğu) arka planda 30 sn'de bir yenilenir.
   const stopBusinessMetricsRefresher = startBusinessMetricsRefresher();
 
@@ -793,6 +818,7 @@ async function startServer(): Promise<void> {
       clearInterval(archiveCleanupSweepInterval);
       clearInterval(retentionPurgeSweepInterval);
       clearInterval(reportScheduleSweepInterval);
+      clearInterval(monthlyManagementReportSweepInterval);
       stopBusinessMetricsRefresher();
       await flushSentry(2000); // RES-907: kapanırken bekleyen hata olaylarını gönder
 

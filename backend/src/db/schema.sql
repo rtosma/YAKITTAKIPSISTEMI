@@ -2600,6 +2600,43 @@ CREATE POLICY report_deliveries_tenant_isolation_policy ON report_deliveries
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 
+-- REP-724 (#210): AI destekli aylık yönetim raporu. Firma × ay için TEK satır (UNIQUE) → süpürücü/manuel tetik idempotent.
+-- `facts` = ÖLÇÜLEN veri anlık görüntüsü (rep-724 + en çok tüketen araçlar; kişi adı YOK). `ai_narrative` = Gemini yorumunun
+-- YALNIZCA sistem verisiyle çapraz doğrulamadan GEÇEN kısmı; geçemeyenler `ai_rejected`'a (neden koduyla) yazılır, raporda gösterilmez.
+-- `ai_status`: 'URETILDI' | 'KISMEN_DOGRULANDI' | 'DOGRULANAMADI' | 'MODEL_ERISILEMEDI' | 'GECERSIZ_CIKTI' | 'MODUL_KAPALI' | 'VERI_YOK'.
+-- Model erişilemezse de satır YAZILIR (ölçülen veri bölümüyle) ve rapor yine gönderilir.
+-- `email_status`: 'BEKLIYOR' | 'KISMEN_GÖNDERILDI' | 'GÖNDERILDI' | 'ALICI_YOK' | 'ATLANDI_BOŞ' | 'KALICI_BAŞARISIZ';
+-- `emailed_user_ids` teslim edilenleri tutar → yeniden deneme yalnızca eksik alıcılara gider (çift e-posta yok).
+CREATE TABLE IF NOT EXISTS monthly_management_reports (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    period_month CHAR(7) NOT NULL,
+    facts JSONB NOT NULL,
+    ai_status VARCHAR(24) NOT NULL,
+    ai_narrative JSONB,
+    ai_rejected JSONB NOT NULL DEFAULT '[]'::jsonb,
+    ai_error TEXT,
+    model_name VARCHAR(64),
+    generated_by VARCHAR(64) NOT NULL,
+    email_status VARCHAR(24) NOT NULL DEFAULT 'BEKLIYOR',
+    email_attempts INTEGER NOT NULL DEFAULT 0,
+    emailed_user_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    emailed_at TIMESTAMP WITH TIME ZONE,
+    last_email_error TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_monthly_management_reports_month UNIQUE (tenant_id, period_month),
+    CONSTRAINT chk_monthly_management_reports_month CHECK (period_month ~ '^[0-9]{4}-(0[1-9]|1[0-2])$')
+);
+CREATE INDEX IF NOT EXISTS idx_monthly_management_reports_tenant_month ON monthly_management_reports(tenant_id, period_month DESC);
+ALTER TABLE monthly_management_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE monthly_management_reports FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS monthly_management_reports_tenant_isolation_policy ON monthly_management_reports;
+CREATE POLICY monthly_management_reports_tenant_isolation_policy ON monthly_management_reports
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
 -- REP-712 (#169): araç bazlı tüketim raporunun (REP-703 çatısı SQL-tanımlı)
 -- FLEET-1405 motorunu (tenantDb.ts computeVehicleConsumptionWindow, JS)
 -- SQL'de yeniden ifade eden iki YARDIMCI fonksiyon. Çift kaynak riskine karşı

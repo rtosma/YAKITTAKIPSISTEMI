@@ -34,7 +34,7 @@ Issue kodları `GRUP-NNN` biçimindedir; kodda ilgili yorumlarda ve commit başl
 | **INV** Envanter | Tank tanımı, yakıt alım/dolum irsaliyesi, depo/parça envanteri, maliyet yöntemi, laboratuvar | FUEL | `db/tenantDb.ts` | `test_inv15*` |
 | **AI** Anomali | Debi↔tank korelasyonu (hırsızlık), Gemini tüketim analizi, mesai dışı/anomali, alarm yaşam döngüsü, sürücü/cihaz skoru | FUEL, IOT | `services/theftDetectionService.ts`, `services/consumptionAnomalyService.ts` | `test_ai50*` |
 | **COMP** Mevzuat | e-İrsaliye UBL-TR XML, entegratör istemcisi + devre kesici, [mükellef](SOZLUK.md#mukellef) sorgusu, KVKK | FUEL | `compliance/`, `privacy/`, `services/privacyService.ts` | [KVKK](KVKK_ENVANTER.md) · `test_comp60*` |
-| **REP** Rapor | Rapor çatısı (`reports/`), 13 ana rapor + alt görünümler, CSV/PDF/JSON, PII maskesi, zamanlanmış teslim, şifreli arşiv, yönetici dashboard'u | tüm veri | `backend/src/reports/`, `services/reportScheduleService.ts`, `services/tenantArchiveService.ts` | §11 · `test_rep7*` |
+| **REP** Rapor | Rapor çatısı (`reports/`), 14 ana rapor + alt görünümler, CSV/PDF/XLSX/JSON, PII maskesi, zamanlanmış teslim, şifreli arşiv, yönetici dashboard'u, AI aylık yönetim raporu ([AYLIK_YONETIM_RAPORU.md](AYLIK_YONETIM_RAPORU.md)) | tüm veri | `backend/src/reports/`, `services/reportScheduleService.ts`, `services/tenantArchiveService.ts` | §11 · `test_rep7*` |
 | **NOTIF** Bildirim | Uygulama-içi/e-posta/SMS/Telegram/webhook, tercihler, yeniden deneme + dead-letter, devre kesici | AI, FUEL | `notifications/`, `services/notificationService.ts` | `test_notif16*` |
 | **BILL** Faturalama | Paket/limitler, ek modüller, kullanım ölçümü, lisans uyarıları | ARCH | `services/usageMeteringService.ts`, `services/licenseWarningService.ts` | `test_bill17*` |
 | **HR** Personel | Personel kaydı, izin talebi/onayı, izin bakiyesi ve araç [zimmet](SOZLUK.md#zimmet) çakışması | FLEET | `services/personnelLeaveService.ts` | `test_hr1801_*` |
@@ -314,9 +314,9 @@ Firmware bu depoda **yok** (FW-1301 iskeleti açık). Cihaz olmadan geliştirme:
 ## 8. API sözleşmesi ve MQTT şeması
 
 <!-- ÜRETİLEN:ENDPOINT:BAŞLA (scripts/generate-project-guide.mjs — ELLE DEĞİŞTİRMEYİN) -->
-Toplam **275 REST ucu** (`/api/v1` altında). Kimlik doğrulama türüne göre: **cihaz HMAC** 9 · **JWT + rol kısıtı** 221 · **JWT (tüm roller)** 29 · **kimliksiz** 16 (giriş, sağlık, parola sıfırlama, indirme bağlantıları, Sentry tüneli).
+Toplam **279 REST ucu** (`/api/v1` altında). Kimlik doğrulama türüne göre: **cihaz HMAC** 9 · **JWT + rol kısıtı** 225 · **JWT (tüm roller)** 29 · **kimliksiz** 16 (giriş, sağlık, parola sıfırlama, indirme bağlantıları, Sentry tüneli).
 
-Kaynak gruplarına göre: `/vehicles` 20 · `/auth` 16 · `/tanks` 13 · `/admin` 12 · `/hardware-devices` 12 · `/companies` 11 · `/devices` 10 · `/notifications` 10 · `/fleet` 9 · `/transactions` 8 · `/drivers` 7 · `/quotas` 7 · `/personnel` 6 · `/inventory-items` 6 · `/lab-samples` 6 · `/alarms` 6 · `/manual-dispense-requests` 6 · `/report-schedules` 6 · `/privacy` 6 · `/leave-requests` 5 · `/sites` 5 · `/telemetry` 5 · `/rfid-cards` 5 · `/fire-records` 5 · `/policies` 4 · `/anomaly-flags` 4 · `/firmware-rollouts` 4 · `/dispense` 4 · `/recipients` 4 · `/health` 3 · `/meter-readings` 3 · `/despatch-advice-transmissions` 3 · `/vehicle-documents` 3 · `/reports` 3 · `/fuel-budgets` 3 · `/retention` 3 · `/archives` 3 · `/cross-site-permissions` 3 · `/usage-metering` 2 · `/maintenance-records` 2 · `/tires` 2 · `/inventory` 2 · `/ai` 2 · `/firmware-artifacts` 2 · `/fuel-intakes` 2 · `/stock-reconciliations` 2 · `/tenant-info` 1 · `/fuel-stock-summary` 1 · `/leave-calendar` 1 · `/lab` 1 · `/dashboard` 1 · `/report-deliveries` 1 · `/despatch-advice-documents` 1 · `/taxpayers` 1 · `/lorawan` 1 · `/audit-logs` 1.
+Kaynak gruplarına göre: `/vehicles` 20 · `/auth` 16 · `/tanks` 13 · `/admin` 12 · `/hardware-devices` 12 · `/companies` 11 · `/devices` 10 · `/notifications` 10 · `/fleet` 9 · `/transactions` 8 · `/drivers` 7 · `/quotas` 7 · `/personnel` 6 · `/inventory-items` 6 · `/lab-samples` 6 · `/alarms` 6 · `/manual-dispense-requests` 6 · `/report-schedules` 6 · `/privacy` 6 · `/leave-requests` 5 · `/sites` 5 · `/telemetry` 5 · `/rfid-cards` 5 · `/fire-records` 5 · `/policies` 4 · `/anomaly-flags` 4 · `/firmware-rollouts` 4 · `/dispense` 4 · `/management-reports` 4 · `/recipients` 4 · `/health` 3 · `/meter-readings` 3 · `/despatch-advice-transmissions` 3 · `/vehicle-documents` 3 · `/reports` 3 · `/fuel-budgets` 3 · `/retention` 3 · `/archives` 3 · `/cross-site-permissions` 3 · `/usage-metering` 2 · `/maintenance-records` 2 · `/tires` 2 · `/inventory` 2 · `/ai` 2 · `/firmware-artifacts` 2 · `/fuel-intakes` 2 · `/stock-reconciliations` 2 · `/tenant-info` 1 · `/fuel-stock-summary` 1 · `/leave-calendar` 1 · `/lab` 1 · `/dashboard` 1 · `/report-deliveries` 1 · `/despatch-advice-documents` 1 · `/taxpayers` 1 · `/lorawan` 1 · `/audit-logs` 1.
 <!-- ÜRETİLEN:ENDPOINT:BİTİŞ -->
 
 **Sözleşme kuralları**
@@ -344,7 +344,7 @@ MQTT v5, `clean=false`, QoS 1; backend `$share/...` paylaşımlı abonelikle din
 ### 9.1 Şema (tablo / alan)
 
 <!-- ÜRETİLEN:VERITABANI:BAŞLA (scripts/generate-project-guide.mjs — ELLE DEĞİŞTİRMEYİN) -->
-**70 tablo**, 67 tanesinde satır düzeyi güvenlik (RLS, tenant izolasyonu). "Saklama sınıfı" [DATA_RETENTION.md](DATA_RETENTION.md)'deki katalogdandır.
+**71 tablo**, 68 tanesinde satır düzeyi güvenlik (RLS, tenant izolasyonu). "Saklama sınıfı" [DATA_RETENTION.md](DATA_RETENTION.md)'deki katalogdandır.
 
 | Tablo | Sütunlar (ad:tip) | Tenant RLS | Saklama sınıfı |
 |---|---|---|---|
@@ -413,6 +413,7 @@ MQTT v5, `clean=false`, QoS 1; backend `$share/...` paylaşımlı abonelikle din
 | `user_notification_mutes` | id:varchar(64), tenant_id:varchar(64), user_id:varchar(64), event_type:varchar(64), muted_until:timestamp, created_at:timestamp | RLS | ana veri |
 | `report_schedules` | id:varchar(64), tenant_id:varchar(64), report_id:varchar(64), filters:jsonb, format:varchar(16), period_type:varchar(16), send_hour_local:integer, day_of_week:integer, day_of_month:integer, recipient_user_ids:text[], skip_if_empty:boolean, site_scope:varchar(128), enabled:boolean, created_by:varchar(64), next_run_at:timestamp, created_at:timestamp, updated_at:timestamp | RLS | ana veri |
 | `report_deliveries` | id:varchar(64), tenant_id:varchar(64), schedule_id:varchar(64), period_key:varchar(32), status:varchar(24), attempts:integer, row_count:integer, delivery_mode:varchar(16), file_data:bytea, file_size_bytes:integer, download_token_hash:varchar(64), expires_at:timestamp, last_error:text, sent_at:timestamp, created_at:timestamp | RLS | silinebilir |
+| `monthly_management_reports` | id:varchar(64), tenant_id:varchar(64), period_month:char(7), facts:jsonb, ai_status:varchar(24), ai_narrative:jsonb, ai_rejected:jsonb, ai_error:text, model_name:varchar(64), generated_by:varchar(64), email_status:varchar(24), email_attempts:integer, emailed_user_ids:jsonb, emailed_at:timestamp, last_email_error:text, created_at:timestamp, updated_at:timestamp | RLS | ana veri |
 | `cross_site_denials` | id:varchar(64), tenant_id:varchar(64), vehicle_plate:varchar(32), home_site:varchar(128), target_site:varchar(128), requested_liters:numeric(10,2), reason:varchar(32), permission_id:varchar(64), allowed_liters:numeric(10,2), used_liters:numeric(10,2), source:varchar(16), occurred_at:timestamp | RLS | silinebilir |
 | `fuel_budgets` | id:varchar(64), tenant_id:varchar(64), site_name:varchar(128), month:varchar(7), amount_try:numeric(14,2), created_by:varchar(64), created_at:timestamp, updated_at:timestamp | RLS | ana veri |
 | `tenant_retention_settings` | tenant_id:varchar(64), data_class:varchar(32), retention_days:integer, updated_by:varchar(64), updated_at:timestamp | RLS | ana veri |
@@ -466,6 +467,7 @@ Beş rol: **SUPER_ADMIN** (platform sahibi, tüm firmalar), **COMPANY_OWNER** (f
 | Laboratuvar / kalite (`/lab`) | O | O | O | — | — |
 | Laboratuvar numuneleri (`/lab-samples`) | O/Y | O/Y | O/Y | — | — |
 | Lastik takibi (`/tires`) | O/Y | O/Y | O/Y | — | — |
+| management-reports (`/management-reports`) | O/Y | O/Y | O | — | — |
 | Manuel ikmal talepleri (çift onay) (`/manual-dispense-requests`) | O/Y | O/Y | O/Y | Y | — |
 | Mesai dışı / anomali işaretleri (`/anomaly-flags`) | O/Y | O/Y | O/Y | — | — |
 | Mükellef sorgusu (VKN) (`/taxpayers`) | Y | Y | Y | Y | Y |
@@ -493,7 +495,7 @@ Beş rol: **SUPER_ADMIN** (platform sahibi, tüm firmalar), **COMPANY_OWNER** (f
 ## 11. Rapor kataloğu
 
 <!-- ÜRETİLEN:RAPORLAR:BAŞLA (scripts/generate-project-guide.mjs — ELLE DEĞİŞTİRMEYİN) -->
-**26 rapor tanımı** (REP-711…723; ana rapor + alt görünümler). Yeni rapor = `reports/definitions/` altına tanım + `reports/index.ts`'e bir satır. Roller: SA=SUPER_ADMIN, CO=COMPANY_OWNER, SM=SITE_MANAGER, PO=PUMP_OPERATOR, DR=DRIVER. Çıktılar: JSON, CSV, PDF (rol bazlı PII maskesi — REP-720).
+**27 rapor tanımı** (REP-711…723; ana rapor + alt görünümler). Yeni rapor = `reports/definitions/` altına tanım + `reports/index.ts`'e bir satır. Roller: SA=SUPER_ADMIN, CO=COMPANY_OWNER, SM=SITE_MANAGER, PO=PUMP_OPERATOR, DR=DRIVER. Çıktılar: JSON, CSV, PDF (rol bazlı PII maskesi — REP-720).
 
 | Rapor kodu | Başlık | Roller | Sütun |
 |---|---|---|:-:|
@@ -523,6 +525,7 @@ Beş rol: **SUPER_ADMIN** (platform sahibi, tüm firmalar), **COMPANY_OWNER** (f
 | `rep-722` | Denetim (Audit) Raporu | SA CO | 12 |
 | `rep-723` | Yönetici Özeti — Şantiye KPI (REP-723) | SA CO SM | 9 |
 | `rep-723-tank` | Tank Doluluk Durumu (REP-723) | SA CO SM | 9 |
+| `rep-724` | Aylık Yönetim Raporu — Ölçülen Veri (REP-724) | SA CO SM | 10 |
 <!-- ÜRETİLEN:RAPORLAR:BİTİŞ -->
 
 Rapor çatısı (`reports/`): SQL-tanımlı (tablo/sütun/filtre **sabit kodlu**, istemciden asla gelmez), `?format=csv|pdf` akışlı çıktı, rol bazlı PII maskesi, denetimli indirme (`audit_logs`), zamanlanmış teslim (e-posta/bağlantı) ve şifreli arşiv (REP-702).

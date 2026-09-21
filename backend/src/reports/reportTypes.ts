@@ -159,4 +159,10 @@ export interface ReportDefinition {
   auditAccess?: boolean;
   /** PDF export CPU-yoğun ve kuyruksuz (bkz. reportEngine.ts) — bu satır sınırının üstünde 409 döner. */
   maxPdfRows?: number;
+  /**
+   * REP-724: tablo `{{jeton}}`larıyla ham bir istek DEĞERİNİ SQL parametresi olarak kullanıyorsa (örn. `month`), biçimi
+   * sorgu çalışmadan ÖNCE doğrulanır; geçersizse BadRequestError fırlatır (aksi halde Postgres hatası 500 olurdu).
+   * Motorun tek giriş noktasında (buildWhereClause) çağrılır → JSON, CSV, PDF ve XLSX için aynı doğrulama.
+   */
+  validateQuery?: (query: Record<string, unknown>) => void;
 }

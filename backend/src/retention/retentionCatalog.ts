@@ -130,7 +130,7 @@ export const MASTER_TABLES: readonly string[] = [
   'tank_strapping_tables', 'rfid_card_blacklist', 'fuel_quotas', 'users', 'site_working_hours', 'user_totp', 'vehicle_meter_readings',
   'recipient_taxpayers', 'vehicle_fuel_limits', 'vehicle_maintenance_records', 'vehicle_compliance_deadlines', 'vehicle_tires',
   'vehicle_document_download_links', 'inventory_items', 'sites', 'firmware_artifacts', 'firmware_rollouts', 'firmware_rollout_devices',
-  'sms_monthly_usage', 'tenant_notification_channels', 'user_notification_preferences', 'user_notification_mutes', 'report_schedules',
+  'sms_monthly_usage', 'tenant_notification_channels', 'user_notification_preferences', 'user_notification_mutes', 'report_schedules', 'monthly_management_reports',
   'fuel_budgets', 'tenant_retention_settings', 'data_subject_requests'
 ];
 

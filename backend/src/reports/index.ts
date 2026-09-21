@@ -17,11 +17,13 @@ import './definitions/rep720DriverReport';
 import './definitions/rep721DespatchStatus';
 import './definitions/rep722AuditReport';
 import './definitions/rep723ExecutiveSummary';
+import './definitions/rep724MonthlyManagement';
 
 export { getReportDefinition, listReportsForRole } from './reportRegistry';
-export { runReport, streamReportExport, assertPdfRowLimit, assertPiiFilterAccess } from './reportEngine';
+export { runReport, streamReportExport, assertPdfRowLimit, assertPiiFilterAccess, assertReportQueryValid } from './reportEngine';
 export type { ReportQueryParams } from './reportEngine';
 export { streamReportToCsv } from './csvExport';
 export { streamReportToPdf } from './pdfExport';
+export { streamReportToXlsx, buildReportXlsxBuffer } from './xlsxExport';
 export { auditReportExport } from './reportAudit';
 export type { ReportViewer } from './reportTypes';

@@ -568,6 +568,15 @@ jobs:
           SMTP_PORT: 2525
           SMTP_FROM: ci-test@yakittakip.local
 
+      # REP-724 (#210): AI destekli aylık yönetim raporu. GEMINI_API_KEY SET EDİLMEZ (model test çiftidir; "anahtarsız → yorumsuz üretim" yolu da bu sayede
+      # gerçek kod yolunda sınanır). E-posta: REP-705 ile AYNI mock SMTP dinleyicisi (2525).
+      - name: Run REP-724 Monthly Management Report Tests
+        run: cd backend && npx tsx test/test_rep724_monthly_management_report.ts
+        env:
+          SMTP_HOST: localhost
+          SMTP_PORT: 2525
+          SMTP_FROM: ci-test@yakittakip.local
+
       # AI-502: bu job'ta GEMINI_API_KEY kasıtlı olarak SET EDİLMİYOR — test
       # dosyası bunun (bu sandbox'ta da gerçek olan) "yapılandırılmamış"
       # durumunu doğruluyor; asıl AI çıktı-doğrulama mantığı ise Gemini'ye

@@ -24,7 +24,7 @@ export const reportRunQuerySchema = z
   .catchall(z.string().max(200).optional());
 
 export const reportExportQuerySchema = reportRunQuerySchema.extend({
-  format: z.enum(['csv', 'pdf'], { message: "format 'csv' veya 'pdf' olmalıdır." })
+  format: z.enum(['csv', 'pdf', 'xlsx'], { message: "format 'csv', 'pdf' veya 'xlsx' olmalıdır." })
 });
 
 export const reportIdParamsSchema = z.object({
