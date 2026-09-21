@@ -107,6 +107,12 @@ jobs:
       - name: "ARCH-101.2: Ham pool.query Kullanımı Denetimi (RLS Bypass Koruması)"
         run: node scripts/check-no-raw-pool-query.mjs
 
+      # COMP-606 (#132): "Loglara TC kimlik no ve telefon yazılmamalıdır" — logger çağrılarında kişisel veri anahtarı taraması + statik sözleşme testleri.
+      - name: "COMP-606: Loglarda Kişisel Veri (TCKN/telefon/e-posta) Denetimi"
+        run: node scripts/check-no-pii-logging.mjs
+      - name: "COMP-606: KVKK Statik Testleri (envanter belgesi, guard fixture, bağlantılar)"
+        run: node scripts/test-comp606.mjs
+
       - name: "ARCH-110: Ham process.env Kullanımı Denetimi (Tipli Config Zorunluluğu)"
         run: node scripts/check-no-direct-process-env.mjs
 
@@ -702,6 +708,11 @@ jobs:
       # purge (mali kayıt koruması, arşiv-başarısızsa-iptal, advisory lock) — bu teste özel geçici tenant'larda çalışır.
       - name: Run ARCH-107 Data Retention Policy and Purge Tests
         run: cd backend && npx tsx test/test_arch107_retention.ts
+
+      # COMP-606 (#132): KVKK — envanter↔şema drift, rol bazlı maskeleme, log çıktısı taraması, Gemini takma adı, veri sahibi başvurusu
+      # (erişim/silme/ret/gecikme), anonimleştirme (mali bütünlük), süre dolumu, soğuk arşiv ömrü.
+      - name: Run COMP-606 KVKK Personal Data Tests
+        run: cd backend && npx tsx test/test_comp606_kvkk.ts
 
       - name: Run HR-1801 Personnel Leave Tracking Tests
         run: cd backend && npx tsx test/test_hr1801_personnel_leave.ts

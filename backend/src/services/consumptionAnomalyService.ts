@@ -77,6 +77,22 @@ export function buildAnomalyPrompt(stats: VehicleConsumptionStat[], periodDays: 
   ].join('\n');
 }
 
+/**
+ * COMP-606: şoför adlarını dış servise gitmeden ÖNCE takma adlaştırır. Aynı ad → aynı takma ad (modelin aynı kişiyi
+ * gruplayabilmesi için). `restore` yalnızca bu çağrının haritasını bilir; bilinmeyen metne dokunmaz.
+ */
+export function pseudonymizeDriversForExternalService(stats: VehicleConsumptionStat[]): { stats: VehicleConsumptionStat[]; restore: (text: string) => string } {
+  const byName = new Map<string, string>();
+  const safe = stats.map((s) => {
+    if (!s.driverName) return s;
+    if (!byName.has(s.driverName)) byName.set(s.driverName, `Sürücü-${byName.size + 1}`);
+    return { ...s, driverName: byName.get(s.driverName)! };
+  });
+  const entries = Array.from(byName.entries()).map(([real, alias]) => [alias, real] as const).sort((a, b) => b[0].length - a[0].length);
+  const restore = (text: string): string => entries.reduce((acc, [alias, real]) => acc.split(alias).join(real), text);
+  return { stats: safe, restore };
+}
+
 export interface AnomalyAnalysisDeps {
   /** Test/birim test enjeksiyonu — verilirse gerçek Gemini API'sine HİÇ
    *  gidilmez. Prod kod yolunda bu her zaman undefined'dır. */
@@ -93,7 +109,12 @@ export async function requestAnomalyAnalysis(
   periodDays: number,
   deps: AnomalyAnalysisDeps = {}
 ): Promise<AnomalyAnalysisResult> {
-  const prompt = buildAnomalyPrompt(stats, periodDays);
+  // COMP-606 AC: "dış servis çağrılarında kişisel veri bulunmamalıdır" (ticket: "Gemini gibi dış servislere veri gönderilmeden
+  // önce maskeleme zorunludur"). Şoför adları prompt'a GİRMEZ: Sürücü-1, Sürücü-2... takma adlarıyla gider, modelin
+  // yanıtındaki takma adlar (driverName + reason metni) geri çevrilir. Plaka kurumsal varlık (araç/iş makinesi) tanımlayıcısıdır
+  // ve analiz için gereklidir — kişisel veri envanterinde "yarı-tanımlayıcı" olarak belgelidir (docs/KVKK_ENVANTER.md).
+  const { stats: safeStats, restore } = pseudonymizeDriversForExternalService(stats);
+  const prompt = buildAnomalyPrompt(safeStats, periodDays);
 
   let rawText: string;
   if (deps.generateContent) {
@@ -140,7 +161,10 @@ export async function requestAnomalyAnalysis(
     throw new ServiceUnavailableError('AI modelinin çıktısı beklenen şemaya uymuyor.');
   }
 
-  return validation.data;
+  return {
+    ...validation.data,
+    anomalies: validation.data.anomalies.map((a) => ({ ...a, driverName: a.driverName == null ? a.driverName : restore(a.driverName), reason: restore(a.reason) }))
+  };
 }
 
 /**

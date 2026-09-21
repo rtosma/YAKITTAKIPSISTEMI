@@ -16,7 +16,8 @@ import routes from './routes/routes';
 import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing, sweepTimedOutCalibrations, getAllTenantIdsWithAiAnomalyEnabled, getAllTenantIds, listCompaniesDueForPeriodicArchive, sweepExpiredArchives, touchArchiveLastGenerated } from './db/adminDb';
 import { generateArchiveForTenant } from './services/tenantArchiveService';
 import { sweepTimedOutSessions } from './services/dispenseSessionService';
-import { runRetentionPurge } from './services/retentionService';
+import { runRetentionPurge, purgeColdArchives } from './services/retentionService';
+import { anonymizeExpiredSubjects } from './services/privacyService';
 import { broadcastToTenant, drainSocketClients } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
@@ -706,6 +707,22 @@ async function startServer(): Promise<void> {
       }
     } catch (err) {
       logger.error({ err }, '🚨 [ARCH-107] Retention purge turu başarısız.');
+    }
+    // COMP-606: aynı günlük tur — süresi dolan kişisel verilerin anonimleştirilmesi + soğuk arşiv ömrü. Birbirinden ve
+    // yukarıdaki purge'ten bağımsız (biri hata verirse diğerleri sürer).
+    try {
+      for (const r of await anonymizeExpiredSubjects()) {
+        logger.info({ ...r }, `🔒 [COMP-606] Süresi dolan kişisel veri: ${r.dataClass} — ${r.anonymized}/${r.candidates} anonimleştirildi${r.failed ? `, ${r.failed} BAŞARISIZ` : ''}.`);
+      }
+    } catch (err) {
+      logger.error({ err }, '🚨 [COMP-606] Kişisel veri anonimleştirme turu başarısız.');
+    }
+    try {
+      for (const r of await purgeColdArchives()) {
+        logger.info({ ...r }, `🗄️ [COMP-606] Soğuk arşiv ömrü doldu: ${r.archives} arşiv silindi.`);
+      }
+    } catch (err) {
+      logger.error({ err }, '🚨 [COMP-606] Soğuk arşiv temizliği turu başarısız.');
     }
   }, RETENTION_PURGE_SWEEP_MS);
 

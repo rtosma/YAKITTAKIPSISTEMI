@@ -47,6 +47,10 @@ import { getNotifications, markNotificationRead, sendTestNotification, notifyAla
 import { listNotificationQuerySchema, updateNotificationChannelsSchema, sendTestNotificationSchema, setUserNotificationPreferenceSchema, createUserNotificationMuteSchema } from '../schemas/notificationSchema';
 import { createFirmwareArtifactSchema, listFirmwareArtifactQuerySchema, startFirmwareRolloutSchema, listFirmwareRolloutQuerySchema, reportRolloutRollbackSchema } from '../schemas/firmwareRolloutSchema';
 import { generateArchiveForTenant, listTenantArchives, verifyAndConsumeArchiveDownload } from '../services/tenantArchiveService';
+import { createDataSubjectRequest, listDataSubjectRequests, fulfillAccessRequest, fulfillErasureRequest, rejectDataSubjectRequest, anonymizeExpiredSubjects } from '../services/privacyService';
+import { createDsrSchema, dsrIdParamsSchema, dsrRejectSchema, anonymizeExpiredSchema } from '../schemas/privacySchema';
+import { PII_INVENTORY } from '../privacy/piiInventory';
+import { maskDriverForRole, maskPersonnelForRole } from '../privacy/piiPolicy';
 import { getRetentionPolicies, setRetentionDays, listRetentionArchives, runRetentionPurge } from '../services/retentionService';
 import { retentionClassParamsSchema, retentionPolicyUpdateSchema, retentionRunSchema } from '../schemas/retentionSchema';
 import { archiveSettingsSchema, createArchiveSchema, archiveIdParamsSchema, archiveDownloadParamsSchema } from '../schemas/archiveSchema';
@@ -133,18 +137,8 @@ function siteScopeFor(user: JwtUserPayload): string | undefined {
   return user.role === 'SITE_MANAGER' ? user.siteName : undefined;
 }
 
-/**
- * FLEET-1403 AC (KVKK/COMP-606): "Kişisel veriler yetkisiz rollere
- * maskelenmiş gösterilmelidir." — TC Kimlik No önceden TÜM authenticateJWT
- * geçen rollere (PUMP_OPERATOR dahil) ham döndürülüyordu. Şoför kaydını
- * OLUŞTURABİLEN/DÜZENLEYEBİLEN roller (SUPER_ADMIN/COMPANY_OWNER/
- * SITE_MANAGER — POST/PUT /drivers'ın authorizeRoles'ü) tam değeri görmeye
- * devam eder; salt-okunur erişimi olan PUMP_OPERATOR maskelenmiş görür.
- */
-function maskTcNoForRole(tcNo: string | null | undefined, role: UserRole): string | null | undefined {
-  if (role !== 'PUMP_OPERATOR' || !tcNo || tcNo.length !== 11) return tcNo;
-  return `${tcNo.slice(0, 3)}******${tcNo.slice(9)}`;
-}
+// FLEET-1403 AC (KVKK/COMP-606): "Kişisel veriler yetkisiz rollere maskelenmiş gösterilmelidir." — kural COMP-606'da
+// privacy/piiPolicy.ts'e taşındı (TC + telefon; TAM görenler = kaydı düzenleyebilen roller, diğer HER rol maskeli/fail-closed).
 
 /**
  * @swagger
@@ -2512,14 +2506,14 @@ router.post('/personnel', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), 
 });
 router.get('/personnel', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    res.json({ success: true, data: await getPersonnelList() });
+    res.json({ success: true, data: (await getPersonnelList()).map((p) => maskPersonnelForRole(p, req.user!.role)) });
   } catch (error: any) {
     next(error);
   }
 });
 router.get('/personnel/:id', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    res.json({ success: true, data: await getPersonnel(req.params.id) });
+    res.json({ success: true, data: maskPersonnelForRole(await getPersonnel(req.params.id), req.user!.role) });
   } catch (error: any) {
     next(error);
   }
@@ -5028,7 +5022,7 @@ router.get('/vehicles/:id/assignment-history', authenticateJWT, async (req: Auth
 router.get('/drivers', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const drivers = await getTenantDrivers(siteScopeFor(req.user!));
-    const maskedDrivers = drivers.map((d) => ({ ...d, tc_no: maskTcNoForRole(d.tc_no, req.user!.role) }));
+    const maskedDrivers = drivers.map((d) => maskDriverForRole(d, req.user!.role));
 
     res.json({
       success: true,
@@ -6693,6 +6687,98 @@ router.post(
     }
   }
 );
+
+/**
+ * @swagger
+ * /privacy/inventory:
+ *   get:
+ *     summary: Kişisel Veri Envanteri (COMP-606)
+ *     description: Hangi tabloda hangi kişisel veri, hangi amaçla, ne kadar süre, hangi rol erişimiyle ve hangi korumayla tutulur.
+ *     security:
+ *       - bearerAuth: []
+ * /privacy/requests:
+ *   post:
+ *     summary: Veri Sahibi Başvurusu Oluştur (COMP-606, KVKK m.11)
+ *     description: >
+ *       `requestType`: ACCESS (erişim/döküm) veya ERASURE (silme = anonimleştirme). Yanıt süresi 30 gün (`dueAt`).
+ *       Aynı kişi ve tür için açık başvuru varken 409.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Veri Sahibi Başvuruları (gecikenler `overdue: true`)
+ *     security:
+ *       - bearerAuth: []
+ * /privacy/requests/{id}/access-export:
+ *   post:
+ *     summary: Erişim Başvurusunu Sonuçlandır ve Dökümü Üret
+ *     description: Kişinin verisinin dökümü YALNIZCA bu yanıtta döner (saklanmaz); başvuru COMPLETED olur. Ad çakışması varsa ad-tabanlı bölümler başkasının verisi ifşa olmasın diye withheld.
+ *     security:
+ *       - bearerAuth: []
+ * /privacy/requests/{id}/erase:
+ *   post:
+ *     summary: Silme Başvurusunu Uygula (anonimleştirme)
+ *     description: Kişisel alanlar anonimleştirilir; ikmal kayıtları (mali) takma adla korunur. Geri alınamaz.
+ *     security:
+ *       - bearerAuth: []
+ * /privacy/requests/{id}/reject:
+ *   post:
+ *     summary: Başvuruyu Reddet (gerekçeli)
+ *     security:
+ *       - bearerAuth: []
+ * /admin/privacy/anonymize-expired:
+ *   post:
+ *     summary: Süresi Dolan Kişisel Verileri Anonimleştir (SUPER_ADMIN)
+ *     description: Günlük zamanlanmış turla aynı kod; `dryRun` yalnızca adayları sayar.
+ *     security:
+ *       - bearerAuth: []
+ */
+const DSR_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+router.get('/privacy/inventory', authenticateJWT, authorizeRoles(...DSR_ROLES), (_req: AuthenticatedRequest, res: Response) => {
+  res.json({ success: true, data: PII_INVENTORY });
+});
+router.post('/privacy/requests', authenticateJWT, authorizeRoles(...DSR_ROLES), validateRequest({ body: createDsrSchema }), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.status(201).json({ success: true, data: await createDataSubjectRequest(req.user!.tenantId, req.user!.userId, req.body) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.get('/privacy/requests', authenticateJWT, authorizeRoles(...DSR_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await listDataSubjectRequests(req.user!.tenantId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.post('/privacy/requests/:id/access-export', authenticateJWT, authorizeRoles(...DSR_ROLES), validateRequest({ params: dsrIdParamsSchema }), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, data: await fulfillAccessRequest(req.user!.tenantId, req.user!.userId, String(req.params.id)) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.post('/privacy/requests/:id/erase', authenticateJWT, authorizeRoles(...DSR_ROLES), validateRequest({ params: dsrIdParamsSchema }), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await fulfillErasureRequest(req.user!.tenantId, req.user!.userId, String(req.params.id)) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.post('/privacy/requests/:id/reject', authenticateJWT, authorizeRoles(...DSR_ROLES), validateRequest({ params: dsrIdParamsSchema, body: dsrRejectSchema }), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await rejectDataSubjectRequest(req.user!.tenantId, req.user!.userId, String(req.params.id), req.body.reason) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.post('/admin/privacy/anonymize-expired', authenticateJWT, authorizeRoles('SUPER_ADMIN'), validateRequest({ body: anonymizeExpiredSchema }), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await anonymizeExpiredSubjects({ dryRun: req.body.dryRun ?? false, tenantId: req.body.tenantId }) });
+  } catch (error: any) {
+    next(error);
+  }
+});
 
 /**
  * @swagger

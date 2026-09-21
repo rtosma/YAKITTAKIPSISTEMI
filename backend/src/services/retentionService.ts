@@ -7,7 +7,7 @@ import { encryptTenantExport, decryptTenantExport } from '../utils/tenantExportC
 import { BadRequestError, NotFoundError } from '../utils/errors';
 import { logger } from '../utils/logger';
 import {
-  PURGEABLE_CLASSES, PROTECTED_TABLES, EXTERNAL_CLASSES, MAX_RETENTION_DAYS, getPurgeableSpec, type PurgeableSpec
+  PURGEABLE_CLASSES, PROTECTED_TABLES, EXTERNAL_CLASSES, MAX_RETENTION_DAYS, ANONYMIZABLE_CLASSES, COLD_ARCHIVE_CLASS, getConfigurableSpec, type PurgeableSpec
 } from '../retention/retentionCatalog';
 
 /**
@@ -45,12 +45,14 @@ export interface EffectivePolicy {
 
 export interface RetentionPolicyView {
   purgeable: EffectivePolicy[];
+  /** COMP-606: süresi dolunca anonimleştirilen kişisel veri sınıfları + soğuk arşiv ömrü. */
+  personalData: Array<EffectivePolicy & { kind: string }>;
   protected: Array<{ table: string; minYears: number; reason: string }>;
   external: typeof EXTERNAL_CLASSES;
   maxDays: number;
 }
 
-async function loadOverrides(tenantId: string, db: Pick<PoolClient, 'query'> = pool): Promise<Map<string, number>> {
+export async function loadOverrides(tenantId: string, db: Pick<PoolClient, 'query'> = pool): Promise<Map<string, number>> {
   const r = await db.query('SELECT data_class, retention_days FROM tenant_retention_settings WHERE tenant_id = $1', [tenantId]);
   return new Map(r.rows.map((row) => [row.data_class as string, Number(row.retention_days)]));
 }
@@ -62,6 +64,10 @@ export async function getRetentionPolicies(tenantId: string): Promise<RetentionP
       dataClass: c.dataClass, label: c.label, table: c.table, defaultDays: c.defaultDays, minDays: c.minDays,
       effectiveDays: overrides.get(c.dataClass) ?? c.defaultDays, customized: overrides.has(c.dataClass), rationale: c.rationale
     })),
+    personalData: [...ANONYMIZABLE_CLASSES, COLD_ARCHIVE_CLASS].map((c) => ({
+      dataClass: c.dataClass, kind: c.kind, label: c.label, table: c.table, defaultDays: c.defaultDays, minDays: c.minDays,
+      effectiveDays: overrides.get(c.dataClass) ?? c.defaultDays, customized: overrides.has(c.dataClass), rationale: c.rationale
+    })),
     protected: Object.entries(PROTECTED_TABLES).map(([table, v]) => ({ table, ...v })),
     external: EXTERNAL_CLASSES,
     maxDays: MAX_RETENTION_DAYS
@@ -70,7 +76,7 @@ export async function getRetentionPolicies(tenantId: string): Promise<RetentionP
 
 /** `null` → tenant özelleştirmesini kaldırır (varsayılana döner). */
 export async function setRetentionDays(tenantId: string, dataClass: string, retentionDays: number | null, actorUserId: string): Promise<EffectivePolicy> {
-  const spec = getPurgeableSpec(dataClass);
+  const spec = getConfigurableSpec(dataClass);
   if (!spec) {
     const isProtected = Object.keys(PROTECTED_TABLES).includes(dataClass.toLowerCase()) || /^transactions?$/i.test(dataClass);
     if (isProtected) {
@@ -108,7 +114,7 @@ export async function setRetentionDays(tenantId: string, dataClass: string, rete
     client.release();
   }
   const view = await getRetentionPolicies(tenantId);
-  return view.purgeable.find((p) => p.dataClass === spec.dataClass)!;
+  return [...view.purgeable, ...view.personalData].find((p) => p.dataClass === spec.dataClass)!;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -283,4 +289,45 @@ export async function runRetentionPurge(options: RetentionRunOptions = {}): Prom
     await lockClient.query('SELECT pg_advisory_unlock(hashtext($1))', [ADVISORY_LOCK_KEY]).catch(() => undefined);
     lockClient.release();
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// COMP-606: soğuk arşivlerin ömrü. Arşivin arşivi tutulmaz (kişisel veri içerdiği için amaç dışı çoğaltma olur);
+// silme yalnızca audit log'a özet olarak yazılır. Her silme tek transaction'da audit ile birlikte yapılır.
+// ---------------------------------------------------------------------------------------------------------------
+
+export interface ColdArchivePurgeResult { tenantId: string; retentionDays: number; cutoff: string; archives: number; rows: number; }
+
+export async function purgeColdArchives(options: { tenantId?: string; dryRun?: boolean; now?: Date } = {}): Promise<ColdArchivePurgeResult[]> {
+  const now = options.now ?? new Date();
+  const tenantIds: string[] = options.tenantId ? [options.tenantId] : (await pool.query('SELECT id FROM companies')).rows.map((r) => r.id as string);
+  const out: ColdArchivePurgeResult[] = [];
+  for (const tenantId of tenantIds) {
+    const days = Math.max((await loadOverrides(tenantId)).get(COLD_ARCHIVE_CLASS.dataClass) ?? COLD_ARCHIVE_CLASS.defaultDays, COLD_ARCHIVE_CLASS.minDays);
+    const cutoff = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const found = await client.query('SELECT id, data_class, row_count FROM retention_archives WHERE tenant_id = $1 AND created_at < $2 FOR UPDATE', [tenantId, cutoff]);
+      if (found.rows.length === 0 || options.dryRun) {
+        await client.query('ROLLBACK');
+        if (found.rows.length > 0) out.push({ tenantId, retentionDays: days, cutoff: cutoff.toISOString(), archives: found.rows.length, rows: found.rows.reduce((s, r) => s + Number(r.row_count), 0) });
+        continue;
+      }
+      await client.query('DELETE FROM retention_archives WHERE tenant_id = $1 AND id = ANY($2::text[])', [tenantId, found.rows.map((r) => r.id)]);
+      const rows = found.rows.reduce((s, r) => s + Number(r.row_count), 0);
+      await client.query(
+        `INSERT INTO audit_logs (id, tenant_id, user_id, action, target_type, target_id, after_value) VALUES ($1, $2, NULL, 'RETENTION_COLD_ARCHIVE_PURGE', 'retention_archives', $3, $4::jsonb)`,
+        [generateId('audit'), tenantId, COLD_ARCHIVE_CLASS.dataClass, JSON.stringify({ archives: found.rows.length, rows, cutoff: cutoff.toISOString(), retentionDays: days, dataClasses: [...new Set(found.rows.map((r) => r.data_class))] })]
+      );
+      await client.query('COMMIT');
+      out.push({ tenantId, retentionDays: days, cutoff: cutoff.toISOString(), archives: found.rows.length, rows });
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      logger.error({ err, tenantId }, '🚨 [COMP-606] Soğuk arşiv temizliği başarısız (arşivler korundu).');
+    } finally {
+      client.release();
+    }
+  }
+  return out;
 }

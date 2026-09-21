@@ -60,6 +60,33 @@ export const PURGEABLE_CLASSES: readonly PurgeableSpec[] = [
     rationale: 'Türetilmiş metrik geçmişi.' }
 ] as const;
 
+/**
+ * COMP-606 (#132): süresi dolunca SİLİNMEZ, KİŞİSEL ALANLARI ANONİMLEŞTİRİLİR (kayıt, ilişkili işlem/ikmal ve tutarlar
+ * korunur — mali bütünlük). Süre "aktif olmama" (deactivated_at) anından sayılır; aktif kayıtlar hiçbir zaman dolmaz.
+ */
+export interface ConfigurableSpec {
+  dataClass: string;
+  kind: 'PURGE' | 'ANONYMIZE' | 'COLD_ARCHIVE';
+  label: string;
+  table: string;
+  defaultDays: number;
+  minDays: number;
+  rationale: string;
+}
+
+export const ANONYMIZABLE_CLASSES: readonly ConfigurableSpec[] = [
+  { dataClass: 'DRIVER_PII', kind: 'ANONYMIZE', label: 'Aktif olmayan sürücünün kişisel verisi (drivers)', table: 'drivers', defaultDays: 1825, minDays: 365,
+    rationale: 'Ad, TCKN, telefon, ehliyet, RFID kart no. Sürücü aktif olmaktan çıktıktan sonra amaç sona erer; işlem/ikmal kayıtları takma adla kalır (mali kayıt).' },
+  { dataClass: 'PERSONNEL_PII', kind: 'ANONYMIZE', label: 'Pasif personelin kişisel verisi (personnel)', table: 'personnel', defaultDays: 3650, minDays: 1825,
+    rationale: 'Personel özlük kayıtları için uzun yasal saklama süreleri olabilir (varsayılan 10 yıl, taban 5 yıl); hukuk müşaviri onayıyla ayarlayın.' }
+] as const;
+
+/** ARCH-107 soğuk arşivleri kişisel veri (ad, TCKN...) içerebilir → süresiz tutulamaz (KVKK). */
+export const COLD_ARCHIVE_CLASS: ConfigurableSpec = {
+  dataClass: 'COLD_ARCHIVE', kind: 'COLD_ARCHIVE', label: 'Retention soğuk arşivleri (retention_archives)', table: 'retention_archives', defaultDays: 1825, minDays: 365,
+  rationale: 'Purge öncesi alınan arşivler silinen satırların (kişisel veri dahil) kopyasıdır; oluşturulmalarından itibaren bu süre sonra silinir. (Arşivin arşivi tutulmaz — silme audit log\'a yazılır.)'
+};
+
 /** Mali kayıt / mevzuat: ASLA otomatik silinmez. `minYears` bilgilendirici saklama önerisidir (uygulama silmez). */
 export const PROTECTED_TABLES: Readonly<Record<string, { minYears: number; reason: string }>> = {
   transactions: { minYears: 10, reason: 'Mali kayıt (ikmal hareketi) — değişmezlik mührü (FUEL-401.4); önerilen saklama 10 yıl.' },
@@ -87,7 +114,7 @@ export const PROTECTED_TABLES: Readonly<Record<string, { minYears: number; reaso
 /** Kendi süpürücüsü olan tablolar. */
 export const MANAGED_TABLES: Readonly<Record<string, string>> = {
   tenant_archives: 'REP-702: dosya içeriği expires_at sonrası sweepExpiredArchives ile temizlenir (satır/denetim izi kalır).',
-  retention_archives: 'ARCH-107: soğuk arşiv; süresiz saklanır, silme yalnızca SUPER_ADMIN kararıyla (bkz. docs/DATA_RETENTION.md).'
+  retention_archives: 'ARCH-107/COMP-606: soğuk arşiv; COLD_ARCHIVE süresi (varsayılan 5 yıl) dolunca silinir (bkz. docs/DATA_RETENTION.md).'
 };
 
 /** Tablo olarak var olmayan / harici sistemlerde tutulan veri sınıfları (bilgilendirme; purge kodu yok). */
@@ -104,8 +131,15 @@ export const MASTER_TABLES: readonly string[] = [
   'recipient_taxpayers', 'vehicle_fuel_limits', 'vehicle_maintenance_records', 'vehicle_compliance_deadlines', 'vehicle_tires',
   'vehicle_document_download_links', 'inventory_items', 'sites', 'firmware_artifacts', 'firmware_rollouts', 'firmware_rollout_devices',
   'sms_monthly_usage', 'tenant_notification_channels', 'user_notification_preferences', 'user_notification_mutes', 'report_schedules',
-  'fuel_budgets', 'tenant_retention_settings'
+  'fuel_budgets', 'tenant_retention_settings', 'data_subject_requests'
 ];
+
+export function getConfigurableSpec(dataClass: string): ConfigurableSpec | undefined {
+  const p = getPurgeableSpec(dataClass);
+  if (p) return { dataClass: p.dataClass, kind: 'PURGE', label: p.label, table: p.table, defaultDays: p.defaultDays, minDays: p.minDays, rationale: p.rationale };
+  if (dataClass === COLD_ARCHIVE_CLASS.dataClass) return COLD_ARCHIVE_CLASS;
+  return ANONYMIZABLE_CLASSES.find((c) => c.dataClass === dataClass);
+}
 
 export function getPurgeableSpec(dataClass: string): PurgeableSpec | undefined {
   return PURGEABLE_CLASSES.find((c) => c.dataClass === dataClass);

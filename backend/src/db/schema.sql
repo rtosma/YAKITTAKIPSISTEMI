@@ -2757,3 +2757,72 @@ CREATE POLICY retention_archives_tenant_isolation_policy ON retention_archives
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 REVOKE ALL ON retention_archives FROM app_user;
+
+-- COMP-606 (#132): kişisel veri saklama süresi sayacı + anonimleştirme işareti. `deactivated_at` — kaydın "aktif olmayan"
+-- duruma GEÇTİĞİ an (sürücü: AKTİF/SAHADA/İZİNLİ dışı; personel: PASİF); tetikleyici HER yazıcıda (API, SQL, içe aktarma)
+-- tutarlıdır. Süre dolunca (tenant ayarı, varsayılan sürücü 5 yıl / personel 10 yıl) kişisel alanlar anonimleştirilir
+-- (`anonymized_at`); işlem/ikmal kaydı ve tutarları KORUNUR. Mevcut aktif olmayan kayıtlar için sayaç migrasyon anında başlar.
+ALTER TABLE drivers ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE drivers ADD COLUMN IF NOT EXISTS anonymized_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE personnel ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE personnel ADD COLUMN IF NOT EXISTS anonymized_at TIMESTAMP WITH TIME ZONE;
+
+CREATE OR REPLACE FUNCTION set_driver_deactivated_at() RETURNS trigger AS $$
+BEGIN
+  IF NEW.status IN ('AKTİF', 'SAHADA', 'İZİNLİ') THEN
+    NEW.deactivated_at := NULL;
+  ELSIF TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM NEW.status OR NEW.deactivated_at IS NULL THEN
+    NEW.deactivated_at := COALESCE(NEW.deactivated_at, CURRENT_TIMESTAMP);
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS drivers_deactivated_at_trg ON drivers;
+CREATE TRIGGER drivers_deactivated_at_trg BEFORE INSERT OR UPDATE OF status ON drivers FOR EACH ROW EXECUTE FUNCTION set_driver_deactivated_at();
+
+CREATE OR REPLACE FUNCTION set_personnel_deactivated_at() RETURNS trigger AS $$
+BEGIN
+  IF NEW.status = 'AKTİF' THEN
+    NEW.deactivated_at := NULL;
+  ELSIF TG_OP = 'INSERT' OR OLD.status IS DISTINCT FROM NEW.status OR NEW.deactivated_at IS NULL THEN
+    NEW.deactivated_at := COALESCE(NEW.deactivated_at, CURRENT_TIMESTAMP);
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS personnel_deactivated_at_trg ON personnel;
+CREATE TRIGGER personnel_deactivated_at_trg BEFORE INSERT OR UPDATE OF status ON personnel FOR EACH ROW EXECUTE FUNCTION set_personnel_deactivated_at();
+
+UPDATE drivers SET deactivated_at = CURRENT_TIMESTAMP WHERE deactivated_at IS NULL AND status NOT IN ('AKTİF', 'SAHADA', 'İZİNLİ');
+UPDATE personnel SET deactivated_at = CURRENT_TIMESTAMP WHERE deactivated_at IS NULL AND status <> 'AKTİF';
+
+-- COMP-606: veri sahibi başvuruları (KVKK m.11 hakları: erişim/silme). Teslim süresi 30 gün (KVKK m.13) — `due_at`.
+-- Tabloda kişisel veri YOKTUR (yalnızca konu kaydının id'si); sonuç özeti sayılardan oluşur.
+CREATE TABLE IF NOT EXISTS data_subject_requests (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    request_type VARCHAR(16) NOT NULL,   -- 'ACCESS' | 'ERASURE'
+    subject_type VARCHAR(16) NOT NULL,   -- 'DRIVER' | 'PERSONNEL'
+    subject_id VARCHAR(64) NOT NULL,
+    requester_note TEXT,
+    status VARCHAR(16) NOT NULL DEFAULT 'RECEIVED', -- 'RECEIVED' | 'COMPLETED' | 'REJECTED'
+    received_by VARCHAR(64),
+    received_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    due_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    handled_by VARCHAR(64),
+    reject_reason TEXT,
+    result JSONB,
+    CONSTRAINT dsr_type_check CHECK (request_type IN ('ACCESS', 'ERASURE')),
+    CONSTRAINT dsr_subject_check CHECK (subject_type IN ('DRIVER', 'PERSONNEL')),
+    CONSTRAINT dsr_status_check CHECK (status IN ('RECEIVED', 'COMPLETED', 'REJECTED'))
+);
+CREATE INDEX IF NOT EXISTS idx_dsr_tenant_status ON data_subject_requests(tenant_id, status, due_at);
+ALTER TABLE data_subject_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE data_subject_requests FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS data_subject_requests_tenant_isolation_policy ON data_subject_requests;
+CREATE POLICY data_subject_requests_tenant_isolation_policy ON data_subject_requests
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+REVOKE ALL ON data_subject_requests FROM app_user;

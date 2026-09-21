@@ -59,8 +59,8 @@ Günlük tur (`index.ts`, 24 sa) → `retentionService.runRetentionPurge()`; SUP
 
 ## 3. Soğuk arşivler
 
-`retention_archives` — silinen satırların şifreli, sıkıştırılmış kopyası (tenant başına RLS; uygulama rolüne kapalı). **Süresiz saklanır**; silme yalnızca SUPER_ADMIN kararıyla (elle) yapılır — arşivde kişisel veri kalabileceği için (KVKK, COMP-606)
-saklama süresi ve erişim politikası orada ayrıca ele alınır. Meta veri: `GET /api/v1/retention/archives` (içerik dönmez).
+`retention_archives` — silinen satırların şifreli, sıkıştırılmış kopyası (tenant başına RLS; uygulama rolüne kapalı). Arşivde kişisel veri kalabileceği için **süresiz tutulmaz** (COMP-606): `COLD_ARCHIVE` süresi (varsayılan 1825 gün, taban 365,
+tenant ayarlı) sonunda günlük tur arşivi siler ve özeti audit log'a yazar (`RETENTION_COLD_ARCHIVE_PURGE`). Ayrıntı: [KVKK_ENVANTER.md §4](KVKK_ENVANTER.md). Meta veri: `GET /api/v1/retention/archives` (içerik dönmez).
 
 **Bir arşivi açma (yönetici):** `retentionService.decryptRetentionArchive(file_data, sha256)` (sunucu ortamında; anahtar `TENANT_EXPORT_ENCRYPTION_KEY`) `{ header, rows }` döner; `header` sınıf/tablo/tenant/eşik/süre/satır sayısını,
 `rows` silinen satırların tam JSON içeriğini taşır. Bütünlük (`sha256`) ve şifreleme etiketi (GCM) doğrulanmadan açılmaz. Arşivden geri yükleme otomatik değildir; satırlar elle `INSERT` edilir.
