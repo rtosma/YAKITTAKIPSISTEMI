@@ -133,6 +133,12 @@ jobs:
       - name: "DOC-1207: Operatör El Kitabı ve Özet Kart Testleri"
         run: node scripts/test-doc1207.mjs
 
+      # DOC-1203 (#40): proje rehberinin üretilen bölümleri (şema, rol matrisi, uçlar, rapor kataloğu) koddan güncel mi + kurulum betiği gerçekten çalışıyor mu.
+      - name: "DOC-1203: Proje Rehberi Güncel mi? (koddan üretilen bölümler)"
+        run: node scripts/generate-project-guide.mjs --check
+      - name: "DOC-1203: Proje Rehberi Sözleşme Testleri (kurulum, modül haritası, diyagramlar, roller)"
+        run: node scripts/test-doc1203.mjs
+
       - name: "ARCH-110: Ham process.env Kullanımı Denetimi (Tipli Config Zorunluluğu)"
         run: node scripts/check-no-direct-process-env.mjs
 

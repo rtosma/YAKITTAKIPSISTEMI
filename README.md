@@ -52,8 +52,13 @@ YAKITTAKIPSISTEMI/
 ### Docker Compose ile (Önerilen)
 
 ```bash
-# 1. Ortam değişkenlerini konfigüre et
+# 1. Ortam değişkenlerini konfigüre et: .env'i oluştur ve __CHANGE_ME__ yer tutucularını rastgele sırlarla doldur
+#    (yer tutucular backend tarafından REDDEDİLİR; ayrıntı: docs/PROJE-REHBERI.md §7.1)
 cp .env.example .env
+while grep -qE '__CHANGE_ME_RUN_openssl_rand_-hex_[0-9]+__' .env; do
+  n=$(grep -oE -m1 'hex_[0-9]+__' .env | head -1 | tr -dc 0-9)
+  sed -i "0,/__CHANGE_ME_RUN_openssl_rand_-hex_${n}__/s//$(openssl rand -hex "$n")/" .env
+done
 
 # 2. Tüm servisleri başlat (PostgreSQL + Backend + Frontend)
 docker compose up --build
@@ -95,6 +100,7 @@ npm run dev          # http://localhost:3000
 
 | Belge | Açıklama |
 | ----- | -------- |
+| [docs/PROJE-REHBERI.md](docs/PROJE-REHBERI.md) | **Buradan başlayın** — ekip çalışma rehberi: modül haritası, mimari ve kararların gerekçeleri, Mermaid diyagramları, ortam kurulumu (30 dk), rol matrisi, rapor kataloğu, şema, test stratejisi, riskler |
 | [docs/HARDWARE_INTEGRATION_GUIDE.md](docs/HARDWARE_INTEGRATION_GUIDE.md) | Pano üreticileri için donanım entegrasyon rehberi (HMAC imza şeması, MQTT topic/LWT, LoRaWAN binary payload formatı, kalibrasyon/fail-open/offline-sync protokolleri) |
 | [docs/SECRETS.md](docs/SECRETS.md) | Ortam değişkenleri ve sır yönetimi |
 | `/api-docs` (backend ayaktayken) | Swagger UI — tüm REST endpoint'lerinin interaktif dokümantasyonu |
