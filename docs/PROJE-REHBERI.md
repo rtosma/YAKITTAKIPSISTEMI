@@ -4,17 +4,17 @@
 > Bu rehber kodla birlikte güncellenir: veritabanı şeması, rol matrisi, uç sayıları ve rapor kataloğu **koddan üretilir** ve CI'da güncel mi diye denetlenir (`node scripts/generate-project-guide.mjs --check`). Eskimiş rehber, rehber olmamasından kötüdür.
 
 **Hızlı yol (30 dakika):** [§7 Ortam kurulumu](#7-ortam-kurulumu-adım-adım) → [§6 Çalışma kuralları](#6-repo-yapısı-branch-commit-ve-pr-kuralları) → [§2 Modül haritası](#2-modül-haritası-18-grup) → bir issue seç.
-Terimler için `docs/SOZLUK.md` (DOC-1205). Diğer belgeler: [Donanım entegrasyonu](HARDWARE_INTEGRATION_GUIDE.md) · [Saha kurulum](SAHA_KURULUM.md) · [Operatör kitabı](OPERATOR_EL_KITABI.md) · [Ortamlar](ENVIRONMENTS.md) · [Dağıtım/geri alma](DEPLOY_ROLLBACK.md) · [Gözlemlenebilirlik](OBSERVABILITY.md) · [Uyarılar/runbook](ALERTING.md) · [KVKK](KVKK_ENVANTER.md) · [Saklama](DATA_RETENTION.md) · [Yedekleme](BACKUP_RESTORE.md) · [Kaos testi](CHAOS_TESTING.md) · [Sırlar](SECRETS.md) · [Test planı](../TEST_PLAN.md).
+Terimler için [SOZLUK.md](SOZLUK.md). Diğer belgeler: [Donanım entegrasyonu](HARDWARE_INTEGRATION_GUIDE.md) · [Saha kurulum](SAHA_KURULUM.md) · [Operatör kitabı](OPERATOR_EL_KITABI.md) · [Ortamlar](ENVIRONMENTS.md) · [Dağıtım/geri alma](DEPLOY_ROLLBACK.md) · [Gözlemlenebilirlik](OBSERVABILITY.md) · [Uyarılar/runbook](ALERTING.md) · [[KVKK](SOZLUK.md#pii)](KVKK_ENVANTER.md) · [Saklama](DATA_RETENTION.md) · [Yedekleme](BACKUP_RESTORE.md) · [Kaos testi](CHAOS_TESTING.md) · [Sırlar](SECRETS.md) · [Test planı](../TEST_PLAN.md).
 
 ---
 
 ## 1. Proje amacı, kapsamı ve kapsam dışı
 
-**Ne:** şantiyelerdeki akaryakıt tanklarını ve pompaları izleyen, ikmali **RFID kartıyla yetkilendiren**, stok/tüketim/maliyeti raporlayan, kaçak ve anomalileri yakalayan, e-İrsaliye üreten **çok kiracılı (multi-tenant) SaaS**. Sahada ESP32 tabanlı pompa kontrol üniteleri (RFID okuyucu, akışmetre, röle) HTTPS (HMAC imzalı) ve MQTT ile sunucuya konuşur; yönetim/şantiye panelleri React SPA'dır.
+**Ne:** şantiyelerdeki akaryakıt tanklarını ve pompaları izleyen, ikmali **[RFID](SOZLUK.md#rfid) kartıyla yetkilendiren**, stok/tüketim/maliyeti raporlayan, kaçak ve anomalileri yakalayan, [e-İrsaliye](SOZLUK.md#e-irsaliye) üreten **çok kiracılı ([multi-tenant](SOZLUK.md#tenant)) SaaS**. Sahada ESP32 tabanlı pompa kontrol üniteleri (RFID okuyucu, [akışmetre](SOZLUK.md#debimetre), röle) HTTPS ([HMAC](SOZLUK.md#hmac) imzalı) ve [MQTT](SOZLUK.md#mqtt) ile sunucuya konuşur; yönetim/şantiye panelleri React SPA'dır.
 
-**Kapsam içi:** çok kiracılı veri izolasyonu · RFID'li ikmal oturumu (yetki → akış → sonlandırma) · çevrimdışı çalışma ve toplu senkron · tank/stok/mutabakat/fire · çapraz şantiye kota/mahsuplaşma · filo (araç, sürücü, bakım, belge) · anomali/hırsızlık tespiti ve AI analizi · e-İrsaliye (UBL-TR) · raporlama ve şifreli arşiv · bildirimler · KVKK/saklama · gözlemlenebilirlik, yedekleme, sıfır kesintili dağıtım.
+**Kapsam içi:** çok kiracılı veri izolasyonu · RFID'li ikmal oturumu (yetki → akış → sonlandırma) · çevrimdışı çalışma ve toplu senkron · tank/stok/[mutabakat](SOZLUK.md#mutabakat)/[fire](SOZLUK.md#fire) · çapraz şantiye [kota](SOZLUK.md#kota)/mahsuplaşma · filo (araç, sürücü, bakım, belge) · anomali/hırsızlık tespiti ve AI analizi · e-İrsaliye ([UBL-TR](SOZLUK.md#ubl-tr)) · raporlama ve şifreli arşiv · bildirimler · KVKK/saklama · gözlemlenebilirlik, yedekleme, sıfır kesintili dağıtım.
 
-**Kapsam dışı (bilinçli):** cihaz **firmware'i bu depoda yok** (FW-13xx ayrı iş; `hardware/` altında yalnızca eski bir prototip) · gerçek e-Fatura entegratör bağlantısı (arayüz + devre kesici hazır, canlı entegratör yok) · TimescaleDB/hypertable (ARCH-103, henüz kurulmadı — bkz. §9.2) · Kubernetes (dağıtım Docker Compose + nginx blue/green) · mobil uygulama.
+**Kapsam dışı (bilinçli):** cihaz **firmware'i bu depoda yok** (FW-13xx ayrı iş; `hardware/` altında yalnızca eski bir prototip) · gerçek e-Fatura entegratör bağlantısı (arayüz + [devre kesici](SOZLUK.md#circuit-breaker) hazır, canlı entegratör yok) · TimescaleDB/[hypertable](SOZLUK.md#hypertable) (ARCH-103, henüz kurulmadı — bkz. §9.2) · Kubernetes (dağıtım Docker Compose + nginx [blue/green](SOZLUK.md#blue-green)) · mobil uygulama.
 
 > **Ticket'lardan bilinçli sapmalar** (çoğu issue NestJS/BullMQ/Drizzle/K8s varsayar; kod tabanı **Express + ham SQL + Redis** kullanır). Sapmalar ilgili dosyada "KAPSAM UYARLAMASI" yorumuyla gerekçelendirilir; yeni iş alırken ticket'ı **koddaki gerçek desenle** eşleştirin (§5.5).
 
@@ -26,23 +26,23 @@ Issue kodları `GRUP-NNN` biçimindedir; kodda ilgili yorumlarda ve commit başl
 
 | Grup | Ne yapar | Bağlı olduğu | Kodda nerede | Ana belge / test |
 |---|---|---|---|---|
-| **ARCH** Mimari | AsyncLocalStorage + PostgreSQL RLS ile tenant izolasyonu, olay yolu, tenant yaşam döngüsü (dondur/sil/dışa aktar), saklama politikası | — (temel) | `backend/src/context/`, `db/withTenant.ts`, `db/schema.sql`, `services/retentionService.ts` | [DATA_RETENTION](DATA_RETENTION.md) · `test_195_*`, `test_arch107_*`, `test_arch108_*` |
-| **AUTH** Kimlik | JWT (access/refresh rotasyonu), Argon2id, rol/site kapsamı, cihaz HMAC, denetim günlüğü, TOTP, hesap kilidi | ARCH | `middleware/authMiddleware.ts`, `middleware/hardwareAuthMiddleware.ts`, `services/tokenService.ts`, `utils/auditLog.ts` | [HW guide §2](HARDWARE_INTEGRATION_GUIDE.md) · `test_auth2*` |
-| **IOT** Telemetri | MQTT v5 dinleyici (paylaşımlı abonelik), LoRaWAN payload çözücü, presence, çevrimdışı toplu senkron (`sync-batch`), cihaz sağlığı | ARCH, AUTH | `iot/mqttClient.ts`, `services/lorawanUplinkService.ts`, `routes` (`/telemetry`) | [HW guide §3-4,7](HARDWARE_INTEGRATION_GUIDE.md) · `test_iot30*`, [CHAOS](CHAOS_TESTING.md) |
-| **FUEL** İkmal | RFID'li ikmal oturumu (Redis durum makinesi), çapraz şantiye kota (Redlock benzeri kilit), strapping tablosu, kalibrasyon, mutabakat/fire, manuel çift onay | ARCH, AUTH, IOT | `services/dispenseSessionService.ts`, `db/tenantDb.ts`, `fuel/` | [HW guide §5,9](HARDWARE_INTEGRATION_GUIDE.md) · `test_fuel4*` |
+| **ARCH** Mimari | [AsyncLocalStorage](SOZLUK.md#async-local-storage) + PostgreSQL [RLS](SOZLUK.md#rls) ile tenant izolasyonu, olay yolu, tenant yaşam döngüsü (dondur/sil/dışa aktar), saklama politikası | — (temel) | `backend/src/context/`, `db/withTenant.ts`, `db/schema.sql`, `services/retentionService.ts` | [DATA_RETENTION](DATA_RETENTION.md) · `test_195_*`, `test_arch107_*`, `test_arch108_*` |
+| **AUTH** Kimlik | [JWT](SOZLUK.md#jwt) (access/refresh rotasyonu), [Argon2id](SOZLUK.md#argon2id), rol/site kapsamı, cihaz HMAC, denetim günlüğü, TOTP, hesap kilidi | ARCH | `middleware/authMiddleware.ts`, `middleware/hardwareAuthMiddleware.ts`, `services/tokenService.ts`, `utils/auditLog.ts` | [HW guide §2](HARDWARE_INTEGRATION_GUIDE.md) · `test_auth2*` |
+| **IOT** Telemetri | MQTT v5 dinleyici (paylaşımlı abonelik), [LoRaWAN](SOZLUK.md#lorawan) payload çözücü, [presence](SOZLUK.md#presence), çevrimdışı toplu senkron (`sync-batch`), cihaz sağlığı | ARCH, AUTH | `iot/mqttClient.ts`, `services/lorawanUplinkService.ts`, `routes` (`/telemetry`) | [HW guide §3-4,7](HARDWARE_INTEGRATION_GUIDE.md) · `test_iot30*`, [CHAOS](CHAOS_TESTING.md) |
+| **FUEL** İkmal | RFID'li ikmal oturumu (Redis durum makinesi), çapraz şantiye kota (Redlock benzeri kilit), [strapping](SOZLUK.md#strapping-table) tablosu, kalibrasyon, mutabakat/fire, manuel çift onay | ARCH, AUTH, IOT | `services/dispenseSessionService.ts`, `db/tenantDb.ts`, `fuel/` | [HW guide §5,9](HARDWARE_INTEGRATION_GUIDE.md) · `test_fuel4*` |
 | **FLEET** Filo | Araç/sürücü, km-motor saati, yakıt limiti, bakım, belge, lastik, uyum tarihleri, sürücü davranış skoru | FUEL | `fleet/`, `db/tenantDb.ts` | `test_fleet14*` |
 | **INV** Envanter | Tank tanımı, yakıt alım/dolum irsaliyesi, depo/parça envanteri, maliyet yöntemi, laboratuvar | FUEL | `db/tenantDb.ts` | `test_inv15*` |
 | **AI** Anomali | Debi↔tank korelasyonu (hırsızlık), Gemini tüketim analizi, mesai dışı/anomali, alarm yaşam döngüsü, sürücü/cihaz skoru | FUEL, IOT | `services/theftDetectionService.ts`, `services/consumptionAnomalyService.ts` | `test_ai50*` |
-| **COMP** Mevzuat | e-İrsaliye UBL-TR XML, entegratör istemcisi + devre kesici, mükellef sorgusu, KVKK | FUEL | `compliance/`, `privacy/`, `services/privacyService.ts` | [KVKK](KVKK_ENVANTER.md) · `test_comp60*` |
+| **COMP** Mevzuat | e-İrsaliye UBL-TR XML, entegratör istemcisi + devre kesici, [mükellef](SOZLUK.md#mukellef) sorgusu, KVKK | FUEL | `compliance/`, `privacy/`, `services/privacyService.ts` | [KVKK](KVKK_ENVANTER.md) · `test_comp60*` |
 | **REP** Rapor | Rapor çatısı (`reports/`), 13 ana rapor + alt görünümler, CSV/PDF/JSON, PII maskesi, zamanlanmış teslim, şifreli arşiv, yönetici dashboard'u | tüm veri | `backend/src/reports/`, `services/reportScheduleService.ts`, `services/tenantArchiveService.ts` | §11 · `test_rep7*` |
 | **NOTIF** Bildirim | Uygulama-içi/e-posta/SMS/Telegram/webhook, tercihler, yeniden deneme + dead-letter, devre kesici | AI, FUEL | `notifications/`, `services/notificationService.ts` | `test_notif16*` |
 | **BILL** Faturalama | Paket/limitler, ek modüller, kullanım ölçümü, lisans uyarıları | ARCH | `services/usageMeteringService.ts`, `services/licenseWarningService.ts` | `test_bill17*` |
-| **HR** Personel | Personel kaydı, izin talebi/onayı, izin bakiyesi ve araç zimmet çakışması | FLEET | `services/personnelLeaveService.ts` | `test_hr1801_*` |
-| **FE** Frontend | React SPA: Yönetici / Şantiye / Geliştirici panelleri, Socket.io canlı veri, rol koruması, sessiz token yenileme | AUTH | `frontend/src/` | `frontend/src/**/*.test.*`, `frontend/e2e/` |
-| **FW** Firmware | ESP32 pompa ünitesi (RFID, akışmetre, röle, MQTT/HTTPS, offline kuyruk, OTA, ekran) | IOT, FUEL | **bu depoda yok** — sözleşme: `docs/HARDWARE_INTEGRATION_GUIDE.md`, `docs/operator/device-messages.json` | HIL testleri (TEST-1005, açık) |
+| **HR** Personel | Personel kaydı, izin talebi/onayı, izin bakiyesi ve araç [zimmet](SOZLUK.md#zimmet) çakışması | FLEET | `services/personnelLeaveService.ts` | `test_hr1801_*` |
+| **FE** Frontend | React SPA: Yönetici / Şantiye / Geliştirici panelleri, [Socket.io](SOZLUK.md#websocket) canlı veri, rol koruması, sessiz token yenileme | AUTH | `frontend/src/` | `frontend/src/**/*.test.*`, `frontend/e2e/` |
+| **FW** Firmware | ESP32 pompa ünitesi (RFID, akışmetre, röle, MQTT/HTTPS, offline kuyruk, [OTA](SOZLUK.md#ota), ekran) | IOT, FUEL | **bu depoda yok** — sözleşme: `docs/HARDWARE_INTEGRATION_GUIDE.md`, `docs/operator/device-messages.json` | HIL testleri (TEST-1005, açık) |
 | **RES** Dayanıklılık | Zod doğrulama, global hata yönetimi, yapısal log, graceful degradation, health/ready, Sentry | tümü | `middleware/errorHandler.ts`, `services/readinessService.ts`, `observability/` | [ERROR_TRACKING](ERROR_TRACKING.md) · `test_res90*` |
 | **TEST** Test | Entegrasyon, yük (k6), kaos, e2e, sözleşme testleri | tümü | `backend/test/`, `scripts/test-*.mjs`, `frontend/e2e/` | §13 · [TEST_PLAN](../TEST_PLAN.md) |
-| **OPS** DevOps | Docker, CI/CD, ortamlar, sıfır kesinti + geri alma, yedek/PITR, izleme, uyarı/runbook | tümü | `.github/workflows/`, `docker-compose*.yml`, `scripts/`, `deploy/` | [DEPLOY_ROLLBACK](DEPLOY_ROLLBACK.md) · [OBSERVABILITY](OBSERVABILITY.md) · [BACKUP_RESTORE](BACKUP_RESTORE.md) |
+| **OPS** DevOps | Docker, CI/CD, ortamlar, sıfır kesinti + geri alma, yedek/[PITR](SOZLUK.md#pitr), izleme, uyarı/runbook | tümü | `.github/workflows/`, `docker-compose*.yml`, `scripts/`, `deploy/` | [DEPLOY_ROLLBACK](DEPLOY_ROLLBACK.md) · [OBSERVABILITY](OBSERVABILITY.md) · [BACKUP_RESTORE](BACKUP_RESTORE.md) |
 | **DOC** Doküman | Bu rehber, sözlük, sunum, donanım şartnamesi, saha/operatör kitapları | — | `docs/` | `scripts/test-doc*.mjs` |
 
 ---
@@ -173,9 +173,9 @@ sequenceDiagram
 | Katman | Seçim | Neden |
 |---|---|---|
 | Backend | Node.js 20 + Express + TypeScript | Tek dil (frontend ile), zengin ekosistem (MQTT, Socket.io, PDF/Excel), olay güdümlü I/O yükü için uygun. NestJS **kullanılmıyor** (ticket'lar varsayar): daha az soyutlama, açık akış |
-| Veritabanı | PostgreSQL 16, **ham SQL** (`pg`) | Satır düzeyi güvenlik (RLS) ile tenant izolasyonu DB'de zorlanır; ORM'in RLS bağlamını taşıma riski yok. Şema `schema.sql` (idempotent, expand-only) |
-| Önbellek/durum | Redis | Dağıtık ikmal oturumu (replikalar arası paylaşım), nonce/replay, rate limit, presence TTL |
-| Mesajlaşma | EMQX (MQTT v5) | Cihazlar için hafif, QoS 1, LWT ile anlık offline tespiti; paylaşımlı abonelik ile çok replika |
+| Veritabanı | PostgreSQL 16, **ham SQL** (`pg`) | Satır düzeyi güvenlik (RLS) ile tenant izolasyonu DB'de zorlanır; ORM'in RLS bağlamını taşıma riski yok. Şema `schema.sql` (idempotent, [expand-only](SOZLUK.md#expand-only)) |
+| Önbellek/durum | Redis | Dağıtık ikmal oturumu (replikalar arası paylaşım), [nonce](SOZLUK.md#nonce)/[replay](SOZLUK.md#replay), rate limit, presence TTL |
+| Mesajlaşma | EMQX (MQTT v5) | Cihazlar için hafif, [QoS](SOZLUK.md#qos) 1, [LWT](SOZLUK.md#lwt) ile anlık offline tespiti; paylaşımlı abonelik ile çok replika |
 | Kimlik | Argon2id + JWT (15 dk access + döner refresh) + cihazlar için HMAC-SHA256 | Parola kırma maliyeti; refresh çalınmasına karşı rotasyon; cihazda tarayıcı yok → imzalı istek |
 | Doğrulama | Zod | Girdi şeması tek yerde; OpenAPI ile uyumlu |
 | Frontend | React 19 + Vite + Tailwind v4 | Hızlı derleme; `socket.io-client` ile canlı veri |
@@ -192,25 +192,25 @@ sequenceDiagram
 Her istek `authenticateJWT` ile bir **tenant bağlamı** (AsyncLocalStorage) kurar; tüm sorgular `withTenant()` içinde `SET LOCAL ROLE app_user` + `app.current_tenant_id` ile çalışır ve **PostgreSQL RLS** satırları filtreler. **Neden:** uygulama katmanındaki bir `WHERE tenant_id=…` unutulması veri sızıntısıdır; RLS bunu DB düzeyinde imkânsız kılar. Kuralları: yeni tenant tablosu `tenant_id` + `ENABLE/FORCE RLS` + politika taşır (`check-rls-coverage` CI'ı zorlar); ham `pool.query` yalnızca izinli dosyalarda (`check-no-raw-pool-query`); sistem genelindeki bakım işleri `adminDb`/yönetim bağlantısını kullanır ve `tenant_id` filtresini elle yazar.
 
 ### 5.2 Cihaz güveni: HMAC + tek kullanımlık nonce
-Cihaz istekleri `X-Timestamp` (±30 sn) + `X-Nonce` (Redis'te tek kullanımlık, 120 sn) + gövdeyi imzalayan HMAC-SHA256 taşır. **Neden:** cihazda oturum/parola yoktur; yakalanan paketin tekrarı (replay) ve gövde değişikliği engellenir. Nonce deposu Redis'tir: **Redis çökerse cihaz istekleri 503 (fail-closed)** — replay koruması atlanamaz; kayıp yoktur çünkü cihaz kuyruğu korur ([CHAOS_TESTING](CHAOS_TESTING.md)). Cihaz sırları DB'de AES-256-GCM ile şifreli; tek seferlik **claim** akışıyla verilir.
+Cihaz istekleri `X-Timestamp` (±30 sn) + `X-Nonce` (Redis'te tek kullanımlık, 120 sn) + gövdeyi imzalayan HMAC-SHA256 taşır. **Neden:** cihazda oturum/parola yoktur; yakalanan paketin tekrarı (replay) ve gövde değişikliği engellenir. Nonce deposu Redis'tir: **Redis çökerse cihaz istekleri 503 (fail-closed)** — replay koruması atlanamaz; kayıp yoktur çünkü cihaz kuyruğu korur ([CHAOS_TESTING](CHAOS_TESTING.md)). Cihaz sırları DB'de AES-256-GCM ile şifreli; tek seferlik **[claim](SOZLUK.md#claim)** akışıyla verilir.
 
 ### 5.3 Çevrimdışı ve idempotency
 Sahada internet kesilir. Cihaz ikmalleri yerelde `localSequenceId` ile kuyruklar; bağlantı gelince `sync-batch` yollar. **`(device_id, local_sequence_id)` DB'de benzersizdir** → aynı batch tekrar gönderilse (yanıt kaybolduysa, ikinci kesinti olduysa) mükerrer kayıt oluşmaz (`DUPLICATE_SKIPPED`). Cihaz yalnızca `ACCEPTED`/`DUPLICATE_SKIPPED` kayıtları siler. **Neden:** ağ kesintisinde en pahalı hata mali kaydın kaybı veya çift yazılmasıdır; "tam bir kez" garantisi istemci-sunucu koordinasyonuyla değil DB kısıtıyla verilir. Kaos testi bunu 72 saatlik kesinti, %35 paket kaybı ve sunucu çökmesi altında doğrular.
 
 ### 5.4 Fail-open politikası (FUEL-410)
-Sunucuya ulaşılamazken ikmali tamamen durdurmak şantiyeyi felç eder; tamamen serbest bırakmak denetimi yok eder. **Sınırlı fail-open:** cihaz, sunucudan periyodik çektiği **whitelist + limit önbelleğiyle** çevrimdışı ikmale izin verir (`GET /telemetry/fail-open-policy`); önbellek tazeliği (`whitelistFreshnessHours`) ve çevrimdışı limit dolunca durur. Çevrimdışı ikmaller sonradan `sync-batch` ile gelir ve negatif stok/limit aşımı mutabakata düşer. **Neden:** sahada ikmal durursa iş durur; serbest bırakırsak denetim kalkar — sınır (tazelik + limit) ikisinin arasındaki bilinçli orta yoldur.
+Sunucuya ulaşılamazken ikmali tamamen durdurmak şantiyeyi felç eder; tamamen serbest bırakmak denetimi yok eder. **Sınırlı [fail-open](SOZLUK.md#fail-open):** cihaz, sunucudan periyodik çektiği **whitelist + limit önbelleğiyle** çevrimdışı ikmale izin verir (`GET /telemetry/fail-open-policy`); önbellek tazeliği (`whitelistFreshnessHours`) ve çevrimdışı limit dolunca durur. Çevrimdışı ikmaller sonradan `sync-batch` ile gelir ve negatif stok/limit aşımı mutabakata düşer. **Neden:** sahada ikmal durursa iş durur; serbest bırakırsak denetim kalkar — sınır (tazelik + limit) ikisinin arasındaki bilinçli orta yoldur.
 
 ### 5.5 K-faktör (kalibrasyon) akışı
 Akışmetrenin pals/litre katsayısı yanlışsa tüm ikmaller sapar. Akış: portal `POST /devices/{id}/calibration` → sunucu **komut** üretir, K **değişmez** → cihaz uygular ve `calibration-ack` (`appliedKFactor` zorunlu) yollar → **K yalnızca ACK ile güncellenir**. Değişim **%20'yi** aşarsa ikinci yetkili onayı ister. Referans kap ile test alımı sapmayı ve önerilen K'yı hesaplar; geçmiş **silinemez** (audit). **Neden:** uzaktan yanlış K tüm filoyu bozar → iki aşamalı, cihaz-onaylı, izlenebilir. Saha prosedürü: [SAHA_KURULUM §4.6](SAHA_KURULUM.md).
 
 ### 5.6 Değişmezlik ve mali kayıt
-İkmal kaydı `hash_signature` (HMAC) taşır; e-İrsaliye belgeleri, denetim günlüğü ve kalibrasyon geçmişi DB düzeyinde **append-only** (`REVOKE UPDATE/DELETE`). Mali tablolar **asla otomatik silinmez** ([DATA_RETENTION](DATA_RETENTION.md)); KVKK anonimleştirme yalnızca kişisel alanları çevirir, tutar/plaka/tarih/mühür korunur. **Neden:** mali/denetim kaydının sonradan değiştirilebilir olması hem yasal hem güven sorunudur; kişisel veri silme hakkı ile mali bütünlük birlikte sağlanmalıdır.
+İkmal kaydı `hash_signature` (HMAC) taşır; e-İrsaliye belgeleri, denetim günlüğü ve kalibrasyon geçmişi DB düzeyinde **append-only** (`REVOKE UPDATE/DELETE`). Mali tablolar **asla otomatik silinmez** ([DATA_RETENTION](DATA_RETENTION.md)); KVKK [anonimleştirme](SOZLUK.md#anonymization) yalnızca kişisel alanları çevirir, tutar/plaka/tarih/mühür korunur. **Neden:** mali/denetim kaydının sonradan değiştirilebilir olması hem yasal hem güven sorunudur; kişisel veri silme hakkı ile mali bütünlük birlikte sağlanmalıdır.
 
 ### 5.7 Şema değişikliği: expand-only
 `schema.sql` idempotent ve dağıtımda tek transaction'da uygulanır; eski replika yeni şemayla çalışmak zorundadır (blue/green). Bu yüzden **yalnızca genişleten** (yeni tablo/sütun/indeks) değişiklikler serbesttir; yıkıcı ifade `-- MIGRATION-CONTRACT: <gerekçe>` ister (`check-migration-safety`). Geri alma bu kurala dayanır ([DEPLOY_ROLLBACK §5](DEPLOY_ROLLBACK.md)).
 
 ### 5.8 Diğer kararlar (kısa)
-Zero-downtime blue/green + drain ([DEPLOY_ROLLBACK](DEPLOY_ROLLBACK.md)) · PII: log/dış servis/Sentry'de kişisel veri yok ([KVKK](KVKK_ENVANTER.md)) · süpürücüler `setInterval` + advisory lock (BullMQ yok) · Socket.io yayınları tenant odasına (`tenant:{id}`).
+Zero-downtime blue/green + [drain](SOZLUK.md#graceful-shutdown) ([DEPLOY_ROLLBACK](DEPLOY_ROLLBACK.md)) · PII: log/dış servis/Sentry'de kişisel veri yok ([KVKK](KVKK_ENVANTER.md)) · süpürücüler `setInterval` + advisory lock (BullMQ yok) · Socket.io yayınları tenant odasına (`tenant:{id}`).
 
 ---
 
@@ -323,7 +323,7 @@ Kaynak gruplarına göre: `/vehicles` 20 · `/auth` 16 · `/tanks` 13 · `/admin
 - Taban: `/api/v1`. Etkileşimli referans: **Swagger UI** (backend portunda `/api-docs`, §7.1); donanım tarafı ayrıntısı [HARDWARE_INTEGRATION_GUIDE](HARDWARE_INTEGRATION_GUIDE.md).
 - **Kimlik:** panel uçları `Authorization: Bearer <JWT>` (15 dk; süresi dolunca istemci sessizce `POST /auth/refresh`); cihaz uçları 4 HMAC başlığı (`X-Device-ID`, `X-Timestamp`, `X-Nonce`, `X-Hardware-Signature`).
 - **Başarılı yanıt:** `{ "success": true, "data": … }` (bazı eski uçlar doğrudan nesne döner). **Hata:** `{ "success": false, "error": "KOD", "message": "…", "traceId": "…" }`; `traceId` her yanıtta `X-Trace-ID` başlığıyla da gelir ve loglarla/Sentry ile eşleşir ([ERROR_TRACKING](ERROR_TRACKING.md)).
-- **Durum kodları:** 400/422 doğrulama · 401 kimlik · 403 yetki · 404 · 409 çakışma/idempotency · 429 rate limit · **503** geçici bağımlılık arızası (DB/Redis; `Retry-After`) — istemciler 5xx/429'da üstel geri çekilmeyle yeniden dener.
+- **Durum kodları:** 400/422 doğrulama · 401 kimlik · 403 yetki · 404 · 409 çakışma/[idempotency](SOZLUK.md#idempotency) · 429 rate limit · **503** geçici bağımlılık arızası (DB/Redis; `Retry-After`) — istemciler 5xx/429'da üstel geri çekilmeyle yeniden dener.
 - **Sayfalama/filtre:** liste uçları `?page&pageSize` ve alan filtreleri; rapor uçları `GET /reports/{id}` (JSON, filtre/sıralama/sayfalama) ve `GET /reports/{id}/export?format=csv|pdf` (akışlı).
 - **Rate limit:** giriş 10/15 dk/IP · cihaz 300/dk/cihaz · webhook/Sentry tüneli IP başına.
 - **Gerçek zamanlı:** Socket.io `/socket.io`, JWT ile el sıkışma, `tenant:{tenantId}` odası; olaylar `telemetry:data`, `device:status`, `dispense:session`, `dispense:completed`, `tank:negative-stock-alarm`.
@@ -569,11 +569,11 @@ Orijinal faz planı için [ISSUES_ROADMAP.md](../ISSUES_ROADMAP.md). Aşağıdak
 |---|---|---|
 | Tenant veri sızıntısı | Kritik | RLS + FORCE, CI RLS kapsam kontrolü, tenant bağlamı olmayan sorgu = hata |
 | Cihaz sırrı sızıntısı | Yüksek | Claim tek seferlik, sırlar AES-GCM'li, rotasyon (`rotate-secret`), HMAC + nonce |
-| Yanlış K-faktör (mali sapma) | Yüksek | ACK-only + %20 ikinci onay + referans kap doğrulaması, geçmiş silinemez |
+| Yanlış [K-faktör](SOZLUK.md#k-factor) (mali sapma) | Yüksek | ACK-only + %20 ikinci onay + referans kap doğrulaması, geçmiş silinemez |
 | İnternet kesintisi | Orta | Cihaz kuyruğu + idempotent senkron + sınırlı fail-open; kaos testiyle kanıtlı |
-| Bağımlılık çökmesi (Redis/DB/MQTT) | Orta-Yüksek | Tanımlı davranış matrisi (fail-closed/açık), readiness, uyarılar ([CHAOS_TESTING](CHAOS_TESTING.md)) |
+| Bağımlılık çökmesi (Redis/DB/MQTT) | Orta-Yüksek | Tanımlı davranış matrisi (fail-closed/açık), [readiness](SOZLUK.md#readiness), uyarılar ([CHAOS_TESTING](CHAOS_TESTING.md)) |
 | Şema değişikliği ile kesinti | Yüksek | expand-only + blue/green + tek komut geri alma + migrasyon kapısı |
-| Veri kaybı | Kritik | Şifreli yedek + sürekli WAL (PITR, RPO ≤ 15 dk) + düzenli geri yükleme tatbikatı |
+| Veri kaybı | Kritik | Şifreli yedek + sürekli WAL (PITR, [RPO](SOZLUK.md#rpo-rto) ≤ 15 dk) + düzenli geri yükleme tatbikatı |
 | KVKK ihlali (log/dış servis) | Yüksek | Log temizleyici, Sentry/Gemini PII'siz, rol maskesi, anonimleştirme ([KVKK](KVKK_ENVANTER.md)) |
 | Firmware ekibine bağımlılık | Yüksek | Protokol şartnamesi + mesaj kataloğu tek kaynak; cihaz simülatörü ile firmware'siz geliştirme. **Firmware henüz yok — büyük risk** |
 | Bilgi tekelleşmesi | Orta | Bu rehber + runbook'lar + drift testleri; issue başına "KAPSAM UYARLAMASI" gerekçesi |
