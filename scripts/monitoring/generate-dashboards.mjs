@@ -122,6 +122,8 @@ business.push(stat('En eski bekleyen e-İrsaliye', 'yakit_despatch_oldest_queued
 business.push(stat('Bildirim yeniden deneme kuyruğu', 'yakit_notifications_retry_queue', grid(18, y, 3, 4), { thresholds: amber(10, 100) }));
 business.push(stat('Webhook devre kesici AÇIK', 'yakit_notification_circuit_open', grid(21, y, 3, 4), { thresholds: amber(1, 5), description: 'Ardışık başarısızlıkla otomatik devre dışı bırakılan bildirim webhook kanalları (NOTIF-1604).' }));
 y += 4;
+business.push(stat('e-İrsaliye entegratör devre kesici', 'yakit_despatch_integrator_circuit_open', grid(0, y, 6, 4), { thresholds: red(1), description: 'e-İrsaliye entegratörüne (GİB) 5 ardışık gönderim başarısız oldu — devre açık, gönderim ertelendi, üretim/kuyruğa alma etkilenmedi (COMP-602.2).' }));
+y += 4;
 business.push(row('Seyir', y++));
 business.push(timeseries('Cihaz durumu', [{ expr: 'yakit_devices', legend: '{{state}}' }], grid(0, y, 12, 8)));
 business.push(timeseries('Açık alarmlar (şiddet)', [{ expr: 'yakit_alarms_open', legend: '{{severity}}' }], grid(12, y, 12, 8), { stack: true }));

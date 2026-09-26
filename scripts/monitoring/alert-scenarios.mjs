@@ -115,6 +115,10 @@ export const SCENARIOS = [
     { name: 'warning: 2 kanal', series: [g('yakit_notification_circuit_open', 2)], evalMinutes: 35, gauge: 30, expect: [{ severity: 'warning', value: 2 }] },
     { name: 'sessiz: 0', series: [g('yakit_notification_circuit_open', 0)], evalMinutes: 35, expect: [] }
   ] },
+  { alert: 'DespatchIntegratorCircuitOpen', cases: [
+    { name: 'warning: devre açık (1)', series: [g('yakit_despatch_integrator_circuit_open', 1)], evalMinutes: 6, expect: [{ severity: 'warning', value: 1 }] },
+    { name: 'sessiz: devre kapalı (0)', series: [g('yakit_despatch_integrator_circuit_open', 0)], evalMinutes: 10, expect: [] }
+  ] },
   { alert: 'MqttRejectSpike', cases: [
     { name: 'warning: 2 ret/sn', series: [c('yakit_mqtt_rejected_total{reason="blocked_device"}', 120)], evalMinutes: 20, expect: [{ severity: 'warning', value: 2 }] },
     { name: 'sessiz: 0.1 ret/sn', series: [c('yakit_mqtt_rejected_total{reason="blocked_device"}', 6)], evalMinutes: 20, expect: [] }

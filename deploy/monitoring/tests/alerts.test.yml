@@ -1248,6 +1248,38 @@ tests:
 
   - interval: "1m"
     input_series:
+      - series: "yakit_despatch_integrator_circuit_open"
+        values: "1+0x60"
+
+    alert_rule_test:
+      - eval_time: "6m"
+        alertname: "DespatchIntegratorCircuitOpen"
+        exp_alerts:
+          - exp_labels:
+              severity: "warning"
+              domain: "field"
+            exp_annotations:
+              summary: "e-İrsaliye entegratör devre kesicisi AÇIK — gönderim duraklatıldı"
+              description: "Entegratöre 5 ardışık istek başarısız oldu; devre açık, bekleyen belgeler biriktiriliyor (üretim durmadı, yalnızca gönderim ertelendi)."
+              runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchintegratorcircuitopen"
+
+
+    name: "DespatchIntegratorCircuitOpen: warning: devre açık (1)"
+
+  - interval: "1m"
+    input_series:
+      - series: "yakit_despatch_integrator_circuit_open"
+        values: "0+0x60"
+
+    alert_rule_test:
+      - eval_time: "10m"
+        alertname: "DespatchIntegratorCircuitOpen"
+        exp_alerts: []
+
+    name: "DespatchIntegratorCircuitOpen: sessiz: devre kapalı (0)"
+
+  - interval: "1m"
+    input_series:
       - series: "yakit_mqtt_rejected_total{reason=\"blocked_device\"}"
         values: "0+120x60"
 

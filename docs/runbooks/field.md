@@ -145,6 +145,25 @@ Müşteriyi bilgilendirin (webhook adresi/sırrı düzeltmesi); müşteri webhoo
 ### Eskalasyon
 Müşteri yanıt vermiyorsa hesap sorumlusu.
 
+## DespatchIntegratorCircuitOpen
+
+### Etki
+e-İrsaliye entegratörüne (GİB özel entegratörü) 5 ardışık gönderim başarısız oldu; devre kesici (COMP-602.2) açıldı. **Belge üretimi/kuyruğa alma ETKİLENMEZ** — yalnızca gönderim ertelenir, belgeler `QUEUED` olarak birikir. Devre kendi kendine ~60 sn'de bir yarı-açık deneme yapar; kısa bir ağ sıçraması genelde 5 dakikalık uyarı penceresi içinde kendiliğinden kapanır (bu yüzden `for: 5m` — anlık sıçramalar sayfalamaz).
+
+### Tanı
+1. `GET /api/v1/despatch-advice-transmissions/circuit-status` (SUPER_ADMIN/COMPANY_OWNER) — `state`, `consecutiveFailures`, `nextRetryAt`.
+2. Etkilenen tenant'ların panelinde `DESPATCH_INTEGRATOR_CIRCUIT_OPEN` alarmı görünür (hangi tenant'ların bekleyen belgesi olduğunu gösterir).
+3. Gerçek entegratör ağ erişilebilirliğini kontrol edin (bu ortamda `MockGibIntegrator` — üretimde gerçek GİB özel entegratörünün durum sayfası/SLA panelini kontrol edin).
+
+### Müdahale
+Devre kendi kendine toparlanabilir (bekleyin — yarı-açık pencere ~60 sn). 5 dakikadan uzun sürüyorsa entegratörün gerçekten erişilemez olduğu anlamına gelir: entegratör sağlayıcısının durum sayfasını kontrol edin, gerekirse destek hattını arayın. Sistemi **yeniden başlatmak devreyi sıfırlamaz** (durum Redis'te, süreç dışı) — yalnızca gerçek bir başarılı deneme kapatır.
+
+### Doğrulama
+`yakit_despatch_integrator_circuit_open` = 0; bekleyen (`QUEUED`) belgeler bir sonraki süpürme turunda (≤60 sn) gönderilmeye başlar.
+
+### Eskalasyon
+15 dakikadan uzun sürüyorsa entegratör sağlayıcısıyla resmi destek talebi açın (yasal e-İrsaliye teslim süresi riske girer).
+
 ## MqttRejectSpike
 
 ### Etki

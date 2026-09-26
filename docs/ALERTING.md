@@ -58,7 +58,7 @@ her critical uyarı sonrası kısa olay notu (ne oldu / ne yaptık / kalıcı d�
 | API/uptime | `ApiErrorRate` (%2 w / %10 c), `ApiLatencyP95` (1 sn w / 3 sn c), `EventLoopLag`, `BackendDown` (c), `BackendMissing` (c), `BackendMemoryHigh` | [api.md](runbooks/api.md) |
 | Veritabanı | `DbPoolSaturated` (w/c), `PostgresConnectionsHigh` (%80 w / %90 c), `PostgresDown` (c) | [database.md](runbooks/database.md) |
 | Altyapı | `DiskSpace` (%85 w / %95 c), `DiskWillFillSoon`, `HostMemoryLow`, `HostCpuHigh` | [infrastructure.md](runbooks/infrastructure.md) |
-| Saha | `DevicesOfflineRatio` (%30 w / %50 c), `NoActiveDevices`, `DespatchQueueBacklog`, `DespatchQueueStuck`, `DespatchDeadLetter` (DLQ), `NotificationRetryBacklog`, `NotificationWebhookCircuitOpen` (devre kesici), `MqttRejectSpike`, `MqttProcessingErrors`, `CriticalFieldAlarmsOpen` (info) | [field.md](runbooks/field.md) |
+| Saha | `DevicesOfflineRatio` (%30 w / %50 c), `NoActiveDevices`, `DespatchQueueBacklog`, `DespatchQueueStuck`, `DespatchDeadLetter` (DLQ), `NotificationRetryBacklog`, `NotificationWebhookCircuitOpen` (devre kesici), `DespatchIntegratorCircuitOpen` (e-İrsaliye entegratör devre kesici), `MqttRejectSpike`, `MqttProcessingErrors`, `CriticalFieldAlarmsOpen` (info) | [field.md](runbooks/field.md) |
 | İzleme hattı | `Watchdog`, `ScrapeTargetDown`, `BusinessMetricsStale`, `LogPipelineDown` | [monitoring.md](runbooks/monitoring.md) |
 | Yedekleme | `BackupTooOld` (c), `BackupMetricsMissing`, `WalShippingStalled` (c, RPO), `WalSpoolBacklog` | [backup.md](runbooks/backup.md) |
 

@@ -101,6 +101,18 @@ groups:
           description: "{{ $value | printf \"%.0f\" }} tenant webhook'u ardışık başarısızlık nedeniyle devre dışı — müşteri uç noktası erişilemez/yanlış."
           runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#notificationwebhookcircuitopen"
 
+      # COMP-602.2: 5 dk'lık pencere BİLİNÇLİ — devrenin kendisi ~60 sn'lik yarı-açık
+      # denemeyle kendi kendini toparlayabilir (kısa bir ağ sıçraması alarm ÜRETMEMELİ,
+      # Teknik Not: "uyarı yorgunluğu"); yalnızca SÜREGELEN bir kesinti sayfalanır.
+      - alert: DespatchIntegratorCircuitOpen
+        expr: max(yakit_despatch_integrator_circuit_open) > 0
+        for: 5m
+        labels: { severity: warning, domain: field }
+        annotations:
+          summary: "e-İrsaliye entegratör devre kesicisi AÇIK — gönderim duraklatıldı"
+          description: "Entegratöre 5 ardışık istek başarısız oldu; devre açık, bekleyen belgeler biriktiriliyor (üretim durmadı, yalnızca gönderim ertelendi)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/field.md#despatchintegratorcircuitopen"
+
       - alert: MqttRejectSpike
         expr: sum(rate(yakit_mqtt_rejected_total[5m])) > 1
         for: 10m

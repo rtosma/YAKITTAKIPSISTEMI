@@ -146,6 +146,9 @@ const despatchQueue = new client.Gauge({ name: 'yakit_despatch_queue', help: 'e-
 const despatchOldest = new client.Gauge({ name: 'yakit_despatch_oldest_queued_age_seconds', help: 'Kuyrukta (QUEUED) bekleyen en eski e-İrsaliyenin yaşı (sn); kuyruk boşsa 0.', registers: [registry] });
 const notificationRetry = new client.Gauge({ name: 'yakit_notifications_retry_queue', help: 'Yeniden deneme bekleyen (BAŞARISIZ) bildirim sayısı.', registers: [registry] });
 const notificationCircuitOpen = new client.Gauge({ name: 'yakit_notification_circuit_open', help: 'Devre kesicisi AÇIK (ardışık başarısızlık nedeniyle otomatik devre dışı) bildirim webhook kanalı sayısı — tenant sayısı, tenant etiketi YOK.', registers: [registry] });
+// COMP-602.2 (#128) devre kesici GLOBAL'dir (Redis'te tek anahtar, tenant'a özgü değil) — bu yüzden
+// notificationCircuitOpen'in aksine burada "sayı" değil 0/1 bayraktır (tek bir paylaşılan entegratör bağlantısı).
+const despatchIntegratorCircuitOpen = new client.Gauge({ name: 'yakit_despatch_integrator_circuit_open', help: 'e-İrsaliye entegratör devre kesicisi AÇIK/YARI-AÇIK mı (1) yoksa KAPALI mı (0) — GLOBAL, tenant etiketi YOK (COMP-602.2).', registers: [registry] });
 const businessLastRefresh = new client.Gauge({ name: 'yakit_business_metrics_last_refresh_timestamp_seconds', help: 'İş metriklerinin son BAŞARILI yenilenme zamanı (unix sn) — bayat veriyi yakalamak için.', registers: [registry] });
 const businessRefreshErrors = new client.Counter({ name: 'yakit_business_metrics_refresh_errors_total', help: 'İş metriği yenileme hatası sayısı.', registers: [registry] });
 
@@ -163,6 +166,7 @@ export async function refreshBusinessMetrics(): Promise<void> {
     despatchOldest.set(s.despatchOldestQueuedAgeSeconds);
     notificationRetry.set(s.notificationRetryQueue);
     notificationCircuitOpen.set(s.notificationCircuitOpen);
+    despatchIntegratorCircuitOpen.set(s.despatchIntegratorCircuitOpen ? 1 : 0);
     businessLastRefresh.set(Date.now() / 1000);
   } catch (err) {
     businessRefreshErrors.inc();

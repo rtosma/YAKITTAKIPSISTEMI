@@ -1393,6 +1393,8 @@ export interface BusinessMetricsSnapshot {
   notificationRetryQueue: number;
   /** webhook_disabled_at dolu (NOTIF-1604 devre kesici AÇIK) kanal sayısı. */
   notificationCircuitOpen: number;
+  /** e-İrsaliye entegratör devre kesicisi (COMP-602.2) OPEN/HALF_OPEN mi — GLOBAL, Redis'ten okunur. */
+  despatchIntegratorCircuitOpen: boolean;
 }
 
 export async function getBusinessMetricsSnapshot(): Promise<BusinessMetricsSnapshot> {
@@ -1433,6 +1435,16 @@ export async function getBusinessMetricsSnapshot(): Promise<BusinessMetricsSnaps
     pool.query(`SELECT COUNT(*)::int AS n FROM notifications WHERE status = 'BAŞARISIZ'`),
     pool.query(`SELECT COUNT(*)::int AS n FROM tenant_notification_channels WHERE webhook_disabled_at IS NOT NULL`)
   ]);
+  // Redis'te GLOBAL bir bayrak (tenant sorgusu değil) — Postgres Promise.all'undan
+  // AYRI, çünkü farklı bir depolama katmanıdır; hatası diğer metrikleri etkilemesin diye ayrıca try/catch.
+  let despatchIntegratorCircuitOpen = false;
+  try {
+    const { getDespatchIntegratorCircuitStatus } = await import('./tenantDb');
+    const circuit = await getDespatchIntegratorCircuitStatus();
+    despatchIntegratorCircuitOpen = circuit.state === 'OPEN' || circuit.state === 'HALF_OPEN';
+  } catch (err) {
+    logger.warn({ err }, '⚠️ [OPS-1108] e-İrsaliye entegratör devre kesici durumu okunamadı (metrik önceki değerde kalır).');
+  }
   const byKey = (rows: any[], key: string): Record<string, number> => Object.fromEntries(rows.map((r) => [r[key], Number(r.n)]));
   const queued = despatch.rows.find((r) => r.status === 'QUEUED');
   return {
@@ -1443,6 +1455,7 @@ export async function getBusinessMetricsSnapshot(): Promise<BusinessMetricsSnaps
     despatchQueue: byKey(despatch.rows, 'status'),
     despatchOldestQueuedAgeSeconds: queued?.oldest ? Math.max(0, Math.round((Date.now() - new Date(queued.oldest).getTime()) / 1000)) : 0,
     notificationRetryQueue: notif.rows[0].n,
-    notificationCircuitOpen: circuit.rows[0].n
+    notificationCircuitOpen: circuit.rows[0].n,
+    despatchIntegratorCircuitOpen
   };
 }
