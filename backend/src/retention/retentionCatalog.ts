@@ -95,6 +95,7 @@ export const PROTECTED_TABLES: Readonly<Record<string, { minYears: number; reaso
   despatch_advice_transmissions: { minYears: 10, reason: 'e-İrsaliye iletim/durum kaydı (GİB kanıtı).' },
   despatch_advice_documents_status: { minYears: 10, reason: 'e-İrsaliye durum geçmişi.' },
   fuel_intake_receipts: { minYears: 10, reason: 'Yakıt alım (dolum) irsaliyesi — mali/stok kaydı.' },
+  fuel_purchase_waybills: { minYears: 10, reason: 'Alım irsaliyesi başlığı (INV-1502) — KDV/ÖTV/toplam tutarlı mali kayıt, fuel_intake_receipts ile aynı gerekçe.' },
   stock_reconciliations: { minYears: 10, reason: 'Stok mutabakatı — denetim kaydı.' },
   inventory_movements: { minYears: 10, reason: 'Envanter hareketi — mali/stok kaydı.' },
   fire_records: { minYears: 10, reason: 'Fire (kayıp) kaydı — mali/denetim.' },
@@ -131,7 +132,7 @@ export const MASTER_TABLES: readonly string[] = [
   'recipient_taxpayers', 'vehicle_fuel_limits', 'vehicle_maintenance_records', 'vehicle_compliance_deadlines', 'vehicle_tires',
   'vehicle_document_download_links', 'inventory_items', 'sites', 'firmware_artifacts', 'firmware_rollouts', 'firmware_rollout_devices',
   'sms_monthly_usage', 'tenant_notification_channels', 'user_notification_preferences', 'user_notification_mutes', 'report_schedules', 'monthly_management_reports',
-  'fuel_budgets', 'tenant_retention_settings', 'data_subject_requests'
+  'fuel_budgets', 'tenant_retention_settings', 'data_subject_requests', 'suppliers'
 ];
 
 export function getConfigurableSpec(dataClass: string): ConfigurableSpec | undefined {

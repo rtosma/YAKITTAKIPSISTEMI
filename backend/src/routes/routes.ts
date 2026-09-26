@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getVehicleSiteAssignmentHistory, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant, createLabSample, getLabSamples, getLabSample, cancelLabSample, recordLabTestResult, getLabTestResults, getNonConformingLabResults, computeDriverBehaviorScores, getDriverBehaviorScores, getDriverBehaviorScoreHistory, getTankStockForecasts, runTankStockAlertSweepForCurrentTenant, computeDeviceHealthScores, getDeviceHealthScores, getDeviceHealthScoreHistory, getDeviceOnlineSla, getDeviceFirmwareInventory, createFireRecord, getFireRecords, approveFireRecord, rejectFireRecord, getFireRecordSiteComparison, getSmsMonthlyUsageForCurrentTenant, upsertTenantNotificationChannels, getTenantNotificationChannels, setUserNotificationPreference, getUserNotificationPreferencesForCurrentUser, createUserNotificationMute, getActiveUserNotificationMutes } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getVehicleSiteAssignmentHistory, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant, createLabSample, getLabSamples, getLabSample, cancelLabSample, recordLabTestResult, getLabTestResults, getNonConformingLabResults, computeDriverBehaviorScores, getDriverBehaviorScores, getDriverBehaviorScoreHistory, getTankStockForecasts, runTankStockAlertSweepForCurrentTenant, computeDeviceHealthScores, getDeviceHealthScores, getDeviceHealthScoreHistory, getDeviceOnlineSla, getDeviceFirmwareInventory, createFireRecord, getFireRecords, approveFireRecord, rejectFireRecord, getFireRecordSiteComparison, getSmsMonthlyUsageForCurrentTenant, upsertTenantNotificationChannels, getTenantNotificationChannels, setUserNotificationPreference, getUserNotificationPreferencesForCurrentUser, createUserNotificationMute, getActiveUserNotificationMutes, createSupplier, updateSupplier, getSuppliers, getSupplier, createFuelPurchaseWaybill, getFuelPurchaseWaybill, getSupplierPurchaseHistory } from '../db/tenantDb';
 import { downloadDespatchAdviceDocument } from '../services/despatchAdviceDownloadService';
 import { recordDispenseCompleted } from '../observability/metrics';
 import { getExecutiveDashboard } from '../services/executiveDashboardService';
@@ -18,6 +18,7 @@ import { blockRfidCardSchema, replaceRfidCardSchema } from '../schemas/rfidCardS
 import { checkReadiness } from '../services/readinessService';
 import { createQuotaSchema, updateQuotaSchema } from '../schemas/quotaSchema';
 import { createFuelIntakeSchema, listFuelIntakeQuerySchema } from '../schemas/fuelIntakeSchema';
+import { createSupplierSchema, updateSupplierSchema, createFuelPurchaseWaybillSchema } from '../schemas/supplierSchema';
 import { createReconciliationSchema, listReconciliationQuerySchema } from '../schemas/stockReconciliationSchema';
 import { createManualDispenseSchema, rejectManualDispenseSchema, listManualDispenseQuerySchema, manualDispenseRatioQuerySchema } from '../schemas/manualDispenseSchema';
 import { createFireRecordSchema, approveFireRecordSchema, rejectFireRecordSchema, listFireRecordQuerySchema, fireRecordSiteComparisonQuerySchema } from '../schemas/fireRecordSchema';
@@ -5487,6 +5488,162 @@ router.get(
 // Dolum bir mali/stok kaydıdır ve tanker teslimatı şantiye sorumlusu
 // gözetiminde tutanaklanır — PUMP_OPERATOR bilinçli olarak hariç.
 const INTAKE_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+// ── INV-1502: tedarikçi tanımı ve yakıt alım irsaliyesi ──────────────────
+// Tedarikçi/irsaliye de mali bir kayıttır — aynı roller (FUEL-408 ile aynı gerekçe).
+/**
+ * @swagger
+ * /suppliers:
+ *   post:
+ *     summary: Tedarikçi Kartı Oluştur (INV-1502)
+ *     description: VKN, GİB algoritmasıyla (compliance/taxIdValidation.ts) doğrulanır.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Tedarikçi Listesi (INV-1502)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/suppliers',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  validateRequest({ body: createSupplierSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const supplier = await createSupplier(req.body, req.user!.userId);
+      res.status(201).json({ success: true, message: 'Tedarikçi kaydedildi.', data: supplier });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/suppliers',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const suppliers = await getSuppliers();
+      res.json({ success: true, totalCount: suppliers.length, data: suppliers });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /suppliers/{id}:
+ *   get:
+ *     summary: Tedarikçi Detayı (INV-1502)
+ *     security:
+ *       - bearerAuth: []
+ *   put:
+ *     summary: Tedarikçi Güncelle (INV-1502)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/suppliers/:id',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getSupplier(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.put(
+  '/suppliers/:id',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  validateRequest({ body: updateSupplierSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const supplier = await updateSupplier(req.params.id, req.body);
+      res.json({ success: true, message: 'Tedarikçi güncellendi.', data: supplier });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /suppliers/{id}/purchase-history:
+ *   get:
+ *     summary: Tedarikçi Bazlı Alım Geçmişi ve Fiyat Karşılaştırması (INV-1502)
+ *     description: AC — irsaliyeler + her birinin bağlı dolum satırlarındaki birim fiyatlar, ortalama.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/suppliers/:id/purchase-history',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getSupplierPurchaseHistory(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fuel-waybills:
+ *   post:
+ *     summary: Alım İrsaliyesi Başlığı Oluştur (INV-1502)
+ *     description: >
+ *       Bir irsaliye BİRDEN ÇOK tanka boşaltılabilir (Teknik Not) — bu başlık,
+ *       ardından POST /tanks/:id/intakes çağrılarına `waybillId` ile birden
+ *       çok kez (her seferinde farklı bir tank için) bağlanır. Aynı tedarikçide
+ *       mükerrer irsaliye no'su reddedilir (AC).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/fuel-waybills',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  validateRequest({ body: createFuelPurchaseWaybillSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const waybill = await createFuelPurchaseWaybill(req.body, req.user!.userId);
+      res.status(201).json({ success: true, message: 'İrsaliye kaydedildi.', data: waybill });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fuel-waybills/{id}:
+ *   get:
+ *     summary: İrsaliye Başlığı + Bağlı Dolum Satırları (INV-1502)
+ *     description: AC — "İrsaliye kaydı bir veya birden çok dolumla ilişkilendirilebilmelidir."
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fuel-waybills/:id',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getFuelPurchaseWaybill(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
 
 /**
  * @swagger

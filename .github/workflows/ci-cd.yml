@@ -670,6 +670,9 @@ jobs:
       - name: Run FUEL-408 Tank Intake Receipt + Stock Increase Tests
         run: cd backend && npx tsx test/test_fuel408_tank_intake.ts
 
+      - name: Run INV-1502 Supplier Definition + Fuel Purchase Waybill Tests
+        run: cd backend && npx tsx test/test_inv1502_supplier_waybill.ts
+
       - name: Run INV-1503 Unit Price History and Fuel Cost Tests
         run: cd backend && npx tsx test/test_inv1503_fuel_cost.ts
 

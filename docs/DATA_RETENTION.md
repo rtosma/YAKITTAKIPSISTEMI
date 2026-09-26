@@ -32,7 +32,7 @@ reddedilir (400); değişiklik audit log'a (`RETENTION_POLICY_UPDATED`, önceki/
 
 ### PROTECTED — hiçbir koşulda otomatik silinmez
 
-`transactions` (ikmal — mali kayıt), `despatch_advice_*` (e-İrsaliye), `fuel_intake_receipts`, `stock_reconciliations`, `inventory_movements`, `fire_records`, `calibration_*`, `manual_dispense_requests`,
+`transactions` (ikmal — mali kayıt), `despatch_advice_*` (e-İrsaliye), `fuel_intake_receipts`, `fuel_purchase_waybills` (INV-1502 alım irsaliyesi başlığı), `stock_reconciliations`, `inventory_movements`, `fire_records`, `calibration_*`, `manual_dispense_requests`,
 `transaction_anomaly_flags`, `fuel_quota_history`, `usage_metering_records`, `lab_*`, `vehicle_documents`, `platform_audit_log`, `tenant_deletion_approvals` — önerilen saklama **10 yıl**. Bu tablolar için **ne ayar ne de silme kod yolu vardır**:
 purge SQL'i yalnızca PURGEABLE girdilerinin sabit tablo/sütun adlarından üretilir; test, yıl **2100**'e sarılmış bir purge'ün 12 yıllık ikmali ve eski fire kaydını **bırakmasını** doğrular. Bu kayıtlar yalnızca tenant'ın kalıcı silinmesinde
 (ARCH-108, çift onaylı) gider.

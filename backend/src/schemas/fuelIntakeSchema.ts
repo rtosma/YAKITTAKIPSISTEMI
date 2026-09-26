@@ -6,18 +6,25 @@ import { isoDateString } from './common/dateString';
  *
  * Bilinçli sapma: ticket "NestJS + nesne depolama + INV-1502" öneriyor. Bu
  * yığında nesne depolama yok → irsaliye görseli yalnızca `waybillImageUrl`
- * referansı olarak saklanır. Tedarikçi kartı (INV-1502) da henüz yok →
- * `supplierName` düz metin. Sıcaklık düzeltmesi FUEL-403 motoru
+ * referansı olarak saklanır. Sıcaklık düzeltmesi FUEL-403 motoru
  * (correctToStandardVolume, ASTM D1250) ile yapılır.
  *
  * `levelAfterLiters` verilirse (sensör/manuel ölçüm) fiziksel dolum miktarı
  * `levelAfter - levelBefore` olarak hesaplanır ve beyanla karşılaştırılır;
  * verilmezse stok doğrudan `declaredLiters` ile artırılır (measured_* NULL).
+ *
+ * INV-1502: `waybillId` verilirse (tedarikçi kartı + irsaliye başlığı YOLU —
+ * bkz. supplierSchema.ts) `supplierName`/`waybillNo` İRSALİYE BAŞLIĞINDAN
+ * türetilir ve BURADA TEKRAR GİRİLMEZ (aynı teslimatın birden çok tanka
+ * bölünmesinde tek kaynak). `waybillId` yoksa ikisi de zorunludur — FUEL-408'in
+ * eski, tedarikçi kartı olmadan hızlı manuel giriş davranışı GERİYE UYUMLU
+ * korunuyor.
  */
 export const createFuelIntakeSchema = z
   .object({
-    supplierName: z.string().min(1, 'supplierName zorunludur.').max(160),
-    waybillNo: z.string().min(1, 'waybillNo zorunludur.').max(64),
+    supplierName: z.string().min(1, 'supplierName zorunludur.').max(160).optional(),
+    waybillNo: z.string().min(1, 'waybillNo zorunludur.').max(64).optional(),
+    waybillId: z.string().min(1).max(64).optional(),
     deliveryDate: isoDateString('deliveryDate YYYY-AA-GG olmalıdır.'),
     declaredLiters: z.coerce.number({ message: 'declaredLiters zorunludur.' }).positive().max(1_000_000),
     tankerPlate: z.string().min(1).max(32).optional(),
@@ -38,6 +45,14 @@ export const createFuelIntakeSchema = z
   .refine((v) => v.levelAfterLiters === undefined || v.levelBeforeLiters === undefined || v.levelAfterLiters >= v.levelBeforeLiters, {
     message: 'levelAfterLiters, levelBeforeLiters değerinden küçük olamaz (dolum seviyeyi artırır).',
     path: ['levelAfterLiters']
+  })
+  .refine((v) => v.waybillId !== undefined || (v.supplierName !== undefined && v.waybillNo !== undefined), {
+    message: 'waybillId verilmediyse supplierName ve waybillNo zorunludur.',
+    path: ['waybillId']
+  })
+  .refine((v) => v.waybillId === undefined || (v.supplierName === undefined && v.waybillNo === undefined), {
+    message: 'waybillId verildiğinde supplierName/waybillNo tekrar girilmez (irsaliye başlığından alınır).',
+    path: ['waybillId']
   });
 
 export type CreateFuelIntakeDTO = z.infer<typeof createFuelIntakeSchema>;

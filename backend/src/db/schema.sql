@@ -2913,3 +2913,70 @@ CREATE POLICY data_subject_requests_tenant_isolation_policy ON data_subject_requ
     USING (tenant_id = current_setting('app.current_tenant_id', true))
     WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
 REVOKE ALL ON data_subject_requests FROM app_user;
+
+-- INV-1502 (#152): tedarikçi kartı — unvan, VKN, iletişim, sözleşme bilgileri.
+-- VKN'nin GİB algoritmasıyla (checksum) doğrulanması servis katmanında yapılır
+-- (bkz. compliance/taxIdValidation.ts, COMP-605'te zaten var — burada YENİDEN
+-- kullanılıyor); burada yalnızca biçim (10 hane) + tenant bazlı benzersizlik.
+CREATE TABLE IF NOT EXISTS suppliers (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    name VARCHAR(200) NOT NULL,
+    vkn VARCHAR(10) NOT NULL,
+    contact_phone VARCHAR(32),
+    contact_email VARCHAR(160),
+    contact_address VARCHAR(500),
+    contract_info TEXT,
+    status VARCHAR(16) NOT NULL DEFAULT 'AKTİF',
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (tenant_id, vkn)
+);
+ALTER TABLE suppliers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE suppliers FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS suppliers_tenant_isolation_policy ON suppliers;
+CREATE POLICY suppliers_tenant_isolation_policy ON suppliers
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- INV-1502: alım irsaliyesi BAŞLIĞI. Teknik Not: "Bir irsaliye birden çok tanka
+-- boşaltılabilir" — bu yüzden fuel_intake_receipts (FUEL-408, HER ZAMAN tank
+-- başına tek satır) ile ayrı, 1-başlık↔N-dolum ilişkisi kuran bir tablo (bkz.
+-- fuel_intake_receipts.waybill_id, aşağıda). AC: "Vergi kalemleri ayrı
+-- saklanmalıdır" — subtotal/kdv/otv/total BAĞIMSIZ sütunlar, hiçbiri diğerinden
+-- (ör. toplamdan geriye) TÜRETİLMEZ; servis katmanı yalnızca tutarlılık için
+-- toplamı ile karşılaştırır (bkz. fuelSupplierSchema.ts), üzerine yazmaz.
+CREATE TABLE IF NOT EXISTS fuel_purchase_waybills (
+    id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    supplier_id VARCHAR(64) NOT NULL REFERENCES suppliers(id) ON DELETE RESTRICT,
+    waybill_no VARCHAR(64) NOT NULL,
+    delivery_date DATE NOT NULL,
+    subtotal_amount NUMERIC(14, 2) NOT NULL,
+    kdv_amount NUMERIC(14, 2) NOT NULL,
+    otv_amount NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    total_amount NUMERIC(14, 2) NOT NULL,
+    waybill_image_url VARCHAR(512),
+    note TEXT,
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    -- AC: "Aynı tedarikçide mükerrer irsaliye numarası reddedilmelidir."
+    -- (tank bazlı DEĞİL — supplier bazlı; bkz. Teknik Not yukarıda.)
+    UNIQUE (tenant_id, supplier_id, waybill_no)
+);
+CREATE INDEX IF NOT EXISTS idx_fuel_purchase_waybills_supplier ON fuel_purchase_waybills(tenant_id, supplier_id, delivery_date);
+ALTER TABLE fuel_purchase_waybills ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fuel_purchase_waybills FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS fuel_purchase_waybills_tenant_isolation_policy ON fuel_purchase_waybills;
+CREATE POLICY fuel_purchase_waybills_tenant_isolation_policy ON fuel_purchase_waybills
+    FOR ALL
+    USING (tenant_id = current_setting('app.current_tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('app.current_tenant_id', true));
+
+-- INV-1502: fuel_intake_receipts (FUEL-408) → hangi irsaliye BAŞLIĞINDAN
+-- geldiğini İSTEĞE BAĞLI taşır. NULL = tedarikçi kartı/başlık olmadan hızlı
+-- manuel giriş (FUEL-408'in eski davranışı — GERİYE DÖNÜK UYUMLU, kaldırılmadı).
+-- Aynı waybill_id BİRDEN ÇOK satıra (BİRDEN ÇOK tanka) bağlanabilir.
+ALTER TABLE fuel_intake_receipts ADD COLUMN IF NOT EXISTS waybill_id VARCHAR(64) REFERENCES fuel_purchase_waybills(id);
+CREATE INDEX IF NOT EXISTS idx_fuel_intake_receipts_waybill ON fuel_intake_receipts(waybill_id) WHERE waybill_id IS NOT NULL;

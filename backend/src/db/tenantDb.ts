@@ -4509,6 +4509,238 @@ function round2(v: number): number {
 }
 
 // ============================================================================
+// INV-1502: TEDARİKÇİ TANIMI VE YAKIT ALIM İRSALİYESİ
+// ============================================================================
+
+export interface SupplierRecord {
+  id: string;
+  tenant_id: string;
+  name: string;
+  vkn: string;
+  contact_phone: string | null;
+  contact_email: string | null;
+  contact_address: string | null;
+  contract_info: string | null;
+  status: string;
+  created_by: string;
+  created_at: string;
+}
+
+function rethrowSupplierVknConflict(err: any): never {
+  if (err?.code === '23505' && String(err?.constraint).includes('vkn')) {
+    throw new ConflictError('Bu VKN ile kayıtlı bir tedarikçi zaten var.', { error: 'SUPPLIER_VKN_TAKEN' });
+  }
+  throw err;
+}
+
+/**
+ * INV-1502 — tedarikçi kartı oluşturur. VKN, COMP-605'in GİB algoritmik
+ * doğrulamasından (aynı `validateTaxId`) geçmezse reddedilir — iki farklı
+ * ticket aynı VKN doğrulama ihtiyacını paylaşıyor, kod TEKRARLANMADI.
+ */
+export async function createSupplier(
+  data: { name: string; vkn: string; contactPhone?: string; contactEmail?: string; contactAddress?: string; contractInfo?: string },
+  createdByUserId: string
+): Promise<SupplierRecord> {
+  const v = validateTaxId(data.vkn);
+  if (!v.ok || v.kind !== 'VKN') {
+    throw new BadRequestError(`VKN geçersiz: ${v.reason ?? 'tedarikçi bir şirket olmalı (10 haneli VKN, TCKN değil).'}`, { error: 'INVALID_VKN' });
+  }
+  return withTenant(async (client, tenantId) => {
+    const id = generateId('supp');
+    try {
+      const res = await client.query(
+        `INSERT INTO suppliers (id, tenant_id, name, vkn, contact_phone, contact_email, contact_address, contract_info, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         RETURNING *`,
+        [id, tenantId, data.name, v.normalized, data.contactPhone ?? null, data.contactEmail ?? null, data.contactAddress ?? null, data.contractInfo ?? null, createdByUserId]
+      );
+      await writeAuditLog(client, { action: 'SUPPLIER_CREATED', targetType: 'supplier', targetId: id, afterValue: { name: data.name, vkn: v.normalized } });
+      return res.rows[0] as SupplierRecord;
+    } catch (err: any) {
+      rethrowSupplierVknConflict(err);
+    }
+  });
+}
+
+export async function updateSupplier(
+  supplierId: string,
+  data: { name?: string; vkn?: string; contactPhone?: string | null; contactEmail?: string | null; contactAddress?: string | null; contractInfo?: string | null; status?: string }
+): Promise<SupplierRecord> {
+  let normalizedVkn: string | undefined;
+  if (data.vkn !== undefined) {
+    const v = validateTaxId(data.vkn);
+    if (!v.ok || v.kind !== 'VKN') {
+      throw new BadRequestError(`VKN geçersiz: ${v.reason ?? 'tedarikçi bir şirket olmalı (10 haneli VKN).'}`, { error: 'INVALID_VKN' });
+    }
+    normalizedVkn = v.normalized;
+  }
+  return withTenant(async (client) => {
+    const fields: string[] = [];
+    const values: any[] = [];
+    const push = (col: string, val: any) => { values.push(val); fields.push(`${col} = $${values.length}`); };
+    if (data.name !== undefined) push('name', data.name);
+    if (normalizedVkn !== undefined) push('vkn', normalizedVkn);
+    if (data.contactPhone !== undefined) push('contact_phone', data.contactPhone);
+    if (data.contactEmail !== undefined) push('contact_email', data.contactEmail);
+    if (data.contactAddress !== undefined) push('contact_address', data.contactAddress);
+    if (data.contractInfo !== undefined) push('contract_info', data.contractInfo);
+    if (data.status !== undefined) push('status', data.status);
+    if (fields.length === 0) {
+      const cur = await client.query('SELECT * FROM suppliers WHERE id = $1', [supplierId]);
+      if (cur.rows.length === 0) throw new NotFoundError('Tedarikçi bulunamadı.');
+      return cur.rows[0] as SupplierRecord;
+    }
+    values.push(supplierId);
+    try {
+      const res = await client.query(`UPDATE suppliers SET ${fields.join(', ')} WHERE id = $${values.length} RETURNING *`, values);
+      if (res.rows.length === 0) throw new NotFoundError('Tedarikçi bulunamadı.');
+      return res.rows[0] as SupplierRecord;
+    } catch (err: any) {
+      rethrowSupplierVknConflict(err);
+    }
+  });
+}
+
+export async function getSuppliers(): Promise<SupplierRecord[]> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM suppliers ORDER BY name ASC');
+    return res.rows;
+  });
+}
+
+export async function getSupplier(supplierId: string): Promise<SupplierRecord> {
+  return withTenant(async (client) => {
+    const res = await client.query('SELECT * FROM suppliers WHERE id = $1', [supplierId]);
+    if (res.rows.length === 0) throw new NotFoundError('Tedarikçi bulunamadı.');
+    return res.rows[0];
+  });
+}
+
+export interface FuelPurchaseWaybillRecord {
+  id: string;
+  tenant_id: string;
+  supplier_id: string;
+  waybill_no: string;
+  delivery_date: string;
+  subtotal_amount: string;
+  kdv_amount: string;
+  otv_amount: string;
+  total_amount: string;
+  waybill_image_url: string | null;
+  note: string | null;
+  created_by: string;
+  created_at: string;
+}
+
+/**
+ * INV-1502 — alım irsaliyesi BAŞLIĞI oluşturur (Teknik Not: "bir irsaliye
+ * birden çok tanka boşaltılabilir" — bu başlık, sonradan recordFuelIntake'e
+ * `waybillId` ile birden çok kez, her seferinde farklı bir tank için,
+ * bağlanabilir; bkz. FUEL-408 bölümü). AC: "Aynı tedarikçide mükerrer irsaliye
+ * numarası reddedilmelidir" — DB'deki (tenant_id, supplier_id, waybill_no)
+ * UNIQUE kısıtı tarafından uygulanır (23505 → dostane 409).
+ */
+export async function createFuelPurchaseWaybill(
+  data: {
+    supplierId: string;
+    waybillNo: string;
+    deliveryDate: string;
+    subtotalAmount: number;
+    kdvAmount: number;
+    otvAmount?: number;
+    totalAmount: number;
+    waybillImageUrl?: string;
+    note?: string;
+  },
+  createdByUserId: string
+): Promise<FuelPurchaseWaybillRecord> {
+  return withTenant(async (client, tenantId) => {
+    const supplierRes = await client.query('SELECT id FROM suppliers WHERE id = $1', [data.supplierId]);
+    if (supplierRes.rows.length === 0) throw new NotFoundError('Tedarikçi bulunamadı.', { error: 'SUPPLIER_NOT_FOUND' });
+
+    const id = generateId('wb');
+    try {
+      const res = await client.query(
+        `INSERT INTO fuel_purchase_waybills
+           (id, tenant_id, supplier_id, waybill_no, delivery_date, subtotal_amount, kdv_amount, otv_amount, total_amount, waybill_image_url, note, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         RETURNING *`,
+        [
+          id, tenantId, data.supplierId, data.waybillNo, data.deliveryDate, data.subtotalAmount,
+          data.kdvAmount, data.otvAmount ?? 0, data.totalAmount, data.waybillImageUrl ?? null, data.note ?? null, createdByUserId
+        ]
+      );
+      await writeAuditLog(client, {
+        action: 'FUEL_PURCHASE_WAYBILL_CREATED',
+        targetType: 'fuel_purchase_waybill',
+        targetId: id,
+        afterValue: { supplierId: data.supplierId, waybillNo: data.waybillNo, totalAmount: data.totalAmount }
+      });
+      return res.rows[0] as FuelPurchaseWaybillRecord;
+    } catch (err: any) {
+      if (err?.code === '23505' && String(err?.constraint).includes('waybill_no')) {
+        throw new ConflictError(
+          `'${data.waybillNo}' numaralı irsaliye bu tedarikçi için zaten kayıtlı.`,
+          { error: 'DUPLICATE_SUPPLIER_WAYBILL' }
+        );
+      }
+      throw err;
+    }
+  });
+}
+
+/** İrsaliye başlığı + ona bağlı (bir veya birden çok tanka) TÜM dolum satırları. */
+export async function getFuelPurchaseWaybill(waybillId: string): Promise<{ waybill: FuelPurchaseWaybillRecord; intakes: FuelIntakeRecord[] }> {
+  return withTenant(async (client) => {
+    const wbRes = await client.query('SELECT * FROM fuel_purchase_waybills WHERE id = $1', [waybillId]);
+    if (wbRes.rows.length === 0) throw new NotFoundError('İrsaliye bulunamadı.');
+    const intakesRes = await client.query('SELECT * FROM fuel_intake_receipts WHERE waybill_id = $1 ORDER BY created_at ASC', [waybillId]);
+    return { waybill: wbRes.rows[0], intakes: intakesRes.rows };
+  });
+}
+
+/**
+ * AC: "Tedarikçi bazlı alım geçmişi ve fiyat karşılaştırması." — o tedarikçiye
+ * ait tüm irsaliyeler + her birinin (waybill_id ile bağlı) dolum satırlarındaki
+ * unitPrice'lar; ortalama birim fiyat, en düşük/en yüksek karşılaştırma için.
+ */
+export async function getSupplierPurchaseHistory(supplierId: string): Promise<{
+  supplier: SupplierRecord;
+  waybills: (FuelPurchaseWaybillRecord & { intakeCount: number; totalLiters: number; avgUnitPrice: number | null })[];
+  avgUnitPriceOverall: number | null;
+}> {
+  return withTenant(async (client) => {
+    const supplierRes = await client.query('SELECT * FROM suppliers WHERE id = $1', [supplierId]);
+    if (supplierRes.rows.length === 0) throw new NotFoundError('Tedarikçi bulunamadı.');
+
+    const res = await client.query(
+      `SELECT w.*,
+              COUNT(fir.id)::int AS intake_count,
+              COALESCE(SUM(fir.added_liters), 0)::numeric AS total_liters,
+              AVG(fir.unit_price) AS avg_unit_price
+         FROM fuel_purchase_waybills w
+         LEFT JOIN fuel_intake_receipts fir ON fir.waybill_id = w.id
+        WHERE w.supplier_id = $1
+        GROUP BY w.id
+        ORDER BY w.delivery_date DESC, w.created_at DESC`,
+      [supplierId]
+    );
+    const waybills = res.rows.map((r) => ({
+      ...r,
+      intakeCount: r.intake_count,
+      totalLiters: Number(r.total_liters),
+      avgUnitPrice: r.avg_unit_price !== null ? Number(r.avg_unit_price) : null
+    }));
+    const pricedWaybills = waybills.filter((w) => w.avgUnitPrice !== null);
+    const avgUnitPriceOverall = pricedWaybills.length > 0
+      ? Number((pricedWaybills.reduce((sum, w) => sum + w.avgUnitPrice!, 0) / pricedWaybills.length).toFixed(4))
+      : null;
+    return { supplier: supplierRes.rows[0], waybills, avgUnitPriceOverall };
+  });
+}
+
+// ============================================================================
 // FUEL-408: TANK DOLUM (ALIM İRSALİYESİ) GİRİŞİ + STOK ARTIŞI
 // ============================================================================
 
@@ -4551,6 +4783,8 @@ export interface FuelIntakeRecord {
   note: string | null;
   created_by: string;
   created_at: string;
+  /** INV-1502 — NULL = tedarikçi kartı/irsaliye başlığı olmadan hızlı manuel giriş. */
+  waybill_id: string | null;
 }
 
 export interface FuelIntakeResult {
@@ -4578,8 +4812,13 @@ export interface FuelIntakeResult {
 export async function recordFuelIntake(
   tankId: string,
   data: {
-    supplierName: string;
-    waybillNo: string;
+    // INV-1502: waybillId verildiğinde supplierName/waybillNo İRSALİYE
+    // BAŞLIĞINDAN türetilir (aşağıda) — ikisi birden verilmez (schema.ts'te
+    // .refine ile denetlenir); waybillId yoksa ikisi de zorunludur (FUEL-408'in
+    // eski, tedarikçi kartı olmadan hızlı manuel giriş davranışı — GERİYE UYUMLU).
+    supplierName?: string;
+    waybillNo?: string;
+    waybillId?: string;
     deliveryDate: string;
     declaredLiters: number;
     tankerPlate?: string;
@@ -4606,6 +4845,27 @@ export async function recordFuelIntake(
     const capacity = Number(tank.capacity_liters);
     const levelBeforeActual = Number(tank.current_level_liters);
 
+    // INV-1502: waybillId verildiyse tedarikçi/irsaliye no BAŞLIKTAN türetilir
+    // (çağıran ikisini tekrar yazmaz — aynı teslimatın birden çok tanka
+    // bölünmesinde tek bir yerde tutulur). withTenant zaten RLS ile
+    // tenant'a kısıtladığından başka bir tenant'ın başlığı burada 0 satır döner.
+    let resolvedSupplierName = data.supplierName;
+    let resolvedWaybillNo = data.waybillNo;
+    if (data.waybillId) {
+      const wbRes = await client.query(
+        `SELECT w.waybill_no, s.name AS supplier_name
+           FROM fuel_purchase_waybills w JOIN suppliers s ON s.id = w.supplier_id
+          WHERE w.id = $1`,
+        [data.waybillId]
+      );
+      if (wbRes.rows.length === 0) throw new NotFoundError('İrsaliye bulunamadı.', { error: 'WAYBILL_NOT_FOUND' });
+      resolvedSupplierName = wbRes.rows[0].supplier_name;
+      resolvedWaybillNo = wbRes.rows[0].waybill_no;
+    }
+    if (!resolvedSupplierName || !resolvedWaybillNo) {
+      throw new BadRequestError('supplierName/waybillNo veya waybillId zorunludur.', { error: 'MISSING_SUPPLIER_REFERENCE' });
+    }
+
     // TEST_PLAN.md §2.2 (idempotency) — aynı tedarikçinin aynı irsaliyesi AYNI
     // tanka ikinci kez girilemez. Önceden hiçbir kontrol yoktu: çift tıklama,
     // ağ zaman aşımı sonrası tekrar gönderme ya da kasıtlı mükerrer giriş,
@@ -4614,23 +4874,29 @@ export async function recordFuelIntake(
     // bir kaybı (hırsızlığı) "fazlalık" ile örtebilir.
     // Kapsam BİLİNÇLİ olarak tank başına: tek bir tanker teslimatı tek irsaliyeyle
     // İKİ FARKLI tanka bölünebilir — bu meşru olduğu için engellenmiyor.
-    // Tedarikçi adı serbest metin (INV-1502 tedarikçi kartı yok), bu yüzden
-    // büyük/küçük harf ve baş/son boşluk farkı aynı tedarikçi sayılıyor.
+    // waybillId VARSA denetim o KATI kimliğe (FK) göre yapılır; YOKSA (INV-1502
+    // tedarikçi kartı kullanılmayan eski/hızlı giriş) serbest metin karşılaştırması
+    // — büyük/küçük harf ve baş/son boşluk farkı aynı tedarikçi sayılır.
     // Yarış güvenliği: kontrol yukarıdaki tank FOR UPDATE kilidinin ARDINDAN
     // yapılıyor — aynı tanka eşzamanlı iki dolum sıraya girer, ikincisi ilkinin
     // kaydını görür. (Unique index yerine uygulama kontrolü: mevcut verideki
     // olası geçmiş mükerrer kayıtlar deploy'daki şema uygulamasını kırmasın.)
-    const duplicateRes = await client.query(
-      `SELECT id, created_at FROM fuel_intake_receipts
-        WHERE tenant_id = $1 AND tank_id = $2
-          AND lower(btrim(supplier_name)) = lower(btrim($3))
-          AND btrim(waybill_no) = btrim($4)
-        LIMIT 1`,
-      [tenantId, tankId, data.supplierName, data.waybillNo]
-    );
+    const duplicateRes = data.waybillId
+      ? await client.query(
+          `SELECT id, created_at FROM fuel_intake_receipts WHERE tenant_id = $1 AND tank_id = $2 AND waybill_id = $3 LIMIT 1`,
+          [tenantId, tankId, data.waybillId]
+        )
+      : await client.query(
+          `SELECT id, created_at FROM fuel_intake_receipts
+            WHERE tenant_id = $1 AND tank_id = $2
+              AND lower(btrim(supplier_name)) = lower(btrim($3))
+              AND btrim(waybill_no) = btrim($4)
+            LIMIT 1`,
+          [tenantId, tankId, resolvedSupplierName, resolvedWaybillNo]
+        );
     if (duplicateRes.rows.length > 0) {
       throw new ConflictError(
-        `'${data.waybillNo.trim()}' numaralı irsaliye bu tedarikçi için bu tanka zaten kaydedilmiş — stok ikinci kez artırılmadı.`,
+        `'${resolvedWaybillNo.trim()}' numaralı irsaliye bu tedarikçi için bu tanka zaten kaydedilmiş — stok ikinci kez artırılmadı.`,
         { error: 'DUPLICATE_WAYBILL', existingReceiptId: duplicateRes.rows[0].id }
       );
     }
@@ -4686,16 +4952,16 @@ export async function recordFuelIntake(
          (id, tenant_id, tank_id, tank_name, site_name, supplier_name, waybill_no, delivery_date, tanker_plate,
           declared_liters, unit_price, temperature_c, density_kg_m3, level_before_liters, level_after_liters,
           measured_liters, declared_liters_15c, measured_liters_15c, discrepancy_liters, discrepancy_pct,
-          added_liters, status, window_start, window_end, waybill_image_url, note, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+          added_liters, status, window_start, window_end, waybill_image_url, note, created_by, waybill_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
        RETURNING *`,
       [
-        id, tenantId, tank.id, tank.name, tank.site_name, data.supplierName, data.waybillNo, data.deliveryDate,
+        id, tenantId, tank.id, tank.name, tank.site_name, resolvedSupplierName, resolvedWaybillNo, data.deliveryDate,
         data.tankerPlate ?? null, data.declaredLiters, data.unitPrice ?? null, data.temperatureC ?? null,
         data.densityKgM3 ?? null, data.levelBeforeLiters ?? null, data.levelAfterLiters ?? null,
         measuredLiters, declared15c, measured15c, discrepancyLiters, discrepancyPct,
         addedLiters, status, windowStart.toISOString(), now.toISOString(), data.waybillImageUrl ?? null,
-        data.note ?? null, createdByUserId
+        data.note ?? null, createdByUserId, data.waybillId ?? null
       ]
     );
 
@@ -4711,7 +4977,7 @@ export async function recordFuelIntake(
 
     if (shortDeliveryAlert) {
       logger.warn(
-        { tankId: tank.id, tankName: tank.name, waybillNo: data.waybillNo, declared15c, measured15c, discrepancyPct },
+        { tankId: tank.id, tankName: tank.name, waybillNo: resolvedWaybillNo, declared15c, measured15c, discrepancyPct },
         `🚨 [FUEL-408] Eksik teslimat şüphesi: '${tank.name}' — beyan ${declared15c} L, ölçüm ${measured15c} L (%${discrepancyPct}).`
       );
     }
