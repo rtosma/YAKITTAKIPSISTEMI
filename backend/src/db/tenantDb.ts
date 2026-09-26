@@ -366,6 +366,15 @@ export interface TankRecord {
   /** INV-1504 — bkz. tankStockAlertService.ts. */
   low_stock_threshold_liters: number | null;
   reorder_lead_days: number;
+  /** INV-1501 — pompanın çekemediği, current_level_liters'a dahil ama dispense edilemeyen hacim. */
+  dead_volume_liters: number;
+  /** INV-1501 — LoRaWAN ultrasonik sensörünün EUI-64 kimliği (platform genelinde benzersiz). */
+  sensor_dev_eui: string | null;
+  sensor_mount_height_mm: number | null;
+  /** INV-1501 — 'AKTİF' | 'BAKIMDA' | 'DEVRE_DIŞI'; STOK göstergesi olan `status`'tan AYRI. */
+  operational_status: string;
+  /** INV-1501 — türetilmiş SUNUM alanı (GREATEST(0, current_level_liters - dead_volume_liters)); yazılamaz. */
+  usable_stock_liters?: number;
 }
 
 /**
@@ -748,24 +757,51 @@ export async function deleteDriver(id: string): Promise<void> {
 // TANKS CRUD
 // ============================================================================
 
+// INV-1501 AC: "kullanılabilir stok, ölü hacim düşülerek gösterilmelidir" — current_level_liters'ın
+// KENDİSİ değiştirilmez (dispense/mutabakat/rapor matematiği ona dayanıyor); bu yalnızca bir SUNUM
+// alanıdır. `sensor_dev_eui'nin BAŞKA bir tanka atanmış olması` gibi cross-tenant sızıntı riski
+// TAŞIMAYAN, salt-okunur bir SQL ifadesi olduğu için tek satırlık ifade her SELECT'e eklenir.
+const USABLE_STOCK_SQL = 'GREATEST(0, current_level_liters - dead_volume_liters) AS usable_stock_liters';
+
 export async function getTenantTanks(siteRestriction?: string): Promise<TankRecord[]> {
   return withTenant(async (client) => {
     const result = siteRestriction
-      ? await client.query('SELECT * FROM tanks WHERE site_name = $1 ORDER BY created_at DESC', [siteRestriction])
-      : await client.query('SELECT * FROM tanks ORDER BY created_at DESC');
+      ? await client.query(`SELECT *, ${USABLE_STOCK_SQL} FROM tanks WHERE site_name = $1 ORDER BY created_at DESC`, [siteRestriction])
+      : await client.query(`SELECT *, ${USABLE_STOCK_SQL} FROM tanks ORDER BY created_at DESC`);
     return result.rows;
   });
 }
 
-export async function createTank(data: Omit<TankRecord, 'id' | 'tenant_id' | 'low_stock_threshold_liters' | 'reorder_lead_days'>): Promise<TankRecord> {
+/**
+ * AC: "Sensör eşleştirmesi benzersiz olmalıdır." `sensor_dev_eui` PLATFORM GENELİNDE (tenant_id'siz)
+ * UNIQUE bir indekse sahiptir (bkz. schema.sql) — bu, RLS'in filtrelediği tenant-scoped bir SELECT'in
+ * GÖREMEYECEĞİ başka bir tenant'ın tankıyla çakışmayı bile DB seviyesinde yakalar. Hangi tankın
+ * çakıştığı BİLEREK SÖYLENMEZ (başka bir tenant'ın tank adını sızdırmamak için) — yalnızca "zaten
+ * kullanımda" denir.
+ */
+function rethrowDevEuiConflict(err: any): never {
+  if (err?.code === '23505' && String(err?.constraint).includes('sensor_dev_eui')) {
+    throw new ConflictError('Bu LoRaWAN DevEUI zaten başka bir tanka atanmış — her sensör yalnızca tek bir tanka eşlenebilir.', { error: 'SENSOR_DEV_EUI_TAKEN' });
+  }
+  throw err;
+}
+
+export async function createTank(data: Omit<TankRecord, 'id' | 'tenant_id' | 'low_stock_threshold_liters' | 'reorder_lead_days' | 'dead_volume_liters' | 'sensor_dev_eui' | 'sensor_mount_height_mm' | 'operational_status' | 'usable_stock_liters'> & Partial<Pick<TankRecord, 'dead_volume_liters' | 'sensor_dev_eui' | 'sensor_mount_height_mm' | 'operational_status'>>): Promise<TankRecord> {
   return withTenant(async (client, tenantId) => {
     const id = generateId('tnk');
-    const result = await client.query(
-      `INSERT INTO tanks (id, tenant_id, name, capacity_liters, current_level_liters, fuel_type, site_name, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-      [id, tenantId, data.name, data.capacity_liters, data.current_level_liters, data.fuel_type, data.site_name, data.status]
-    );
-    return result.rows[0];
+    try {
+      const result = await client.query(
+        `INSERT INTO tanks (id, tenant_id, name, capacity_liters, current_level_liters, fuel_type, site_name, status, dead_volume_liters, sensor_dev_eui, sensor_mount_height_mm, operational_status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *, ${USABLE_STOCK_SQL}`,
+        [
+          id, tenantId, data.name, data.capacity_liters, data.current_level_liters, data.fuel_type, data.site_name, data.status,
+          data.dead_volume_liters ?? 0, data.sensor_dev_eui ?? null, data.sensor_mount_height_mm ?? null, data.operational_status ?? 'AKTİF'
+        ]
+      );
+      return result.rows[0];
+    } catch (err: any) {
+      rethrowDevEuiConflict(err);
+    }
   });
 }
 
@@ -775,12 +811,23 @@ export async function updateTank(id: string, data: Partial<TankRecord>): Promise
 
     for (const [key, value] of Object.entries(data)) {
       if (value === undefined) continue;
-      if (['name', 'capacity_liters', 'current_level_liters', 'fuel_type', 'site_name', 'status', 'low_stock_threshold_liters', 'reorder_lead_days'].includes(key)) {
+      if ([
+        'name', 'capacity_liters', 'current_level_liters', 'fuel_type', 'site_name', 'status', 'low_stock_threshold_liters', 'reorder_lead_days',
+        'dead_volume_liters', 'sensor_dev_eui', 'sensor_mount_height_mm', 'operational_status'
+      ].includes(key)) {
         fields.push({ column: key, value });
       }
     }
 
-    return buildDynamicUpdate(client, 'tanks', id, fields, 'Tank bulunamadı veya yetkiniz yok.');
+    let updated: TankRecord;
+    try {
+      updated = await buildDynamicUpdate(client, 'tanks', id, fields, 'Tank bulunamadı veya yetkiniz yok.');
+    } catch (err: any) {
+      rethrowDevEuiConflict(err);
+    }
+    // buildDynamicUpdate vehicles/drivers ile PAYLAŞILIYOR — SELECT'e usable_stock_liters GÖMEMEZ;
+    // burada aritmetik ikinci bir DB round-trip'i gerektirmez.
+    return { ...updated, usable_stock_liters: Math.max(0, Number(updated.current_level_liters) - Number(updated.dead_volume_liters)) } as TankRecord;
   });
 }
 
@@ -1505,13 +1552,26 @@ async function authorizeDispenseRequestCore(input: {
 
       // 4. Tank bu şantiyede var mı, seviyesi yeterli mi?
       const tankRes = await client.query(
-        'SELECT current_level_liters, fuel_type FROM tanks WHERE name = $1 AND site_name = $2',
+        'SELECT current_level_liters, fuel_type, dead_volume_liters, operational_status FROM tanks WHERE name = $1 AND site_name = $2',
         [input.tankName, input.deviceSiteName]
       );
       if (tankRes.rows.length === 0) {
         throw new NotFoundError(`'${input.tankName}' tankı '${input.deviceSiteName}' şantiyesinde bulunamadı.`, { error: 'TANK_NOT_FOUND' });
       }
       const tankFuelType: string | null = tankRes.rows[0].fuel_type ?? null;
+
+      // INV-1501 AC (tank durumu — mevcut stok göstergesi `status`'tan AYRI bir yaşam döngüsü):
+      // bakımda/devre dışı bir tank, DOLU olsa bile OTOMATİK ikmale kapalıdır — bu, insan gözetimi
+      // olmadan çalışan RFID/pompa akışının, teknisyenin "bu tank şu an bakımda" işaretini görmezden
+      // gelmesini engeller. Manuel/operatör ikmali (createTransactionCore) BİLEREK bu kontrolü
+      // TAŞIMAZ — o yol zaten insan gözetimi altındadır (bkz. o fonksiyondaki tolerans notu).
+      const tankOperationalStatus: string = tankRes.rows[0].operational_status;
+      if (tankOperationalStatus !== 'AKTİF') {
+        throw new ForbiddenError(
+          `'${input.tankName}' tankı şu an ikmale kapalı (durum: ${tankOperationalStatus}).`,
+          { error: 'TANK_UNAVAILABLE', operationalStatus: tankOperationalStatus }
+        );
+      }
 
       // 4.5 FUEL-407 AC: "Araç yakıt tipi uyuşmazlığında ikmal reddedilmelidir."
       if (!areFuelTypesCompatible(vehicle.fuel_type, tankFuelType)) {
@@ -1521,11 +1581,14 @@ async function authorizeDispenseRequestCore(input: {
         );
       }
 
-      const tankLevel = Number(tankRes.rows[0].current_level_liters);
-      if (tankLevel <= 0) {
-        throw new ConflictError(`'${input.tankName}' tankında yakıt kalmamış.`, { error: 'TANK_LOW' });
+      // INV-1501 AC: "kullanılabilir stok, ölü hacim düşülerek gösterilmelidir" — burada yalnızca
+      // GÖSTERİM değil, otomatik ikmalde İZİN VERİLEN üst sınırın KENDİSİ ölü hacmi hesaba katar;
+      // aksi halde sistem, pompanın fiziksel olarak asla çekemeyeceği bir miktarı "izinli" sayardı.
+      const usableTankLevel = Number(tankRes.rows[0].current_level_liters) - Number(tankRes.rows[0].dead_volume_liters);
+      if (usableTankLevel <= 0) {
+        throw new ConflictError(`'${input.tankName}' tankında (ölü hacim düşüldüğünde) yakıt kalmamış.`, { error: 'TANK_LOW' });
       }
-      maxAllowedLiters = Math.min(maxAllowedLiters, tankLevel);
+      maxAllowedLiters = Math.min(maxAllowedLiters, usableTankLevel);
 
       // FUEL-402.2: rezervasyon — kilit tutulurken (çapraz şantiye) YA DA
       // kilitsiz (aynı şantiye, paylaşılan bir kota YOK) bu, YUKARIDAKİ TÜM
@@ -3915,6 +3978,8 @@ export interface TankVolumeComputation {
   productGroup: string;
   outOfRange: boolean;
   modelVersionAt: string;
+  /** INV-1501 AC: "kullanılabilir stok, ölü hacim düşülerek gösterilmelidir" — GREATEST(0, standardLiters - deadVolumeLiters). */
+  usableLiters: number;
 }
 
 /**
@@ -3941,6 +4006,13 @@ export async function computeTankVolume(
 
   const std = correctToStandardVolume(raw.observedLiters, observedTempC ?? null, fuelType, density15);
 
+  // INV-1501: dead_volume_liters STRAPPING/CYLINDER modeliyle (yukarıda, CACHE'Lİ) BİRLİKTE
+  // TUTULMAZ — tank kabının kendi mülkü, kalibrasyon versiyonundan bağımsız değişebilir; bu yüzden
+  // cache anahtarını KİRLETMEMEK için ayrı, ucuz bir sorgu (bu uç zaten sık çağrılan bir hot-path
+  // değil — manuel/kalibrasyon amaçlı, bkz. dosya başı GET /tanks/:id/volume yorumu).
+  const deadVolumeRes = await withTenant((client) => client.query('SELECT dead_volume_liters FROM tanks WHERE name = $1', [tankName]));
+  const deadVolumeLiters = Number(deadVolumeRes.rows[0]?.dead_volume_liters ?? 0);
+
   return {
     tankName,
     levelMm,
@@ -3952,8 +4024,14 @@ export async function computeTankVolume(
     vcf: std.vcf,
     productGroup: std.productGroup,
     outOfRange: raw.outOfRange,
-    modelVersionAt: model.createdAt
+    modelVersionAt: model.createdAt,
+    usableLiters: Math.max(0, round4ish(std.standardLiters - deadVolumeLiters))
   };
+}
+
+/** computeTankVolume'un usableLiters'ı için — tankVolume.ts'in kendi round3'üyle AYNI hassasiyet. */
+function round4ish(v: number): number {
+  return Math.round(v * 1000) / 1000;
 }
 
 // ============================================================================

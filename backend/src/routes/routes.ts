@@ -5213,14 +5213,18 @@ router.post(
   validateRequest({ body: createTankSchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const { name, capacityLiters, currentLevelLiters, fuelType, siteName, status } = req.body;
+      const { name, capacityLiters, currentLevelLiters, fuelType, siteName, status, deadVolumeLiters, sensorDevEui, sensorMountHeightMm, operationalStatus } = req.body;
       const tankData = {
         name,
         capacity_liters: capacityLiters,
         current_level_liters: currentLevelLiters,
         fuel_type: fuelType || 'Motorin',
         site_name: siteName || 'Gebze Ana Şantiye',
-        status: status || 'GÜVENLİ'
+        status: status || 'GÜVENLİ',
+        dead_volume_liters: deadVolumeLiters,
+        sensor_dev_eui: sensorDevEui,
+        sensor_mount_height_mm: sensorMountHeightMm,
+        operational_status: operationalStatus
       };
 
       const newTank = await createTank(tankData);
@@ -5262,7 +5266,10 @@ router.put(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const id = req.params.id;
-      const { name, capacityLiters, currentLevelLiters, fuelType, siteName, status, lowStockThresholdLiters, reorderLeadDays } = req.body;
+      const {
+        name, capacityLiters, currentLevelLiters, fuelType, siteName, status, lowStockThresholdLiters, reorderLeadDays,
+        deadVolumeLiters, sensorDevEui, sensorMountHeightMm, operationalStatus
+      } = req.body;
       const updateData = {
         ...(name && { name }),
         ...(capacityLiters !== undefined && { capacity_liters: capacityLiters }),
@@ -5271,7 +5278,13 @@ router.put(
         ...(siteName && { site_name: siteName }),
         ...(status && { status }),
         ...(lowStockThresholdLiters !== undefined && { low_stock_threshold_liters: lowStockThresholdLiters }),
-        ...(reorderLeadDays !== undefined && { reorder_lead_days: reorderLeadDays })
+        ...(reorderLeadDays !== undefined && { reorder_lead_days: reorderLeadDays }),
+        ...(deadVolumeLiters !== undefined && { dead_volume_liters: deadVolumeLiters }),
+        // sensorDevEui: null GÖNDERİLİRSE eşleştirme KALDIRILIR (sensör söküldü/değiştirildi) —
+        // bu yüzden `!== undefined` (falsy ama anlamlı bir null'ı da geçirir), `sensorDevEui &&` DEĞİL.
+        ...(sensorDevEui !== undefined && { sensor_dev_eui: sensorDevEui }),
+        ...(sensorMountHeightMm !== undefined && { sensor_mount_height_mm: sensorMountHeightMm }),
+        ...(operationalStatus && { operational_status: operationalStatus })
       };
 
       const updatedTank = await updateTank(id, updateData);

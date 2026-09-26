@@ -212,6 +212,35 @@ ALTER TABLE tanks ADD COLUMN IF NOT EXISTS low_stock_threshold_liters NUMERIC(10
 -- Ticket notu: "3 gün sonra biter" uyarısı eyleme daha dönük — varsayılan 3.
 ALTER TABLE tanks ADD COLUMN IF NOT EXISTS reorder_lead_days INTEGER NOT NULL DEFAULT 3;
 
+-- INV-1501 (#101): tank tanımının fiziksel/operasyonel eksik alanları. Geometri (çap/uzunluk/
+-- prizmatik) BİLEREK burada YOK — FUEL-403'ün ZATEN kurduğu tank_strapping_tables.cylinder_config
+-- (versiyonlu, tek doğruluk kaynağı) tekrarlanmadı; POST/PUT /tanks geometri alanlarıyla çağrılırsa
+-- tenantDb.ts bunu setTankStrappingTable()'a yönlendirir (bkz. o fonksiyonun yorumu).
+--  - dead_volume_liters: AC "kullanılabilir stok, ölü hacim düşülerek gösterilmelidir" — tankın en
+--    dibinde pompanın ASLA çekemediği, current_level_liters'a fiziksel olarak DAHİL ama dispense
+--    edilemeyen hacim. GET /tanks ve GET /tanks/:id/volume bunu düşerek "usable" alanı üretir;
+--    authorizeDispenseRequest de OTOMATİK ikmalde izin verilen üst sınırı bununla KISAR (aşağıda).
+--  - sensor_dev_eui: LoRaWAN ultrasonik seviye sensörünün EUI-64 kimliği (IOT-302). AC: "Sensör
+--    eşleştirmesi benzersiz olmalıdır" — bir fiziksel sensör gerçekte tek bir tanka takılıdır, bu
+--    yüzden PLATFORM GENELİNDE (tenant_id'siz) benzersiz — hardware_devices.device_id'nin AYNI
+--    ilkesiyle (bkz. o UNIQUE kısıtı).
+--  - sensor_mount_height_mm: sensörün tank tabanından montaj yüksekliği — ultrasonik mesafe
+--    okumasını (distanceMm) seviyeye çevirmek için gerekir (levelMm ≈ mountHeightMm - distanceMm).
+--    Bu ticket'ın kapsamı YALNIZCA tanımdır; canlı distanceMm→levelMm dönüşüm hattı KAPSAM DIŞI
+--    (Test Notu yalnızca "tank tanımı, sensör eşleştirme çakışması, ölü hacim hesabı" sayıyor) —
+--    ayrı, takip eden bir iş (muhtemelen IOT-302'yi bu alana bağlayan bir görev).
+--  - operational_status: mevcut `status` sütunuyla KARIŞTIRILMAMALI — `status` bir STOK seviyesi
+--    göstergesidir (GÜVENLİ/UYARI/KRİTİK, otomatik hesaplanır); `operational_status` tankın kendisinin
+--    YAŞAM DÖNGÜSÜdür (bakımda/devre dışı bir tank dolu bile olsa ikmale KAPALI olmalıdır) —
+--    authorizeDispenseRequest'te (aşağıda) zorunlu kılınır.
+ALTER TABLE tanks ADD COLUMN IF NOT EXISTS dead_volume_liters NUMERIC(10, 2) NOT NULL DEFAULT 0;
+ALTER TABLE tanks ADD COLUMN IF NOT EXISTS sensor_dev_eui VARCHAR(16);
+ALTER TABLE tanks ADD COLUMN IF NOT EXISTS sensor_mount_height_mm NUMERIC(10, 2);
+-- 'AKTİF' | 'BAKIMDA' | 'DEVRE_DIŞI'.
+ALTER TABLE tanks ADD COLUMN IF NOT EXISTS operational_status VARCHAR(16) NOT NULL DEFAULT 'AKTİF';
+-- Kısmi benzersiz indeks (NULL'lar hariç tutulur — çoğu tank henüz sensörsüz olabilir).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tanks_sensor_dev_eui ON tanks(sensor_dev_eui) WHERE sensor_dev_eui IS NOT NULL;
+
 -- 3. Drivers Table
 CREATE TABLE IF NOT EXISTS drivers (
     id VARCHAR(64) PRIMARY KEY,

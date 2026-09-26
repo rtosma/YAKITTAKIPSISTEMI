@@ -22,9 +22,18 @@ export interface StrappingPoint {
 }
 
 export interface CylinderConfig {
+  /** Silindir çapı (mm) — yalnızca HORIZONTAL/VERTICAL'de kullanılır, PRISMATIC'te yok sayılır. */
   diameterMm: number;
+  /** HORIZONTAL: tank boyu · VERTICAL: yükseklik · PRISMATIC: taban kenarı (uzunluk). */
   lengthMm: number;
-  orientation: 'HORIZONTAL' | 'VERTICAL';
+  // INV-1501: ticket'ın istediği üçüncü geometri — dikdörtgen prizma (ör. IBC tote, saha konteyner
+  // tankı). Silindirik olmayan tanklarda daldırma cetveli genelde daha doğrudur; bu KAPALI FORM,
+  // strapping cetveli henüz kalibre edilmemiş yeni bir tank için hızlı bir İLK tahmin sağlar.
+  orientation: 'HORIZONTAL' | 'VERTICAL' | 'PRISMATIC';
+  /** Yalnızca PRISMATIC: taban diğer kenarı (genişlik, mm). */
+  widthMm?: number;
+  /** Yalnızca PRISMATIC: toplam yükseklik (mm) — dolum seviyesi bu sınıra kırpılır. */
+  heightMm?: number;
 }
 
 export interface RawVolumeResult {
@@ -83,11 +92,21 @@ export function interpolateStrappingVolume(points: StrappingPoint[], levelMm: nu
 // ── Silindirik tank kapalı form ─────────────────────────────────────────────
 
 /**
- * Silindirik tankta `fillHeightMm` yüksekliğine kadar sıvı hacmi (litre).
- * Yatay: dairesel kesit segment alanı × uzunluk.
- * Dikey: taban alanı × yükseklik.
+ * Silindirik/prizmatik tankta `fillHeightMm` yüksekliğine kadar sıvı hacmi (litre).
+ * Yatay silindir: dairesel kesit segment alanı × uzunluk.
+ * Dikey silindir: taban alanı × yükseklik.
+ * Prizmatik (INV-1501): taban alanı (uzunluk × genişlik) × dolu yükseklik — dikdörtgen kesit
+ * yükseklik boyunca SABİT olduğundan (silindirin aksine) segment integrali gerekmez.
  */
 export function cylinderVolume(cfg: CylinderConfig, fillHeightMm: number): RawVolumeResult {
+  if (cfg.orientation === 'PRISMATIC') {
+    const totalHeight = cfg.heightMm ?? 0;
+    const h = clamp(fillHeightMm, 0, totalHeight);
+    const outOfRange = fillHeightMm < 0 || fillHeightMm > totalHeight;
+    const volumeMm3 = cfg.lengthMm * (cfg.widthMm ?? 0) * h;
+    return { observedLiters: round3(volumeMm3 / 1_000_000), outOfRange, method: 'CYLINDER_FORMULA' };
+  }
+
   const rMm = cfg.diameterMm / 2;
   const h = clamp(fillHeightMm, 0, cfg.orientation === 'HORIZONTAL' ? cfg.diameterMm : cfg.lengthMm);
   const outOfRange = fillHeightMm < 0 || fillHeightMm > (cfg.orientation === 'HORIZONTAL' ? cfg.diameterMm : cfg.lengthMm);

@@ -676,6 +676,9 @@ jobs:
       - name: Run INV-1504 Tank Low-Stock Forecast + Reorder Alert Tests
         run: cd backend && npx tsx test/test_inv1504_tank_stock_forecast.ts
 
+      - name: Run INV-1501 Tank Definition, Dead Volume + Sensor Mapping Tests
+        run: cd backend && npx tsx test/test_inv1501_tank_definition.ts
+
       - name: Run FUEL-409 Theoretical vs Physical Stock Reconciliation Tests
         run: cd backend && npx tsx test/test_fuel409_stock_reconciliation.ts
 

@@ -67,10 +67,22 @@ const strappingPointSchema = z.object({
 });
 
 const cylinderConfigSchema = z.object({
-  diameterMm: z.number().int().positive(),
+  // PRISMATIC'te diameterMm anlamsız (tankVolume.ts yok sayar) — bu yüzden
+  // yalnızca HORIZONTAL/VERTICAL'de zorunlu, aşağıdaki .refine ile denetlenir.
+  diameterMm: z.number().int().positive().optional(),
+  // HORIZONTAL: tank boyu · VERTICAL: yükseklik · PRISMATIC: taban kenarı (uzunluk).
   lengthMm: z.number().int().positive(),
-  orientation: z.enum(['HORIZONTAL', 'VERTICAL'])
-});
+  orientation: z.enum(['HORIZONTAL', 'VERTICAL', 'PRISMATIC']),
+  // INV-1501: yalnızca PRISMATIC (dikdörtgen prizma — ör. IBC tote, saha konteyner tankı).
+  widthMm: z.number().int().positive().optional(),
+  heightMm: z.number().int().positive().optional()
+}).refine(
+  (v) => v.orientation !== 'PRISMATIC' || (v.widthMm !== undefined && v.heightMm !== undefined),
+  { message: "PRISMATIC (prizmatik) tank için widthMm ve heightMm zorunludur.", path: ['widthMm'] }
+).refine(
+  (v) => v.orientation === 'PRISMATIC' || v.diameterMm !== undefined,
+  { message: 'HORIZONTAL/VERTICAL tank için diameterMm zorunludur.', path: ['diameterMm'] }
+);
 
 /**
  * POST /tanks/:name/strapping-table gövdesi. ÜÇ girdi biçiminden BİRİ:

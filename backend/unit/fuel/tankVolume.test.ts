@@ -50,6 +50,20 @@ describe('cylinderVolume (silindirik tank kapalı form)', () => {
     expect(cylinderVolume({ diameterMm: 2000, lengthMm: 3000, orientation: 'VERTICAL' }, 3500)).toMatchObject({ observedLiters: 9424.778, outOfRange: true });
     expect(cylinderVolume({ diameterMm: 2000, lengthMm: 3000, orientation: 'VERTICAL' }, -5)).toMatchObject({ observedLiters: 0, outOfRange: true });
   });
+  it('PRİZMATİK (INV-1501): taban alanı × dolu yükseklik — 2000×1500 mm taban, 1000 mm yükseklik; 500 mm → 1500 L, tam dolu (1000 mm) → 3000 L, boş → 0 L', () => {
+    const cfg = { diameterMm: 0, lengthMm: 2000, widthMm: 1500, heightMm: 1000, orientation: 'PRISMATIC' as const };
+    expect(cylinderVolume(cfg, 500)).toEqual({ observedLiters: 1500, outOfRange: false, method: 'CYLINDER_FORMULA' });
+    expect(cylinderVolume(cfg, 1000).observedLiters).toBe(3000);
+    expect(cylinderVolume(cfg, 0).observedLiters).toBe(0);
+  });
+  it('PRİZMATİK: sınır dışı yükseklik toplam yüksekliğe KIRPILIR ve işaretlenir (silindirle AYNI kural); negatif → 0', () => {
+    const cfg = { diameterMm: 0, lengthMm: 2000, widthMm: 1500, heightMm: 1000, orientation: 'PRISMATIC' as const };
+    expect(cylinderVolume(cfg, 1200)).toMatchObject({ observedLiters: 3000, outOfRange: true });
+    expect(cylinderVolume(cfg, -10)).toMatchObject({ observedLiters: 0, outOfRange: true });
+  });
+  it('PRİZMATİK: widthMm/heightMm hiç verilmemişse (eksik yapılandırma) 0 L döner, hata FIRLATMAZ (aynı "geçersiz girdi → 0" toleransı)', () => {
+    expect(cylinderVolume({ diameterMm: 0, lengthMm: 2000, orientation: 'PRISMATIC' }, 500).observedLiters).toBe(0);
+  });
 });
 
 describe('ASTM D1250 sıcaklık düzeltmesi', () => {

@@ -402,8 +402,12 @@ Uygulama kuralları (cihaz tarafında):
 
 Reddedilirse `details.error` makine-okunur: `CARD_UNKNOWN`, `DRIVER_INACTIVE`,
 `NO_VEHICLE_ASSIGNED`, `VEHICLE_BLOCKED`, `NO_SITE_PERMISSION`,
-`QUOTA_EXHAUSTED`, `TANK_NOT_FOUND`, `TANK_LOW` — cihaz her birine farklı bir
-LED/ekran mesajı gösterebilir.
+`QUOTA_EXHAUSTED`, `TANK_NOT_FOUND`, `TANK_LOW`, `TANK_UNAVAILABLE` (IOT-501:
+tank operatör tarafından **bakımda/devre dışı** işaretlenmiş — dolu olsa bile
+ikmale kapalı) — cihaz her birine farklı bir LED/ekran mesajı gösterebilir.
+`TANK_LOW`, tankın **ölü hacim düşüldükten sonraki** kullanılabilir stoğu
+tükendiğinde de tetiklenir (INV-1501) — ham `current_level_liters` sıfırın
+üstünde görünse bile.
 
 ### 9.2 `POST /dispense/heartbeat` — pompalama sırasında her ~5 sn
 
