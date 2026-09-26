@@ -53,11 +53,21 @@ async function q(sql: string, params: any[] = []): Promise<any[]> {
 
 const TX_IDS = ['comp602-tx-1', 'comp602-tx-2', 'comp602-tx-3'];
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function cleanup(): Promise<void> {
   await q("DELETE FROM audit_logs WHERE tenant_id='comp-camsa' AND action LIKE 'DESPATCH_ADVICE_TRANSMISSION_%' AND created_at > NOW() - INTERVAL '30 minutes'");
   await q('DELETE FROM despatch_advice_transmissions WHERE transaction_id = ANY($1::text[])', [TX_IDS]);
   await q('DELETE FROM despatch_advice_documents WHERE transaction_id = ANY($1::text[])', [TX_IDS]);
   await q('DELETE FROM transactions WHERE id = ANY($1::text[])', [TX_IDS]);
+  // COMP-602.2: bu test 5 ART ARDA entegratör hatası üretir (Test 6+7) — bu
+  // TAM OLARAK devre kesicinin açılma eşiğidir (CIRCUIT_FAILURE_THRESHOLD=5).
+  // Devre GLOBAL (Redis, tenant'a özgü değil) olduğundan bu testin bıraktığı
+  // "açık devre" durumu SONRAKİ herhangi bir teste sızabilir — hem test
+  // başlamadan ÖNCE hem de bittiğinde (finally) temizlenir.
+  await redis.del('despatch:integrator:circuit');
 }
 
 async function run() {
@@ -136,7 +146,15 @@ async function run() {
       `status=${requeuedRow?.status}, attempt=${requeuedRow?.attempt_count}, err=${requeuedRow?.last_error}`);
 
     // ── Test 7: MAX_ATTEMPTS aşılınca kalıcı FAILED ──────────────────
+    // COMP-602.2: her başarısız denemeden sonra next_retry_at exponential
+    // backoff ile ileri atılır (taban 2 sn — tenantDb.ts computeBackoffDelaySeconds
+    // İLE AYNI formül: 2,4,8,16 sn). Bu satır artık ANINDA tekrar seçilebilir
+    // DEĞİL — bu yüzden her sweep çağrısından ÖNCE o denemenin gerektirdiği
+    // kadar (küçük bir tampon payıyla) beklenir; aksi halde next_retry_at
+    // filtresi satırı atlar ve asla FAILED'e ulaşmaz.
     for (let i = 0; i < DESPATCH_TRANSMISSION_MAX_ATTEMPTS - 1; i++) {
+      const delaySeconds = 2 * 2 ** i; // i=0→2, i=1→4, i=2→8, i=3→16
+      await sleep(delaySeconds * 1000 + 200);
       await call('POST', '/despatch-advice-transmissions/sweep', { token: owner });
     }
     const failedRow = (await q('SELECT * FROM despatch_advice_transmissions WHERE id = $1', [r6enq.body.data.id]))[0];

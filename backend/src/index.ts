@@ -24,7 +24,7 @@ import { anonymizeExpiredSubjects } from './services/privacyService';
 import { broadcastToTenant, drainSocketClients } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
-import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant, runTankStockAlertSweepForCurrentTenant, runDriverBehaviorScoreSweepForCurrentTenant, runDeviceHealthScoreSweepForCurrentTenant } from './db/tenantDb';
+import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runDespatchAdviceStatusPollForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant, runTankStockAlertSweepForCurrentTenant, runDriverBehaviorScoreSweepForCurrentTenant, runDeviceHealthScoreSweepForCurrentTenant } from './db/tenantDb';
 import { runNotificationRetrySweepForCurrentTenant, notifyAlarmEscalationRecipients } from './services/notificationService';
 import { runReportScheduleSweepForCurrentTenant } from './services/reportScheduleService';
 import { runMonthlyManagementReportSweepForCurrentTenant } from './services/monthlyManagementReportService';
@@ -478,6 +478,30 @@ async function startServer(): Promise<void> {
     }
   }, DESPATCH_TRANSMISSION_SWEEP_MS);
 
+  // COMP-602.2 AC: "Gönderilmiş belgelerin durum yoklaması." Aynı desen —
+  // düz setInterval, iletim süpürmesiyle AYNI periyot (bağımsız bir dış çağrı
+  // türü — send() değil checkStatus() — devre kesiciyi etkilemez/okumaz).
+  const DESPATCH_STATUS_POLL_MS = 60 * 1000;
+  const despatchStatusPollInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [COMP-602.2] Tenant listesi alınamadı, bu GİB durum yoklama turu atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const r = await runWithTenant({ tenantId }, () => runDespatchAdviceStatusPollForCurrentTenant());
+        if (r.checked > 0) {
+          logger.info({ tenantId, ...r }, `📋 [COMP-602.2] GİB durum yoklaması: ${r.checked} sorgulandı, ${r.finalized} nihai karara ulaştı.`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [COMP-602.2] GİB durum yoklaması başarısız.');
+      }
+    }
+  }, DESPATCH_STATUS_POLL_MS);
+
   // FLEET-1407 AC: "yaklaşan bakımlar için hatırlatma sistemi." Ticket
   // NOTIF-1601 öneriyor — yok; yukarıdaki süpürücülerle AYNI setInterval.
   // Günlük bir tur, tarih/sayaç eşiğine yaklaşan/geçen araçlar için AI-507
@@ -807,6 +831,7 @@ async function startServer(): Promise<void> {
       clearInterval(anomalySweepInterval);
       clearInterval(alarmEscalationSweepInterval);
       clearInterval(despatchTransmissionSweepInterval);
+      clearInterval(despatchStatusPollInterval);
       clearInterval(maintenanceReminderSweepInterval);
       clearInterval(fleetComplianceSweepInterval);
       clearInterval(inventoryCriticalStockSweepInterval);

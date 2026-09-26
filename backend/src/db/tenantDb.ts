@@ -3392,6 +3392,10 @@ export interface DespatchAdviceTransmissionRecord {
   queuedAt: string;
   sentAt: string | null;
   updatedAt: string;
+  /** COMP-602.2 — GİB'in (mock entegratör üzerinden) bildirdiği durum kodu/açıklaması. NULL = henüz yoklanmadı. */
+  gibStatusCode: string | null;
+  gibStatusDescription: string | null;
+  gibStatusCheckedAt: string | null;
 }
 
 const DESPATCH_TRANSMISSION_MAX_ATTEMPTS = 5;
@@ -3411,7 +3415,10 @@ function mapDespatchTransmissionRow(row: any): DespatchAdviceTransmissionRecord 
     providerReference: row.provider_reference,
     queuedAt: row.queued_at,
     sentAt: row.sent_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    gibStatusCode: row.gib_status_code,
+    gibStatusDescription: row.gib_status_description,
+    gibStatusCheckedAt: row.gib_status_checked_at
   };
 }
 
@@ -3500,35 +3507,154 @@ export async function getDespatchAdviceTransmission(id: string): Promise<Despatc
   });
 }
 
+// ============================================================================
+// COMP-602.2 (#128): DEVRE KESİCİ + EXPONENTIAL BACKOFF
+// ============================================================================
+
+// AC: "5 ardışık hatadan sonra devre açılmalı." DESPATCH_TRANSMISSION_MAX_ATTEMPTS
+// (bir BELGENİN kendi deneme sınırı) ile AYNI DEĞER ama KAVRAMSAL OLARAK FARKLI
+// bir sayaç: devre kesici, TÜM belgeler/tenant'lar arasında PAYLAŞILAN entegratör
+// sağlığını izler (Redis'te GLOBAL tek anahtar — entegratör tek bir dış servistir,
+// tenant'a özgü değildir); bir belgenin kendi deneme sayısını DEĞİL.
+const CIRCUIT_FAILURE_THRESHOLD = 5;
+// Devre açıldıktan bu kadar sonra yarı-açık (TEK deneme) izin verilir. Ticket
+// kesin bir süre vermiyor — Bilinçli sapma: 60 sn (index.ts'teki sweep periyoduyla
+// aynı mertebe — yarı-açık deneme normal bir sonraki tur ile örtüşsün diye).
+const CIRCUIT_HALF_OPEN_AFTER_MS = 60_000;
+const CIRCUIT_STATE_KEY = 'despatch:integrator:circuit';
+
+type CircuitBreakerState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
+export interface DespatchIntegratorCircuitStatus {
+  state: CircuitBreakerState;
+  consecutiveFailures: number;
+  openedAt: string | null;
+  nextRetryAt: string | null;
+}
+const CIRCUIT_CLOSED_DEFAULT: DespatchIntegratorCircuitStatus = { state: 'CLOSED', consecutiveFailures: 0, openedAt: null, nextRetryAt: null };
+
+async function readCircuitBreaker(): Promise<DespatchIntegratorCircuitStatus> {
+  const raw = await redisPool.client.get(CIRCUIT_STATE_KEY);
+  return raw ? JSON.parse(raw) : { ...CIRCUIT_CLOSED_DEFAULT };
+}
+async function writeCircuitBreaker(s: DespatchIntegratorCircuitStatus): Promise<void> {
+  await redisPool.client.set(CIRCUIT_STATE_KEY, JSON.stringify(s));
+}
+
+/** AC: "panelde görünür uyarı" — frontend bu uçla devrenin o an açık olup olmadığını gösterebilir. */
+export async function getDespatchIntegratorCircuitStatus(): Promise<DespatchIntegratorCircuitStatus> {
+  return readCircuitBreaker();
+}
+
+/**
+ * Her GERÇEK entegratör çağrısından (send) sonra çağrılır — başarı sayaç
+ * SIFIRLAR (ve HALF_OPEN/OPEN'dan CLOSED'a döner); başarısızlık sayacı artırır,
+ * eşiğe ulaşınca (veya HALF_OPEN'daki TEK deneme başarısız olunca) devreyi açar.
+ */
+async function recordIntegratorOutcome(success: boolean): Promise<DespatchIntegratorCircuitStatus> {
+  const current = await readCircuitBreaker();
+  if (success) {
+    const next = { ...CIRCUIT_CLOSED_DEFAULT };
+    await writeCircuitBreaker(next);
+    return next;
+  }
+  const consecutiveFailures = current.consecutiveFailures + 1;
+  if (current.state === 'HALF_OPEN' || consecutiveFailures >= CIRCUIT_FAILURE_THRESHOLD) {
+    const now = new Date();
+    const next: DespatchIntegratorCircuitStatus = {
+      state: 'OPEN',
+      consecutiveFailures,
+      openedAt: current.openedAt ?? now.toISOString(),
+      nextRetryAt: new Date(now.getTime() + CIRCUIT_HALF_OPEN_AFTER_MS).toISOString()
+    };
+    await writeCircuitBreaker(next);
+    return next;
+  }
+  const next: DespatchIntegratorCircuitStatus = { ...current, consecutiveFailures };
+  await writeCircuitBreaker(next);
+  return next;
+}
+
+// AC: "kuyruk tarafında exponential backoff." Bilinçli seçim: küçük taban (2 sn)
+// — üretimde entegratör limitlerine göre büyütülebilir; küçük seçildi ki testler
+// dakikalarca beklemeden gerçek (sahte olmayan) bir geri-çekilme davranışını
+// doğrulayabilsin. 2,4,8,16,32... üstel, 5 dakikada tavanlanır.
+const BACKOFF_BASE_SECONDS = 2;
+const BACKOFF_MAX_SECONDS = 5 * 60;
+function computeBackoffDelaySeconds(attemptCountAfterFailure: number): number {
+  return Math.min(BACKOFF_BASE_SECONDS * 2 ** (attemptCountAfterFailure - 1), BACKOFF_MAX_SECONDS);
+}
+
 /**
  * Kuyruktaki en eski QUEUED satırlardan başlayarak SIRAYLA (tek seferde bir
  * tane, önceki bitmeden bir sonrakine geçmeden) entegratöre gönderir —
  * "gönderim sırası korunmalı" AC'si. Bir tenant'ın süpürmesi başarısız
  * OLMAZ; her satır kendi try/catch'i içinde işlenir (bir satırın entegratör
  * hatası aynı turdaki diğer satırları durdurmamalı).
+ *
+ * COMP-602.2: devre AÇIKKEN bu fonksiyon HİÇBİR satırı denemeden döner
+ * (`circuitOpen: true`) — AC: "belge üretimi durmamalı, yalnızca gönderim
+ * ertelenmelidir" (enqueueDespatchAdviceTransmission bu fonksiyonu hiç
+ * çağırmaz, üretim tamamen bağımsızdır). Yarı-açık pencere geldiğinde TEK bir
+ * deneme yapılır (maxAttemptsThisCall=1); başarılıysa devre kapanır ve
+ * "bekleyen belgeler sırayla gönderilir" AC'si BİR SONRAKİ (normal, tam
+ * batch'li) çağrıda karşılanır.
  */
 export async function runDespatchAdviceTransmissionSweepForCurrentTenant(): Promise<{
   processed: number;
   sent: number;
   failed: number;
   requeued: number;
+  circuitOpen: boolean;
 }> {
   const adapter = getIntegratorAdapter();
   let processed = 0;
   let sent = 0;
   let failed = 0;
   let requeued = 0;
+
+  const circuitBefore = await readCircuitBreaker();
+  let halfOpenTrial = false;
+  if (circuitBefore.state === 'OPEN' || circuitBefore.state === 'HALF_OPEN') {
+    const nextRetryAtMs = circuitBefore.nextRetryAt ? new Date(circuitBefore.nextRetryAt).getTime() : Infinity;
+    if (Date.now() < nextRetryAtMs) {
+      const hasQueued = await withTenant(async (client, tenantId) => {
+        const r = await client.query(`SELECT 1 FROM despatch_advice_transmissions WHERE tenant_id = $1 AND status = 'QUEUED' LIMIT 1`, [tenantId]);
+        if (r.rows.length > 0) {
+          // AC: "Devre açıldığında yönetici bildirimi ve panelde görünür uyarı."
+          // alarmKey SABİT → aynı kesinti boyunca TEK alarm satırı (event_count
+          // artar), her süpürme turunda YENİ bir alarm satırı YARATILMAZ.
+          await raiseAlarm(client, tenantId, {
+            alarmKey: 'despatch-integrator-circuit-open',
+            category: 'DESPATCH_INTEGRATOR_CIRCUIT_OPEN',
+            severity: 'CRITICAL',
+            title: 'e-İrsaliye entegratörüne şu an ulaşılamıyor (devre kesici açık) — bekleyen belgeler var.',
+            detail: { consecutiveFailures: circuitBefore.consecutiveFailures, openedAt: circuitBefore.openedAt }
+          });
+        }
+        return r.rows.length > 0;
+      });
+      void hasQueued;
+      return { processed: 0, sent: 0, failed: 0, requeued: 0, circuitOpen: true };
+    }
+    // Yarı-açık pencere geldi — devreyi HALF_OPEN'a işaretle (tek deneme sonucu
+    // recordIntegratorOutcome'da kesinleşir: başarı→CLOSED, başarısızlık→tekrar OPEN).
+    await writeCircuitBreaker({ ...circuitBefore, state: 'HALF_OPEN' });
+    halfOpenTrial = true;
+  }
+
   // Başarısız bir satır bu turda QUEUED'a geri dönebilir (bounded retry) —
   // AYNI çağrı içinde onu HEMEN tekrar seçip "hot loop" yapmamak için zaten
   // denenmiş id'ler bu turda bir daha seçilmez. Her satır bir sweep
   // çağrısında EN FAZLA BİR kez denenir; bir sonraki deneme BİR SONRAKİ
   // (manuel veya otomatik) süpürme turunu bekler.
   const attemptedIds: string[] = [];
-  for (let i = 0; i < DESPATCH_TRANSMISSION_SWEEP_BATCH_SIZE; i++) {
+  const maxAttemptsThisCall = halfOpenTrial ? 1 : DESPATCH_TRANSMISSION_SWEEP_BATCH_SIZE;
+  for (let i = 0; i < maxAttemptsThisCall; i++) {
     const outcome = await withTenant(async (client, tenantId) => {
       const next = await client.query(
         `SELECT * FROM despatch_advice_transmissions
          WHERE tenant_id = $1 AND status = 'QUEUED' AND NOT (id = ANY($2::text[]))
+           AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
          ORDER BY queued_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED`,
         [tenantId, attemptedIds]
       );
@@ -3548,12 +3674,13 @@ export async function runDespatchAdviceTransmissionSweepForCurrentTenant(): Prom
       } catch (err: any) {
         result = { success: false, errorMessage: err?.message ?? 'Bilinmeyen entegratör hatası.' };
       }
+      await recordIntegratorOutcome(result.success);
 
       if (result.success) {
         await client.query(
           `UPDATE despatch_advice_transmissions
              SET status = 'SENT', sent_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
-                 provider_reference = $2, attempt_count = attempt_count + 1, last_error = NULL
+                 provider_reference = $2, attempt_count = attempt_count + 1, last_error = NULL, next_retry_at = NULL
            WHERE id = $1`,
           [row.id, result.providerReference ?? null]
         );
@@ -3568,11 +3695,12 @@ export async function runDespatchAdviceTransmissionSweepForCurrentTenant(): Prom
 
       const newAttemptCount = row.attempt_count + 1;
       const terminal = newAttemptCount >= DESPATCH_TRANSMISSION_MAX_ATTEMPTS;
+      const nextRetryAt = terminal ? null : new Date(Date.now() + computeBackoffDelaySeconds(newAttemptCount) * 1000).toISOString();
       await client.query(
         `UPDATE despatch_advice_transmissions
-           SET status = $2, attempt_count = $3, last_error = $4, updated_at = CURRENT_TIMESTAMP
+           SET status = $2, attempt_count = $3, last_error = $4, next_retry_at = $5, updated_at = CURRENT_TIMESTAMP
          WHERE id = $1`,
-        [row.id, terminal ? 'FAILED' : 'QUEUED', newAttemptCount, result.errorMessage ?? 'Bilinmeyen hata']
+        [row.id, terminal ? 'FAILED' : 'QUEUED', newAttemptCount, result.errorMessage ?? 'Bilinmeyen hata', nextRetryAt]
       );
       if (terminal) {
         await writeAuditLog(client, {
@@ -3591,7 +3719,59 @@ export async function runDespatchAdviceTransmissionSweepForCurrentTenant(): Prom
     else if (outcome === 'failed') failed++;
     else requeued++;
   }
-  return { processed, sent, failed, requeued };
+  return { processed, sent, failed, requeued, circuitOpen: false };
+}
+
+const DESPATCH_STATUS_POLL_BATCH_SIZE = 20;
+
+/**
+ * COMP-602.2 AC: "Gönderilmiş belgelerin durum yoklaması ve GİB durum
+ * kodlarının işlenmesi." SENT ama henüz NİHAİ bir GİB kodu almamış (gib_status_code
+ * NULL veya final=false demek olan '1000') satırları sırayla yoklar. Devre
+ * kesiciden BAĞIMSIZDIR — yoklama send() DEĞİL, checkStatus() çağırır; ayrı
+ * bir dış çağrı türü, aynı devrenin sayaçlarını ETKİLEMEZ/OKUMAZ.
+ */
+export async function runDespatchAdviceStatusPollForCurrentTenant(): Promise<{ checked: number; finalized: number }> {
+  const adapter = getIntegratorAdapter();
+  let checked = 0;
+  let finalized = 0;
+  const attemptedIds: string[] = [];
+  for (let i = 0; i < DESPATCH_STATUS_POLL_BATCH_SIZE; i++) {
+    const outcome = await withTenant(async (client, tenantId) => {
+      const next = await client.query(
+        `SELECT * FROM despatch_advice_transmissions
+         WHERE tenant_id = $1 AND status = 'SENT' AND provider_reference IS NOT NULL
+           AND (gib_status_code IS NULL OR gib_status_code = '1000')
+           AND NOT (id = ANY($2::text[]))
+         ORDER BY sent_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED`,
+        [tenantId, attemptedIds]
+      );
+      if (next.rows.length === 0) return null;
+      const row = next.rows[0];
+      attemptedIds.push(row.id);
+
+      let result: { code: string; description: string; final: boolean };
+      try {
+        result = await adapter.checkStatus(row.provider_reference);
+      } catch (err: any) {
+        // Yoklama hatası bir GİB kararı DEĞİLDİR — satır olduğu gibi kalır, bir
+        // sonraki turda tekrar denenir (devre kesiciyi TETİKLEMEZ, bkz. üstteki not).
+        logger.warn({ err, transmissionId: row.id }, '⚠️ [COMP-602.2] GİB durum yoklaması başarısız, sonraki turda tekrar denenecek.');
+        return 'checked' as const;
+      }
+      await client.query(
+        `UPDATE despatch_advice_transmissions
+           SET gib_status_code = $2, gib_status_description = $3, gib_status_checked_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $1`,
+        [row.id, result.code, result.description]
+      );
+      return result.final ? ('finalized' as const) : ('checked' as const);
+    });
+    if (outcome === null) break;
+    checked++;
+    if (outcome === 'finalized') finalized++;
+  }
+  return { checked, finalized };
 }
 
 // ============================================================================
@@ -6330,6 +6510,10 @@ export type AlarmCategory =
   // skoru düşürebilir); bu alarm ise hardwareAuthMiddleware.ts'in AYRI bir Redis penceresinde ÜÇ AYRI
   // istekte de 5 sn'yi aşan sapma gördüğü, yani GERÇEKTEN kalıcı/RTC pil arızası şüphesi taşıyan durum.
   | 'DEVICE_CLOCK_DRIFT'
+  // COMP-602.2 AC: "Devre açıldığında yönetici bildirimi ve panelde görünür
+  // uyarı." Devre kesici GLOBAL (Redis) olduğu için bu alarm, o an bekleyen
+  // (QUEUED) belgesi olan HER tenant'ın kendi sweep çağrısında raporlanır.
+  | 'DESPATCH_INTEGRATOR_CIRCUIT_OPEN'
   | 'OTHER';
 export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';

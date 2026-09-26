@@ -2980,3 +2980,15 @@ CREATE POLICY fuel_purchase_waybills_tenant_isolation_policy ON fuel_purchase_wa
 -- Aynı waybill_id BİRDEN ÇOK satıra (BİRDEN ÇOK tanka) bağlanabilir.
 ALTER TABLE fuel_intake_receipts ADD COLUMN IF NOT EXISTS waybill_id VARCHAR(64) REFERENCES fuel_purchase_waybills(id);
 CREATE INDEX IF NOT EXISTS idx_fuel_intake_receipts_waybill ON fuel_intake_receipts(waybill_id) WHERE waybill_id IS NOT NULL;
+
+-- COMP-602.2 (#128): devre kesici + exponential backoff + GİB durum yoklaması.
+-- next_retry_at: başarısız (ama kalıcı olmayan) bir denemeden sonra bir
+-- SONRAKİ deneme için EN ERKEN zaman (exponential backoff — bkz. tenantDb.ts
+-- computeBackoffDelaySeconds). NULL = hemen tekrar denenebilir (ilk deneme).
+ALTER TABLE despatch_advice_transmissions ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMP WITH TIME ZONE;
+-- GİB'in (mock entegratör üzerinden) bildirdiği durum kodu/açıklaması — AC:
+-- "GİB durum kodları belge kaydına işlenmelidir." NULL = henüz yoklanmadı
+-- (SENT olsa bile GİB'in nihai kararı henüz bilinmiyor).
+ALTER TABLE despatch_advice_transmissions ADD COLUMN IF NOT EXISTS gib_status_code VARCHAR(16);
+ALTER TABLE despatch_advice_transmissions ADD COLUMN IF NOT EXISTS gib_status_description VARCHAR(256);
+ALTER TABLE despatch_advice_transmissions ADD COLUMN IF NOT EXISTS gib_status_checked_at TIMESTAMP WITH TIME ZONE;
