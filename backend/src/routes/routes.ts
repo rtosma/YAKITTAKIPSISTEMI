@@ -7705,17 +7705,25 @@ router.post(
         hw.deviceId, req.body.sessionId, req.body.totalizerLiters, req.body.flowRateLpm
       );
 
+      // IOT-307 AC: "Sunucu zamanının HER heartbeat yanıtında cihaza bildirilmesi" —
+      // heartbeat en yüksek frekanslı (aktif pompalarken ~5sn) uç olduğundan, cihazın
+      // kendi saatini pasif biçimde (ek bir komut beklemeden) sürekli karşılaştırıp
+      // düzeltebileceği en ucuz kanal budur. Sapma eşiği aşılırsa AYRICA (MQTT
+      // command/v1/{deviceId} üzerinden) aktif bir TIME_SYNC komutu da üretilir —
+      // bkz. hardwareAuthMiddleware.ts handleAcceptedClockDrift().
+      const serverTime = new Date().toISOString();
+
       const limitCheck = await dispenseSessionService.checkLimits(session);
       if (limitCheck.exceeded) {
         await dispenseSessionService.forceAbort(hw.deviceId, 'TIMED_OUT');
         mqttService.publishCommand(hw.deviceId, 'FORCE_CUTOFF', { reason: limitCheck.reason, sessionId: session.sessionId });
         broadcastToTenant(hw.tenantId, 'dispense:session', { ...session, state: 'TIMED_OUT' });
-        res.json({ success: true, command: 'FORCE_CUTOFF', reason: limitCheck.reason });
+        res.json({ success: true, command: 'FORCE_CUTOFF', reason: limitCheck.reason, serverTime });
         return;
       }
 
       broadcastToTenant(hw.tenantId, 'dispense:session', session);
-      res.json({ success: true, command: 'CONTINUE', state: session.state });
+      res.json({ success: true, command: 'CONTINUE', state: session.state, serverTime });
     } catch (error: any) {
       next(error);
     }
@@ -7745,7 +7753,7 @@ router.post(
   hardwareAuthMiddleware,
   validateRequest({ body: dispenseFinalizeSchema }),
   async (req: Request, res: Response, next: NextFunction) => {
-    const hw = (req as any).authenticatedHardware as { deviceId: string; tenantId: string };
+    const hw = (req as any).authenticatedHardware as { deviceId: string; tenantId: string; timestampMs: number };
     try {
       // Oturum state machine'ine dokunmadan ÖNCE idempotency kontrolü —
       // aksi halde bu isteğin ÖNCEKİ bir denemesi zaten başarıyla
@@ -7778,7 +7786,11 @@ router.post(
           reportedLiters: req.body.reportedLiters,
           flowRateLpm: session.currentFlowRateLpm,
           idempotencyKey: req.body.idempotencyKey,
-          forceManualVerification: wasTimedOut
+          forceManualVerification: wasTimedOut,
+          // IOT-307: finalize isteğinin HMAC X-Timestamp'i — cihazın "bu ikmal ne zaman
+          // bitti" dediği an; server_received_at (DB DEFAULT) ayrıca sunucunun kaydı
+          // GERÇEKTEN yazdığı anı tutar.
+          deviceReportedAtMs: hw.timestampMs
         })
       );
 

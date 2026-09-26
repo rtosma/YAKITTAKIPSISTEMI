@@ -1,10 +1,14 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { redisPool } from '../db/redisPool';
-import { getHardwareDeviceByDeviceId } from '../db/adminDb';
+import { getHardwareDeviceByDeviceId, recordHardwareClockDrift, type HardwareDeviceRecord } from '../db/adminDb';
 import { decryptDeviceSecret } from '../utils/hardwareSecretCrypto';
 import { logger } from '../utils/logger';
 import { ServiceUnavailableError } from '../utils/errors';
+import { mqttService } from '../iot/mqttClient';
+import { runWithTenant } from '../context/tenantContext';
+import { withTenant } from '../db/withTenant';
+import { raiseAlarm } from '../db/tenantDb';
 
 // AUTH-202.2 — 30sn'lik timestamp penceresinden BÜYÜK olmalı (ticket notu):
 // bir nonce, kabul edilebilir en eski paketten bile daha uzun süre Redis'te
@@ -12,6 +16,87 @@ import { ServiceUnavailableError } from '../utils/errors';
 // reddedilsin.
 const NONCE_TTL_MS = 120_000;
 const MAX_ALLOWED_TIME_WINDOW_MS = 30_000;
+
+// ── IOT-307: saat sapması tespiti + senkron komutu ────────────────────────────
+// Ticket AC: "5 saniyeden fazla sapma tespit edildiğinde senkron komutu üretilmelidir."
+// Bu, AUTH-202.2'nin 30sn'lik SERT reddiyle KARIŞTIRILMAMALI: 5sn eşiği İSTEK HÂLÂ
+// KABUL EDİLİRKEN (30sn'nin altında) cihazı ERKENDEN uyarıp kendini düzeltmesini sağlar —
+// amaç, cihazın hiç 30sn sınırına ULAŞMAMASI.
+const SYNC_THRESHOLD_MS = 5_000;
+// Aynı cihaza her istekte yeniden TIME_SYNC komutu BASILMAZ (MQTT broker'ı gereksiz
+// yere doldurur) — FORCE_CUTOFF'un aksine bu komut acil değil, birikmeli de değil.
+const DRIFT_COMMAND_COOLDOWN_SECONDS = 60;
+// "Kalıcı" (persistent) sapma: TEK bir isteğin 5sn'yi aşması değil, KISA bir pencerede
+// TEKRARLANMASI — ağ gecikmesi kaynaklı tek seferlik bir sapma alarme değmez, RTC pil
+// arızası şüphesi ancak SÜREKLİLİK gösterirse anlamlıdır.
+const DRIFT_PERSISTENT_WINDOW_SECONDS = 5 * 60;
+const DRIFT_PERSISTENT_THRESHOLD = 3;
+// raiseAlarm() zaten (tenant_id, alarm_key) BENZERSİZLİĞİYLE dedup ediyor (event_count
+// artırır) — bu cooldown, her kabul edilen istekte YENİDEN bir DB transaction'ı AÇMAMAK
+// içindir (alarm zaten "canlı", event eklemeye gerek yok — 10 dakikada bir yeter).
+const DRIFT_ALARM_COOLDOWN_SECONDS = 10 * 60;
+// AC: "Kalıcı sapma" — 15sn'yi aşan sapma RTC'nin gerçekten durduğu/pil bittiği
+// ihtimalini CRITICAL'e yükseltir (5-15sn arası ağ/işlemci gecikmesiyle de açıklanabilir).
+const CRITICAL_DRIFT_MS = 15_000;
+
+/**
+ * IOT-307 — bir HMAC isteği (30sn penceresi İÇİNDE, yani KABUL EDİLMİŞ) ölçülen saat
+ * sapmasının yan etkilerini işler: (1) "son bilinen sapma"yı kalıcı hale getirir (AC:
+ * IOT-308'in ZATEN kullandığı last_clock_drift_ms artık YALNIZCA cihazın opsiyonel MQTT
+ * vitals'ına değil, HER isteğin ZORUNLU X-Timestamp'ine dayanır); (2) eşik aşılırsa
+ * cihaza TIME_SYNC komutu yayınlar (MQTT — mevcut command/v1/{deviceId} kanalı, FORCE_CUTOFF
+ * ile AYNI mekanizma); (3) sapma KALICIYSA (kısa pencerede tekrar tekrar) bir alarm
+ * yükseltir. Fire-and-forget: donanım isteğinin yanıtını ASLA bloklamaz/başarısız kılmaz.
+ */
+async function handleAcceptedClockDrift(device: HardwareDeviceRecord, driftMs: number): Promise<void> {
+  void recordHardwareClockDrift(device.device_id, driftMs);
+
+  const absDrift = Math.abs(driftMs);
+  if (absDrift <= SYNC_THRESHOLD_MS) return;
+
+  try {
+    const commandLock = await redisPool.client.set(
+      `hw-timesync-cmd:${device.device_id}`, '1', 'EX', DRIFT_COMMAND_COOLDOWN_SECONDS, 'NX'
+    );
+    if (commandLock === 'OK') {
+      mqttService.publishCommand(device.device_id, 'TIME_SYNC', {
+        serverTime: new Date().toISOString(),
+        driftMs
+      });
+    }
+  } catch (err) {
+    logger.warn({ err, deviceId: device.device_id }, '⚠️ [IOT-307] TIME_SYNC komut kilidi/yayını başarısız (Redis/MQTT).');
+  }
+
+  try {
+    const countKey = `hw-drift-count:${device.device_id}`;
+    const count = await redisPool.client.incr(countKey);
+    if (count === 1) await redisPool.client.expire(countKey, DRIFT_PERSISTENT_WINDOW_SECONDS);
+    if (count < DRIFT_PERSISTENT_THRESHOLD) return;
+
+    const alarmLock = await redisPool.client.set(
+      `hw-drift-alarm-cooldown:${device.device_id}`, '1', 'EX', DRIFT_ALARM_COOLDOWN_SECONDS, 'NX'
+    );
+    if (alarmLock !== 'OK') return;
+
+    await runWithTenant({ tenantId: device.tenant_id }, () =>
+      withTenant((client, tenantId) =>
+        raiseAlarm(client, tenantId, {
+          alarmKey: `DEVICE_CLOCK_DRIFT:${device.device_id}`,
+          category: 'DEVICE_CLOCK_DRIFT',
+          severity: absDrift > CRITICAL_DRIFT_MS ? 'CRITICAL' : 'WARNING',
+          title: `Cihaz saati kalıcı olarak sapıyor: ${device.device_id} (${Math.round(absDrift / 1000)} sn) — RTC pil arızası şüphesi`,
+          siteName: device.site_name,
+          subjectType: 'DEVICE',
+          subjectId: device.device_id,
+          detail: { driftMs, occurrencesInWindow: count, windowSeconds: DRIFT_PERSISTENT_WINDOW_SECONDS }
+        })
+      )
+    );
+  } catch (err) {
+    logger.error({ err, deviceId: device.device_id }, '🚨 [IOT-307] Kalıcı saat sapması alarmı yükseltilemedi.');
+  }
+}
 
 // Reddedilen paket sayacı: cihaz başına, kayan bir pencerede tutulur; eşik
 // aşılırsa alarm seviyesinde loglanır (Prometheus bu projede hiçbir yerde
@@ -120,12 +205,18 @@ export const hardwareAuthMiddleware = async (req: Request, res: Response, next: 
       return reject(res, 400, 'INVALID_TIMESTAMP_FORMAT', 'X-Timestamp geçerli bir milisaniye zaman damgası veya ISO tarihi olmalıdır.');
     }
 
-    const timeDifferenceMs = Math.abs(Date.now() - timestampMs);
+    // IOT-307: İŞARETLİ tutulur (+ = cihaz GERİDE/geçmişte, - = cihaz İLERİDE) —
+    // mqttClient.ts'in opsiyonel vitals'tan hesapladığı last_clock_drift_ms İLE
+    // AYNI kural (Date.now() - cihazınZamanı), iki kaynağın anlamı tutarlı olsun.
+    const signedDriftMs = Date.now() - timestampMs;
+    const timeDifferenceMs = Math.abs(signedDriftMs);
 
     if (timeDifferenceMs > MAX_ALLOWED_TIME_WINDOW_MS) {
       // Cihaz saati kaymışsa (RTC drift) TÜM paketleri reddedilir ve saha
       // durur — bu yüzden sessizce 401 dönmek yerine ayrıca CLOCK_DRIFT
-      // olarak loglanır (asıl saat senkronu komutu IOT-307'nin işi). Cihaz
+      // olarak loglanır. Bu SERT reddiye (30sn) henüz ULAŞMAMIŞ, ama küçük
+      // bir sapma gösteren istekler için asıl senkron komutu aşağıda,
+      // handleAcceptedClockDrift() içinde üretilir (IOT-307) — cihaz
       // BURADA kara listeye alınmaz, yalnızca bu paket reddedilir.
       logger.warn(
         { deviceId, driftMs: timeDifferenceMs },
@@ -213,6 +304,10 @@ export const hardwareAuthMiddleware = async (req: Request, res: Response, next: 
       tenantId: device.tenant_id,
       timestampMs
     };
+
+    // IOT-307: yalnızca İMZASI DOĞRULANMIŞ istekler için (spoofed/garbage istekler bu
+    // sinyali kirletmesin) — yanıtı ASLA bloklamaz, next() öncesi başlatılıp devam edilir.
+    void handleAcceptedClockDrift(device, signedDriftMs);
 
     next();
   } catch (err) {

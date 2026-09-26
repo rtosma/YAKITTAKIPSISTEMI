@@ -920,6 +920,10 @@ export interface TransactionRecord {
   /** INV-1503 — bkz. fuelCostService.ts. Tank/fiyat geçmişi yoksa null. */
   unit_cost_liters: number | null;
   total_cost: number | null;
+  /** IOT-307 — cihazın HMAC X-Timestamp'i (ya da offline kayıtta kendi zaman damgası); cihaz yoksa (manuel/operatör ikmali) null. */
+  device_reported_at: string | null;
+  /** IOT-307 — sunucunun kaydı GERÇEKTEN yazdığı an (DEFAULT CURRENT_TIMESTAMP; offline'da created_at'ın backdate edilmesinden ETKİLENMEZ). */
+  server_received_at: string;
 }
 
 export interface TransactionFilters {
@@ -1198,7 +1202,7 @@ async function createTransactionCore(
   // ikmallere özgü (bkz. yukarıdaki alan yorumları) — bu fonksiyon (manuel/
   // operatör tetiklemeli tek seferlik ikmal) bunları hiç set etmez, DB
   // varsayılanları (NULL / 'DOĞRULANDI') geçerli olur.
-  data: Omit<TransactionRecord, 'id' | 'tenant_id' | 'created_at' | 'idempotency_key' | 'hash_signature' | 'verification_status' | 'device_id' | 'local_sequence_id' | 'unit_cost_liters' | 'total_cost'>
+  data: Omit<TransactionRecord, 'id' | 'tenant_id' | 'created_at' | 'idempotency_key' | 'hash_signature' | 'verification_status' | 'device_id' | 'local_sequence_id' | 'unit_cost_liters' | 'total_cost' | 'device_reported_at' | 'server_received_at'>
 ): Promise<TransactionRecord> {
   return withTenant(async (client, tenantId) => {
     const id = generateId('tx');
@@ -1606,6 +1610,8 @@ export interface FinalizeDispenseInput {
   flowRateLpm: number | null;
   idempotencyKey: string;
   forceManualVerification: boolean;
+  /** IOT-307 — finalize isteğinin HMAC X-Timestamp'i (hardwareAuthMiddleware'in doğruladığı, ms). */
+  deviceReportedAtMs: number;
 }
 
 /**
@@ -1702,13 +1708,13 @@ export async function finalizeDispenseSession(
 
     const result = await client.query(
       `INSERT INTO transactions
-         (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, idempotency_key, hash_signature, verification_status, fuel_type, unit_cost_liters, total_cost)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+         (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, idempotency_key, hash_signature, verification_status, fuel_type, unit_cost_liters, total_cost, device_reported_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
       [
         id, tenantId, data.siteName, data.vehiclePlate, data.driverName, data.tankName,
         totalizerLiters, data.flowRateLpm, 'TAMAMLANTI', 'Otomatik', true,
         data.idempotencyKey, hashSignature, needsVerification ? 'DOĞRULAMA_BEKLIYOR' : 'DOĞRULANDI', finalizeFuelType,
-        finalizeCost?.unitCostLiters ?? null, finalizeCost?.totalCost ?? null
+        finalizeCost?.unitCostLiters ?? null, finalizeCost?.totalCost ?? null, new Date(data.deviceReportedAtMs)
       ]
     );
     return { ...(result.rows[0] as TransactionRecord), alreadyExisted: false };
@@ -1844,13 +1850,17 @@ async function syncSingleOfflineRecord(deviceId: string, record: SyncBatchRecord
       try {
         insertResult = await client.query(
           `INSERT INTO transactions
-             (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, device_id, local_sequence_id, hash_signature, verification_status, created_at, unit_cost_liters, total_cost)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING id`,
+             (id, tenant_id, site_name, vehicle_plate, driver_name, tank_name, amount_liters, flow_rate_lpm, pump_status, type, rfid_auth, device_id, local_sequence_id, hash_signature, verification_status, created_at, unit_cost_liters, total_cost, device_reported_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
           [
             id, tenantId, record.siteName, record.vehiclePlate, record.driverName ?? null, record.tankName,
             record.amountLiters, record.flowRateLpm ?? null, 'TAMAMLANTI', 'Çevrimdışı Senkron', true,
             deviceId, record.localSequenceId, hashSignature, 'DOĞRULAMA_BEKLIYOR', record.deviceTimestamp,
-            syncCost?.unitCostLiters ?? null, syncCost?.totalCost ?? null
+            syncCost?.unitCostLiters ?? null, syncCost?.totalCost ?? null,
+            // IOT-307: created_at ZATEN cihaz zamanına backdate edilir (yukarıda) — device_reported_at bunu
+            // AÇIKÇA, kendi anlamıyla (created_at'ın gelecekte başka bir şey için yeniden yorumlanmasından
+            // bağımsız) tekrarlar. server_received_at (DEFAULT) burada da NE ZAMAN SENKRONLANDIĞINI verir.
+            record.deviceTimestamp
           ]
         );
       } catch (insertErr: any) {
@@ -2088,12 +2098,18 @@ export interface TenantHardwareDeviceRecord {
   secret_rotated_at: string | null;
   previous_secret_expires_at: string | null;
   created_at: string;
+  /** IOT-307 — imzalı DAKİK X-Timestamp'ten hesaplanan sapma (ms; + = cihaz geride, - = ileride). */
+  last_clock_drift_ms: number | null;
+  last_clock_drift_at: string | null;
 }
 
 // Secret sütunları (encrypted_secret*) BİLEREK seçilmiyor — bu liste ucu
 // provisioning/rotasyon dışında hiçbir zaman şifreli de olsa secret
 // döndürmemeli (AC: "tek seferlik gösterim").
-const HARDWARE_DEVICE_PUBLIC_COLUMNS = 'id, device_id, name, site_name, status, secret_rotated_at, previous_secret_expires_at, created_at';
+// IOT-307: last_clock_drift_ms/_at — panelin cihaz sağlığı görünümünün (FE-806) sapmayı
+// gösterebilmesi için (drift'in KENDİSİ artık her kabul edilen istekte middleware'ce yazılır,
+// bkz. hardwareAuthMiddleware.ts recordHardwareClockDrift).
+const HARDWARE_DEVICE_PUBLIC_COLUMNS = 'id, device_id, name, site_name, status, secret_rotated_at, previous_secret_expires_at, created_at, last_clock_drift_ms, last_clock_drift_at';
 
 export async function getTenantHardwareDevices(): Promise<TenantHardwareDeviceRecord[]> {
   return withTenant(async (client) => {
@@ -5964,7 +5980,13 @@ export type AlarmCategory =
   // NOTIF-1603 AC: "Aylık SMS limiti aşıldığında uyarı üretilmelidir."
   | 'SMS_MONTHLY_LIMIT_EXCEEDED'
   // NOTIF-1604 AC: "Sürekli hata veren webhook otomatik devre dışı bırakılmalıdır."
-  | 'WEBHOOK_AUTO_DISABLED' | 'OTHER';
+  | 'WEBHOOK_AUTO_DISABLED'
+  // IOT-307 AC: "Kalıcı sapmalı cihazlar panelde uyarı ile listelenmelidir" — DEVICE_HEALTH_SCORE_LOW'dan
+  // KASITLI olarak AYRI: o skor 5 DAKİKALIK bir eşiğin nokta-zamanlı cezasıdır (tek bir kötü ölçüm bile
+  // skoru düşürebilir); bu alarm ise hardwareAuthMiddleware.ts'in AYRI bir Redis penceresinde ÜÇ AYRI
+  // istekte de 5 sn'yi aşan sapma gördüğü, yani GERÇEKTEN kalıcı/RTC pil arızası şüphesi taşıyan durum.
+  | 'DEVICE_CLOCK_DRIFT'
+  | 'OTHER';
 export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
 

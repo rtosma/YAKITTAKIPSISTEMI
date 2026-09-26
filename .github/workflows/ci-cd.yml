@@ -501,6 +501,13 @@ jobs:
       - name: Run FUEL-410 Hybrid Fail-Open Policy Tests
         run: cd backend && npx tsx test/test_fuel410_fail_open_policy.ts
 
+      # IOT-307 (#110): saat sapması tespiti + senkron komutu + kalıcı sapma alarmı + device_reported_at/
+      # server_received_at. Bu iş gerçek bir EMQX'e bağlanmadığından (MQTT_URL=__CI_SKIP__, yukarıdaki not)
+      # yalnızca MQTT'ye GERÇEKTEN yayınlandığının gözlemi (T1b/T3) atlanır — geri kalan tüm doğrulamalar
+      # (drift kaydı, kalıcı alarm, response alanları, DB sütunları) burada da tam çalışır.
+      - name: "IOT-307: Saat Sapması Tespiti ve Senkron Komutu Testleri"
+        run: cd backend && npx tsx test/test_iot307_clock_drift.ts
+
       - name: Run REP-701 Stream Excel Export Tests
         run: cd backend && npx tsx test/test_rep701_transaction_export.ts
 

@@ -202,6 +202,7 @@ JSON: `{ "command": "<AD>", ...ek alanlar, "issuedAt": "<ISO>" }`. Bilinen komut
 |---|---|---|
 | `FORCE_CUTOFF` | İkmal sırasında limit/süre aşımı ya da heartbeat zaman aşımı | Solenoidi/pompayı **derhal** kapat; `payload.reason`, `payload.sessionId` bilgi amaçlı |
 | (kalibrasyon) | Operatör K-faktör değişikliği talep etti | §5'teki ACK akışını çalıştır |
+| `TIME_SYNC` | Cihazın imzaladığı `X-Timestamp`, sunucu saatinden **5 saniyeden fazla** sapıyor (IOT-307; henüz `AUTH-202.2`'nin 30 sn'lik sert reddine ulaşmadan, erkenden) | RTC'yi `payload.serverTime` (ISO 8601) ile eşitle; `payload.driftMs` bilgi amaçlı (+ = cihaz geride). Aynı cihaza 60 sn içinde tekrar basılmaz — kayıp mesaj varsa bir sonraki sapan istekte yeniden gelir |
 
 ---
 
@@ -408,13 +409,17 @@ LED/ekran mesajı gösterebilir.
 
 ```
 { "sessionId": "...", "totalizerLiters": <KÜMÜLATİF totalizatör okuması>, "flowRateLpm": 48.2 }
-→ { "success": true, "command": "CONTINUE", "state": "PUMPING" }
+→ { "success": true, "command": "CONTINUE", "state": "PUMPING", "serverTime": "<ISO 8601>" }
   veya
-→ { "success": true, "command": "FORCE_CUTOFF", "reason": "MAX_LITERS_EXCEEDED" }
+→ { "success": true, "command": "FORCE_CUTOFF", "reason": "MAX_LITERS_EXCEEDED", "serverTime": "<ISO 8601>" }
 ```
 
 - `totalizerLiters` **sıfırlanmayan kümülatif** debimetre değeridir (bu
   heartbeat'te "akan miktar" değil).
+- `serverTime` (IOT-307): sunucu saati, **HER** heartbeat yanıtında — komut
+  beklemeden, cihazın RTC'sini pasif biçimde karşılaştırıp gerekirse kendi
+  içinde düzeltmesi için. Sapma 5 sn'yi aşarsa AYRICA `TIME_SYNC` komutu da
+  gelir (§3.6) — iki kanal birbirini tamamlar, biri kaybolursa diğeri kalır.
 - İlk heartbeat oturumu `AUTHORIZED → PUMPING`'e geçirir ve o andaki okumayı
   başlangıç noktası olarak sabitler.
 - **15 saniye** heartbeat gelmezse sunucu oturumu `TIMED_OUT` yapar ve

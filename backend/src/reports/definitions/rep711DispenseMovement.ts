@@ -60,7 +60,11 @@ export const rep711DispenseMovement: ReportDefinition = {
     { key: 'unit_cost_liters', header: 'Birim Fiyat', width: 14, format: (v) => (v === null || v === undefined ? '-' : Number(v).toFixed(4)) },
     { key: 'total_cost', header: 'Tutar', width: 14, format: (v) => (v === null || v === undefined ? '-' : Number(v).toFixed(2)) },
     { key: 'pump_status', header: 'Pompa Durumu', width: 16 },
-    { key: 'type', header: 'Yetki Tipi', width: 18 }
+    { key: 'type', header: 'Yetki Tipi', width: 18 },
+    // IOT-307 AC: "adli inceleme için ikisi de gerekir" — cihaz zamanı (varsa; manuel/operatör
+    // ikmalinde cihaz yok → '-') ile sunucunun kaydı GERÇEKTEN yazdığı an ayrı sütunlarda.
+    { key: 'device_reported_at', header: 'Cihaz Zamanı', width: 20, format: (v) => (v ? new Date(v as string).toLocaleString('tr-TR') : '-') },
+    { key: 'server_received_at', header: 'Sunucu Alış Zamanı', width: 20, format: (v) => new Date(v as string).toLocaleString('tr-TR') }
   ],
   filters: [
     { key: 'startDate', column: 'created_at', type: 'dateFrom', label: 'Başlangıç Tarihi' },

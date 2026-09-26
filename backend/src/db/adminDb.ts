@@ -6,6 +6,7 @@ import { encryptDeviceSecret, generateDeviceSecret } from '../utils/hardwareSecr
 import { ForbiddenError, ConflictError, NotFoundError } from '../utils/errors';
 import { encryptTenantExport } from '../utils/tenantExportCrypto';
 import type { FuelCostMethod } from '../fuel/fuelCostService';
+import { logger } from '../utils/logger';
 
 /**
  * SUPER_ADMIN'e özel, tek bir tenant'a kısıtlı OLMAYAN sorgular. Diğer
@@ -754,6 +755,27 @@ export interface HardwareDeviceRecord {
 export async function getHardwareDeviceByDeviceId(deviceId: string): Promise<HardwareDeviceRecord | null> {
   const result = await pool.query('SELECT * FROM hardware_devices WHERE device_id = $1', [deviceId]);
   return result.rows[0] ?? null;
+}
+
+/**
+ * IOT-307 — getHardwareDeviceByDeviceId ile AYNI gerekçe: hardwareAuthMiddleware bir isteği kabul
+ * ettiği anda tenant context (JWT ile kurulan withTenant() akışı) henüz YOK, bu yüzden ham
+ * pool.query. ÖNCEDEN last_clock_drift_ms yalnızca cihazın OPSİYONEL MQTT vitals alanı
+ * (deviceTimeMs) gönderdiğinde güncelleniyordu (nadiren) — artık HER kabul edilen HMAC isteğinde
+ * (ZORUNLU X-Timestamp'ten) çağrılır, bu yüzden "son bilinen sapma" güvenilir biçimde günceldir.
+ * Fire-and-forget: bu bir yan etkidir (telemetri/health verisi), donanım isteğinin YANITINI
+ * ASLA bloklamamalı/başarısız kılmamalı — hata yutulur, yalnızca loglanır (redisPool.ts'teki
+ * "telemetri hattını bloklamaz" disipliniyle AYNI).
+ */
+export async function recordHardwareClockDrift(deviceId: string, driftMs: number): Promise<void> {
+  try {
+    await pool.query(
+      'UPDATE hardware_devices SET last_clock_drift_ms = $2, last_clock_drift_at = NOW() WHERE device_id = $1',
+      [deviceId, Math.round(driftMs)]
+    );
+  } catch (err) {
+    logger.warn({ err, deviceId }, '⚠️ [IOT-307] Cihaz saat sapması kaydedilemedi (DB hatası).');
+  }
 }
 
 // ── AUTH-206: parola sıfırlama (pre-auth, tenant context YOK) ─────────────

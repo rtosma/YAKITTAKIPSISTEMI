@@ -352,6 +352,20 @@ END $$;
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS unit_cost_liters NUMERIC(12, 4);
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS total_cost NUMERIC(14, 2);
 
+-- IOT-307 AC: "Her kayıtta hem cihaz zamanı hem sunucu alış zamanı saklanmalıdır" — adli inceleme
+-- (forensics) için ikisi de gerekir. `created_at` zaten (offline senkronda) cihaz zamanına
+-- BACKDATE edilebiliyor (bkz. syncSingleOfflineRecord) — bu, "ne zaman OLDU"nun tek kaynağı olarak
+-- doğru, ama "ne zaman ÖĞRENDİK"i (adli/replay/gecikme analizi için ayrı bir sinyal) SİLİYOR.
+-- `device_reported_at`: cihazın HMAC isteğindeki (X-Timestamp) ya da offline kayıttaki kendi
+-- zaman damgası — cihaz YOKSA (manuel/operatör ikmali) NULL kalır, "cihaz zamanı bilinmiyor"
+-- demektir, sessizce 'şimdi' SAYILMAZ.
+-- `server_received_at`: DEFAULT CURRENT_TIMESTAMP sayesinde HİÇBİR INSERT'e dokunmadan (yeni
+-- kolon INSERT'in sütun listesinde yoksa Postgres varsayılanı uygular) TÜM yollarda (online,
+-- offline, manuel) otomatik dolar — sunucunun kaydı GERÇEKTEN yazdığı an, `created_at`'ın
+-- offline'da backdate edilmiş olmasından ETKİLENMEZ.
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS device_reported_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS server_received_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
 -- 3c. Cross-Site Fuel Permissions (Çapraz Şantiye İkmal Yetkileri — FUEL-402)
 -- Bir aracın KENDİ şantiyesi dışında (target_site) yakıt alabilmesi için
 -- tanımlanan geçici kota. createTransaction bu tabloyu kontrol eder: araç
@@ -2215,6 +2229,13 @@ ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_reported_rssi INTEGER
 ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_reported_battery_pct NUMERIC(5, 2);
 ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_reported_low_battery BOOLEAN;
 ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_clock_drift_ms BIGINT;
+-- IOT-307: yukarıdaki last_clock_drift_ms YALNIZCA cihazın OPSİYONEL olarak bildirdiği
+-- deviceTimeMs'ten geliyordu (nadiren gönderilir). Bu sütun (last_clock_drift_at) ile
+-- birlikte, artık hardwareAuthMiddleware'in HER kabul edilen istekte ZORUNLU olan
+-- HMAC X-Timestamp'inden de güncellenir (bkz. adminDb.ts recordHardwareClockDrift) —
+-- bu yüzden "en son ne zaman ölçüldü" bilgisi de gerekir: değer eskiyse (cihaz uzun
+-- süredir hiç istek atmıyorsa) "şu an sapıyor" demek yanıltıcı olur.
+ALTER TABLE hardware_devices ADD COLUMN IF NOT EXISTS last_clock_drift_at TIMESTAMP WITH TIME ZONE;
 
 -- IOT-301.2'nin GERÇEK ZAMANLI ürettiği (ama hiçbir yere kalıcı yazmadığı)
 -- ONLINE/OFFLINE geçişlerinin append-only geçmişi — online oranı/SLA
