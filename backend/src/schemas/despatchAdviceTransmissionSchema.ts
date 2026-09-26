@@ -18,3 +18,14 @@ export const despatchAdviceTransmissionListQuerySchema = z.object({
   transactionId: z.string().optional()
 });
 export type DespatchAdviceTransmissionListQueryDTO = z.infer<typeof despatchAdviceTransmissionListQuerySchema>;
+
+/**
+ * COMP-604 — toplu yeniden gönderim. AC: "yalnızca hatalı durumdakiler
+ * seçilebilmelidir" — biçim denetimi burada (1-100 arası id); FAILED-dışı
+ * bir id'nin reddi servis katmanında (tenantDb.ts) yapılır, çünkü durumu
+ * bilmek için DB'ye bakmak gerekir.
+ */
+export const bulkResendDespatchAdviceTransmissionSchema = z.object({
+  ids: z.array(z.string().min(1)).min(1, 'En az bir id gereklidir.').max(100, 'Tek seferde en fazla 100 belge yeniden gönderilebilir.')
+});
+export type BulkResendDespatchAdviceTransmissionDTO = z.infer<typeof bulkResendDespatchAdviceTransmissionSchema>;

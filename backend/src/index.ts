@@ -24,7 +24,7 @@ import { anonymizeExpiredSubjects } from './services/privacyService';
 import { broadcastToTenant, drainSocketClients } from './socket/socketServer';
 import { runWithTenant } from './context/tenantContext';
 import { generateAndStoreAnomalyReport } from './services/consumptionAnomalyService';
-import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runDespatchAdviceStatusPollForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant, runTankStockAlertSweepForCurrentTenant, runDriverBehaviorScoreSweepForCurrentTenant, runDeviceHealthScoreSweepForCurrentTenant } from './db/tenantDb';
+import { resetDueQuotasForCurrentTenant, runDailyStockReconciliationForCurrentTenant, runAnomalyDetectionForCurrentTenant, runAlarmEscalationForCurrentTenant, runDespatchAdviceTransmissionSweepForCurrentTenant, runDespatchAdviceStatusPollForCurrentTenant, runDespatchAdviceStuckDetectionForCurrentTenant, runMaintenanceReminderSweepForCurrentTenant, runFleetComplianceSweepForCurrentTenant, runInventoryCriticalStockSweepForCurrentTenant, runTankStockAlertSweepForCurrentTenant, runDriverBehaviorScoreSweepForCurrentTenant, runDeviceHealthScoreSweepForCurrentTenant } from './db/tenantDb';
 import { runNotificationRetrySweepForCurrentTenant, notifyAlarmEscalationRecipients } from './services/notificationService';
 import { runReportScheduleSweepForCurrentTenant } from './services/reportScheduleService';
 import { runMonthlyManagementReportSweepForCurrentTenant } from './services/monthlyManagementReportService';
@@ -502,6 +502,30 @@ async function startServer(): Promise<void> {
     }
   }, DESPATCH_STATUS_POLL_MS);
 
+  // COMP-604 AC: "Takılı kalan belgeler için uyarı (örn. 24 saattir yanıt
+  // yok)." Eşik zaten 24 saat olduğundan günlük bir tur yeterli — diğer
+  // günlük süpürücülerle (FLEET-1407 vb.) AYNI desen.
+  const DESPATCH_STUCK_DETECTION_MS = 24 * 60 * 60 * 1000;
+  const despatchStuckDetectionInterval = setInterval(async () => {
+    let tenantIds: string[] = [];
+    try {
+      tenantIds = await getAllTenantIds();
+    } catch (err) {
+      logger.error({ err }, '🚨 [COMP-604] Tenant listesi alınamadı, bu takılı-belge taraması atlandı.');
+      return;
+    }
+    for (const tenantId of tenantIds) {
+      try {
+        const r = await runWithTenant({ tenantId }, () => runDespatchAdviceStuckDetectionForCurrentTenant());
+        if (r.stuckCount > 0) {
+          logger.warn({ tenantId, ...r }, `🚨 [COMP-604] ${r.stuckCount} e-İrsaliye 24 saatten uzun süredir yanıt bekliyor.`);
+        }
+      } catch (err) {
+        logger.error({ err, tenantId }, '🚨 [COMP-604] Takılı-belge taraması başarısız.');
+      }
+    }
+  }, DESPATCH_STUCK_DETECTION_MS);
+
   // FLEET-1407 AC: "yaklaşan bakımlar için hatırlatma sistemi." Ticket
   // NOTIF-1601 öneriyor — yok; yukarıdaki süpürücülerle AYNI setInterval.
   // Günlük bir tur, tarih/sayaç eşiğine yaklaşan/geçen araçlar için AI-507
@@ -832,6 +856,7 @@ async function startServer(): Promise<void> {
       clearInterval(alarmEscalationSweepInterval);
       clearInterval(despatchTransmissionSweepInterval);
       clearInterval(despatchStatusPollInterval);
+      clearInterval(despatchStuckDetectionInterval);
       clearInterval(maintenanceReminderSweepInterval);
       clearInterval(fleetComplianceSweepInterval);
       clearInterval(inventoryCriticalStockSweepInterval);

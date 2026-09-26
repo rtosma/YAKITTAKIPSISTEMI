@@ -3774,6 +3774,97 @@ export async function runDespatchAdviceStatusPollForCurrentTenant(): Promise<{ c
   return { checked, finalized };
 }
 
+// COMP-604 (#130): "Takılı kalan belgeler için uyarı (örn. 24 saattir yanıt
+// yok)." Ticket kesin bir süre vermiyor — 24 saat örneği alındı. İki bağımsız
+// "takılı" durumu var: (a) SENT ama GİB henüz NİHAİ bir kod vermemiş (kod
+// NULL veya '1000') — normal senaryo, yoklayıcının (COMP-602.2) kendisi
+// ölçer; (b) QUEUED/SENDING olarak HİÇ ilerleyemeyen (devre kesici uzun süre
+// açık kalırsa olabilir) — MAX_ATTEMPTS'e ulaşıp FAILED olmadan da takılabilir.
+const DESPATCH_STUCK_THRESHOLD_MS = 24 * 60 * 60 * 1000;
+const DESPATCH_STUCK_SWEEP_BATCH_SIZE = 50;
+
+/**
+ * Her takılı belge KENDİ alarm satırını alır (alarmKey belgeye özel) —
+ * DEVICE_HEALTH_SCORE_LOW gibi diğer varlık-bazlı alarmlarla AYNI desen.
+ * Tekrar sweep'lerde AYNI belge için YENİ alarm YARATILMAZ, event_count artar.
+ */
+export async function runDespatchAdviceStuckDetectionForCurrentTenant(): Promise<{ stuckCount: number }> {
+  return withTenant(async (client, tenantId) => {
+    const cutoff = new Date(Date.now() - DESPATCH_STUCK_THRESHOLD_MS).toISOString();
+    const rows = await client.query(
+      `SELECT id, document_number, status, queued_at, sent_at, gib_status_code
+         FROM despatch_advice_transmissions
+        WHERE tenant_id = $1
+          AND (
+                (status IN ('QUEUED', 'SENDING') AND queued_at < $2)
+             OR (status = 'SENT' AND (gib_status_code IS NULL OR gib_status_code = '1000') AND sent_at < $2)
+              )
+        ORDER BY queued_at ASC
+        LIMIT $3`,
+      [tenantId, cutoff, DESPATCH_STUCK_SWEEP_BATCH_SIZE]
+    );
+    for (const row of rows.rows) {
+      const waitingSince = row.status === 'SENT' ? row.sent_at : row.queued_at;
+      await raiseAlarm(client, tenantId, {
+        alarmKey: `despatch-stuck-${row.id}`,
+        category: 'DESPATCH_ADVICE_TRANSMISSION_STUCK',
+        severity: 'WARNING',
+        title: `'${row.document_number}' numaralı e-İrsaliye ${DESPATCH_STUCK_THRESHOLD_MS / 3_600_000} saatten uzun süredir yanıt bekliyor (durum: ${row.status}).`,
+        subjectType: 'despatch_advice_transmission',
+        subjectId: row.id,
+        detail: { documentNumber: row.document_number, status: row.status, waitingSince, gibStatusCode: row.gib_status_code }
+      });
+    }
+    return { stuckCount: rows.rows.length };
+  });
+}
+
+/**
+ * COMP-604 AC: "Toplu yeniden gönderim yalnızca uygun durumdaki belgelerde
+ * çalışmalıdır" — FAILED DIŞINDAKİ herhangi bir id VARSA TÜM istek reddedilir
+ * (kısmi/belirsiz bir sonuç yerine "hepsi ya da hiçbiri" — çağıran hangi
+ * id'nin sorunlu olduğunu görür ve düzeltip tekrar dener).
+ *
+ * "Yanlışlıkla mükerrer belge ÜRETMEMELİ": burada YENİ bir belge/kayıt
+ * YARATILMAZ — VAR OLAN satır sıfırlanıp (status→QUEUED, attempt_count→0)
+ * AYNI COMP-602.1 kuyruğuna geri verilir; (tenant_id, despatch_advice_document_id)
+ * UNIQUE kısıtı zaten ikinci bir satırın var olmasını engeller.
+ */
+export async function bulkResendFailedDespatchAdviceTransmissions(ids: string[]): Promise<{ resent: number; documentNumbers: string[] }> {
+  return withTenant(async (client, tenantId) => {
+    const rows = await client.query(
+      `SELECT id, document_number, status FROM despatch_advice_transmissions WHERE tenant_id = $1 AND id = ANY($2::text[])`,
+      [tenantId, ids]
+    );
+    if (rows.rows.length !== ids.length) {
+      const found = new Set(rows.rows.map((r: any) => r.id));
+      const missing = ids.filter((id) => !found.has(id));
+      throw new NotFoundError(`Bazı iletim kayıtları bulunamadı: ${missing.join(', ')}`, { error: 'TRANSMISSION_NOT_FOUND', missing });
+    }
+    const nonFailed = rows.rows.filter((r: any) => r.status !== 'FAILED');
+    if (nonFailed.length > 0) {
+      throw new ConflictError(
+        `Yalnızca kalıcı hatalı (FAILED) belgeler yeniden gönderilebilir — ${nonFailed.length} belge uygun durumda değil.`,
+        { error: 'INVALID_STATUS_FOR_RESEND', invalidIds: nonFailed.map((r: any) => ({ id: r.id, status: r.status })) }
+      );
+    }
+    const updated = await client.query(
+      `UPDATE despatch_advice_transmissions
+         SET status = 'QUEUED', attempt_count = 0, last_error = NULL, next_retry_at = NULL, updated_at = CURRENT_TIMESTAMP
+       WHERE tenant_id = $1 AND id = ANY($2::text[])
+       RETURNING id, document_number`,
+      [tenantId, ids]
+    );
+    await writeAuditLog(client, {
+      action: 'DESPATCH_ADVICE_TRANSMISSION_BULK_RESENT',
+      targetType: 'despatch_advice_transmission',
+      targetId: ids.join(','),
+      afterValue: { count: updated.rows.length, documentNumbers: updated.rows.map((r: any) => r.document_number) }
+    });
+    return { resent: updated.rows.length, documentNumbers: updated.rows.map((r: any) => r.document_number) };
+  });
+}
+
 // ============================================================================
 // COMP-603: e-İRSALİYE RED/İPTAL SENARYOSU + YENİDEN GÖNDERİM (DÜZELTME)
 // ============================================================================
@@ -6514,6 +6605,8 @@ export type AlarmCategory =
   // uyarı." Devre kesici GLOBAL (Redis) olduğu için bu alarm, o an bekleyen
   // (QUEUED) belgesi olan HER tenant'ın kendi sweep çağrısında raporlanır.
   | 'DESPATCH_INTEGRATOR_CIRCUIT_OPEN'
+  // COMP-604 AC: "Takılı kalan belgeler için uyarı (örn. 24 saattir yanıt yok)."
+  | 'DESPATCH_ADVICE_TRANSMISSION_STUCK'
   | 'OTHER';
 export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
