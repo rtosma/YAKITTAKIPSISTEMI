@@ -337,6 +337,22 @@
       "action": "Şantiye şefine haber verin; tank dolumu bekleyin."
     },
     {
+      "id": "TANK_UNAVAILABLE",
+      "screen": "HATA",
+      "source": {
+        "type": "backend",
+        "code": "TANK_UNAVAILABLE"
+      },
+      "lines": [
+        "Tank ikmale",
+        "kapalı",
+        "Şefe bildirin"
+      ],
+      "buzzer": "RET",
+      "meaning": "Tank operatör tarafından bakımda/devre dışı işaretlenmiş — dolu olsa bile ikmale kapalı.",
+      "action": "Şantiye şefine haber verin; tank tekrar aktif işaretlenene kadar bekleyin."
+    },
+    {
       "id": "TANK_NOT_FOUND",
       "screen": "HATA",
       "source": {

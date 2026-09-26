@@ -130,6 +130,10 @@ Ekran 16 harf × 4 satırdır. Aşağıda **ekranda gördüğünüz yazı** kal�
   - Anlamı: Tankta yakıt kalmamış.
   - **Ne yapmalı:** Şantiye şefine haber verin; tank dolumu bekleyin.
   - <sub>Kod: `TANK_LOW`</sub>
+- **Tank ikmale / kapalı / Şefe bildirin** — ses: RET (3 kısa bip)
+  - Anlamı: Tank operatör tarafından bakımda/devre dışı işaretlenmiş — dolu olsa bile ikmale kapalı.
+  - **Ne yapmalı:** Şantiye şefine haber verin; tank tekrar aktif işaretlenene kadar bekleyin.
+  - <sub>Kod: `TANK_UNAVAILABLE`</sub>
 - **Tank tanımsız / Teknik servis** — ses: HATA (1 uzun alçak bip + 2 kısa)
   - Anlamı: Pompaya bağlı tank sistemde bulunamadı (kurulum hatası).
   - **Ne yapmalı:** İkmal yapmayın. Teknik servise haber verin.

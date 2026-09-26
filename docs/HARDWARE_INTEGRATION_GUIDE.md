@@ -141,6 +141,52 @@ Operatör bir cihazın secret'ını uzaktan döndürebilir. Geçiş penceresi bo
 secret'la imzalamalıdır. Eski secret'la gelen istek kabul edilir ama sunucu
 "hâlâ eski secret" uyarısı loglar.
 
+### 2.5 HMAC imzalama test vektörleri (DOC-1202)
+
+Aşağıdaki girdi/çıktı çiftleri backend'in **gerçek** doğrulama koduyla
+(`hardwareAuthMiddleware.ts`: `HMAC_SHA256(timestamp + "." + nonce + "." + rawBody, deviceSecret)`)
+üretilmiştir — firmware tarafı aynı girdilerle **birebir aynı** çıktıyı
+üretmelidir. `deviceSecret` burada sahte/örnek bir değerdir — gerçek cihaz
+secret'ınızı asla bir belgeye veya sürüm kontrolüne yazmayın.
+
+**Vektör 1 — gövdesiz istek (ör. `GET /telemetry/fail-open-policy`):**
+
+| Alan | Değer |
+|---|---|
+| `deviceSecret` | `ornek_test_gizli_anahtar_12345` |
+| `X-Timestamp` | `1788700000000` |
+| `X-Nonce` | `a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6` |
+| `rawBody` | `{}` |
+| imzalanan dize | `1788700000000.a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6.{}` |
+| **beklenen `X-Hardware-Signature`** | `991aa39d17cc4e261a57861ef19a2fb1738b8e7a729d6b94f21749cf1e51dd86` |
+
+**Vektör 2 — gövdeli istek (`POST /dispense/request-auth`):**
+
+| Alan | Değer |
+|---|---|
+| `deviceSecret` | `ornek_test_gizli_anahtar_12345` |
+| `X-Timestamp` | `1788700000000` |
+| `X-Nonce` | `a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6` |
+| `rawBody` | `{"rfidCardId":"CARD-881201","tankName":"Gebze Ana Tank (T-1)"}` |
+| imzalanan dize | `1788700000000.a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6.{"rfidCardId":"CARD-881201","tankName":"Gebze Ana Tank (T-1)"}` |
+| **beklenen `X-Hardware-Signature`** | `d621eddad2c20ba99ead9816370c8eeea773d2a90a4d120701f9222622c4911d` |
+
+Doğrulama (Node.js, `crypto` çekirdek modülüyle — ek bağımlılık gerekmez):
+
+```js
+const crypto = require('crypto');
+const sig = crypto.createHmac('sha256', 'ornek_test_gizli_anahtar_12345')
+  .update('1788700000000.a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6.{}')
+  .digest('hex');
+console.assert(sig === '991aa39d17cc4e261a57861ef19a2fb1738b8e7a729d6b94f21749cf1e51dd86', 'Vektör 1 tutmuyor!');
+```
+
+Firmware tarafında (ör. mbedTLS `mbedtls_md_hmac`) aynı üç bileşeni
+(`timestamp`, `nonce`, `rawBody`) noktayla birleştirip HMAC-SHA256 uygulayan
+bir test fonksiyonu yazıp bu iki vektörle karşılaştırın — sonuç tutmuyorsa
+sorun secret'ta değil, **birleştirme sırasında veya body serileştirmesindedir**
+(ör. JSON alan sırası farklı, fazladan boşluk/satır sonu).
+
 ---
 
 ## 3. MQTT Telemetri Kanalı (IOT-301)
@@ -203,6 +249,55 @@ JSON: `{ "command": "<AD>", ...ek alanlar, "issuedAt": "<ISO>" }`. Bilinen komut
 | `FORCE_CUTOFF` | İkmal sırasında limit/süre aşımı ya da heartbeat zaman aşımı | Solenoidi/pompayı **derhal** kapat; `payload.reason`, `payload.sessionId` bilgi amaçlı |
 | (kalibrasyon) | Operatör K-faktör değişikliği talep etti | §5'teki ACK akışını çalıştır |
 | `TIME_SYNC` | Cihazın imzaladığı `X-Timestamp`, sunucu saatinden **5 saniyeden fazla** sapıyor (IOT-307; henüz `AUTH-202.2`'nin 30 sn'lik sert reddine ulaşmadan, erkenden) | RTC'yi `payload.serverTime` (ISO 8601) ile eşitle; `payload.driftMs` bilgi amaçlı (+ = cihaz geride). Aynı cihaza 60 sn içinde tekrar basılmaz — kayıp mesaj varsa bir sonraki sapan istekte yeniden gelir |
+
+**Komut protokolü — ack biçimi, zaman aşımı, idempotency (DOC-1202):** komutlar
+İKİ ailededir. `FORCE_CUTOFF`/`TIME_SYNC` **"ateşle-ve-unut"**dur — MQTT QoS 1
+teslimatına güvenilir, HTTP ACK **beklenmez**; idempotency, komutun kendisinin
+**etkisiz-yineleme (idempotent)** olmasından gelir (`FORCE_CUTOFF` zaten kapalı
+bir solenoidi tekrar kapatmak zararsızdır; `TIME_SYNC` 60 sn'lik soğuma
+penceresiyle sınırlıdır — bkz. yukarıdaki tablo). Kalibrasyon komutu ise
+**ACK/NACK beklenen** tek komut ailesidir ve kendi `commandId`'siyle (bkz. §5)
+zaman aşımı + tekilliği yönetir:
+
+```mermaid
+sequenceDiagram
+    participant Op as Operatör (portal)
+    participant Sv as Sunucu
+    participant Dv as Cihaz (firmware)
+
+    Op->>Sv: POST /devices/{id}/calibration<br/>{newKFactor, reason}
+    Sv->>Sv: calibration_commands satırı<br/>status=BEKLIYOR, sent_at=now()
+    Sv-->>Dv: command/v1/{deviceId} (MQTT QoS 1)<br/>{command, commandId, newKFactor}
+    Note over Sv,Dv: k_factor HENÜZ değişmedi
+
+    alt Cihaz 5 dakika içinde yanıtlar
+        Dv->>Dv: EEPROM/flash'a yaz
+        Dv->>Sv: POST /telemetry/calibration-ack (HMAC)<br/>{commandId, status: ACK, appliedKFactor}
+        Sv->>Sv: status=ONAYLANDI, k_factor=appliedKFactor
+    else 5 dakika içinde yanıt yok
+        Sv->>Sv: (30 sn'lik süpürücü) status=ZAMAN_ASIMI
+        Sv-->>Op: WebSocket calibration:timeout
+        Note over Op: Operatör tekrar dener veya soruşturur
+    end
+```
+
+- **Ack formatı:** `{ commandId, status: 'ACK' | 'NACK', appliedKFactor? (ACK zorunlu), reason? (NACK) }`.
+- **Zaman aşımı:** `BEKLIYOR` durumundaki bir komut `sent_at`'ten **5 dakika**
+  sonra `ZAMAN_ASIMI`'na döner (30 sn'lik bir süpürücü kontrol eder). **Bu
+  noktadan sonra gelen bir ACK/NACK artık kabul EDİLMEZ** — sunucu
+  `CALIBRATION_COMMAND_NOT_FOUND` (404) ile reddeder, çünkü ACK sorgusu yalnızca
+  hâlâ `BEKLIYOR` durumundaki komutları eşleştirir. Cihaz 5 dakikadan uzun süren
+  bir gecikmeden sonra ACK göndermeye çalışırsa ve 404 alırsa, komutun zaten
+  zaman aşımına uğradığını ve k-faktörün DEĞİŞMEDİĞİNİ bilmelidir — operatörün
+  komutu yeniden göndermesi gerekir.
+- **Idempotency:** ACK sorgusu yalnızca **hâlâ `BEKLIYOR`** durumundaki komutları
+  eşleştirir (`WHERE id=commandId AND status='BEKLIYOR'`) — bu yüzden aynı
+  `commandId` ile İKİNCİ bir ACK/NACK (ör. ağ tekrarı, kayıp yanıt sanılıp
+  yeniden gönderme) **404 `CALIBRATION_COMMAND_NOT_FOUND` ile reddedilir**,
+  sessizce yok sayılmaz. Cihaz firmware'i bu 404'ü **"muhtemelen zaten
+  işlendi"** olarak yorumlamalı, hata saymamalıdır — yeniden denemeden önce
+  önce gerçekten terminal bir durum mu (ONAYLANDI/REDDEDILDI/ZAMAN_ASIMI) diye
+  komutun son durumunu (varsa) sorgulamalıdır.
 
 ---
 
@@ -270,6 +365,11 @@ frame sayacını monotonik artır.
 ---
 
 ## 5. Uzaktan Kalibrasyon — K-Faktör (FUEL-404.1)
+
+> Uçtan uca sekans diyagramı (ACK/NACK, 5 dakikalık zaman aşımı, idempotency
+> kuralları dahil) — bkz. **§3.6 "Komut protokolü"**, komut ailesi olarak
+> kalibrasyonun tek ACK/NACK bekleyen komut türü olması nedeniyle orada
+> tanımlanmıştır. Aşağıdaki metin aynı akışın kısa özetidir.
 
 ```
 1. Operatör portal'dan  ──►  POST /devices/{deviceId}/calibration  { newKFactor, reason, referenceMeasurement? }
@@ -389,6 +489,30 @@ Uygulama kuralları (cihaz tarafında):
 Üç uç da HMAC korumalı. Durum makinesi:
 `AUTHORIZED → PUMPING → FINALIZING → COMPLETED` (+ `ABORTED`/`TIMED_OUT`).
 
+**Cihaz (oturum) durum makinesi (DOC-1202):**
+
+```mermaid
+stateDiagram-v2
+    [*] --> AUTHORIZED: POST /dispense/request-auth (kart okutuldu, yetki verildi)
+    AUTHORIZED --> PUMPING: ilk POST /dispense/heartbeat
+    AUTHORIZED --> ABORTED: cihaz/operatör iptal
+    AUTHORIZED --> TIMED_OUT: heartbeat gelmedi (sunucu zaman aşımı)
+    PUMPING --> PUMPING: sonraki heartbeat'ler (~5 sn)
+    PUMPING --> FINALIZING: POST /dispense/finalize
+    PUMPING --> ABORTED: cihaz/operatör iptal
+    PUMPING --> TIMED_OUT: heartbeat gelmedi
+    TIMED_OUT --> FINALIZING: kurtarma (bağlantı toparlanıp son totalizatör okumasıyla finalize edilir, zorla DOĞRULAMA_BEKLIYOR işaretlenir)
+    FINALIZING --> COMPLETED: finalize başarılı, transactions'a yazıldı
+    FINALIZING --> ABORTED: finalize sırasında geçersiz durum
+    COMPLETED --> [*]
+    ABORTED --> [*]
+```
+
+`TIMED_OUT`'tan `FINALIZING` DIŞINDA hiçbir geçiş yoktur — sunucu geçersiz bir
+geçiş denemesini (`INVALID_STATE_TRANSITION`, §12) reddeder; cihaz durum
+makinesini birebir bu diyagrama göre uygulamalıdır, aksi halde meşru bir
+kurtarma denemesi bile reddedilir.
+
 ### 9.1 `POST /dispense/request-auth` — kart okutuldu
 
 ```
@@ -482,6 +606,60 @@ Firmware bu dosyayı **derleme zamanında gömer**; [Operatör El Kitabı](OPERA
 - [ ] `fail-open-policy`'yi `whitelistFreshnessHours`'tan sık çek ve önbelleğe al
 - [ ] Kalibrasyon: yeni K-faktörü yaz → `calibration-ack` (`ACK` + `appliedKFactor`)
 - [ ] Ekran/buzzer: `operator/device-messages.json` mesajlarını birebir göster (Türkçe karakterli özel font; 16×4)
+
+---
+
+## 12. Hata Kodları Sözlüğü (DOC-1202)
+
+Bu belgedeki TÜM uçlarda karşılaşılabilecek makine-okunur `error` kodlarının
+tek, konsolide referansı. Ekranda **ne gösterileceği** ayrı bir kaynaktan
+gelir: [operator/device-messages.json](operator/device-messages.json) (§10.1)
+her kodu bir ekran/buzzer mesajına eşler ve CI'da bu sözlükle tutarlılığı
+doğrulanır — burada yalnızca **anlam ve nereden geldiği** var.
+
+### 12.1 HMAC kimlik doğrulama (§2.3) — tüm HMAC korumalı uçlarda ortak
+
+| HTTP | `error` | Anlamı |
+|---|---|---|
+| 401 | `MISSING_HARDWARE_HEADERS` | Dört HMAC başlığından biri eksik |
+| 401 | `UNAUTHORIZED_DEVICE` | `deviceId` sistemde kayıtlı değil |
+| 403 | `DEVICE_BLOCKED` | Cihaz operatör tarafından bloke edilmiş |
+| 400 | `INVALID_TIMESTAMP_FORMAT` | `X-Timestamp` ms/ISO formatında değil |
+| 401 | `REPLAY_ATTACK_DETECTED` | Zaman damgası ±30 sn dışında |
+| 401 | `INVALID_SIGNATURE_FORMAT` | `X-Hardware-Signature` geçerli hex değil |
+| 401 | `INVALID_HARDWARE_SIGNATURE` | İmza tutmuyor |
+| 401 | `NONCE_REUSED` | Nonce 120 sn içinde tekrar kullanıldı |
+| 429 | `TOO_MANY_REQUESTS` | Dakikalık istek limiti aşıldı |
+
+### 12.2 Otomatik ikmal oturumu (§9) — `POST /dispense/*`
+
+| HTTP | `error` | Anlamı |
+|---|---|---|
+| 403 | `CARD_UNKNOWN` | RFID kartı sisteme kayıtlı değil |
+| 403 | `DRIVER_INACTIVE` | Kart sahibi sürücü aktif değil (İZİNLİ/PASİF) |
+| 403 | `NO_VEHICLE_ASSIGNED` | Sürücüye atanmış araç yok |
+| 403 | `VEHICLE_BLOCKED` | Araç bloke/bakımda |
+| 403 | `NO_SITE_PERMISSION` | Araç bu şantiyede ikmal yapamaz (çapraz şantiye izni yok) |
+| 403 | `QUOTA_EXHAUSTED` | Araç/dönem kotası tükendi |
+| 404 | `TANK_NOT_FOUND` | Belirtilen ad+şantiye kombinasyonunda tank yok |
+| 409 | `TANK_LOW` | Kullanılabilir stok (ölü hacim düşülmüş) sıfır/altında |
+| 403 | `TANK_UNAVAILABLE` | Tank BAKIMDA/DEVRE_DIŞI — dolu olsa bile kapalı |
+| 403 | `FUEL_TYPE_MISMATCH` | Araç yakıt tipi ile tank yakıt tipi uyuşmuyor |
+| 409 | `SESSION_ALREADY_ACTIVE` | Bu pompada zaten devam eden bir oturum var |
+| 404 | `SESSION_NOT_FOUND` | `sessionId` bilinmiyor veya süresi doldu |
+| 409 | `INVALID_STATE_TRANSITION` | Durum makinesinde (§9 diyagramı) izin verilmeyen bir geçiş denendi |
+
+### 12.3 Kalibrasyon (§5) — `POST /telemetry/calibration-ack`
+
+| HTTP | `error` | Anlamı |
+|---|---|---|
+| 404 | `CALIBRATION_COMMAND_NOT_FOUND` | `commandId` bilinmiyor VEYA zaten terminal bir durumda (ONAYLANDI/REDDEDILDI/ZAMAN_ASIMI) — mükerrer ACK/geç ACK burada düşer |
+
+### 12.4 LoRaWAN (§4.3) — telemetri decode
+
+`CorruptedPayloadException` bir HTTP yanıtı DEĞİLDİR (MQTT tek yönlü) — paket
+sessizce düşürülür ve sunucu tarafında `warn` loglanır; cihazın göreceği bir
+`error` kodu yoktur. Firmware tarafında CRC/uzunluk kendi kendine doğrulanmalı.
 
 ---
 
