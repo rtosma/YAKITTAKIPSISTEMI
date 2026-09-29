@@ -15,6 +15,13 @@ export interface CompanyModule {
   crossSiteAuth: boolean;   // Çapraz Şantiye İkmal Yetkisi
 }
 
+/** FE-805: ARCH-105'in POST /companies yanıtındaki tek seferlik kimlik bilgileri — yalnızca oluşturma anında döner, bir daha üretilemez. */
+export interface TenantProvisioningResult {
+  ownerUsername: string;
+  temporaryPassword: string;
+  passwordExpiresAt: string;
+}
+
 export interface Company {
   id: string;
   name: string;
@@ -27,6 +34,7 @@ export interface Company {
   modules: CompanyModule;
   activeVehiclesCount: number;
   totalFuelThisMonth: number; // Litres
+  lastActivityAt: string | null; // FE-805: en son ikmal işleminin zamanı (ISO), hiç ikmal yoksa null
 }
 
 export interface Vehicle {

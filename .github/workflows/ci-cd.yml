@@ -780,6 +780,9 @@ jobs:
       - name: Run ARCH-105 Tenant Onboarding/Provisioning Tests
         run: cd backend && npx tsx test/test_arch105_tenant_provisioning.ts
 
+      - name: Run FE-805 Developer Panel (Company List Last Activity) Tests
+        run: cd backend && npx tsx test/test_fe805_developer_panel.ts
+
       - name: Run BILL-1701 Company Packages + License Model Tests
         run: cd backend && npx tsx test/test_bill1701_packages_license.ts
 

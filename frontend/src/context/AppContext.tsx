@@ -15,7 +15,8 @@ import {
   HardwareDevice,
   HardwareLog,
   CompanyModule,
-  UnmatchedRfidAlert
+  UnmatchedRfidAlert,
+  TenantProvisioningResult
 } from '../types';
 // NOTE: Oturum açıldığında firma bilgisi de dahil her şey PostgreSQL backend'inden
 // (apiFetch) çekiliyor: firma profili -> GET /companies/me (yalnızca giriş yapan
@@ -122,7 +123,7 @@ interface AppContextType {
   clearHardwareLogs: () => void;
   toggleCrossSiteStatus: (id: string) => Promise<void>;
   addCrossSitePermission: (perm: Omit<CrossSitePermission, 'id' | 'usedLiters' | 'status'>) => Promise<void>;
-  addCompany: (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules'>) => Promise<void>;
+  addCompany: (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules' | 'lastActivityAt'>) => Promise<TenantProvisioningResult | null>;
   updateCompanyStatus: (companyId: string, status: 'AKTİF' | 'ASKIDA' | 'DENEME') => Promise<void>;
 
   // Toast
@@ -680,6 +681,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           city: d.city || '',
           licenseStatus: d.licenseStatus || 'AKTİF',
           licenseExpiry: d.licenseExpiry || '',
+          lastActivityAt: null, // FE-805: yalnızca geliştirici panelinin firma listesinde kullanılır, /companies/me'de yok
           sites: Array.isArray(d.sites)
             ? d.sites.map((s: any) => ({
                 id: s.id,
@@ -1212,16 +1214,25 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const addCompany = async (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules'>) => {
+  const addCompany = async (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules' | 'lastActivityAt'>) => {
     try {
-      await apiFetch('/companies', {
+      const response = await apiFetch('/companies', {
         method: 'POST',
         body: JSON.stringify({ name: comp.name, city: comp.city, taxNumber: comp.taxNumber })
       });
       await fetchCompanies();
       showToast(`Yeni firma sisteme tanımlandı: ${comp.name}`);
+      // FE-805 AC: "parola tek seferlik gösterilmelidir" — ARCH-105'in
+      // ürettiği geçici parola API yanıtında yalnızca BU çağrıda döner;
+      // yeniden üretilemez, bu yüzden çağırana (sihirbaz) taşınıyor.
+      const { ownerUsername, temporaryPassword, passwordExpiresAt } = response.data ?? {};
+      if (ownerUsername && temporaryPassword && passwordExpiresAt) {
+        return { ownerUsername, temporaryPassword, passwordExpiresAt } as TenantProvisioningResult;
+      }
+      return null;
     } catch (err: any) {
       showToast(`Firma eklenirken hata: ${err.message}`, 'error');
+      return null;
     }
   };
 

@@ -39,6 +39,8 @@ export interface AdminCompanyProfile {
   sites: AdminCompanySite[];
   activeVehiclesCount: number;
   totalFuelThisMonth: number;
+  /** FE-805: geliştirici panelindeki firma listesinde "son aktivite" sütunu — bu tenant'ın en son ikmal işleminin zamanı (hiç ikmal yoksa null). */
+  lastActivityAt: string | null;
 }
 
 const DEFAULT_MODULES = {
@@ -147,7 +149,7 @@ async function buildAdminCompanyProfile(c: any): Promise<AdminCompanyProfile> {
   // sırayla await etmek yerine birlikte çalıştırılır. pool.query() her
   // çağrıda kendi bağlantısını aldığından (tek bir client üzerinde değil) bu
   // gerçekten paralel çalışır.
-  const [sitesRes, vehRes, fuelRes] = await Promise.all([
+  const [sitesRes, vehRes, fuelRes, activityRes] = await Promise.all([
     pool.query(
       `SELECT s.id, s.name, s.location,
          (SELECT COUNT(*)::int FROM tanks t    WHERE t.tenant_id = $1 AND t.site_name = s.name) AS active_tanks_count,
@@ -160,7 +162,12 @@ async function buildAdminCompanyProfile(c: any): Promise<AdminCompanyProfile> {
       `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS total FROM transactions
        WHERE tenant_id = $1 AND created_at >= date_trunc('month', CURRENT_TIMESTAMP)`,
       [c.id]
-    )
+    ),
+    // FE-805: "son aktivite" — ayrı bir tracking mekanizması (ör. son giriş
+    // zamanı) eklemek yerine, zaten var olan transactions.created_at'ten en
+    // sonuncusu kullanılıyor (bu tenant'ın gerçekten kullanıldığının en
+    // güvenilir göstergesi — bir giriş yapıp hiçbir şey yapmamaktan farklı olarak).
+    pool.query('SELECT MAX(created_at) AS last FROM transactions WHERE tenant_id = $1', [c.id])
   ]);
 
   return {
@@ -181,7 +188,8 @@ async function buildAdminCompanyProfile(c: any): Promise<AdminCompanyProfile> {
       activeVehiclesCount: s.active_vehicles_count
     })),
     activeVehiclesCount: vehRes.rows[0].cnt,
-    totalFuelThisMonth: Number(fuelRes.rows[0].total)
+    totalFuelThisMonth: Number(fuelRes.rows[0].total),
+    lastActivityAt: activityRes.rows[0].last ? new Date(activityRes.rows[0].last).toISOString() : null
   };
 }
 
@@ -313,6 +321,7 @@ export async function createCompanyWithOwner(
       sites: [{ id: siteId, name: siteName, location: city, activeTanksCount: 0, activeVehiclesCount: 0 }],
       activeVehiclesCount: 0,
       totalFuelThisMonth: 0,
+      lastActivityAt: null,
       ownerUsername: username,
       temporaryPassword,
       passwordExpiresAt: passwordExpiresAt.toISOString()

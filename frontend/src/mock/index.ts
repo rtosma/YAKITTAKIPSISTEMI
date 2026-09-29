@@ -19,6 +19,7 @@ export const INITIAL_COMPANIES: Company[] = [
     city: 'Kocaeli / Gebze',
     licenseStatus: 'AKTİF',
     licenseExpiry: '2027-12-31',
+    lastActivityAt: null,
     sites: [
       { id: 'site-gebze', name: 'Gebze Ana Şantiye', location: 'Gebze OIZ 4. Cadde', activeTanksCount: 2, activeVehiclesCount: 18 },
       { id: 'site-orman', name: 'Orman Şantiyesi', location: 'Karasu Orman Bölgesi', activeTanksCount: 1, activeVehiclesCount: 9 },
@@ -43,6 +44,7 @@ export const INITIAL_COMPANIES: Company[] = [
     city: 'İstanbul / Maltepe',
     licenseStatus: 'AKTİF',
     licenseExpiry: '2026-11-15',
+    lastActivityAt: null,
     sites: [
       { id: 'site-maltepe', name: 'Maltepe Santral', location: 'Maltepe E5 Yanal', activeTanksCount: 1, activeVehiclesCount: 22 },
       { id: 'site-pendik', name: 'Pendik Taş Ocağı', location: 'Pendik Kurtköy', activeTanksCount: 2, activeVehiclesCount: 15 }
@@ -66,6 +68,7 @@ export const INITIAL_COMPANIES: Company[] = [
     city: 'Bursa / İnegöl',
     licenseStatus: 'AKTİF',
     licenseExpiry: '2027-06-30',
+    lastActivityAt: null,
     sites: [
       { id: 'site-inegol', name: 'İnegöl Mermer Ocağı', location: 'Oylat Yolu Mevkii', activeTanksCount: 2, activeVehiclesCount: 14 }
     ],
