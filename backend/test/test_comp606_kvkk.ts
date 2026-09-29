@@ -123,6 +123,17 @@ async function run() {
       s1 === 'sürücü [TCKN] aradı: [TEL] / [TEL] / [TEL] / [EMAIL]', s1);
     const s2 = scrubString('id tx-1789132546542 ref 12345678901 ts 2026-09-21T08:18:24.665Z lt 1234.56');
     check('Yanlış pozitif yok: 13 haneli zaman damgalı id, sağlama toplamı tutmayan 11 haneli sayı, ISO tarih ve ondalık sayı DEĞİŞMEZ', s2 === 'id tx-1789132546542 ref 12345678901 ts 2026-09-21T08:18:24.665Z lt 1234.56', s2);
+    // Regresyon: EMAIL_RE'nin eski hali (`[...]+@...`) `@` içermeyen uzun bir
+    // girdide çökmesiz geri izleme (catastrophic backtracking) yapıp backend'i
+    // dakikalarca kilitliyordu (FLEET-1409 10.5MB dosya reddi testinde yakalandı,
+    // bkz. piiScrub.ts EMAIL_RE yorumu). 5MB'lık `@` içermeyen bir girdi artık
+    // milisaniyeler içinde dönmeli (ve MAX_SCRUB_LEN üstü olduğundan kırpılmalı).
+    const redosStart = Date.now();
+    const huge = 'a'.repeat(5 * 1024 * 1024);
+    const s3 = scrubString(huge);
+    const redosMs = Date.now() - redosStart;
+    check(`ReDoS regresyonu: 5MB '@'siz girdi < 500ms'de döner (${redosMs}ms) ve MAX_SCRUB_LEN üstü olduğundan kırpılır`,
+      redosMs < 500 && s3 === '[LARGE_VALUE_TRUNCATED]', `${redosMs}ms, sonuç: ${s3.slice(0, 40)}`);
     const nested: any = { tcNo: TC, driver: { phone: PHONE, profile: { email: 'a@b.co', note: `TC ${TC}` } }, username: 'ahmet', list: [{ tc_no: TC }, `tel ${PHONE}`], ok: 42 };
     nested.self = nested;
     const sv: any = scrubValue(nested);
