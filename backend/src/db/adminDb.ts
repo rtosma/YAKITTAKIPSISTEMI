@@ -880,6 +880,14 @@ export interface AdminHardwareDeviceSummary {
   name: string;
   site_name: string;
   status: string;
+  /** FE-806: IOT-308'in hardware_devices.last_seen_at'i — cihazın KENDİ bildirdiği en son görülme (her ONLINE/telemetride üzerine yazılır); hiç görülmemişse null. */
+  last_heartbeat_at: string | null;
+  /** FE-806: IOT-308 device_health_scores'taki EN GÜNCEL (computed_at DESC) skor — henüz hesaplanmamışsa null. */
+  health_score: number | null;
+  /** FE-806: IOT-308'in hardware_devices.firmware_version'ı — cihazın KENDİ bildirdiği sürüm (OTA dağıtım durumu DEĞİL); hiç bildirmemişse null. */
+  firmware_version: string | null;
+  /** FE-806: IOT-308'in hardware_devices.last_reported_rssi'si — opsiyonel, cihaz göndermiyorsa null. */
+  last_reported_rssi: number | null;
 }
 
 /**
@@ -889,7 +897,21 @@ export interface AdminHardwareDeviceSummary {
  * (tenant bazlı filtrelemeye gerek yok, sistem geneli bir bakım işi).
  */
 export async function getAllHardwareDevices(): Promise<AdminHardwareDeviceSummary[]> {
-  const result = await pool.query('SELECT device_id, tenant_id, name, site_name, status FROM hardware_devices ORDER BY created_at DESC');
+  // FE-806 AC: "Cihaz sağlık tablosu ... son heartbeat, sağlık skoru,
+  // firmware sürümü." Yeni bir tracking mekanizması EKLEMEK yerine
+  // (ARCH-105/FE-805'teki lastActivityAt İLE AYNI ilke), IOT-308'in ZATEN
+  // yazdığı verilere bakılıyor: last_seen_at/firmware_version/
+  // last_reported_rssi doğrudan hardware_devices'te ("son bilinen durum"
+  // anlık görüntüsü, her ONLINE/telemetride üzerine yazılır); sağlık skoru
+  // İÇİN doğrudan bir kolon yok (periyodik/tarihsel), device_health_scores'a
+  // korelasyonlu alt sorgu gerekiyor.
+  const result = await pool.query(`
+    SELECT hd.device_id, hd.tenant_id, hd.name, hd.site_name, hd.status,
+      hd.last_seen_at AS last_heartbeat_at, hd.firmware_version, hd.last_reported_rssi,
+      (SELECT dhs.score FROM device_health_scores dhs WHERE dhs.device_id = hd.device_id ORDER BY dhs.computed_at DESC LIMIT 1) AS health_score
+    FROM hardware_devices hd
+    ORDER BY hd.created_at DESC
+  `);
   return result.rows;
 }
 

@@ -149,6 +149,20 @@ export interface HardwareDevice {
   ipAddress?: string;
   signalRssi?: number;
   lastPing?: string;
+  // FE-806: device_presence_events/device_health_scores'tan (GET /devices) — hiç veri yoksa null.
+  lastHeartbeatAt: string | null;
+  healthScore: number | null;
+}
+
+/** FE-806: GET /admin/system-metrics — OPS-1107'nin ZATEN var olan Prometheus registry'sinden okunan özet. */
+export interface SystemMetricsSnapshot {
+  mqtt: { messagesTotal: number; errorsTotal: number; rejectedTotal: number };
+  devices: Record<string, number>; // state -> count (registered/active/offline/blocked)
+  despatchQueue: Record<string, number> & { oldestQueuedAgeSeconds: number }; // status -> count + yaş
+  notifications: { retryQueue: number; circuitOpenChannels: number };
+  despatchIntegratorCircuitOpen: boolean;
+  http: { totalRequests: number; errorRequests: number; errorRatePct: number };
+  dbPool: Record<string, number>; // state -> count (total/idle/waiting)
 }
 
 export interface HardwareLog {

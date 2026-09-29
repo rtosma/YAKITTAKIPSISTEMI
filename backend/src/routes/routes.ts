@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
 import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getVehicleSiteAssignmentHistory, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant, createLabSample, getLabSamples, getLabSample, cancelLabSample, recordLabTestResult, getLabTestResults, getNonConformingLabResults, computeDriverBehaviorScores, getDriverBehaviorScores, getDriverBehaviorScoreHistory, getTankStockForecasts, runTankStockAlertSweepForCurrentTenant, computeDeviceHealthScores, getDeviceHealthScores, getDeviceHealthScoreHistory, getDeviceOnlineSla, getDeviceFirmwareInventory, createFireRecord, getFireRecords, approveFireRecord, rejectFireRecord, getFireRecordSiteComparison, getSmsMonthlyUsageForCurrentTenant, upsertTenantNotificationChannels, getTenantNotificationChannels, setUserNotificationPreference, getUserNotificationPreferencesForCurrentUser, createUserNotificationMute, getActiveUserNotificationMutes, createSupplier, updateSupplier, getSuppliers, getSupplier, createFuelPurchaseWaybill, getFuelPurchaseWaybill, getSupplierPurchaseHistory, getDespatchIntegratorCircuitStatus, runDespatchAdviceStatusPollForCurrentTenant, bulkResendFailedDespatchAdviceTransmissions, runDespatchAdviceStuckDetectionForCurrentTenant } from '../db/tenantDb';
 import { downloadDespatchAdviceDocument } from '../services/despatchAdviceDownloadService';
-import { recordDispenseCompleted } from '../observability/metrics';
+import { recordDispenseCompleted, registry } from '../observability/metrics';
 import { getExecutiveDashboard } from '../services/executiveDashboardService';
 import { executiveDashboardQuerySchema } from '../schemas/dashboardSchema';
 import { streamTransactionsToExcel } from '../services/transactionExportService';
@@ -1434,11 +1434,91 @@ router.get('/devices', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (re
           siteName: d.site_name,
           tenantId: d.tenant_id,
           registrationStatus: d.status,
-          status
+          status,
+          lastHeartbeatAt: d.last_heartbeat_at ? new Date(d.last_heartbeat_at).toISOString() : null,
+          healthScore: d.health_score,
+          firmwareVersion: d.firmware_version,
+          signalRssi: d.last_reported_rssi
         };
       })
     );
     res.json({ success: true, totalCount: devices.length, data: devices });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/system-metrics:
+ *   get:
+ *     summary: Geliştirici Paneli Sistem Metrikleri Özeti (FE-806, SUPER_ADMIN)
+ *     description: >
+ *       OPS-1107'nin ZATEN var olan Prometheus registry'sinden (backend
+ *       içi, /metrics ile AYNI kaynak — yeni bir ölçüm eklenmez, yalnızca
+ *       SUPER_ADMIN oturumu için tarayıcıdan erişilebilir seçilmiş bir alt
+ *       küme okunur) küçük, isimlendirilmiş bir özet döner. `/metrics`'in
+ *       kendisi (Prometheus exposition format, nginx tarafından proxy'lenmez,
+ *       ayrı bir taşıyıcı token ile korunur) BİLEREK değiştirilmedi.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/admin/system-metrics', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const sumValues = (values: { value: number; labels: Record<string, unknown> }[]): number =>
+      values.reduce((acc, v) => acc + v.value, 0);
+    const byLabel = (values: { value: number; labels: Record<string, unknown> }[], labelKey: string): Record<string, number> => {
+      const out: Record<string, number> = {};
+      for (const v of values) out[String(v.labels[labelKey])] = v.value;
+      return out;
+    };
+
+    const [httpTotalM, mqttMessagesM, mqttErrorsM, mqttRejectedM, devicesM, despatchQueueM, despatchOldestM, notifRetryM, notifCircuitM, despatchCircuitM, dbPoolM] = await Promise.all([
+      registry.getSingleMetric('http_requests_total')?.get(),
+      registry.getSingleMetric('yakit_mqtt_messages_total')?.get(),
+      registry.getSingleMetric('yakit_mqtt_processing_errors_total')?.get(),
+      registry.getSingleMetric('yakit_mqtt_rejected_total')?.get(),
+      registry.getSingleMetric('yakit_devices')?.get(),
+      registry.getSingleMetric('yakit_despatch_queue')?.get(),
+      registry.getSingleMetric('yakit_despatch_oldest_queued_age_seconds')?.get(),
+      registry.getSingleMetric('yakit_notifications_retry_queue')?.get(),
+      registry.getSingleMetric('yakit_notification_circuit_open')?.get(),
+      registry.getSingleMetric('yakit_despatch_integrator_circuit_open')?.get(),
+      registry.getSingleMetric('yakit_db_pool_connections')?.get()
+    ]);
+
+    const httpValues = (httpTotalM?.values || []) as { value: number; labels: Record<string, unknown> }[];
+    const httpTotalCount = sumValues(httpValues);
+    const httpErrorCount = httpValues
+      .filter((v) => String(v.labels.status).startsWith('5'))
+      .reduce((acc, v) => acc + v.value, 0);
+
+    res.json({
+      success: true,
+      data: {
+        mqtt: {
+          messagesTotal: sumValues((mqttMessagesM?.values || []) as any),
+          errorsTotal: sumValues((mqttErrorsM?.values || []) as any),
+          rejectedTotal: sumValues((mqttRejectedM?.values || []) as any)
+        },
+        devices: byLabel((devicesM?.values || []) as any, 'state'),
+        despatchQueue: {
+          ...byLabel((despatchQueueM?.values || []) as any, 'status'),
+          oldestQueuedAgeSeconds: sumValues((despatchOldestM?.values || []) as any)
+        },
+        notifications: {
+          retryQueue: sumValues((notifRetryM?.values || []) as any),
+          circuitOpenChannels: sumValues((notifCircuitM?.values || []) as any)
+        },
+        despatchIntegratorCircuitOpen: sumValues((despatchCircuitM?.values || []) as any) === 1,
+        http: {
+          totalRequests: httpTotalCount,
+          errorRequests: httpErrorCount,
+          errorRatePct: httpTotalCount > 0 ? Number(((httpErrorCount / httpTotalCount) * 100).toFixed(2)) : 0
+        },
+        dbPool: byLabel((dbPoolM?.values || []) as any, 'state')
+      }
+    });
   } catch (error: any) {
     next(error);
   }

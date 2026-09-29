@@ -16,7 +16,8 @@ import {
   HardwareLog,
   CompanyModule,
   UnmatchedRfidAlert,
-  TenantProvisioningResult
+  TenantProvisioningResult,
+  SystemMetricsSnapshot
 } from '../types';
 // NOTE: Oturum açıldığında firma bilgisi de dahil her şey PostgreSQL backend'inden
 // (apiFetch) çekiliyor: firma profili -> GET /companies/me (yalnızca giriş yapan
@@ -67,6 +68,8 @@ interface AppContextType {
   fetchCrossSitePermissions: () => Promise<void>;
   hardwareDevices: HardwareDevice[];
   hardwareLogs: HardwareLog[];
+  systemMetrics: SystemMetricsSnapshot | null;
+  fetchSystemMetrics: () => Promise<void>;
 
   // Refresh trigger for animations
   tankRefreshKey: number;
@@ -231,9 +234,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [crossSitePermissions, setCrossSitePermissions] = useState<CrossSitePermission[]>([]);
   const [hardwareDevices, setHardwareDevices] = useState<HardwareDevice[]>([]);
   const [hardwareLogs, setHardwareLogs] = useState<HardwareLog[]>([]);
+  const [systemMetrics, setSystemMetrics] = useState<SystemMetricsSnapshot | null>(null);
 
   const [simulatedLatencyMs, setSimulatedLatencyMs] = useState<number>(14);
   const [isLogStreamActive, setIsLogStreamActive] = useState<boolean>(true);
+  // FE-806 Teknik Not: "duraklat düğmesi olmalıdır." Soket bağlantısının
+  // KENDİSİ duraklatmayla kesilmez (telemetri/tank/pompa ekranları hâlâ
+  // canlı kalmalı) — yalnızca CANLI LOG TERMİNALİNE yeni satır eklenmesi
+  // duraklatılır. Ref kullanılıyor ki bu ayarı değiştirmek soket
+  // useEffect'ini yeniden çalıştırıp bağlantıyı KOPARMASIN.
+  const isLogStreamActiveRef = useRef(true);
+  useEffect(() => { isLogStreamActiveRef.current = isLogStreamActive; }, [isLogStreamActive]);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [unmatchedRfidAlerts, setUnmatchedRfidAlerts] = useState<UnmatchedRfidAlert[]>([]);
   const [selectedTenantForDetail, setSelectedTenantForDetail] = useState<Company | null>(null);
@@ -545,12 +556,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     // ekranlarının doğru sayıyı yine `dispense:completed`/REST'ten (mevcut,
     // doğrulanmış kaynak) aldığı, yalnızca CANLILIK sinyalinin buradan
     // geldiği bir model.
-    const handleTelemetryData = (payload: { timestamp?: string }) => {
+    const handleTelemetryData = (payload: { timestamp?: string; deviceId?: string; siteId?: string; deviceType?: string }) => {
       setLastTelemetryAt(payload?.timestamp || new Date().toISOString());
+      // FE-806 Kapsam: "Canlı log akışı (WebSocket)." Önceden bu terminal
+      // yalnızca UI'dan tetiklenen SAHTE olaylarla (ping butonu, kalibrasyon
+      // sihirbazı) doluyordu — GERÇEK bir WebSocket akışı yoktu. Artık
+      // backend'in zaten yayınladığı bu olay (FE-801'in tank/pompa
+      // canlılığı için kullandığı KAYNAK) log terminaline de yansıyor.
+      if (isLogStreamActiveRef.current && payload?.deviceId) {
+        addHardwareLog({ deviceCode: payload.deviceId, siteName: payload.siteId, tag: 'SENSOR', message: `[TELEMETRY] ${payload.deviceType || 'cihaz'} veri paketi alındı.` });
+      }
     };
-    const handleDeviceStatusChanged = (payload: { deviceId: string; status: 'ONLINE' | 'OFFLINE' }) => {
+    const handleDeviceStatusChanged = (payload: { deviceId: string; status: 'ONLINE' | 'OFFLINE'; siteId?: string }) => {
       if (!payload?.deviceId) return;
       setDeviceOnlineStatus((prev) => ({ ...prev, [payload.deviceId]: payload.status === 'ONLINE' }));
+      if (isLogStreamActiveRef.current) {
+        addHardwareLog({ deviceCode: payload.deviceId, siteName: payload.siteId, tag: payload.status === 'ONLINE' ? 'MQTT' : 'WARN', message: `[DEVICE_STATUS] Cihaz durumu → ${payload.status}` });
+      }
     };
 
     socket.on('connect', handleConnect);
@@ -774,6 +796,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (currentUser?.role === 'SUPER_ADMIN') {
         fetchCompanies();
         fetchHardwareDevices();
+        fetchSystemMetrics();
       }
     }
   }, [isAuthenticated]);
@@ -1105,17 +1128,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  // FE-806 Teknik Not: "Canlı log ekranı sınırsız birikmemelidir; sabit
+  // tampon (öneri: son 500 satır)." Önceden bu dizi HİÇBİR sınır olmadan
+  // büyüyordu (bellek sızıntısı, AC ihlali) — artık en eski satırlar atılır.
+  const MAX_HARDWARE_LOG_LINES = 500;
+  const hardwareLogSeq = useRef(0);
   const addHardwareLog = (log: Omit<HardwareLog, 'id' | 'timestamp'>) => {
     const now = new Date();
     const timeStr = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setHardwareLogs(prev => [
-      ...prev,
-      {
-        ...log,
-        id: Date.now().toString(),
-        timestamp: timeStr
-      }
-    ]);
+    hardwareLogSeq.current += 1;
+    setHardwareLogs(prev => {
+      const next = [
+        ...prev,
+        {
+          ...log,
+          id: `${Date.now()}-${hardwareLogSeq.current}`,
+          timestamp: timeStr
+        }
+      ];
+      return next.length > MAX_HARDWARE_LOG_LINES ? next.slice(next.length - MAX_HARDWARE_LOG_LINES) : next;
+    });
   };
 
   const clearHardwareLogs = () => {
@@ -1205,12 +1237,31 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           name: d.name,
           type: d.deviceCode.includes('TANK') ? 'Ultrasonik Tank Sensörü' : 'Debimetre & Solenoid',
           siteName: d.siteName,
-          status: d.status
+          status: d.status,
+          lastHeartbeatAt: d.lastHeartbeatAt ?? null,
+          healthScore: d.healthScore ?? null,
+          firmwareVersion: d.firmwareVersion ?? undefined,
+          signalRssi: d.signalRssi ?? undefined
         }));
         setHardwareDevices(mapped);
       }
     } catch (err: any) {
       showToast(`Cihazlar getirilirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  // FE-806: SystemHealthPage'in eskiden tamamen SABİT (uydurma "%99.98
+  // uptime", "24/100 connection" vb.) olan verisini, OPS-1107'nin zaten var
+  // olan Prometheus registry'sinden (GET /admin/system-metrics) gerçek bir
+  // özetle değiştirir.
+  const fetchSystemMetrics = async () => {
+    try {
+      const response = await apiFetch('/admin/system-metrics');
+      if (response.success && response.data) {
+        setSystemMetrics(response.data);
+      }
+    } catch (err: any) {
+      showToast(`Sistem metrikleri getirilirken hata: ${err.message}`, 'error');
     }
   };
 
@@ -1261,6 +1312,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         fetchCrossSitePermissions,
         hardwareDevices,
         hardwareLogs,
+        systemMetrics,
+        fetchSystemMetrics,
         tankRefreshKey,
         triggerTankRefresh,
         simulatedLatencyMs,

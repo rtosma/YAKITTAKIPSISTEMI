@@ -1,15 +1,33 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
+
+// FE-806 Kapsam: "seviye/tenant/cihaz filtreleri." "Tenant" filtresi
+// BİLİNÇLİ OLARAK eklenmedi: SUPER_ADMIN'in soketi yalnızca KENDİ
+// tenant'ının odasına (`tenant:{id}`) katılıyor (socketServer.ts) — çapraz
+// tenant yayını yok, bu yüzden şu an akışta zaten TEK bir tenant'ın verisi
+// var; işlevsiz bir filtre eklemek yanıltıcı olur. Bu, ayrı ve daha büyük
+// bir altyapı işi (SUPER_ADMIN soketinin TÜM tenant odalarına katılması)
+// olarak bildiriliyor.
+const ALL = 'HEPSİ';
 
 export const LiveLogsPage: React.FC = () => {
   const { hardwareLogs, isLogStreamActive, setIsLogStreamActive, clearHardwareLogs } = useApp();
   const terminalEndRef = useRef<HTMLDivElement>(null);
+  const [levelFilter, setLevelFilter] = useState<string>(ALL);
+  const [deviceFilter, setDeviceFilter] = useState<string>(ALL);
+
+  const knownLevels = useMemo(() => Array.from(new Set(hardwareLogs.map((l) => l.tag))).sort(), [hardwareLogs]);
+  const knownDevices = useMemo(() => Array.from(new Set(hardwareLogs.map((l) => l.deviceCode))).sort(), [hardwareLogs]);
+  const filteredLogs = useMemo(
+    () => hardwareLogs.filter((l) => (levelFilter === ALL || l.tag === levelFilter) && (deviceFilter === ALL || l.deviceCode === deviceFilter)),
+    [hardwareLogs, levelFilter, deviceFilter]
+  );
 
   useEffect(() => {
     if (terminalEndRef.current) {
       terminalEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [hardwareLogs]);
+  }, [filteredLogs]);
 
   return (
     <div className="space-y-6">
@@ -46,16 +64,44 @@ export const LiveLogsPage: React.FC = () => {
         </div>
       </div>
 
+      {/* Filtreler — FE-806 Kapsam: "seviye/tenant/cihaz filtreleri" */}
+      <div className="bg-[#1c1b1b] border border-[#353535] p-4 rounded-xl flex flex-wrap items-center gap-3 font-mono text-xs">
+        <label className="flex items-center space-x-2 text-[#d5c4ab]">
+          <span>Seviye:</span>
+          <select
+            data-testid="log-filter-level"
+            value={levelFilter}
+            onChange={(e) => setLevelFilter(e.target.value)}
+            className="bg-[#131313] border border-[#353535] text-[#e5e2e1] rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-[#ffdca1]"
+          >
+            <option value={ALL}>{ALL}</option>
+            {knownLevels.map((l) => <option key={l} value={l}>{l}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center space-x-2 text-[#d5c4ab]">
+          <span>Cihaz:</span>
+          <select
+            data-testid="log-filter-device"
+            value={deviceFilter}
+            onChange={(e) => setDeviceFilter(e.target.value)}
+            className="bg-[#131313] border border-[#353535] text-[#e5e2e1] rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-[#ffdca1]"
+          >
+            <option value={ALL}>{ALL}</option>
+            {knownDevices.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+        </label>
+      </div>
+
       {/* Terminal Container */}
       <div className="bg-[#0e0e0e] border border-[#353535] rounded-2xl p-6 font-mono text-xs space-y-3 min-h-[500px] shadow-2xl">
         <div className="pb-3 border-b border-[#353535] text-[#a1e8a2] font-bold flex justify-between">
           <span>ROOT@AKILLI-SANTIYE-MQTT-BROKER:~$ tail -f /var/log/iot-telemetry.log</span>
-          <span>LOG SAYISI: {hardwareLogs.length}</span>
+          <span data-testid="log-count">LOG SAYISI: {filteredLogs.length} / {hardwareLogs.length} (tampon sınırı: 500)</span>
         </div>
 
-        <div className="space-y-2 leading-relaxed">
-          {hardwareLogs.map(log => (
-            <div key={log.id} className="flex items-start space-x-3 hover:bg-[#1a1a1a] p-1 rounded font-mono">
+        <div className="space-y-2 leading-relaxed" data-testid="log-terminal-lines">
+          {filteredLogs.map(log => (
+            <div key={log.id} data-testid="log-line" className="flex items-start space-x-3 hover:bg-[#1a1a1a] p-1 rounded font-mono">
               <span className="text-[#d5c4ab]/60">[{log.timestamp}]</span>
               <span className="text-[#ffb77f] font-bold">[{log.deviceCode}]</span>
               <span className="text-[#ffdca1]">[{log.tag}]</span>

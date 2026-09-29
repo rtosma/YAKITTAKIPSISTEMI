@@ -1,8 +1,21 @@
 import React from 'react';
 import { useApp } from '../../context/AppContext';
 
+// FE-806 AC: "Cihaz sağlık tablosu canlı güncellenmelidir." — göreli/okunur
+// Türkçe biçim (TenantsPage.tsx'teki formatLastActivity İLE AYNI ilke, farklı
+// dosya — iki çağrı yeri için ayrı bir paylaşılan yardımcı modül eklemeye değmez).
+function formatRelativeTime(iso: string | null): string {
+  if (!iso) return 'Hiç görülmedi';
+  const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (diffMin < 1) return 'Az önce';
+  if (diffMin < 60) return `${diffMin} dk önce`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour} sa önce`;
+  return `${Math.floor(diffHour / 24)} gün önce`;
+}
+
 export const DevicesPage: React.FC = () => {
-  const { hardwareDevices, addHardwareLog, showToast } = useApp();
+  const { hardwareDevices, deviceOnlineStatus, addHardwareLog, showToast } = useApp();
 
   const handlePingDevice = (deviceCode: string) => {
     addHardwareLog({
@@ -38,17 +51,25 @@ export const DevicesPage: React.FC = () => {
 
       {/* Devices Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {hardwareDevices.map(dev => (
-          <div key={dev.id} data-testid="device-card" data-device-code={dev.deviceCode} data-device-status={dev.status} className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-6 space-y-4 flex flex-col justify-between">
+        {hardwareDevices.map(dev => {
+          // FE-806 AC: "Cihaz sağlık tablosu canlı güncellenmelidir." —
+          // sayfa açılışında REST'ten gelen `dev.status` bir SNAPSHOT'tır;
+          // FE-801'in zaten dinlediği GERÇEK `device:status` soket olayı
+          // (deviceOnlineStatus) varsa o ÖNCELİKLİDİR (sayfa yeniden
+          // yüklenmeden anlık yansır).
+          const liveOnline = deviceOnlineStatus[dev.deviceCode];
+          const liveStatus: string = liveOnline === undefined ? dev.status : (liveOnline ? 'ONLINE' : 'OFFLINE');
+          return (
+          <div key={dev.id} data-testid="device-card" data-device-code={dev.deviceCode} data-device-status={liveStatus} className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-6 space-y-4 flex flex-col justify-between">
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-mono text-[#ffb77f] font-bold uppercase">
                   {dev.deviceCode}
                 </span>
                 <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
-                  dev.status === 'ONLINE' ? 'bg-[#a1e8a2]/10 text-[#a1e8a2]' : 'bg-[#ffb4ab]/10 text-[#ffb4ab]'
+                  liveStatus === 'ONLINE' ? 'bg-[#a1e8a2]/10 text-[#a1e8a2]' : 'bg-[#ffb4ab]/10 text-[#ffb4ab]'
                 }`}>
-                  {dev.status}
+                  {liveStatus}
                 </span>
               </div>
 
@@ -71,8 +92,22 @@ export const DevicesPage: React.FC = () => {
                   <span className="text-[#ffdca1] font-bold">{dev.firmwareVersion ? `v${dev.firmwareVersion}` : 'Bilinmiyor'}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-[#d5c4ab]">Son Sinyal:</span>
-                  <span className="text-[#d5c4ab]">{dev.lastPing || 'Hiç bağlanmadı'}</span>
+                  <span className="text-[#d5c4ab]">Son Heartbeat:</span>
+                  <span className="text-[#d5c4ab]" data-testid="device-last-heartbeat">{formatRelativeTime(dev.lastHeartbeatAt)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#d5c4ab]">Sağlık Skoru:</span>
+                  <span
+                    data-testid="device-health-score"
+                    className={`font-bold ${
+                      dev.healthScore == null ? 'text-[#d5c4ab]'
+                        : dev.healthScore >= 80 ? 'text-[#a1e8a2]'
+                        : dev.healthScore >= 50 ? 'text-[#ffdca1]'
+                        : 'text-[#ffb4ab]'
+                    }`}
+                  >
+                    {dev.healthScore != null ? `${dev.healthScore} / 100` : 'Henüz hesaplanmadı'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -86,7 +121,8 @@ export const DevicesPage: React.FC = () => {
               <span>Test Sinyali Gönder (Ping)</span>
             </button>
           </div>
-        ))}
+          );
+        })}
       </div>
 
     </div>
