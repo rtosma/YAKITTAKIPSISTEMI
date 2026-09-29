@@ -1097,7 +1097,7 @@ router.post(
   validateRequest({ body: createCompanySchema }),
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const newCompany = await createCompanyWithOwner(req.body);
+      const newCompany = await createCompanyWithOwner(req.body, req.user!.userId);
       res.json({ success: true, message: 'Firma başarıyla oluşturuldu.', data: newCompany });
     } catch (error: any) {
       next(error);

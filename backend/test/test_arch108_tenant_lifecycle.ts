@@ -65,9 +65,24 @@ async function call(method: string, path: string, opts: { token?: string; body?:
   const buf = Buffer.from(await res.arrayBuffer());
   return { status: res.status, body: { __binary: buf, __contentType: ct, __contentDisposition: res.headers.get('content-disposition') } };
 }
-async function login(username: string): Promise<{ status: number; token: string | null; body: any }> {
-  const r = await call('POST', '/auth/login', { body: { username, password: '123456' } });
+async function login(username: string, password = '123456'): Promise<{ status: number; token: string | null; body: any }> {
+  const r = await call('POST', '/auth/login', { body: { username, password } });
   return { status: r.status, token: r.body.accessToken ?? null, body: r.body };
+}
+
+// ARCH-105: yeni firma sahibinin ilk parolası artık SABİT '123456' DEĞİL —
+// oluşturma yanıtında BİR KEZ dönen rastgele bir geçici parola (bkz.
+// createCompanyWithOwner, adminDb.ts). Geçici parolayla giriş
+// must_change_password=true taşır ve /vehicles gibi normal uçlarda 403'e
+// çarpar — bu yüzden her test firması için oluşturmadan HEMEN sonra BİR
+// KEZ kalıcı bir parolaya geçilir (auth204/BILL-1701 İLE AYNI desen);
+// sonraki TÜM login() çağrıları bu kalıcı parolayı kullanır.
+async function establishPermanentPassword(username: string, temporaryPassword: string, newPassword: string): Promise<string> {
+  const tempLogin = await login(username, temporaryPassword);
+  if (!tempLogin.token) throw new Error(`Ön koşul: ${username} geçici parolayla giriş yapamadı — ${JSON.stringify(tempLogin.body)}`);
+  const changeRes = await call('POST', '/auth/change-password', { token: tempLogin.token, body: { currentPassword: temporaryPassword, newPassword } });
+  if (!changeRes.body.accessToken) throw new Error(`Ön koşul: ${username} parola değişikliği başarısız — ${JSON.stringify(changeRes.body)}`);
+  return changeRes.body.accessToken;
 }
 
 const SECOND_ADMIN_USERNAME = `arch108-admin2-${Date.now()}`;
@@ -95,7 +110,8 @@ async function run() {
     check('Test 1: firma A oluşturuldu, başlangıç account_status AKTİF',
       createA.status === 200 && !!tenantAId,
       `status=${createA.status}, id=${tenantAId}`);
-    const ownerA1 = (await login(companyNameA)).token!;
+    const PW_A = 'Arch108TestPwA1!';
+    const ownerA1 = await establishPermanentPassword(companyNameA, createA.body.data.temporaryPassword, PW_A);
 
     // ── Test 2: dondurma öncesi normal erişim ──────────────────────────
     const r2 = await call('GET', '/vehicles', { token: ownerA1 });
@@ -104,7 +120,7 @@ async function run() {
     // ── Test 3: dondurma → mevcut token bile 403, YENİ giriş de engellenir ─
     const r3freeze = await call('POST', `/admin/companies/${tenantAId}/freeze`, { token: admin1, body: { reason: 'Fatura ödemesi 90 gün geçti, sözleşme feshi öncesi dondurma.' } });
     const r3vehicles = await call('GET', '/vehicles', { token: ownerA1 });
-    const r3login = await login(companyNameA);
+    const r3login = await login(companyNameA, PW_A);
     check('Test 3: dondurulunca → mevcut token 403 TENANT_FROZEN, yeni giriş de 403 TENANT_FROZEN',
       r3freeze.status === 200 && r3freeze.body.data.accountStatus === 'DONDURULDU' &&
       r3vehicles.status === 403 && r3vehicles.body.error === 'TENANT_FROZEN' &&
@@ -118,7 +134,7 @@ async function run() {
 
     // ── Test 5: dondurmayı kaldır → erişim + giriş normale döner ────────
     const r5unfreeze = await call('POST', `/admin/companies/${tenantAId}/unfreeze`, { token: admin1 });
-    const ownerA2 = (await login(companyNameA)).token;
+    const ownerA2 = (await login(companyNameA, PW_A)).token;
     const r5vehicles = ownerA2 ? await call('GET', '/vehicles', { token: ownerA2 }) : { status: 0, body: {} };
     check('Test 5: dondurma kaldırılınca → AKTİF, giriş + erişim tekrar çalışır',
       r5unfreeze.status === 200 && r5unfreeze.body.data.accountStatus === 'AKTİF' && !!ownerA2 && r5vehicles.status === 200,
@@ -126,7 +142,7 @@ async function run() {
 
     // ── Test 6: silme planlama → DONDURULDU gibi davranır (giriş engellenir) ─
     const r6schedule = await call('POST', `/admin/companies/${tenantAId}/schedule-deletion`, { token: admin1, body: { reason: 'Müşteri sözleşmeyi feshetti, kalıcı silme talep etti.' } });
-    const r6login = await login(companyNameA);
+    const r6login = await login(companyNameA, PW_A);
     check('Test 6: silme planlanınca → SILME_BEKLIYOR, giriş 403 TENANT_PENDING_DELETION',
       r6schedule.status === 200 && r6schedule.body.data.accountStatus === 'SILME_BEKLIYOR' &&
       r6login.status === 403 && r6login.body.error === 'TENANT_PENDING_DELETION',
@@ -161,7 +177,7 @@ async function run() {
 
     // ── Test 10: firma GERÇEKTEN gitti (cascade) — eski sahip artık giriş yapamaz ─
     const r10lifecycle = await call('GET', `/admin/companies/${tenantAId}/lifecycle`, { token: admin1 });
-    const r10login = await login(companyNameA);
+    const r10login = await login(companyNameA, PW_A);
     const r10users = await q('SELECT COUNT(*)::int AS c FROM users WHERE tenant_id = $1', [tenantAId]);
     check('Test 10: silinen firma → lifecycle 404, eski sahip giriş yapamaz, users tablosunda hiç kayıt yok (CASCADE)',
       r10lifecycle.status === 404 && r10login.status === 401 && r10users[0].c === 0,
@@ -179,9 +195,11 @@ async function run() {
     const companyNameB = `arch108b${Date.now()}`;
     const createB = await call('POST', '/companies', { token: admin1, body: { name: companyNameB } });
     const tenantBId = createB.body.data.id;
+    const PW_B = 'Arch108TestPwB1!';
+    await establishPermanentPassword(companyNameB, createB.body.data.temporaryPassword, PW_B);
     await call('POST', `/admin/companies/${tenantBId}/schedule-deletion`, { token: admin1, body: { reason: 'Test iptal senaryosu.' } });
     const r12cancel = await call('POST', `/admin/companies/${tenantBId}/cancel-deletion`, { token: admin1 });
-    const r12loginAfter = await login(companyNameB);
+    const r12loginAfter = await login(companyNameB, PW_B);
     check('Test 12: planlanmış silme iptal edilince → AKTİF, giriş tekrar mümkün',
       r12cancel.status === 200 && r12cancel.body.data.accountStatus === 'AKTİF' && r12loginAfter.status === 200,
       `iptal=${r12cancel.status}/${r12cancel.body.data?.accountStatus}, girişSonra=${r12loginAfter.status}`);
@@ -202,7 +220,7 @@ async function run() {
     check('Test 14: Zod — 5 karakterden kısa/eksik reason → 400', r14a.status === 400 && r14b.status === 400, `kısa=${r14a.status}, eksik=${r14b.status}`);
 
     // ── Test 15: RBAC — COMPANY_OWNER lifecycle uçlarına erişemez ────────
-    const ownerB = (await login(companyNameB)).token!;
+    const ownerB = (await login(companyNameB, PW_B)).token!;
     const r15a = await call('POST', `/admin/companies/${tenantBId}/freeze`, { token: ownerB, body: { reason: 'Yetkisiz deneme.' } });
     const r15b = await call('GET', `/admin/companies/${tenantBId}/lifecycle`, { token: ownerB });
     const r15c = await call('GET', `/admin/companies/${tenantBId}/lifecycle`, {});

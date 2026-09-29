@@ -28,12 +28,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function login(username: string): Promise<string> {
+async function login(username: string, password = '123456'): Promise<string> {
   await resetLoginRateLimit(); // TEST_PLAN §0.3 — paket içi 429 kırılmalarını önler
   const res = await fetch(`${API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password: '123456' })
+    body: JSON.stringify({ username, password })
   });
   const data = await res.json();
   if (!data.accessToken) throw new Error(`Ön koşul: ${username} ile giriş başarısız — ${JSON.stringify(data)}`);
@@ -83,12 +83,22 @@ async function run() {
   const siteName = createCompanyRes.data.data?.sites?.[0]?.name;
   check('Ön koşul: Test firması oluşturuldu', createCompanyRes.status === 200 && !!companyId, `yanıt: ${JSON.stringify(createCompanyRes.data)}`);
 
-  const ownerToken = await login(companyName);
+  // ARCH-105: ilk parola artık rastgele üretilir ve mustChangePassword=true
+  // taşır — BILL-1701 İLE AYNI desen (geçici parolayla giriş → hemen değiştir).
+  const temporaryPassword = createCompanyRes.data.data?.temporaryPassword;
+  const tempOwnerToken = await login(companyName, temporaryPassword);
+  const changePwRes = await api('POST', '/auth/change-password', tempOwnerToken, { currentPassword: temporaryPassword, newPassword: 'Hr1801TestPw1!' });
+  check('Ön koşul: geçici parolayla giriş + zorunlu değişiklik başarılı', changePwRes.status === 200 && !!changePwRes.data?.accessToken, `status: ${changePwRes.status}`);
+  const ownerToken = changePwRes.data.accessToken as string;
 
   // --- Ön koşul: bir şoför + o şoföre atanmış bir araç (vehicleAssignmentConflict testi için) ---
   const driverRes = await api('POST', '/drivers', ownerToken, {
     name: `Test Şoför ${Date.now()}`,
-    tcNo: '12345678901',
+    // FLEET-1403 (bu ARCH-105 değişikliğinden BAĞIMSIZ, önceden mevcut bir
+    // hata): '12345678901' sağlama toplamı tutmuyor — algoritmik TCKN
+    // doğrulaması eklendiğinden beri bu ön koşul her zaman 400 dönüyordu.
+    // '10000000146' — bu kod tabanındaki testlerde kullanılan bilinen geçerli TCKN.
+    tcNo: '10000000146',
     phone: '5551234567',
     rfidCardId: `RFID-${Date.now()}`,
     siteName

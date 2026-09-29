@@ -5,6 +5,7 @@ import { generateId } from '../utils/id';
 import { encryptDeviceSecret, generateDeviceSecret } from '../utils/hardwareSecretCrypto';
 import { ForbiddenError, ConflictError, NotFoundError } from '../utils/errors';
 import { encryptTenantExport } from '../utils/tenantExportCrypto';
+import { generateTempPassword } from '../utils/tempCredentials';
 import type { FuelCostMethod } from '../fuel/fuelCostService';
 import { logger } from '../utils/logger';
 
@@ -193,18 +194,39 @@ export async function getAllCompanies(): Promise<AdminCompanyProfile[]> {
   return Promise.all(companiesRes.rows.map(buildAdminCompanyProfile));
 }
 
+// tenantDb.ts'deki createSiteWithManager (AUTH-204) İLE AYNI değer — o
+// sabit dışa aktarılmadığından (private const) burada YİNELENDİ, tek bir
+// paylaşılan "geçici parola" politikası kavramsal olarak İKİ farklı akışta.
+const TEMP_PASSWORD_TTL_HOURS = 72;
+
+export interface ProvisionedCompany extends AdminCompanyProfile {
+  ownerUsername: string;
+  /** ARCH-105 AC: "Üretilen parola yanıtta yalnızca BİR KEZ dönmeli." Bu satır bir daha üretilemez — kaybedilirse parola sıfırlama akışı kullanılır. */
+  temporaryPassword: string;
+  passwordExpiresAt: string;
+}
+
 /**
- * Yeni bir kiracı (tenant) firma oluşturur: şirket kaydı + ilk şantiye +
- * COMPANY_OWNER giriş hesabı (demo/dev sistemine uygun olarak diğer seed
- * hesaplarla aynı '123456' şifresiyle — gerçek bir üretim ortamında bunun
- * yerine bir davet/e-posta akışı olmalıdır).
+ * ARCH-105 (#24) — yeni bir kiracı (tenant) firma oluşturur: şirket kaydı +
+ * ilk şantiye + COMPANY_OWNER giriş hesabı, TEK transaction'da (hata halinde
+ * TAM geri alınır — kısmi/"yarım tenant" kalmaz).
+ *
+ * İlk parola: `createSiteWithManager`nin (AUTH-204, tenantDb.ts) AYNI
+ * deseni — kriptografik rastgele geçici parola (generateTempPassword),
+ * müşteri hesabı zorunlu parola değişikliğiyle (must_change_password) açılır,
+ * düz metin yalnızca BU dönüş değerinde bir kez görünür, veritabanına yalnızca
+ * hash yazılır. Önceki davranış (SABİT '123456') AUTH-204'ün kendi kod
+ * yorumunda "aynı desen" olarak zaten işaret ediyordu ama hiç uygulanmamıştı.
  */
-export async function createCompanyWithOwner(data: {
-  name: string;
-  city?: string;
-  taxNumber?: string;
-  package?: PackageTier;
-}): Promise<AdminCompanyProfile> {
+export async function createCompanyWithOwner(
+  data: {
+    name: string;
+    city?: string;
+    taxNumber?: string;
+    package?: PackageTier;
+  },
+  actorUserId: string
+): Promise<ProvisionedCompany> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
@@ -217,11 +239,21 @@ export async function createCompanyWithOwner(data: {
     const packageTier: PackageTier = isPackageTier(data.package) ? data.package : 'TEMEL';
     const initialModules = PACKAGE_MODULE_DEFAULTS[packageTier];
 
-    await client.query(
-      `INSERT INTO companies (id, name, tax_number, code, city, license_status, license_expiry, modules, package)
-       VALUES ($1, $2, $3, $4, $5, 'AKTİF', $6, $7::jsonb, $8)`,
-      [companyId, data.name.trim(), taxNumber, code, city, '2027-12-31', JSON.stringify(initialModules), packageTier]
-    );
+    try {
+      await client.query(
+        `INSERT INTO companies (id, name, tax_number, code, city, license_status, license_expiry, modules, package)
+         VALUES ($1, $2, $3, $4, $5, 'AKTİF', $6, $7::jsonb, $8)`,
+        [companyId, data.name.trim(), taxNumber, code, city, '2027-12-31', JSON.stringify(initialModules), packageTier]
+      );
+    } catch (err: any) {
+      // AC: "VKN benzersiz olmalı; aynı VKN ile ikinci tenant açılmaya
+      // çalışılırsa 409 dönmelidir." (uq_companies_tax_number — '0000000000'
+      // yer tutucusu HARİÇ, bkz. schema.sql).
+      if (err?.code === '23505' && String(err?.constraint).includes('tax_number')) {
+        throw new ConflictError(`'${taxNumber}' VKN'si ile kayıtlı bir firma zaten var.`, { error: 'TAX_NUMBER_TAKEN' });
+      }
+      throw err;
+    }
 
     const siteId = generateId('site');
     const siteName = `${data.name.trim()} Ana Şantiye`;
@@ -240,11 +272,30 @@ export async function createCompanyWithOwner(data: {
       username = `${usernameBase}${suffix++}`;
     }
 
-    const passwordHash = await hashPassword('123456');
+    const temporaryPassword = generateTempPassword();
+    const passwordHash = await hashPassword(temporaryPassword);
+    const passwordExpiresAt = new Date(Date.now() + TEMP_PASSWORD_TTL_HOURS * 60 * 60 * 1000);
+    const ownerId = generateId('usr');
     await client.query(
-      `INSERT INTO users (id, tenant_id, username, password_hash, role, site_name)
-       VALUES ($1, $2, $3, $4, 'COMPANY_OWNER', NULL)`,
-      [generateId('usr'), companyId, username, passwordHash]
+      `INSERT INTO users (id, tenant_id, username, password_hash, role, site_name, must_change_password, temp_password_expires_at)
+       VALUES ($1, $2, $3, $4, 'COMPANY_OWNER', NULL, TRUE, $5)`,
+      [ownerId, companyId, username, passwordHash, passwordExpiresAt.toISOString()]
+    );
+
+    // AC: "Oluşturma işlemi audit log'a TENANT_PROVISIONED olarak yazılmalıdır."
+    // writeAuditLog() (utils/auditLog.ts) KULLANILAMAZ — çağıranın (SUPER_ADMIN)
+    // AsyncLocalStorage tenant context'i YENİ oluşturulan tenant'a ait DEĞİLDİR
+    // (SUPER_ADMIN hiçbir tenant'a bağlı değildir). Bunun yerine RLS bağlamı bu
+    // transaction'a ÖZEL (SET LOCAL ile aynı etki) YENİ tenant'a ayarlanır —
+    // withTenant() ile TAM AYNI mekanizma (bkz. db/withTenant.ts).
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [companyId]);
+    await client.query(
+      `INSERT INTO audit_logs (id, tenant_id, user_id, action, target_type, target_id, after_value)
+       VALUES ($1, $2, $3, 'TENANT_PROVISIONED', 'company', $2, $4::jsonb)`,
+      [
+        generateId('audit'), companyId, actorUserId,
+        JSON.stringify({ name: data.name.trim(), code, package: packageTier, city, ownerUsername: username })
+      ]
     );
 
     await client.query('COMMIT');
@@ -261,7 +312,10 @@ export async function createCompanyWithOwner(data: {
       package: packageTier,
       sites: [{ id: siteId, name: siteName, location: city, activeTanksCount: 0, activeVehiclesCount: 0 }],
       activeVehiclesCount: 0,
-      totalFuelThisMonth: 0
+      totalFuelThisMonth: 0,
+      ownerUsername: username,
+      temporaryPassword,
+      passwordExpiresAt: passwordExpiresAt.toISOString()
     };
   } catch (err) {
     await client.query('ROLLBACK');

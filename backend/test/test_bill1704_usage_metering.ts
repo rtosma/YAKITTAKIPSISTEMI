@@ -27,12 +27,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function login(username: string): Promise<string> {
+async function login(username: string, password = '123456'): Promise<string> {
   await resetLoginRateLimit(); // TEST_PLAN §0.3 — paket içi 429 kırılmalarını önler
   const res = await fetch(`${API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password: '123456' })
+    body: JSON.stringify({ username, password })
   });
   const data = await res.json();
   if (!data.accessToken) throw new Error(`Ön koşul: ${username} ile giriş başarısız — ${JSON.stringify(data)}`);
@@ -82,7 +82,13 @@ async function run() {
   const siteName = createRes.data.data?.sites?.[0]?.name;
   check('Ön koşul: Test firması oluşturuldu', createRes.status === 200 && !!companyId && !!siteId, `yanıt: ${JSON.stringify(createRes.data)}`);
 
-  const ownerToken = await login(companyName);
+  // ARCH-105: ilk parola artık rastgele üretilir ve mustChangePassword=true
+  // taşır — BILL-1701 İLE AYNI desen (geçici parolayla giriş → hemen değiştir).
+  const temporaryPassword = createRes.data.data?.temporaryPassword;
+  const tempOwnerToken = await login(companyName, temporaryPassword);
+  const changePwRes = await api('POST', '/auth/change-password', tempOwnerToken, { currentPassword: temporaryPassword, newPassword: 'Bill1704TestPw1!' });
+  check('Ön koşul: geçici parolayla giriş + zorunlu değişiklik başarılı', changePwRes.status === 200 && !!changePwRes.data?.accessToken, `status: ${changePwRes.status}`);
+  const ownerToken = changePwRes.data.accessToken as string;
 
   // --- İki cihaz kaydet (active_device_count/device_days için) ---
   const devicePrefix = `BILL1704-DEV-${Date.now()}`;

@@ -32,12 +32,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function login(username: string): Promise<string> {
+async function login(username: string, password = '123456'): Promise<string> {
   await resetLoginRateLimit(); // TEST_PLAN §0.3 — paket içi 429 kırılmalarını önler
   const res = await fetch(`${API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password: '123456' })
+    body: JSON.stringify({ username, password })
   });
   const data = await res.json();
   if (!data.accessToken) throw new Error(`Ön koşul: ${username} ile giriş başarısız — ${JSON.stringify(data)}`);
@@ -126,7 +126,20 @@ async function run() {
   );
 
   // --- Lisans kapısı testleri: tenant'ın kendi kullanıcısıyla giriş ---
-  const ownerToken = await login(companyName);
+  // ARCH-105: ilk giriş artık SABİT '123456' DEĞİL, yaratma yanıtında BİR
+  // KEZ dönen rastgele geçici parola — ve mustChangePassword=true olduğundan
+  // (auth204 İLE AYNI desen) bu token /vehicles gibi normal uçlarda hemen
+  // 403'e çarpar; testin geri kalanı için parola değiştirilip TAZE token alınır.
+  const temporaryPassword = createRes.data.data?.temporaryPassword;
+  check(
+    'Test 3b (ARCH-105 AC): oluşturma yanıtı tek kullanımlık bir geçici parola döner (sabit değer değil)',
+    typeof temporaryPassword === 'string' && temporaryPassword.length >= 8 && temporaryPassword !== '123456',
+    `temporaryPassword uzunluğu: ${temporaryPassword?.length}`
+  );
+  const tempOwnerToken = await login(companyName, temporaryPassword);
+  const changePwRes = await api('POST', '/auth/change-password', tempOwnerToken, { currentPassword: temporaryPassword, newPassword: 'BillTest123456!' });
+  check('Test 3c: Geçici parola ile giriş + zorunlu değişiklik başarılı, taze token döner', changePwRes.status === 200 && !!changePwRes.data?.accessToken, `status: ${changePwRes.status}`);
+  const ownerToken = changePwRes.data.accessToken as string;
 
   const vehiclesOkRes = await api('GET', '/vehicles', ownerToken);
   check('Test 4: Lisans AKTİF iken GET /vehicles erişilebilir (200)', vehiclesOkRes.status === 200, `status: ${vehiclesOkRes.status}`);

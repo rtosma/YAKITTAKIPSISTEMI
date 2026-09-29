@@ -2992,3 +2992,10 @@ ALTER TABLE despatch_advice_transmissions ADD COLUMN IF NOT EXISTS next_retry_at
 ALTER TABLE despatch_advice_transmissions ADD COLUMN IF NOT EXISTS gib_status_code VARCHAR(16);
 ALTER TABLE despatch_advice_transmissions ADD COLUMN IF NOT EXISTS gib_status_description VARCHAR(256);
 ALTER TABLE despatch_advice_transmissions ADD COLUMN IF NOT EXISTS gib_status_checked_at TIMESTAMP WITH TIME ZONE;
+
+-- ARCH-105 (#24): AC "VKN benzersiz olmalı; aynı VKN ile ikinci tenant
+-- açılmaya çalışılırsa 409 dönmelidir." PARTIAL indeks — '0000000000'
+-- (adminDb.ts'nin VKN verilmediğinde kullandığı yer tutucu) HARİÇ, böylece
+-- VKN'siz (gerçek olmayan) firmalar birbirini engellemez, yalnızca GERÇEK
+-- bir VKN çakışması reddedilir.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_companies_tax_number ON companies(tax_number) WHERE tax_number <> '0000000000';
