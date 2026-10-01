@@ -204,6 +204,75 @@ export interface CrossSitePermission {
   status: 'AKTİF' | 'SÜRESİ_DOLDU' | 'KULLANILDI';
 }
 
+// FE-810 Kapsam: "Kota tanımı: litre, dönem, geçerlilik aralığı, devir
+// politikası." FUEL-402.1'in zaten tam olan /quotas backend'i — GENEL,
+// opsiyonel araç/şantiye kapsamlı, dönemsel kota (cross_site_permissions'ın
+// kendi allowed_liters'ından AYRI bir kavram — bkz. AppContext yorumu).
+export interface FuelQuota {
+  id: string;
+  vehiclePlate: string | null;
+  siteName: string | null;
+  periodType: 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'ONE_TIME';
+  limitLiters: number;
+  carryoverPolicy: 'NONE' | 'FULL' | 'CAPPED';
+  periodStart: string;
+  periodEnd: string;
+  carriedOverLiters: number;
+  validFrom: string;
+  validUntil: string | null;
+  status: 'AKTİF' | 'PASİF';
+  createdBy: string;
+}
+
+/** FE-810 Kapsam: "Kota kullanım göstergeleri (kalan/kullanılan)." GET /quotas/:id/balance. */
+export interface QuotaBalance {
+  quotaId: string;
+  periodType: string;
+  periodStart: string;
+  periodEnd: string;
+  baseLimitLiters: number;
+  carriedOverLiters: number;
+  effectiveLimitLiters: number;
+  consumedLiters: number;
+  reservedLiters: number;
+  remainingLiters: number;
+  computedAt: string;
+}
+
+// FE-810 AC: "Kota tükendiğinde ekrana anlık uyarı düşmelidir (FUEL-402.2)."
+// Araştırıldı: GENEL fuel_quotas (yukarıdaki FuelQuota) ikmal yetkilendirmesinde
+// HİÇ kontrol edilmiyor (yalnızca bakiye gösterimi için var) — gerçek zamanlı
+// reddedilen TEK kota mekanizması çapraz şantiye izninin (cross_site_permissions)
+// kendisidir. Bu yüzden bu uyarı o mekanizmanın backend 'quota:exhausted'
+// Socket.io olayının payload'ıdır.
+export interface QuotaExhaustedAlert {
+  vehiclePlate: string;
+  homeSite: string | null;
+  targetSite: string;
+  permissionId: string | null;
+  allowedLiters: number | null;
+  usedLiters: number | null;
+  occurredAt: string;
+}
+
+/**
+ * FE-810 Kapsam: "Mahsuplaşma özetine hızlı erişim (REP-715)." Zaten var olan
+ * genel /reports/:reportId ucunun rep-715-mahsup tanımından (backend
+ * rep715CrossSite.ts) dönen satırların, bu sayfadaki küçük özet widget'ı
+ * için kullanılan alt kümesi — tam rapor görüntüleyici İCAT EDİLMEDİ.
+ */
+export interface CrossSiteSettlementSummaryRow {
+  id: string;
+  siteA: string;
+  siteB: string;
+  monthLabel: string;
+  movementCount: number;
+  netCost: number;
+  debtor: string | null;
+  creditor: string | null;
+  netAmount: number;
+}
+
 export interface HardwareDevice {
   id: string;
   deviceCode: string;

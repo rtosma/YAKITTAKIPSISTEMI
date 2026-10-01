@@ -1250,6 +1250,26 @@ async function recordCrossSiteDenialFromError(err: unknown, source: 'DEVICE' | '
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
         [generateId('csden'), tenantId, ctx.vehiclePlate, ctx.homeSite, ctx.targetSite, ctx.requestedLiters ?? null, ctx.reason, ctx.permissionId ?? null, ctx.allowedLiters ?? null, ctx.usedLiters ?? null, source]
       );
+
+      // FE-810 AC: "Kota tükendiğinde ekrana anlık uyarı düşmelidir
+      // (FUEL-402.2)." Bu, GENEL fuel_quotas (FUEL-402.1) için DEĞİL —
+      // o sistem authorizeDispenseRequestCore/createTransactionCore'da HİÇ
+      // kontrol edilmiyor, yalnızca bakiye GÖSTERİMİ için var (araştırıldı,
+      // doğrulandı — bilinçli kapsam dışı, bkz. commit mesajı). Gerçek
+      // zamanlı REDDEDİLEN tek kota mekanizması budur: cross_site_permissions
+      // (FUEL-402.2). `rfid:unmatched` İLE AYNI desen: yayın başarısız olursa
+      // (Socket.io sorunu) asıl ret ETKİLENMEMELİ, zaten try/catch İÇİNDE.
+      if (ctx.reason === 'QUOTA_EXHAUSTED') {
+        broadcastToTenant(tenantId, 'quota:exhausted', {
+          vehiclePlate: ctx.vehiclePlate,
+          homeSite: ctx.homeSite,
+          targetSite: ctx.targetSite,
+          permissionId: ctx.permissionId ?? null,
+          allowedLiters: ctx.allowedLiters ?? null,
+          usedLiters: ctx.usedLiters ?? null,
+          occurredAt: new Date().toISOString()
+        });
+      }
     });
   } catch (recordErr) {
     logger.error({ err: recordErr, vehiclePlate: ctx.vehiclePlate }, '🚨 [REP-715] Reddedilen çapraz şantiye denemesi kaydedilemedi (ret davranışı etkilenmedi).');

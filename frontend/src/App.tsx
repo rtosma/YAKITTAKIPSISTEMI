@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppProvider } from './context/AppContext';
 import { Toast } from './components/Toast';
 import { RfidUnmatchedAlerts } from './components/RfidUnmatchedAlerts';
+import { QuotaExhaustedAlerts } from './components/QuotaExhaustedAlerts';
 
 // FE-802 — TransactionsPage'in sunucu taraflı sayfalı/filtreli sorguları
 // için tek bir global QueryClient. staleTime > 0: aynı filtre/sayfa
@@ -65,6 +66,7 @@ export function App() {
       <BrowserRouter>
         <Toast />
         <RfidUnmatchedAlerts />
+        <QuotaExhaustedAlerts />
         <Routes>
           {/* Home Login Page */}
           <Route path="/" element={<LoginPage />} />

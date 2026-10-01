@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { Client } from 'pg';
 import Redis from 'ioredis';
+import { io as socketIoClient, Socket } from 'socket.io-client';
 
 /**
  * FUEL-402.2 — Redlock + rezervasyon ile çapraz şantiye kotasının RFID/
@@ -116,6 +117,7 @@ async function run() {
   const deviceIds: string[] = [];
 
   const owner = await login('camsa');
+  let socket: Socket | undefined;
 
   try {
     // --- Ön koşul: araç (home site'ta, KÜÇÜK depo kapasitesiyle), sürücü, tank, izin ---
@@ -156,6 +158,21 @@ async function run() {
       devices.push({ deviceId, secret });
       deviceIds.push(deviceId);
     }
+
+    // --- FE-810 AC: "Kota tükendiğinde ekrana anlık uyarı düşmelidir
+    // (FUEL-402.2)." Bağlantıyı istekler ATILMADAN ÖNCE kur ki hiçbir yayın
+    // kaçırılmasın — fleet1402'deki 'rfid:unmatched' testiyle AYNI desen. ---
+    socket = socketIoClient(API_URL.replace('/api/v1', ''), {
+      path: '/socket.io',
+      auth: { token: owner },
+      transports: ['websocket']
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket!.on('connect', () => resolve());
+      socket!.on('connect_error', reject);
+    });
+    const quotaExhaustedAlerts: any[] = [];
+    socket.on('quota:exhausted', (payload) => quotaExhaustedAlerts.push(payload));
 
     // === Test 1: N_DEVICES eşzamanlı /dispense/request-auth, AYNI kota ===
     const results = await Promise.all(
@@ -198,7 +215,20 @@ async function run() {
       denials.length === N_DEVICES - expectedOks && denials.every((d) => d.reason === 'QUOTA_EXHAUSTED' && d.source === 'DEVICE' && d.target_site === targetSite && Number(d.allowed_liters) === QUOTA_LITERS),
       `kayıt=${denials.length}, beklenen=${N_DEVICES - expectedOks}`
     );
+
+    // === Test 6 (ASIL AC — FE-810): her QUOTA_EXHAUSTED reddi Socket.io
+    // üzerinden 'quota:exhausted' olarak ANLIK yayınlandı (önceden HİÇ
+    // yayınlanmıyordu — sadece cross_site_denials'a yazılıyordu). ===
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const matchingAlerts = quotaExhaustedAlerts.filter((a) => a.vehiclePlate === plate && a.targetSite === targetSite);
+    check(
+      'Test 6 (ASIL AC — FE-810): Her reddedilen istek için \'quota:exhausted\' Socket.io olayı ANLIK yayınlandı',
+      matchingAlerts.length === N_DEVICES - expectedOks &&
+        matchingAlerts.every((a) => a.permissionId === permId && Number(a.allowedLiters) === QUOTA_LITERS),
+      `alınan=${matchingAlerts.length}, beklenen=${N_DEVICES - expectedOks}, örnek=${JSON.stringify(matchingAlerts[0])}`
+    );
   } finally {
+    socket?.disconnect();
     await q('DELETE FROM cross_site_denials WHERE vehicle_plate = $1', [plate]);
     await q('DELETE FROM cross_site_permissions WHERE id = $1', [permId]);
     await q('DELETE FROM tanks WHERE name = $1', [tankName]);

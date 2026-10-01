@@ -24,7 +24,11 @@ import {
   TenantHardwareDevice,
   DeviceClaimCode,
   StrappingUploadError,
-  SiteEmergencyStatus
+  SiteEmergencyStatus,
+  FuelQuota,
+  QuotaBalance,
+  QuotaExhaustedAlert,
+  CrossSiteSettlementSummaryRow
 } from '../types';
 // NOTE: Oturum açıldığında firma bilgisi de dahil her şey PostgreSQL backend'inden
 // (apiFetch) çekiliyor: firma profili -> GET /companies/me (yalnızca giriş yapan
@@ -137,6 +141,30 @@ interface AppContextType {
   fetchSiteEmergencyStatus: (siteName: string) => Promise<void>;
   emergencyStopSite: (siteName: string, reason: string) => Promise<boolean>;
   emergencyResumeSite: (siteName: string) => Promise<boolean>;
+
+  // FE-810 Kapsam: "Kota tanımı/kullanım göstergeleri." FUEL-402.1'in zaten
+  // tam olan /quotas backend'i (GENEL, cross_site_permissions'tan AYRI kota
+  // sistemi) — önceden frontend'de hiç arayüzü yoktu.
+  fuelQuotas: FuelQuota[];
+  fetchFuelQuotas: () => Promise<void>;
+  createFuelQuota: (data: { vehiclePlate?: string; siteName?: string; periodType: FuelQuota['periodType']; limitLiters: number; carryoverPolicy: FuelQuota['carryoverPolicy']; validFrom?: string; validUntil?: string }) => Promise<boolean>;
+  setFuelQuotaStatus: (quotaId: string, status: 'AKTİF' | 'PASİF') => Promise<void>;
+  quotaBalances: Record<string, QuotaBalance>;
+  fetchQuotaBalance: (quotaId: string) => Promise<void>;
+
+  // FE-810 AC: "Kota tükendiğinde ekrana anlık uyarı düşmelidir (FUEL-402.2)."
+  // Backend 'quota:exhausted' Socket.io olayından beslenir (bkz. types.ts
+  // QuotaExhaustedAlert yorumu — GENEL fuel_quotas DEĞİL, çapraz şantiye
+  // izninin kendi tükenmesi).
+  quotaExhaustedAlerts: QuotaExhaustedAlert[];
+  dismissQuotaExhaustedAlert: (permissionId: string | null, occurredAt: string) => void;
+
+  // FE-810 Kapsam: "Mahsuplaşma özetine hızlı erişim (REP-715)." Tam bir
+  // rapor merkezi YOK (henüz hiçbir rapor görüntüleyici sayfa yok) — bu
+  // yüzden zaten var olan genel /reports/:reportId ucu (rep-715-mahsup)
+  // doğrudan, küçük bir özet widget'ı için çağrılıyor.
+  crossSiteSettlementSummary: CrossSiteSettlementSummaryRow[];
+  fetchCrossSiteSettlementSummary: () => Promise<void>;
 
   // FE-801 AC: "Eski veri açıkça işaretlenmelidir." — Socket.io bağlantısı
   // canlı değilken (kopuk/yeniden bağlanıyor/sekme arka planda) ekranda
@@ -288,6 +316,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [unmatchedRfidAlerts, setUnmatchedRfidAlerts] = useState<UnmatchedRfidAlert[]>([]);
   const [rfidDenylist, setRfidDenylist] = useState<RfidBlacklistRecord[]>([]);
   const [siteEmergencyStatus, setSiteEmergencyStatus] = useState<SiteEmergencyStatus | null>(null);
+  const [fuelQuotas, setFuelQuotas] = useState<FuelQuota[]>([]);
+  const [quotaBalances, setQuotaBalances] = useState<Record<string, QuotaBalance>>({});
+  const [quotaExhaustedAlerts, setQuotaExhaustedAlerts] = useState<QuotaExhaustedAlert[]>([]);
+  const [crossSiteSettlementSummary, setCrossSiteSettlementSummary] = useState<CrossSiteSettlementSummaryRow[]>([]);
   const [tenantHardwareDevices, setTenantHardwareDevices] = useState<TenantHardwareDevice[]>([]);
   const [deviceClaimCodes, setDeviceClaimCodes] = useState<DeviceClaimCode[]>([]);
   const [selectedTenantForDetail, setSelectedTenantForDetail] = useState<Company | null>(null);
@@ -561,6 +593,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setUnmatchedRfidAlerts(prev => [payload, ...prev.filter(a => a.cardUid !== payload.cardUid)].slice(0, 10));
     };
 
+    // FE-810 AC: "Kota tükendiğinde ekrana anlık uyarı düşmelidir." rfid:unmatched
+    // İLE AYNI tekilleştirme deseni — permissionId'ye göre (aynı izin kısa
+    // aralıkla tekrar tükenirse yığılmaz, güncellenir).
+    const handleQuotaExhausted = (payload: QuotaExhaustedAlert) => {
+      setQuotaExhaustedAlerts(prev => [payload, ...prev.filter(a => a.permissionId !== payload.permissionId)].slice(0, 10));
+    };
+
     // FE-801 AC: bağlantı koptuğunda "Bağlantı Yenileniyor..." uyarısı +
     // exponential backoff ile yeniden bağlanma (socket.io-client'ın
     // reconnectionDelay/reconnectionDelayMax ayarı bunu zaten yapar — bkz.
@@ -622,6 +661,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     socket.on('disconnect', handleDisconnect);
     socket.on('dispense:completed', handleDispenseCompleted);
     socket.on('rfid:unmatched', handleUnmatchedRfid);
+    socket.on('quota:exhausted', handleQuotaExhausted);
     socket.on('telemetry:data', handleTelemetryData);
     socket.on('device:status', handleDeviceStatusChanged);
 
@@ -648,6 +688,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       socket.off('disconnect', handleDisconnect);
       socket.off('dispense:completed', handleDispenseCompleted);
       socket.off('rfid:unmatched', handleUnmatchedRfid);
+      socket.off('quota:exhausted', handleQuotaExhausted);
       socket.off('telemetry:data', handleTelemetryData);
       socket.off('device:status', handleDeviceStatusChanged);
       disconnectSocket();
@@ -1097,6 +1138,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         fetchTenantHardwareDevices();
         fetchDeviceClaimCodes();
       }
+      // FE-810: backend QUOTA_MANAGER_ROLES İLE AYNI kısıt (/quotas,
+      // rep-715-mahsup de aynı rol kümesine açık).
+      if (currentUser && ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'].includes(currentUser.role)) {
+        fetchFuelQuotas();
+        fetchCrossSiteSettlementSummary();
+      }
     }
   }, [isAuthenticated]);
 
@@ -1509,6 +1556,97 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  // FE-810 Kapsam: FUEL-402.1'in zaten tam olan /quotas CRUD'u (GENEL,
+  // cross_site_permissions'tan AYRI kota sistemi) — önceden frontend'de
+  // hiç arayüzü yoktu.
+  const fetchFuelQuotas = async () => {
+    try {
+      const response = await apiFetch('/quotas');
+      if (response.success && response.data) {
+        const mapped: FuelQuota[] = response.data.map((q: any) => ({
+          id: q.id,
+          vehiclePlate: q.vehicle_plate,
+          siteName: q.site_name,
+          periodType: q.period_type,
+          limitLiters: Number(q.limit_liters),
+          carryoverPolicy: q.carryover_policy,
+          periodStart: q.period_start,
+          periodEnd: q.period_end,
+          carriedOverLiters: Number(q.carried_over_liters),
+          validFrom: q.valid_from,
+          validUntil: q.valid_until,
+          status: q.status,
+          createdBy: q.created_by
+        }));
+        setFuelQuotas(mapped);
+      }
+    } catch (err: any) {
+      showToast(`Yakıt kotaları getirilirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  const createFuelQuota = async (data: { vehiclePlate?: string; siteName?: string; periodType: FuelQuota['periodType']; limitLiters: number; carryoverPolicy: FuelQuota['carryoverPolicy']; validFrom?: string; validUntil?: string }): Promise<boolean> => {
+    try {
+      await apiFetch('/quotas', { method: 'POST', body: JSON.stringify(data) });
+      await fetchFuelQuotas();
+      showToast('Yakıt kotası tanımlandı.');
+      return true;
+    } catch (err: any) {
+      showToast(`Kota tanımlanırken hata: ${err.message}`, 'error');
+      return false;
+    }
+  };
+
+  const setFuelQuotaStatus = async (quotaId: string, status: 'AKTİF' | 'PASİF') => {
+    try {
+      await apiFetch(`/quotas/${quotaId}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+      await fetchFuelQuotas();
+      showToast(`Kota durumu değişti: ${status}`);
+    } catch (err: any) {
+      showToast(`Kota durumu güncellenirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  const fetchQuotaBalance = async (quotaId: string) => {
+    try {
+      const response = await apiFetch(`/quotas/${quotaId}/balance`);
+      if (response.success && response.data) {
+        setQuotaBalances(prev => ({ ...prev, [quotaId]: response.data }));
+      }
+    } catch (err: any) {
+      console.error('Kota bakiyesi getirilirken hata:', err);
+    }
+  };
+
+  const dismissQuotaExhaustedAlert = (permissionId: string | null, occurredAt: string) => {
+    setQuotaExhaustedAlerts(prev => prev.filter(a => !(a.permissionId === permissionId && a.occurredAt === occurredAt)));
+  };
+
+  // FE-810 Kapsam: "Mahsuplaşma özetine hızlı erişim (REP-715)." Tam bir
+  // rapor merkezi sayfası YOK — zaten var olan genel /reports/:reportId
+  // ucu (rep-715-mahsup, backend rep715CrossSite.ts) doğrudan çağrılıyor.
+  const fetchCrossSiteSettlementSummary = async () => {
+    try {
+      const response = await apiFetch('/reports/rep-715-mahsup?pageSize=5&sortBy=month_start&sortDir=desc');
+      if (response.success && response.data) {
+        const mapped: CrossSiteSettlementSummaryRow[] = response.data.map((r: any) => ({
+          id: r.id,
+          siteA: r.site_a,
+          siteB: r.site_b,
+          monthLabel: r.month_label,
+          movementCount: Number(r.movement_count),
+          netCost: Number(r.net_cost),
+          debtor: r.debtor,
+          creditor: r.creditor,
+          netAmount: Number(r.net_amount)
+        }));
+        setCrossSiteSettlementSummary(mapped);
+      }
+    } catch (err: any) {
+      console.error('Mahsuplaşma özeti getirilirken hata:', err);
+    }
+  };
+
   // Süper Admin panelinden yeni tenant firma oluşturur — backend companies +
   // ilk şantiye + COMPANY_OWNER giriş hesabını tek DB transaction'ında yazar
   // (bkz. adminDb.createCompanyWithOwner). Önceden bu tamamen local state'ti.
@@ -1644,6 +1782,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         fetchSiteEmergencyStatus,
         emergencyStopSite,
         emergencyResumeSite,
+        fuelQuotas,
+        fetchFuelQuotas,
+        createFuelQuota,
+        setFuelQuotaStatus,
+        quotaBalances,
+        fetchQuotaBalance,
+        quotaExhaustedAlerts,
+        dismissQuotaExhaustedAlert,
+        crossSiteSettlementSummary,
+        fetchCrossSiteSettlementSummary,
         isSocketConnected,
         lastTelemetryAt,
         deviceOnlineStatus,
