@@ -1,4 +1,5 @@
 import Redis from 'ioredis';
+import { Client } from 'pg';
 
 /**
  * AUTH-204 — Şantiye oluştururken otomatik kullanıcı/parola üretimi ve
@@ -155,6 +156,41 @@ async function runAuth204Tests() {
     oldPwRes.status === 401,
     `HTTP ${oldPwRes.status}`
   );
+
+  // 10 (FE-807 ASIL AC): GET /sites/details, tek istekte üretilen şantiyenin
+  // GERÇEK konumunu döner — SitesPage'in kart listesi önceden bunu hiç
+  // okumuyordu, her şantiye için sabit 'Türkiye' gösteriyordu.
+  const locatedSiteName = `AUTH-204 Konumlu Saha ${Date.now()}`;
+  const locatedCreateRes = await call('POST', '/sites', { token: ownerToken, body: { siteName: locatedSiteName, location: 'Gebze OSB 7. Cadde' } });
+  const detailsRes = await call('GET', '/sites/details', { token: ownerToken });
+  const locatedDetail = (detailsRes.body?.data || []).find((s: any) => s.name === locatedSiteName);
+  const firstSiteDetail = (detailsRes.body?.data || []).find((s: any) => s.name === siteName);
+  check(
+    'Test 10 (ASIL AC): GET /sites/details, gönderilen konumu AYNEN döner; konum verilmeyen ilk şantiyede varsayılan Türkiye',
+    locatedCreateRes.status === 200 && locatedDetail?.location === 'Gebze OSB 7. Cadde' && firstSiteDetail?.location === 'Türkiye',
+    `konumlu=${JSON.stringify(locatedDetail)}, ilk=${JSON.stringify(firstSiteDetail)}`
+  );
+
+  // 11 (regresyon — RBAC/izolasyon): SANTIYE_YÖNETİCİSİ (SITE_MANAGER, kendi
+  // tenant'ı) /sites/details çağırabilir (GET /sites ile AYNI erişim seviyesi).
+  const managerDetailsRes = await call('GET', '/sites/details', { token: newToken });
+  check(
+    'Test 11 (regresyon): SITE_MANAGER de GET /sites/details çağırabilir (GET /sites ile aynı erişim seviyesi)',
+    managerDetailsRes.status === 200 && Array.isArray(managerDetailsRes.body?.data),
+    `HTTP ${managerDetailsRes.status}`
+  );
+
+  const pg = new Client({
+    host: process.env.POSTGRES_HOST || 'localhost',
+    port: parseInt(process.env.POSTGRES_PORT || '5432', 10),
+    user: process.env.POSTGRES_USER || 'postgres',
+    password: process.env.POSTGRES_PASSWORD || 'postgres',
+    database: process.env.POSTGRES_DB || 'yakittakip_db'
+  });
+  await pg.connect();
+  await pg.query(`DELETE FROM sites WHERE name IN ($1, $2) AND tenant_id = 'comp-camsa'`, [siteName, locatedSiteName]);
+  await pg.query(`DELETE FROM users WHERE site_name IN ($1, $2) AND tenant_id = 'comp-camsa'`, [siteName, locatedSiteName]);
+  await pg.end();
 
   await resetIpLoginRateLimit();
   redis.disconnect();

@@ -38,3 +38,23 @@
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #514532;
 }
+
+/* FE-807 Teknik Not: "yazdırma kolaylaştırılmalıdır" (tek seferlik şantiye
+   kimlik bilgileri ekranı) — yazdırma sırasında yalnızca .print-area
+   görünür, geri kalan uygulama (karanlık tema, kenar çubuğu vb.) gizlenir. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-area, .print-area * {
+    visibility: visible;
+  }
+  .print-area {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    background: white;
+    color: black;
+  }
+}

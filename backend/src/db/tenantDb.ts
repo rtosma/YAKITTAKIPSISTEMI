@@ -240,6 +240,28 @@ export async function getTenantSites(): Promise<string[]> {
   });
 }
 
+export interface TenantSiteDetail {
+  id: string;
+  name: string;
+  location: string;
+}
+
+// FE-807: getTenantSites() (üstte) BİLEREK bir string[] — vehicles/tanks/
+// drivers/users'ta REFERANS edilen ama `sites` tablosunda hiç kaydı olmayan
+// "hayalet" şantiye adlarını da (dropdown/filtre amaçlı) kapsıyor; onu zengin
+// kayıtlara çevirmek uygulama genelindeki TÜM tüketicilerini (filtre/dropdown)
+// kırardı. Bu yüzden AYRI, dar amaçlı bir sorgu: yalnızca GERÇEKTEN `sites`
+// tablosunda kaydı olan şantiyelerin id/ad/konumunu döner (SitesPage'in kart
+// listesi için — AUTH-204'ün kaydettiği GERÇEK location'ı göstermek için).
+export async function getTenantSiteDetails(): Promise<TenantSiteDetail[]> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      `SELECT id, name, location FROM sites ORDER BY name ASC`
+    );
+    return result.rows.map((row) => ({ id: row.id, name: row.name, location: row.location || 'Türkiye' }));
+  });
+}
+
 export interface ProvisionedSite {
   site: SiteRecord;
   username: string;

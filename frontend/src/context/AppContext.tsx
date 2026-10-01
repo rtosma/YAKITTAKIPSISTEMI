@@ -17,7 +17,9 @@ import {
   CompanyModule,
   UnmatchedRfidAlert,
   TenantProvisioningResult,
-  SystemMetricsSnapshot
+  SystemMetricsSnapshot,
+  SiteProvisioningResult,
+  SiteDetail
 } from '../types';
 // NOTE: Oturum açıldığında firma bilgisi de dahil her şey PostgreSQL backend'inden
 // (apiFetch) çekiliyor: firma profili -> GET /companies/me (yalnızca giriş yapan
@@ -147,7 +149,9 @@ interface AppContextType {
   // Real DB Sites
   sites: string[];
   fetchSites: () => Promise<void>;
-  addSite: (siteName: string) => Promise<void>;
+  siteDetails: SiteDetail[];
+  fetchSiteDetails: () => Promise<void>;
+  addSite: (siteName: string, location?: string) => Promise<SiteProvisioningResult | null>;
   deleteSite: (siteName: string) => Promise<void>;
 }
 
@@ -228,6 +232,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [tanks, setTanks] = useState<Tank[]>([]);
   const [sites, setSites] = useState<string[]>([]);
+  const [siteDetails, setSiteDetails] = useState<SiteDetail[]>([]);
   // Bu koleksiyonların henüz backend endpoint'i yok; boş başlarlar ve yalnızca
   // kullanıcı eylemleriyle (ikmal kaydı, yetki ekleme, IoT logu) dolarlar.
   const [transactions, setTransactions] = useState<FuelTransaction[]>([]);
@@ -746,19 +751,46 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const addSite = async (siteName: string) => {
+  // FE-807: SitesPage'in kart listesindeki GERÇEK konum — fetchSites()
+  // (üstte) yalnızca ad döndüğünden (bkz. tenantDb.ts getTenantSites
+  // yorumu) SitesPage önceden her şantiye için 'Türkiye' UYDURUYORDU.
+  const fetchSiteDetails = async () => {
+    try {
+      const response = await apiFetch('/sites/details');
+      if (response.success && response.data) {
+        setSiteDetails(response.data);
+      }
+    } catch (err: any) {
+      console.error('Şantiye detayları getirilirken hata:', err);
+    }
+  };
+
+  const addSite = async (siteName: string, location?: string) => {
     try {
       const response = await apiFetch('/sites', {
         method: 'POST',
-        body: JSON.stringify({ siteName })
+        body: JSON.stringify(location ? { siteName, location } : { siteName })
       });
       if (response.success) {
         showToast(`Yeni şantiye eklendi: ${siteName}`);
         await fetchSites();
+        await fetchSiteDetails();
         await fetchTanks();
+        // FE-807 AC: "Şantiye oluşturma tek akışta kullanıcı ve parola
+        // üretmelidir" + "Parola yalnızca bir kez gösterilmeli." AUTH-204
+        // (POST /sites) bunu ZATEN üretiyordu — yanıt burada TAMAMEN
+        // ATILIYORDU (ARCH-105/FE-805'teki addCompany İLE AYNI hata
+        // deseni). Üretilen kimlik bilgileri, bir daha üretilemeyeceği
+        // için çağırana (sihirbaz) taşınıyor.
+        const manager = response.data?.manager;
+        if (manager?.username && manager?.temporaryPassword && manager?.passwordExpiresAt) {
+          return manager as SiteProvisioningResult;
+        }
       }
+      return null;
     } catch (err: any) {
       showToast(`Şantiye eklenirken hata: ${err.message}`, 'error');
+      return null;
     }
   };
 
@@ -770,6 +802,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (response.success) {
         showToast(`Şantiye silindi: ${siteName}`, 'warning');
         await fetchSites();
+        await fetchSiteDetails();
         await fetchVehicles();
         await fetchDrivers();
         await fetchTanks();
@@ -786,6 +819,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (isAuthenticated) {
       fetchCompanyProfile();
       fetchSites();
+      fetchSiteDetails();
       fetchVehicles();
       fetchDrivers();
       fetchTanks();
@@ -1339,6 +1373,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         fetchTanks,
         sites,
         fetchSites,
+        siteDetails,
+        fetchSiteDetails,
         addSite,
         deleteSite,
         fetchTransactions,

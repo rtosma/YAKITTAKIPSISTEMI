@@ -6,6 +6,20 @@ export interface Site {
   activeVehiclesCount: number;
 }
 
+/** FE-807: AUTH-204'ün POST /sites yanıtındaki tek seferlik SITE_MANAGER kimlik bilgileri — yalnızca oluşturma anında döner, bir daha üretilemez. */
+export interface SiteProvisioningResult {
+  username: string;
+  temporaryPassword: string;
+  passwordExpiresAt: string;
+}
+
+/** FE-807: GET /sites/details — yalnızca `sites` tablosunda GERÇEKTEN kaydı olan şantiyelerin id/ad/konumu (bkz. Site tipiyle ilişkisi için tenantDb.ts getTenantSiteDetails yorumu). */
+export interface SiteDetail {
+  id: string;
+  name: string;
+  location: string;
+}
+
 export interface CompanyModule {
   aiAnomaly: boolean;       // AI Hırsızlık Tespiti
   eInvoice: boolean;        // e-İrsaliye Entegrasyonu
