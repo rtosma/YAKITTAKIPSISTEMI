@@ -41,6 +41,7 @@ import { ROLE_GROUPS } from './utils/permissions';
 import { OverviewPage } from './pages/customer/OverviewPage';
 import { SitesPage } from './pages/customer/SitesPage';
 import { VehiclesPage } from './pages/customer/VehiclesPage';
+import { MeterReadingsPage } from './pages/customer/MeterReadingsPage';
 import { DriversPage } from './pages/customer/DriversPage';
 import { VehiclesDriversPage } from './pages/customer/VehiclesDriversPage';
 import { TransactionsPage } from './pages/customer/TransactionsPage';
@@ -106,6 +107,8 @@ export function App() {
             <Route path="santiye-yonetimi" element={<SitesPage />} />
             <Route path="vehicles" element={<VehiclesPage />} />
             <Route path="arac-yonetimi" element={<VehiclesPage />} />
+            <Route path="meter-readings" element={<MeterReadingsPage />} />
+            <Route path="sayac-girisi" element={<MeterReadingsPage />} />
             <Route path="drivers" element={<DriversPage />} />
             <Route path="sofor-yonetimi" element={<DriversPage />} />
             <Route path="vehicles-drivers" element={<VehiclesDriversPage />} />

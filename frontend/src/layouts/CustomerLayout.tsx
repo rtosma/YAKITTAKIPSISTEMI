@@ -33,6 +33,7 @@ export const CustomerLayout: React.FC = () => {
     { label: 'Genel Bakış', path: '/panel', icon: 'dashboard', id: 'overview' },
     { label: 'Şantiye Yönetimi', path: '/panel/sites', icon: 'location_city', id: 'sites' },
     { label: 'Araç Yönetimi', path: '/panel/vehicles', icon: 'local_shipping', id: 'vehicles' },
+    { label: 'Km/Motor-Saat Girişi', path: '/panel/meter-readings', icon: 'speed', id: 'meter-readings' },
     { label: 'Şoför Yönetimi', path: '/panel/drivers', icon: 'badge', id: 'drivers' },
     { label: 'Yakıt Hareketleri', path: '/panel/transactions', icon: 'receipt_long', id: 'transactions' },
     { label: 'Tank Durumu', path: '/panel/tanks', icon: 'oil_barrel', id: 'tanks' },
@@ -46,7 +47,7 @@ export const CustomerLayout: React.FC = () => {
 
   // Restricted list for Şantiye Girişi (Şantiye Modu):
   // Araç Yönetimi, Şoför Yönetimi, Yakıt Hareketleri, Tank Durumu, Bildirimler, Sistem Ayarları
-  const santiyeAllowedIds = ['vehicles', 'drivers', 'transactions', 'tanks', 'notifications', 'settings'];
+  const santiyeAllowedIds = ['vehicles', 'meter-readings', 'drivers', 'transactions', 'tanks', 'notifications', 'settings'];
 
   const navItems = isManagerMode
     ? allNavItems

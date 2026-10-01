@@ -151,6 +151,63 @@ export interface VehicleMaintenanceRecord {
   createdAt: string;
 }
 
+// FE-813 Kapsam: "Km/motor-saat giriş ekranı." Backend (FLEET-1404 +
+// RES-903, vehicle_meter_readings) zaten tamdı — APPEND-ONLY (bir düzeltme
+// eski satırı SİLMEZ, correctsReadingId ile yeni bir satır ekler).
+export type MeterType = 'KM' | 'MOTOR_SAAT';
+
+export interface MeterReading {
+  id: string;
+  vehicleId: string;
+  vehiclePlate: string;
+  meterType: MeterType;
+  value: number;
+  readingAt: string;
+  periodLabel: string;
+  source: 'MANUEL' | 'TOPLU' | 'IKMAL';
+  isSuspicious: boolean;
+  suspicionReasons: string[];
+  overrideApproved: boolean;
+  overrideReason: string | null;
+  approvedBy: string | null;
+  correctsReadingId: string | null;
+  note: string | null;
+  enteredBy: string;
+  createdAt: string;
+}
+
+/**
+ * RES-903 AC: "Doğrulama uyarısı girişi engellememeli, onay isteyerek
+ * geçişe izin vermelidir." Backend şüpheli bir girişi `overrideReason`
+ * olmadan 409 METER_READING_SUSPICIOUS ile reddeder — bu, apiFetch'in
+ * err.details'inde taşınan payload'ın şekli (bkz. useMeterReadings.ts).
+ */
+export interface MeterReadingSuspicionDetail {
+  error: 'METER_READING_SUSPICIOUS';
+  reasons: ('BACKWARD' | 'ABSURD_JUMP' | 'DUPLICATE_PERIOD')[];
+  // backend/src/fleet/meterValidation.ts MeterCheckResult['detail'] — bir
+  // metin DEĞİL, yapılandırılmış bir ölçüm nesnesi (doğrudan JSX child
+  // olarak render edilemez — bkz. useMeterReadings.ts formatSuspicionDetail).
+  detail: { dailyMax: number; elapsedDays?: number; deltaValue?: number; impliedDaily?: number };
+  requiresOverride: true;
+}
+
+export interface BulkMeterResultRow {
+  vehiclePlate: string;
+  ok: boolean;
+  readingId?: string;
+  suspicious?: boolean;
+  reasons?: string[];
+  error?: string;
+  message?: string;
+}
+
+export interface MissingMeterReadings {
+  periodLabel: string;
+  missingCount: number;
+  bySite: Array<{ siteName: string; plates: string[] }>;
+}
+
 export interface Driver {
   id: string;
   name: string;

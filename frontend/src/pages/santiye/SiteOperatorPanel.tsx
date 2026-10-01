@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { useApp } from '../../context/AppContext';
 import { usePermissions } from '../../hooks/usePermissions';
 import { API_BASE_URL } from '../../utils/api';
+import { recordMeterReading, resolveMeterTypeForVehicleType, currentPeriodLabel, formatSuspicionDetail } from '../../hooks/useMeterReadings';
 
 export const SiteOperatorPanel: React.FC = () => {
   const navigate = useNavigate();
@@ -105,6 +106,53 @@ export const SiteOperatorPanel: React.FC = () => {
       await emergencyResumeSite(activeSiteName);
     } finally {
       setIsStopActionBusy(false);
+    }
+  };
+
+  // FE-813 Kapsam: "Sahada tablet ile giriş yapılır; sayısal klavye ve büyük
+  // dokunma alanları kullanılmalıdır." SITE_MANAGER (bu panel) /panel'e HİÇ
+  // giremediğinden (ROLE_GROUPS.PANEL yalnızca SUPER_ADMIN/COMPANY_OWNER)
+  // MeterReadingsPage.tsx'in tam grid'i ona ulaşmıyor — bu yüzden AYRI,
+  // küçük ve dokunma-dostu bir tekil giriş bölümü (toplu yapıştırma YOK,
+  // o ofis panelinin işi). Aynı backend uçlarını (FLEET-1404/RES-903)
+  // doğrudan çağırır, yeni bir endpoint İCAT EDİLMEDİ.
+  const [meterVehicleId, setMeterVehicleId] = useState<string>(siteVehicles[0]?.id || '');
+  const [meterValue, setMeterValue] = useState('');
+  const [isSavingMeter, setIsSavingMeter] = useState(false);
+  const [meterSuspicion, setMeterSuspicion] = useState<{ reasons: string[]; detail: string } | null>(null);
+  const [meterOverrideReason, setMeterOverrideReason] = useState('');
+  const [meterError, setMeterError] = useState<string | null>(null);
+  const [meterSuccess, setMeterSuccess] = useState<string | null>(null);
+
+  const handleSaveMeterReading = async (overrideReason?: string) => {
+    const vehicle = siteVehicles.find(v => v.id === meterVehicleId);
+    const value = Number(meterValue);
+    setMeterError(null);
+    setMeterSuccess(null);
+    if (!vehicle || !meterValue || Number.isNaN(value) || value < 0) {
+      setMeterError('Geçerli bir sayaç değeri girin.');
+      return;
+    }
+    setIsSavingMeter(true);
+    try {
+      await recordMeterReading(vehicle.id, {
+        value,
+        periodLabel: currentPeriodLabel(),
+        meterType: resolveMeterTypeForVehicleType(vehicle.type),
+        overrideReason
+      });
+      setMeterValue('');
+      setMeterSuspicion(null);
+      setMeterOverrideReason('');
+      setMeterSuccess(`${vehicle.plate} için sayaç kaydedildi.`);
+    } catch (err: any) {
+      if (err.details?.error === 'METER_READING_SUSPICIOUS') {
+        setMeterSuspicion({ reasons: err.details.reasons, detail: formatSuspicionDetail(err.details.detail) });
+      } else {
+        setMeterError(err.message);
+      }
+    } finally {
+      setIsSavingMeter(false);
     }
   };
   // TEST_PLAN §2.2 — POST /dispense'in sunucuda doğal tekrar anahtarı yok;
@@ -487,6 +535,69 @@ export const SiteOperatorPanel: React.FC = () => {
               </tbody>
             </table>
           </div>
+        </div>
+
+        {/* FE-813 — sahada tablet için büyük dokunma alanlı tekil km/motor-saat girişi. */}
+        <div data-testid="meter-entry-card" className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-5 space-y-4">
+          <h3 className="text-sm font-extrabold text-[#e5e2e1] uppercase tracking-wide">Km / Motor-Saat Girişi</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3">
+            <select
+              data-testid="meter-vehicle-select"
+              value={meterVehicleId}
+              onChange={(e) => { setMeterVehicleId(e.target.value); setMeterSuspicion(null); setMeterError(null); setMeterSuccess(null); }}
+              className="bg-[#0e0e0e] border border-[#353535] text-[#e5e2e1] text-sm rounded-xl p-4 focus:outline-none focus:border-[#ffdca1]"
+            >
+              {siteVehicles.map(v => (
+                <option key={v.id} value={v.id}>{v.plate} ({resolveMeterTypeForVehicleType(v.type) === 'KM' ? 'Km' : 'Motor-Saat'})</option>
+              ))}
+            </select>
+            <input
+              type="number"
+              inputMode="numeric"
+              data-testid="meter-value-input"
+              value={meterValue}
+              onChange={(e) => setMeterValue(e.target.value)}
+              placeholder="Sayaç değeri"
+              className="bg-[#0e0e0e] border border-[#353535] text-[#e5e2e1] text-sm rounded-xl p-4 focus:outline-none focus:border-[#ffdca1]"
+            />
+            <button
+              data-testid="meter-save"
+              onClick={() => handleSaveMeterReading()}
+              disabled={isSavingMeter || !meterValue}
+              className="px-6 py-4 bg-[#ffdca1] text-[#412d00] rounded-xl text-sm font-black cursor-pointer disabled:opacity-40"
+            >
+              {isSavingMeter ? 'Kaydediliyor...' : 'Kaydet'}
+            </button>
+          </div>
+
+          {meterError && <p data-testid="meter-error" className="text-xs text-[#ffb4ab]">{meterError}</p>}
+          {meterSuccess && <p data-testid="meter-success" className="text-xs text-[#a1e8a2]">{meterSuccess}</p>}
+
+          {meterSuspicion && (
+            <div data-testid="meter-suspicion" className="bg-[#2a1f10] border border-[#ffb800]/30 rounded-xl p-4 space-y-3">
+              <p className="text-xs text-[#ffb4ab] font-bold">
+                Şüpheli giriş: {meterSuspicion.reasons.join(', ')} — {meterSuspicion.detail}
+              </p>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <input
+                  type="text"
+                  data-testid="meter-override-reason-input"
+                  value={meterOverrideReason}
+                  onChange={(e) => setMeterOverrideReason(e.target.value)}
+                  placeholder="Onay gerekçesi (en az 3 karakter)..."
+                  className="flex-1 bg-[#0e0e0e] border border-[#353535] text-[#e5e2e1] text-sm rounded-xl p-4 focus:outline-none focus:border-[#ffdca1]"
+                />
+                <button
+                  data-testid="meter-override-confirm"
+                  onClick={() => handleSaveMeterReading(meterOverrideReason.trim())}
+                  disabled={meterOverrideReason.trim().length < 3 || isSavingMeter}
+                  className="px-6 py-4 bg-[#ffb4ab] text-[#412d00] rounded-xl text-sm font-black cursor-pointer disabled:opacity-40"
+                >
+                  Onayla ve Kaydet
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
       </main>
