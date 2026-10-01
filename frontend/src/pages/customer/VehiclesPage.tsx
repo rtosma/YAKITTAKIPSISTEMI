@@ -3,9 +3,10 @@ import { useApp } from '../../context/AppContext';
 import { Vehicle } from '../../types';
 import { isValidPlate } from '../../utils/validation';
 import { VehicleMaintenanceModal } from '../../components/VehicleMaintenanceModal';
+import { RfidCardStatusModal } from '../../components/RfidCardStatusModal';
 
 export const VehiclesPage: React.FC = () => {
-  const { vehicles, selectedSiteFilter, addVehicle, updateVehicle, deleteVehicle, currentCompany, drivers, isManagerMode, currentUser, sites } = useApp();
+  const { vehicles, selectedSiteFilter, addVehicle, updateVehicle, deleteVehicle, currentCompany, drivers, isManagerMode, currentUser, sites, rfidDenylist } = useApp();
 
   const availableSites = Array.from(new Set([...sites, ...currentCompany.sites.map(s => s.name)])).filter(Boolean);
 
@@ -15,6 +16,9 @@ export const VehiclesPage: React.FC = () => {
   const [deletingVehicle, setDeletingVehicle] = useState<Vehicle | null>(null);
   // FLEET-1407 AC: "Bakım kayıtları araç kartında listelenmelidir."
   const [maintenanceVehicle, setMaintenanceVehicle] = useState<Vehicle | null>(null);
+  // FE-808: AUTH-210 kart kayıp/blokaj/değiştirme akışı.
+  const [rfidCardVehicle, setRfidCardVehicle] = useState<Vehicle | null>(null);
+  const isCardBlocked = (cardUid: string) => rfidDenylist.some((r) => r.card_uid === cardUid && r.status !== 'REPLACED');
 
   // Form Fields
   const [plate, setPlate] = useState('');
@@ -185,7 +189,14 @@ export const VehiclesPage: React.FC = () => {
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{v.type}</td>
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{v.siteName}</td>
                 <td className="py-3.5 px-4 text-[#e5e2e1]">{v.assignedDriver}</td>
-                <td className="py-3.5 px-4 text-[#ffb77f]">{v.rfidTag}</td>
+                <td className="py-3.5 px-4 text-[#ffb77f]">
+                  {v.rfidTag}
+                  {isCardBlocked(v.rfidTag) && (
+                    <span data-testid="rfid-card-blocked-badge" className="ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#ffb4ab]/20 text-[#ffb4ab] border border-[#ffb4ab]/40 align-middle">
+                      KART BLOKE
+                    </span>
+                  )}
+                </td>
                 <td className="py-3.5 px-4 text-[#e5e2e1] font-bold">{v.fuelCapacityLiters} Litre</td>
                 <td className="py-3.5 px-4">
                   <span className={`text-[10px] font-bold px-2.5 py-1 rounded border ${
@@ -209,6 +220,14 @@ export const VehiclesPage: React.FC = () => {
                       className="p-1.5 text-[#d5c4ab] hover:text-[#ffdca1] hover:bg-[#353535] rounded transition-colors cursor-pointer"
                     >
                       <span className="material-symbols-outlined text-base">edit</span>
+                    </button>
+                    <button
+                      data-testid="rfid-card-status-open"
+                      onClick={() => setRfidCardVehicle(v)}
+                      title="RFID Kart Durumu"
+                      className="p-1.5 text-[#d5c4ab] hover:text-[#ffb77f] hover:bg-[#353535] rounded transition-colors cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-base">contactless</span>
                     </button>
                     <button
                       onClick={() => setDeletingVehicle(v)}
@@ -535,6 +554,10 @@ export const VehiclesPage: React.FC = () => {
 
       {maintenanceVehicle && (
         <VehicleMaintenanceModal vehicle={maintenanceVehicle} onClose={() => setMaintenanceVehicle(null)} />
+      )}
+
+      {rfidCardVehicle && (
+        <RfidCardStatusModal cardUid={rfidCardVehicle.rfidTag} entityLabel={rfidCardVehicle.plate} onClose={() => setRfidCardVehicle(null)} />
       )}
 
     </div>

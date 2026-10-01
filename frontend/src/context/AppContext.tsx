@@ -19,7 +19,8 @@ import {
   TenantProvisioningResult,
   SystemMetricsSnapshot,
   SiteProvisioningResult,
-  SiteDetail
+  SiteDetail,
+  RfidBlacklistRecord
 } from '../types';
 // NOTE: Oturum açıldığında firma bilgisi de dahil her şey PostgreSQL backend'inden
 // (apiFetch) çekiliyor: firma profili -> GET /companies/me (yalnızca giriş yapan
@@ -103,6 +104,14 @@ interface AppContextType {
   // tenantDb.ts authorizeDispenseRequest CARD_UNKNOWN dalı).
   unmatchedRfidAlerts: UnmatchedRfidAlert[];
   dismissRfidAlert: (cardUid: string) => void;
+
+  // FE-808: AUTH-210'un kayıp/blokaj/değiştirme akışı (bkz. types.ts
+  // RfidBlacklistRecord yorumu) — önceden frontend'de hiç arayüzü yoktu.
+  rfidDenylist: RfidBlacklistRecord[];
+  fetchRfidDenylist: () => Promise<void>;
+  reportRfidCardLost: (cardUid: string, status: 'LOST' | 'BLOCKED', reason?: string) => Promise<boolean>;
+  unblockRfidCardByUid: (cardUid: string) => Promise<boolean>;
+  replaceRfidCardByUid: (oldCardUid: string, newCardUid: string) => Promise<boolean>;
 
   // FE-801 AC: "Eski veri açıkça işaretlenmelidir." — Socket.io bağlantısı
   // canlı değilken (kopuk/yeniden bağlanıyor/sekme arka planda) ekranda
@@ -252,6 +261,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   useEffect(() => { isLogStreamActiveRef.current = isLogStreamActive; }, [isLogStreamActive]);
   const [toast, setToast] = useState<ToastState | null>(null);
   const [unmatchedRfidAlerts, setUnmatchedRfidAlerts] = useState<UnmatchedRfidAlert[]>([]);
+  const [rfidDenylist, setRfidDenylist] = useState<RfidBlacklistRecord[]>([]);
   const [selectedTenantForDetail, setSelectedTenantForDetail] = useState<Company | null>(null);
   const [tankRefreshKey, setTankRefreshKey] = useState<number>(0);
 
@@ -631,6 +641,73 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setUnmatchedRfidAlerts(prev => prev.filter(a => a.cardUid !== cardUid));
   };
 
+  // FE-808: AUTH-210'un kayıp/blokaj/değiştirme akışının frontend karşılığı.
+  const fetchRfidDenylist = async () => {
+    try {
+      const response = await apiFetch('/rfid-cards/denylist');
+      if (response.success && response.data) {
+        setRfidDenylist(response.data);
+      }
+    } catch (err: any) {
+      console.error('RFID kara listesi getirilirken hata:', err);
+    }
+  };
+
+  const reportRfidCardLost = async (cardUid: string, status: 'LOST' | 'BLOCKED', reason?: string): Promise<boolean> => {
+    try {
+      const response = await apiFetch(`/rfid-cards/${encodeURIComponent(cardUid)}/block`, {
+        method: 'POST',
+        body: JSON.stringify({ status, reason })
+      });
+      if (response.success) {
+        showToast(`Kart ${status === 'LOST' ? 'kayıp' : 'bloke'} olarak işaretlendi: ${cardUid}`, 'warning');
+        await fetchRfidDenylist();
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      showToast(`Kart işaretlenirken hata: ${err.message}`, 'error');
+      return false;
+    }
+  };
+
+  const unblockRfidCardByUid = async (cardUid: string): Promise<boolean> => {
+    try {
+      const response = await apiFetch(`/rfid-cards/${encodeURIComponent(cardUid)}/unblock`, { method: 'POST' });
+      if (response.success) {
+        showToast(`Kart blokesi kaldırıldı: ${cardUid}`);
+        await fetchRfidDenylist();
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      showToast(`Blokesi kaldırılırken hata: ${err.message}`, 'error');
+      return false;
+    }
+  };
+
+  const replaceRfidCardByUid = async (oldCardUid: string, newCardUid: string): Promise<boolean> => {
+    try {
+      const response = await apiFetch('/rfid-cards/replace', {
+        method: 'POST',
+        body: JSON.stringify({ oldCardUid, newCardUid })
+      });
+      if (response.success) {
+        showToast(`Kart değiştirildi: ${oldCardUid} → ${newCardUid}`);
+        await fetchRfidDenylist();
+        // Eski kart artık REPLACED; yeni uid aracın/şoförün kaydına ZATEN
+        // backend tarafında yazıldı (replaceRfidCard) — listeleri tazele.
+        await fetchVehicles();
+        await fetchDrivers();
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      showToast(`Kart değiştirilirken hata: ${err.message}`, 'error');
+      return false;
+    }
+  };
+
   // Toast Helper
   const showToast = (message: string, type: 'success' | 'info' | 'warning' | 'error' = 'success') => {
     const id = Date.now().toString();
@@ -831,6 +908,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         fetchCompanies();
         fetchHardwareDevices();
         fetchSystemMetrics();
+      }
+      // FE-808: RFID kara listesi yönetimi RfidUnmatchedAlerts İLE AYNI rol
+      // kümesine açık (backend RFID_CARD_MANAGER_ROLES) — diğer roller
+      // (PUMP_OPERATOR) zaten 403 alır, gereksiz çağrı yapılmıyor.
+      if (currentUser && ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'].includes(currentUser.role)) {
+        fetchRfidDenylist();
       }
     }
   }, [isAuthenticated]);
@@ -1363,6 +1446,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         deleteVehicle,
         unmatchedRfidAlerts,
         dismissRfidAlert,
+        rfidDenylist,
+        fetchRfidDenylist,
+        reportRfidCardLost,
+        unblockRfidCardByUid,
+        replaceRfidCardByUid,
         isSocketConnected,
         lastTelemetryAt,
         deviceOnlineStatus,

@@ -78,6 +78,20 @@ export interface UnmatchedRfidAlert {
   detectedAt: string;
 }
 
+// FE-808 Kapsam: "Araç/sürücü bloke etme ve kart kayıp bildirimi." AUTH-210
+// (backend rfid_card_blacklist) zaten tam bir kayıp/blokaj/değiştirme akışı
+// sunuyordu — frontend'de HİÇ arayüzü yoktu.
+export interface RfidBlacklistRecord {
+  id: string;
+  card_uid: string;
+  status: 'LOST' | 'BLOCKED' | 'REPLACED';
+  reason: string | null;
+  replaced_by_card_uid: string | null;
+  reported_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
 // FLEET-1407 — bir aracın bakım/servis geçmişi (append-only, backend
 // vehicle_maintenance_records tablosu).
 export interface VehicleMaintenanceRecord {

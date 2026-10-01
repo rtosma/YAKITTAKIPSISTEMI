@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Driver } from '../../types';
+import { RfidCardStatusModal } from '../../components/RfidCardStatusModal';
 
 export const DriversPage: React.FC = () => {
-  const { drivers, selectedSiteFilter, addDriver, updateDriver, deleteDriver, currentCompany, vehicles, isManagerMode, currentUser, sites } = useApp();
+  const { drivers, selectedSiteFilter, addDriver, updateDriver, deleteDriver, currentCompany, vehicles, isManagerMode, currentUser, sites, rfidDenylist } = useApp();
 
   const availableSites = Array.from(new Set([...sites, ...currentCompany.sites.map(s => s.name)])).filter(Boolean);
 
@@ -11,6 +12,9 @@ export const DriversPage: React.FC = () => {
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [editingDriver, setEditingDriver] = useState<Driver | null>(null);
   const [deletingDriver, setDeletingDriver] = useState<Driver | null>(null);
+  // FE-808: AUTH-210 kart kayıp/blokaj/değiştirme akışı.
+  const [rfidCardDriver, setRfidCardDriver] = useState<Driver | null>(null);
+  const isCardBlocked = (cardUid: string) => rfidDenylist.some((r) => r.card_uid === cardUid && r.status !== 'REPLACED');
 
   // Form Fields
   const [name, setName] = useState('');
@@ -165,7 +169,14 @@ export const DriversPage: React.FC = () => {
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{d.siteName}</td>
                 <td className="py-3.5 px-4 font-black text-[#ffdca1] text-sm">{d.assignedVehiclePlate}</td>
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{d.licenseType}</td>
-                <td className="py-3.5 px-4 text-[#ffb77f]">{d.rfidCardId}</td>
+                <td className="py-3.5 px-4 text-[#ffb77f]">
+                  {d.rfidCardId}
+                  {isCardBlocked(d.rfidCardId) && (
+                    <span data-testid="rfid-card-blocked-badge" className="ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#ffb4ab]/20 text-[#ffb4ab] border border-[#ffb4ab]/40 align-middle">
+                      KART BLOKE
+                    </span>
+                  )}
+                </td>
                 <td className="py-3.5 px-4">
                   <span className="font-bold text-[#a1e8a2]">{d.performanceScore} / 100</span>
                 </td>
@@ -186,6 +197,14 @@ export const DriversPage: React.FC = () => {
                       className="p-1.5 text-[#d5c4ab] hover:text-[#ffdca1] hover:bg-[#353535] rounded transition-colors cursor-pointer"
                     >
                       <span className="material-symbols-outlined text-base">edit</span>
+                    </button>
+                    <button
+                      data-testid="rfid-card-status-open"
+                      onClick={() => setRfidCardDriver(d)}
+                      title="RFID Kart Durumu"
+                      className="p-1.5 text-[#d5c4ab] hover:text-[#ffb77f] hover:bg-[#353535] rounded transition-colors cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-base">contactless</span>
                     </button>
                     <button
                       onClick={() => setDeletingDriver(d)}
@@ -487,6 +506,10 @@ export const DriversPage: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {rfidCardDriver && (
+        <RfidCardStatusModal cardUid={rfidCardDriver.rfidCardId} entityLabel={rfidCardDriver.name} onClose={() => setRfidCardDriver(null)} />
       )}
 
     </div>
