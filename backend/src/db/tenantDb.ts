@@ -2244,6 +2244,8 @@ export interface TenantHardwareDeviceRecord {
   /** IOT-307 — imzalı DAKİK X-Timestamp'ten hesaplanan sapma (ms; + = cihaz geride, - = ileride). */
   last_clock_drift_ms: number | null;
   last_clock_drift_at: string | null;
+  /** FE-814 — FUEL-404.1'in GERÇEKTEN uygulanmış (ack'lenmiş) k_factor'ü; önceden bu listede HİÇ yoktu. */
+  k_factor: string | null;
 }
 
 // Secret sütunları (encrypted_secret*) BİLEREK seçilmiyor — bu liste ucu
@@ -2257,7 +2259,10 @@ export interface TenantHardwareDeviceRecord {
 // ve "cihaz durumu, son telemetri" Kapsam öğelerini (IOT-308'in ZATEN
 // yazdığı verilerle, FE-806'daki SUPER_ADMIN /devices ucuyla AYNI ilke)
 // karşılaması için — secret/HMAC alanları YİNE dışarıda kalır.
-const HARDWARE_DEVICE_PUBLIC_COLUMNS = 'id, device_id, name, site_name, status, tank_name, firmware_version, last_seen_at, last_reported_rssi, secret_rotated_at, previous_secret_expires_at, created_at, last_clock_drift_ms, last_clock_drift_at';
+// FE-814: k_factor eklendi — "cihaz kalibrasyon ekranı: güncel K-factor"
+// Kapsam öğesi, önceden bu liste ucunda HİÇ yoktu (FUEL-404.1'in kendisi
+// zaten hardware_devices.k_factor'ü sadece ack üzerine güncelliyordu).
+const HARDWARE_DEVICE_PUBLIC_COLUMNS = 'id, device_id, name, site_name, status, tank_name, firmware_version, last_seen_at, last_reported_rssi, secret_rotated_at, previous_secret_expires_at, created_at, last_clock_drift_ms, last_clock_drift_at, k_factor';
 
 export async function getTenantHardwareDevices(): Promise<TenantHardwareDeviceRecord[]> {
   return withTenant(async (client) => {

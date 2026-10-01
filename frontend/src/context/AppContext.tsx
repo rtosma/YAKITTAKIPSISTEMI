@@ -800,7 +800,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           tankName: d.tank_name,
           firmwareVersion: d.firmware_version,
           lastSeenAt: d.last_seen_at,
-          lastReportedRssi: d.last_reported_rssi
+          lastReportedRssi: d.last_reported_rssi,
+          kFactor: d.k_factor !== null && d.k_factor !== undefined ? Number(d.k_factor) : null
         })));
       }
     } catch (err: any) {

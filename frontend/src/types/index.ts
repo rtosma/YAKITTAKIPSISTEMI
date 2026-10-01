@@ -105,6 +105,51 @@ export interface TenantHardwareDevice {
   firmwareVersion: string | null;
   lastSeenAt: string | null;
   lastReportedRssi: number | null;
+  // FE-814 — FUEL-404.1'in GERÇEKTEN uygulanmış (ack'lenmiş) k_factor'ü;
+  // önceden bu listede hiç yoktu.
+  kFactor: number | null;
+}
+
+// FE-814 Kapsam: "Cihaz kalibrasyon ekranı." FUEL-404.1 — APPEND-ONLY komut
+// geçmişi. `status`: IKINCI_ONAY_BEKLIYOR (±%20 eşiği aşıldı, cihaza HENÜZ
+// gönderilmedi) | BEKLIYOR (gönderildi, ack bekleniyor) | ONAYLANDI (cihaz
+// ack'ledi, k_factor GERÇEKTEN uygulandı) | REDDEDILDI (cihaz NACK) |
+// ZAMAN_ASIMI (5 dk içinde ack gelmedi — "ulaşmadı", BAŞARI DEĞİL).
+export type CalibrationCommandStatus = 'IKINCI_ONAY_BEKLIYOR' | 'BEKLIYOR' | 'ONAYLANDI' | 'REDDEDILDI' | 'ZAMAN_ASIMI';
+
+export interface CalibrationCommand {
+  id: string;
+  deviceId: string;
+  previousKFactor: number | null;
+  newKFactor: number;
+  reason: string;
+  referenceMeasurement: { referenceVolumeLiters?: number; measuredLiters?: number; ambientTemperatureCelsius?: number } | null;
+  requestedBy: string;
+  requiresSecondApproval: boolean;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  status: CalibrationCommandStatus;
+  sentAt: string | null;
+  ackedAt: string | null;
+  isRollback: boolean;
+  createdAt: string;
+}
+
+// FE-814 Kapsam: "Test alım sihirbazı ... sapma ... önerilen K-factor."
+// FUEL-404.2 — referans kap ölçümünün backend'de sapma/öneri hesabı.
+export interface CalibrationTestIntake {
+  id: string;
+  deviceId: string;
+  tankName: string;
+  referenceVolumeLiters: number;
+  measuredLiters: number;
+  ambientTemperatureCelsius: number | null;
+  kFactorAtTest: number;
+  deviationRatio: number;
+  proposedKFactor: number;
+  verifiesCalibrationCommandId: string | null;
+  requestedBy: string;
+  createdAt: string;
 }
 
 /** FE-809 Kapsam: "Cihaz eşleştirme (provisioning) akışı ve QR/claim kodu gösterimi." IOT-304. */

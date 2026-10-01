@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
 import { useApp } from '../../context/AppContext';
+import { TenantHardwareDevice } from '../../types';
+import { DeviceCalibrationModal } from '../../components/DeviceCalibrationModal';
 
 // FE-809 Kapsam: "Cihaz eşleştirme (provisioning) akışı ve QR/claim kodu
 // gösterimi" + AC: "Cihaz eşleştirme QR ile tamamlanabilmelidir." IOT-304
@@ -42,6 +44,8 @@ export const DeviceManagementPage: React.FC = () => {
   } = useApp();
 
   const availableSites = Array.from(new Set([...sites, ...currentCompany.sites.map((s) => s.name)])).filter(Boolean);
+
+  const [calibratingDevice, setCalibratingDevice] = useState<TenantHardwareDevice | null>(null);
 
   const [isClaimOpen, setIsClaimOpen] = useState(false);
   const [claimSiteName, setClaimSiteName] = useState(availableSites[0] || '');
@@ -107,6 +111,8 @@ export const DeviceManagementPage: React.FC = () => {
               <th className="py-3.5 px-4">Son Görülme</th>
               <th className="py-3.5 px-4">Firmware</th>
               <th className="py-3.5 px-4">Bağlı Tank</th>
+              <th className="py-3.5 px-4">K-Factor</th>
+              <th className="py-3.5 px-4 text-right">İşlem</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[#514532]/15 font-mono">
@@ -147,13 +153,23 @@ export const DeviceManagementPage: React.FC = () => {
                       ))}
                     </select>
                   </td>
+                  <td className="py-3.5 px-4 text-[#d5c4ab]" data-testid="device-k-factor">{d.kFactor !== null ? d.kFactor.toFixed(4) : '—'}</td>
+                  <td className="py-3.5 px-4 text-right">
+                    <button
+                      data-testid="device-calibration-open"
+                      onClick={() => setCalibratingDevice(d)}
+                      className="px-3 py-1.5 bg-[#20201f] hover:bg-[#2a2a2a] border border-[#514532]/30 text-[#d5c4ab] hover:text-[#ffdca1] rounded-md text-[11px] font-bold cursor-pointer"
+                    >
+                      Kalibrasyon
+                    </button>
+                  </td>
                 </tr>
               );
             })}
 
             {tenantHardwareDevices.length === 0 && (
               <tr>
-                <td colSpan={7} className="py-12 text-center text-[#d5c4ab]">
+                <td colSpan={9} className="py-12 text-center text-[#d5c4ab]">
                   Kayıtlı cihaz bulunamadı. "Yeni Cihaz Eşleştir" ile ilk cihazınızı provizyonlayın.
                 </td>
               </tr>
@@ -271,6 +287,10 @@ export const DeviceManagementPage: React.FC = () => {
             )}
           </div>
         </div>
+      )}
+
+      {calibratingDevice && (
+        <DeviceCalibrationModal device={calibratingDevice} onClose={() => setCalibratingDevice(null)} />
       )}
 
     </div>

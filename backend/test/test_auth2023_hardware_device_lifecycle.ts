@@ -223,6 +223,34 @@ async function run() {
       unassign.status === 200 && listedAfterUnassign?.tank_name === null,
       `unassign.status=${unassign.status}, tank_name=${listedAfterUnassign?.tank_name}`
     );
+
+    // === Test 14 (FE-814 ASIL AC — "güncel K-factor"): kalibrasyon isteği
+    // → cihaz ack'ler (HMAC, gerçek bir cihaz bildirimini simüle eder) →
+    // GET /hardware-devices ARTIK k_factor'ü doğru yansıtır (önceden bu
+    // uçta HİÇ yoktu — FE-814 için eklendi). İlk kalibrasyon (previous_k_factor
+    // NULL) her zaman %20 eşiğine bakılmadan DOĞRUDAN gönderilir (BEKLIYOR). ===
+    const calibReq = await call('POST', `/devices/${deviceId}/calibration`, { token: camsaToken, body: { newKFactor: 450.25, reason: 'FE-814 test: ilk kalibrasyon' } });
+    check(
+      'Test 14a: İlk kalibrasyon isteği (previousKFactor yok) doğrudan BEKLIYOR olarak gönderilir',
+      calibReq.status === 200 && calibReq.body?.data?.status === 'BEKLIYOR',
+      `status=${calibReq.status}, body=${JSON.stringify(calibReq.body?.data)}`
+    );
+    const commandId = calibReq.body?.data?.id;
+    const ackSig = signHmacRequest(deviceId, newSecret, { commandId, status: 'ACK', appliedKFactor: 450.25 });
+    const ackRes = await fetch(`${API_URL}/telemetry/calibration-ack`, { method: 'POST', headers: ackSig.headers, body: ackSig.rawBody });
+    const ackBody = await ackRes.json().catch(() => ({}));
+    check(
+      'Test 14b: Cihazın ACK\'i (HMAC) kabul edilir, komut ONAYLANDI olur',
+      ackRes.status === 200 && ackBody?.data?.status === 'ONAYLANDI',
+      `status=${ackRes.status}, body=${JSON.stringify(ackBody)}`
+    );
+    const listAfterAck = await call('GET', '/hardware-devices', { token: camsaToken });
+    const listedAfterAck = listAfterAck.body?.data?.find((d: any) => d.device_id === deviceId);
+    check(
+      'Test 14c (ASIL AC — FE-814): GET /hardware-devices artık k_factor alanını (ack\'lenmiş gerçek değeri) döner',
+      Number(listedAfterAck?.k_factor) === 450.25,
+      `k_factor=${listedAfterAck?.k_factor}`
+    );
   } finally {
     // Temizlik: test cihazını kalıcı olarak bloke bırakmayalım (unblock zaten
     // yapıldı), silme endpoint'i yok — deviceId benzersiz (Date.now()) olduğu
