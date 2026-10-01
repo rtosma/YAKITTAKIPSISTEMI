@@ -34,6 +34,15 @@ export type DispenseRequestDTO = z.infer<typeof dispenseRequestSchema>;
  * yapıyor. Filtre alanlarının hepsi opsiyonel; boş/gönderilmemiş bir alan
  * o kritere göre daraltma uygulamaz.
  */
+// FE-812 Kapsam: "Gelişmiş filtre paneli: ... araç, ... tank." Önceden
+// `search` (vehicle_plate/driver_name/tank_name ILIKE birleşik serbest metin)
+// bu ikisini DOLAYLI karşılıyordu — ticket REP-711'inkiyle (bkz.
+// rep711DispenseMovement.ts filters) AYNI, AYRI/özel alanlar istiyor.
+// `sortBy`/`sortDir`: "sütun sıralama" AC'si — izin verilen kolon kümesi
+// tenantDb.ts'teki sabit bir eşleme listesine karşı doğrulanır (SQL
+// injection'a açık serbest metin DEĞİL).
+const TRANSACTION_SORT_COLUMNS = ['created_at', 'site_name', 'vehicle_plate', 'driver_name', 'tank_name', 'amount_liters', 'pump_status', 'type'] as const;
+
 export const transactionQuerySchema = z.object({
   page: z.coerce.number({ message: 'Sayfa numarası geçerli bir sayı olmalıdır.' })
     .int().positive().default(1),
@@ -42,20 +51,29 @@ export const transactionQuerySchema = z.object({
   startDate: isoDateString('Başlangıç tarihi YYYY-AA-GG formatında olmalıdır.').optional(),
   endDate: isoDateString('Bitiş tarihi YYYY-AA-GG formatında olmalıdır.').optional(),
   siteName: z.string().min(1).optional(),
+  vehiclePlate: z.string().min(1).max(32).optional(),
   driverName: z.string().min(1).optional(),
+  tankName: z.string().min(1).optional(),
   pumpStatus: z.enum(['TAMAMLANTI', 'DURDURULDU', 'ANOMALİ']).optional(),
   type: z.enum(['Otomatik', 'Manuel', 'Çapraz Şantiye', 'Çevrimdışı Senkron']).optional(),
-  search: z.string().min(1).max(128).optional()
+  search: z.string().min(1).max(128).optional(),
+  sortBy: z.enum(TRANSACTION_SORT_COLUMNS).optional(),
+  sortDir: z.enum(['asc', 'desc']).optional()
 });
 
 export type TransactionQueryDTO = z.infer<typeof transactionQuerySchema>;
 
 /**
  * REP-701 — GET /transactions/export. Aynı filtre alanları (tarih aralığı,
- * şantiye, sürücü, durum, tip, arama) geçerli; page/pageSize'ın export'ta
- * anlamı yok (tüm sonuç kümesi stream edilir), o yüzden şemadan çıkarılıyor.
+ * şantiye, araç, sürücü, tank, durum, tip, arama) geçerli; page/pageSize'ın
+ * export'ta anlamı yok (tüm sonuç kümesi stream edilir), o yüzden şemadan
+ * çıkarılıyor. `sortBy`/`sortDir` da BİLEREK çıkarıldı — export'un keyset
+ * (created_at, id) sayfalaması performans/doğruluk garantisi için SABİT
+ * sıralamaya dayanıyor (bkz. tenantDb.ts streamTenantTransactionsForExport
+ * yorumu); sıralama yalnızca EKRANDAKİ sayfalı tablo için bir görüntüleme
+ * tercihidir.
  */
-export const transactionExportQuerySchema = transactionQuerySchema.omit({ page: true, pageSize: true });
+export const transactionExportQuerySchema = transactionQuerySchema.omit({ page: true, pageSize: true, sortBy: true, sortDir: true });
 
 export type TransactionExportQueryDTO = z.infer<typeof transactionExportQuerySchema>;
 

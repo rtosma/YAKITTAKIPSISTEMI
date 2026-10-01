@@ -133,3 +133,36 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
 
   return data;
 }
+
+/**
+ * FE-812 — CSV/PDF export (örn. /reports/rep-711/export?format=csv) ikili
+ * (binary) bir dosya stream'i döner; apiFetch'in HER yanıtı `.json()` ile
+ * okuyan gövdesi bunun için uygun DEĞİL (gövde akışı tek kullanımlıktır,
+ * .json() çağrısı onu tüketir). Bu yüzden ayrı, küçük bir indirme yardımcısı:
+ * aynı Bearer token kuralını izler ama yanıtı blob olarak işler ve tarayıcıya
+ * indirir. apiFetch'teki sessiz 401-yenileme burada BİLEREK yok — bir export
+ * tam o anda süresi dolan bir access token'a denk gelirse kullanıcı net bir
+ * hata görüp tekrar dener; bu, az kullanılan bir akış için kabul edilebilir
+ * bir basitleştirme.
+ */
+export async function downloadAuthenticatedFile(endpoint: string, filename: string): Promise<void> {
+  const token = localStorage.getItem('YAKIT_ACCESS_TOKEN');
+  const headers: HeadersInit = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const response = await fetch(`${API_BASE_URL}${endpoint}`, { headers });
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.message || response.statusText || 'Dosya indirilemedi.');
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}

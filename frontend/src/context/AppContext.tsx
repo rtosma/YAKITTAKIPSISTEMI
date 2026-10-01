@@ -28,7 +28,8 @@ import {
   FuelQuota,
   QuotaBalance,
   QuotaExhaustedAlert,
-  CrossSiteSettlementSummaryRow
+  CrossSiteSettlementSummaryRow,
+  DespatchAdviceStatus
 } from '../types';
 // NOTE: Oturum açıldığında firma bilgisi de dahil her şey PostgreSQL backend'inden
 // (apiFetch) çekiliyor: firma profili -> GET /companies/me (yalnızca giriş yapan
@@ -186,6 +187,11 @@ interface AppContextType {
   // Transaction (İkmal) history
   fetchTransactions: () => Promise<void>;
   addFuelTransaction: (tx: Omit<FuelTransaction, 'id' | 'timestamp'>) => Promise<void>;
+  // FE-812 Kapsam: "Satır detayında ... e-İrsaliye durumu." Paylaşılan state
+  // DEĞİL — satır detayı açıldığında on-demand çağrılır. Henüz üretilmemiş
+  // bir e-İrsaliye için backend 404 döner, bu fonksiyon o durumda null döner
+  // (hata toast'u GÖSTERMEZ — "henüz oluşturulmadı" normal bir durumdur).
+  fetchTransactionDespatchStatus: (transactionId: string) => Promise<DespatchAdviceStatus | null>;
   addHardwareLog: (log: Omit<HardwareLog, 'id' | 'timestamp'>) => void;
   clearHardwareLogs: () => void;
   toggleCrossSiteStatus: (id: string) => Promise<void>;
@@ -1474,6 +1480,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const fetchTransactionDespatchStatus = async (transactionId: string): Promise<DespatchAdviceStatus | null> => {
+    try {
+      const response = await apiFetch(`/transactions/${transactionId}/e-irsaliye/status`);
+      return response.success ? response.data : null;
+    } catch (err: any) {
+      // 404 ("henüz üretilmiş bir e-İrsaliye yok") bu akışta BEKLENEN bir
+      // durumdur — hata toast'u göstermeden sessizce null dönülür. Gerçek bir
+      // sunucu/yetki hatası ayrı bir durumdur ama burada da UI'ı bozmamak
+      // için null'a düşürülüyor; satır detayı bunu "henüz oluşturulmadı" gösterir.
+      if (err.status !== 404) console.error('e-İrsaliye durumu getirilirken hata:', err);
+      return null;
+    }
+  };
+
   // FE-806 Teknik Not: "Canlı log ekranı sınırsız birikmemelidir; sabit
   // tampon (öneri: son 500 satır)." Önceden bu dizi HİÇBİR sınır olmadan
   // büyüyordu (bellek sızıntısı, AC ihlali) — artık en eski satırlar atılır.
@@ -1808,6 +1828,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         deleteSite,
         fetchTransactions,
         addFuelTransaction,
+        fetchTransactionDespatchStatus,
         addHardwareLog,
         clearHardwareLogs,
         toggleCrossSiteStatus,

@@ -18,10 +18,16 @@ export interface TransactionQueryFilters {
   startDate?: string;
   endDate?: string;
   siteName?: string;
+  vehiclePlate?: string;
   driverName?: string;
+  tankName?: string;
   pumpStatus?: string;
   type?: string;
   search?: string;
+  // FE-812 — yalnızca canlı tablo için (export her zaman created_at DESC
+  // keyset sayfalamasında kalır, bkz. backend transactionSchema.ts yorumu).
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
 }
 
 export interface PaginatedTransactionsResult {
@@ -56,10 +62,14 @@ function buildQueryString(filters: TransactionQueryFilters | Omit<TransactionQue
   if (filters.startDate) params.set('startDate', filters.startDate);
   if (filters.endDate) params.set('endDate', filters.endDate);
   if (filters.siteName && filters.siteName !== 'TÜMÜ') params.set('siteName', filters.siteName);
+  if (filters.vehiclePlate && filters.vehiclePlate.trim()) params.set('vehiclePlate', filters.vehiclePlate.trim());
   if (filters.driverName && filters.driverName !== 'TÜMÜ') params.set('driverName', filters.driverName);
+  if (filters.tankName && filters.tankName !== 'TÜMÜ') params.set('tankName', filters.tankName);
   if (filters.pumpStatus && filters.pumpStatus !== 'TÜMÜ') params.set('pumpStatus', filters.pumpStatus);
   if (filters.type && filters.type !== 'TÜMÜ') params.set('type', filters.type);
   if (filters.search && filters.search.trim()) params.set('search', filters.search.trim());
+  if (filters.sortBy) params.set('sortBy', filters.sortBy);
+  if (filters.sortDir) params.set('sortDir', filters.sortDir);
   return params.toString();
 }
 

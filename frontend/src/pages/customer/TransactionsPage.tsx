@@ -2,11 +2,43 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useApp } from '../../context/AppContext';
 import { exportToExcelWithTotals } from '../../utils/excelExporter';
-import { FuelTransaction } from '../../types';
+import { downloadAuthenticatedFile } from '../../utils/api';
+import { FuelTransaction, DespatchAdviceStatus } from '../../types';
 import { useTransactionsQuery, useDebouncedValue, fetchAllFilteredTransactions, TransactionQueryFilters } from '../../hooks/useTransactionsQuery';
 
+const DESPATCH_STATUS_VIEW_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'];
+
+type SortColumn = 'created_at' | 'site_name' | 'vehicle_plate' | 'driver_name' | 'tank_name' | 'amount_liters' | 'pump_status' | 'type';
+
+// FE-812 AC: "sütun sıralama." Backend'in izin verdiği kolon kümesiyle
+// BİREBİR aynı (bkz. backend transactionSchema.ts TRANSACTION_SORT_COLUMNS).
+const SortableHeader: React.FC<{
+  column: SortColumn;
+  label: string;
+  sortBy: SortColumn;
+  sortDir: 'asc' | 'desc';
+  onSort: (column: SortColumn) => void;
+  align?: 'left' | 'right';
+}> = ({ column, label, sortBy, sortDir, onSort, align = 'left' }) => {
+  const isActive = sortBy === column;
+  return (
+    <th
+      data-testid={`sort-header-${column}`}
+      onClick={() => onSort(column)}
+      className={`py-3.5 px-4 cursor-pointer select-none hover:text-[#ffdca1] transition-colors ${align === 'right' ? 'text-right' : ''}`}
+    >
+      <span className={`inline-flex items-center gap-1 ${align === 'right' ? 'flex-row-reverse' : ''}`}>
+        {label}
+        <span className={`material-symbols-outlined text-sm ${isActive ? 'text-[#ffdca1]' : 'text-[#514532]/60'}`}>
+          {isActive && sortDir === 'asc' ? 'arrow_upward' : 'arrow_downward'}
+        </span>
+      </span>
+    </th>
+  );
+};
+
 export const TransactionsPage: React.FC = () => {
-  const { selectedSiteFilter, currentCompany, drivers, isManagerMode, currentUser, showToast } = useApp();
+  const { selectedSiteFilter, currentCompany, drivers, tanks, isManagerMode, currentUser, showToast, fetchTransactionDespatchStatus } = useApp();
 
   // FE-802 AC: "Filtreler URL ile senkron olmalıdır" (?page=1&site=...&startDate=...)
   // — sayfa yenilenince/bağlantı paylaşılınca filtreler ÖNCEDEN kayboluyordu.
@@ -22,9 +54,29 @@ export const TransactionsPage: React.FC = () => {
   const [driverFilter, setDriverFilter] = useState<string>(() => searchParams.get('driver') || 'TÜMÜ');
   const [pumpStatusFilter, setPumpStatusFilter] = useState<string>(() => searchParams.get('pumpStatus') || 'TÜMÜ');
   const [selectedType, setSelectedType] = useState<string>(() => searchParams.get('type') || 'TÜMÜ');
+  // FE-812 Kapsam: "Gelişmiş filtre paneli: ... araç, ... tank." Önceden
+  // bunlar yalnızca serbest metin "Arama" kutusunun (ILIKE birleşik) dolaylı
+  // kapsamındaydı — REP-711'in (bkz. backend rep711DispenseMovement.ts)
+  // AYRI alanlarıyla tutarlı, kendi filtreleri eklendi.
+  const [vehicleFilter, setVehicleFilter] = useState<string>(() => searchParams.get('vehicle') || '');
+  const [tankFilter, setTankFilter] = useState<string>(() => searchParams.get('tank') || 'TÜMÜ');
 
-  // Export Loading State
-  const [isExporting, setIsExporting] = useState<boolean>(false);
+  // FE-812 AC: "sütun sıralama." Varsayılan backend'le AYNI (created_at DESC).
+  const [sortBy, setSortBy] = useState<SortColumn>(() => (searchParams.get('sortBy') as SortColumn) || 'created_at');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>(() => (searchParams.get('sortDir') as 'asc' | 'desc') || 'desc');
+
+  // FE-812 Kapsam: "yoğunluk seçenekleri" — tablo satır yüksekliği tercihi,
+  // sunucuya gitmez, yalnızca görüntüleme.
+  const [isCompactDensity, setIsCompactDensity] = useState(false);
+
+  // FE-812 Kapsam: "Satır detayında ... e-İrsaliye durumu." Açık satırın id'si
+  // + o satır için (on-demand, lazy) çekilen e-İrsaliye durumu.
+  const [expandedRowId, setExpandedRowId] = useState<string | null>(null);
+  const [despatchStatus, setDespatchStatus] = useState<DespatchAdviceStatus | null | 'loading' | 'forbidden'>(null);
+
+  // Export Loading State — hangi formatın o an hazırlandığını da taşır,
+  // böylece sadece tıklanan buton spinner gösterir, diğer ikisi disabled kalır.
+  const [isExportingFormat, setIsExportingFormat] = useState<'xlsx' | 'csv' | 'pdf' | null>(null);
 
   // Pagination State
   const [currentPage, setCurrentPage] = useState<number>(() => {
@@ -51,6 +103,9 @@ export const TransactionsPage: React.FC = () => {
   // FE-802 Kapsam: "Arama girdilerinde 300ms debounce" — arama kutusu her
   // tuş vuruşunda değil, kullanıcı yazmayı bitirdikten ~300ms sonra sunucuya gitsin.
   const debouncedSearchTerm = useDebouncedValue(searchTerm, 300);
+  // FE-812 AC: "Arama girdilerinde 300ms debounce" — araç plakası filtresi
+  // de serbest metin olduğundan AYNI kurala tabi.
+  const debouncedVehicleFilter = useDebouncedValue(vehicleFilter, 300);
 
   // Filtre/sayfa değiştikçe URL'i GÜNCEL durumla senkron tutar (AC).
   // `replace: true` — her tuş vuruşunda/filtre değişiminde tarayıcı geçmişini
@@ -61,14 +116,18 @@ export const TransactionsPage: React.FC = () => {
     if (startDate) params.startDate = startDate;
     if (endDate) params.endDate = endDate;
     if (siteFilter !== 'TÜMÜ') params.site = siteFilter;
+    if (vehicleFilter) params.vehicle = vehicleFilter;
     if (driverFilter !== 'TÜMÜ') params.driver = driverFilter;
+    if (tankFilter !== 'TÜMÜ') params.tank = tankFilter;
     if (pumpStatusFilter !== 'TÜMÜ') params.pumpStatus = pumpStatusFilter;
     if (selectedType !== 'TÜMÜ') params.type = selectedType;
     if (searchTerm) params.q = searchTerm;
+    if (sortBy !== 'created_at') params.sortBy = sortBy;
+    if (sortDir !== 'desc') params.sortDir = sortDir;
     if (currentPage > 1) params.page = String(currentPage);
     setSearchParams(params, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [startDate, endDate, siteFilter, driverFilter, pumpStatusFilter, selectedType, searchTerm, currentPage]);
+  }, [startDate, endDate, siteFilter, vehicleFilter, driverFilter, tankFilter, pumpStatusFilter, selectedType, searchTerm, sortBy, sortDir, currentPage]);
 
   // Sunucuya gidecek filtre seti — bunlardan biri değiştiğinde React Query
   // otomatik olarak yeni bir sayfa isteği atar (queryKey bu nesneyi içeriyor).
@@ -78,11 +137,15 @@ export const TransactionsPage: React.FC = () => {
     startDate: startDate || undefined,
     endDate: endDate || undefined,
     siteName: siteFilter !== 'TÜMÜ' ? siteFilter : undefined,
+    vehiclePlate: debouncedVehicleFilter || undefined,
     driverName: driverFilter !== 'TÜMÜ' ? driverFilter : undefined,
+    tankName: tankFilter !== 'TÜMÜ' ? tankFilter : undefined,
     pumpStatus: pumpStatusFilter !== 'TÜMÜ' ? (pumpStatusFilter as any) : undefined,
     type: selectedType !== 'TÜMÜ' ? (selectedType as any) : undefined,
-    search: debouncedSearchTerm || undefined
-  }), [currentPage, startDate, endDate, siteFilter, driverFilter, pumpStatusFilter, selectedType, debouncedSearchTerm]);
+    search: debouncedSearchTerm || undefined,
+    sortBy,
+    sortDir
+  }), [currentPage, startDate, endDate, siteFilter, debouncedVehicleFilter, driverFilter, tankFilter, pumpStatusFilter, selectedType, debouncedSearchTerm, sortBy, sortDir]);
 
   const { data, isLoading, isFetching, isPlaceholderData, isError, error } = useTransactionsQuery(filters);
 
@@ -113,24 +176,63 @@ export const TransactionsPage: React.FC = () => {
     setEndDate('');
     setSiteFilter(!isManagerMode && currentUser?.siteName ? currentUser.siteName : 'TÜMÜ');
     setSearchTerm('');
+    setVehicleFilter('');
     setDriverFilter('TÜMÜ');
+    setTankFilter('TÜMÜ');
     setPumpStatusFilter('TÜMÜ');
     setSelectedType('TÜMÜ');
     setCurrentPage(1);
   };
 
+  // FE-812 AC: "sütun sıralama." Aynı sütuna tekrar tıklamak yönü çevirir;
+  // farklı bir sütuna tıklamak o sütunu DESC (en yeni/en büyük önce) başlatır.
+  const handleSortClick = (column: SortColumn) => {
+    if (sortBy === column) {
+      setSortDir(prev => (prev === 'desc' ? 'asc' : 'desc'));
+    } else {
+      setSortBy(column);
+      setSortDir('desc');
+    }
+    setCurrentPage(1);
+  };
+
+  // FE-812 Kapsam: "Satır detayında ... e-İrsaliye durumu." Aynı satıra
+  // tekrar tıklamak kapatır; başka bir satıra tıklamak o satırın durumunu
+  // (on-demand) çeker.
+  const handleToggleRowDetail = async (transactionId: string) => {
+    if (expandedRowId === transactionId) {
+      setExpandedRowId(null);
+      return;
+    }
+    setExpandedRowId(transactionId);
+    // Backend DESPATCH_TRANSMISSION_VIEW_ROLES'da yok (PUMP_OPERATOR) —
+    // hiç çağrı yapılmaz, "henüz oluşturulmadı" gibi YANILTICI bir mesaj
+    // yerine doğrudan yetkisiz olduğu belirtilir.
+    if (!currentUser || !DESPATCH_STATUS_VIEW_ROLES.includes(currentUser.role)) {
+      setDespatchStatus('forbidden');
+      return;
+    }
+    setDespatchStatus('loading');
+    const status = await fetchTransactionDespatchStatus(transactionId);
+    setDespatchStatus(status);
+  };
+
   // Section 6.3 Real Excel Export with SheetJS & Auto-Calculated Totals.
   // Ekranda görünen tek sayfa değil, filtreye uyan TÜM kayıtlar dışa
   // aktarılıyor — bkz. fetchAllFilteredTransactions (birden fazla sayfa
-  // isteğini birleştirir).
+  // isteğini birleştirir). BİLİNÇLİ OLARAK dokunulmadı/değiştirilmedi: zaten
+  // var olan, REP-701'in sabit sütun kümesinden DAHA ZENGİN (Debi Hızı, RFID
+  // Onayı) bir export — REP-701'e geçmek bu sütunları KAYBEDERDİ.
   const handleExportExcel = async () => {
-    setIsExporting(true);
+    setIsExportingFormat('xlsx');
     try {
       const allFiltered = await fetchAllFilteredTransactions({
         startDate: startDate || undefined,
         endDate: endDate || undefined,
         siteName: siteFilter !== 'TÜMÜ' ? siteFilter : undefined,
+        vehiclePlate: debouncedVehicleFilter || undefined,
         driverName: driverFilter !== 'TÜMÜ' ? driverFilter : undefined,
+        tankName: tankFilter !== 'TÜMÜ' ? tankFilter : undefined,
         pumpStatus: pumpStatusFilter !== 'TÜMÜ' ? (pumpStatusFilter as any) : undefined,
         type: selectedType !== 'TÜMÜ' ? (selectedType as any) : undefined,
         search: debouncedSearchTerm || undefined
@@ -162,7 +264,45 @@ export const TransactionsPage: React.FC = () => {
     } catch (err: any) {
       showToast(`Excel dışa aktarımı sırasında hata: ${err.message}`, 'error');
     } finally {
-      setIsExporting(false);
+      setIsExportingFormat(null);
+    }
+  };
+
+  // FE-812 AC: "Excel/CSV/PDF export" + "Export işlemi kullanıcıyı
+  // bloklamamalıdır." CSV/PDF YENİ eklendi — REP-703'ün zaten var olan, test
+  // edilmiş /reports/rep-711/export ucunu (REP-711) doğrudan kullanır: tek,
+  // sunucu taraflı STREAMED bir istek (üstteki Excel'in sayfa-sayfa yeniden
+  // çekmesinden daha verimli), buton bu sırada devre dışı+spinner gösterir
+  // ama render thread'i DONDURMAZ (async fetch).
+  //
+  // KAPSAM UYARLAMASI (disclosed): "büyük export'ta arka plan bilgilendirmesi"
+  // AC'si bir iş kuyruğu + daha sonra bildirim (push/e-posta) ima ediyor —
+  // bu kod tabanında (başka HİÇBİR export'ta da, bkz. src/index.ts'teki
+  // "BullMQ yok" yorumları) böyle bir arka plan kuyruk altyapısı YOK; ayrı,
+  // büyük bir backend projesi olurdu. Burada "bloklamama" AC'sinin
+  // karşılandığı biçim: tek async istek + devre dışı buton + spinner + bitince
+  // toast (PDF zaten REP-703 tarafında 2000 satır üstünde 400 ile reddedilip
+  // CSV'ye yönlendiriliyor — bkz. reports/pdfExport.ts).
+  const handleExportReport = async (format: 'csv' | 'pdf') => {
+    setIsExportingFormat(format);
+    try {
+      const params = new URLSearchParams({ format });
+      if (startDate) params.set('startDate', startDate);
+      if (endDate) params.set('endDate', endDate);
+      if (siteFilter !== 'TÜMÜ') params.set('siteName', siteFilter);
+      if (debouncedVehicleFilter) params.set('vehiclePlate', debouncedVehicleFilter);
+      if (driverFilter !== 'TÜMÜ') params.set('driverName', driverFilter);
+      if (tankFilter !== 'TÜMÜ') params.set('tankName', tankFilter);
+      if (pumpStatusFilter !== 'TÜMÜ') params.set('pumpStatus', pumpStatusFilter);
+      if (selectedType !== 'TÜMÜ') params.set('type', selectedType);
+
+      const today = new Date().toISOString().split('T')[0];
+      await downloadAuthenticatedFile(`/reports/rep-711/export?${params.toString()}`, `ikmal-hareketleri_${today}.${format}`);
+      showToast(`${format.toUpperCase()} dosyası indirildi.`);
+    } catch (err: any) {
+      showToast(`${format.toUpperCase()} dışa aktarımı sırasında hata: ${err.message}`, 'error');
+    } finally {
+      setIsExportingFormat(null);
     }
   };
 
@@ -195,24 +335,53 @@ export const TransactionsPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Section 6.3 Excel Export Primary Button */}
-          <button
-            onClick={handleExportExcel}
-            disabled={isExporting || totalCount === 0}
-            className="px-5 py-3 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] hover:from-[#ffdca1] hover:to-[#ffb77f] text-[#412d00] font-black rounded-md text-xs flex items-center space-x-2 transition-all cursor-pointer shadow-sm disabled:opacity-50"
-          >
-            {isExporting ? (
-              <>
-                <span className="w-4 h-4 border-2 border-[#412d00] border-t-transparent rounded-full animate-spin" />
-                <span>Hazırlanıyor...</span>
-              </>
-            ) : (
-              <>
-                <span className="material-symbols-outlined text-base">download</span>
-                <span>Excel Olarak İndir</span>
-              </>
-            )}
-          </button>
+          {/* Section 6.3 Export Buttons — Excel (zaten var, dokunulmadı) + FE-812: YENİ CSV/PDF */}
+          <div className="flex items-center gap-2">
+            <button
+              data-testid="export-excel"
+              onClick={handleExportExcel}
+              disabled={isExportingFormat !== null || totalCount === 0}
+              className="px-5 py-3 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] hover:from-[#ffdca1] hover:to-[#ffb77f] text-[#412d00] font-black rounded-md text-xs flex items-center space-x-2 transition-all cursor-pointer shadow-sm disabled:opacity-50"
+            >
+              {isExportingFormat === 'xlsx' ? (
+                <>
+                  <span className="w-4 h-4 border-2 border-[#412d00] border-t-transparent rounded-full animate-spin" />
+                  <span>Hazırlanıyor...</span>
+                </>
+              ) : (
+                <>
+                  <span className="material-symbols-outlined text-base">download</span>
+                  <span>Excel</span>
+                </>
+              )}
+            </button>
+            <button
+              data-testid="export-csv"
+              onClick={() => handleExportReport('csv')}
+              disabled={isExportingFormat !== null || totalCount === 0}
+              className="px-4 py-3 bg-[#20201f] hover:bg-[#2a2a2a] border border-[#514532]/30 text-[#e5e2e1] font-bold rounded-md text-xs flex items-center space-x-2 transition-all cursor-pointer disabled:opacity-50"
+            >
+              {isExportingFormat === 'csv' ? (
+                <span className="w-4 h-4 border-2 border-[#e5e2e1] border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <span className="material-symbols-outlined text-base">description</span>
+              )}
+              <span>CSV</span>
+            </button>
+            <button
+              data-testid="export-pdf"
+              onClick={() => handleExportReport('pdf')}
+              disabled={isExportingFormat !== null || totalCount === 0}
+              className="px-4 py-3 bg-[#20201f] hover:bg-[#2a2a2a] border border-[#514532]/30 text-[#e5e2e1] font-bold rounded-md text-xs flex items-center space-x-2 transition-all cursor-pointer disabled:opacity-50"
+            >
+              {isExportingFormat === 'pdf' ? (
+                <span className="w-4 h-4 border-2 border-[#e5e2e1] border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <span className="material-symbols-outlined text-base">picture_as_pdf</span>
+              )}
+              <span>PDF</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -272,6 +441,21 @@ export const TransactionsPage: React.FC = () => {
             )}
           </div>
 
+          {/* FE-812 Kapsam: "araç" — önceden yalnızca serbest metin Arama'nın dolaylı kapsamındaydı */}
+          <div>
+            <label className="text-[10px] font-mono font-bold text-[#d5c4ab] uppercase block mb-1">
+              Araç Plakası
+            </label>
+            <input
+              type="text"
+              data-testid="filter-vehicle"
+              value={vehicleFilter}
+              onChange={(e) => { setVehicleFilter(e.target.value); setCurrentPage(1); }}
+              placeholder="Plaka..."
+              className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs font-mono rounded-md p-2 focus:outline-none focus:border-[#ffdca1]"
+            />
+          </div>
+
           {/* Şoför Dropdown */}
           <div>
             <label className="text-[10px] font-mono font-bold text-[#d5c4ab] uppercase block mb-1">
@@ -286,6 +470,26 @@ export const TransactionsPage: React.FC = () => {
               {drivers.map(d => (
                 <option key={d.id} value={d.name}>
                   {d.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* FE-812 Kapsam: "tank" */}
+          <div>
+            <label className="text-[10px] font-mono font-bold text-[#d5c4ab] uppercase block mb-1">
+              Tank
+            </label>
+            <select
+              data-testid="filter-tank"
+              value={tankFilter}
+              onChange={(e) => { setTankFilter(e.target.value); setCurrentPage(1); }}
+              className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-2 focus:outline-none focus:border-[#ffdca1]"
+            >
+              <option value="TÜMÜ">Tüm Tanklar</option>
+              {tanks.map(t => (
+                <option key={t.id} value={t.name}>
+                  {t.name}
                 </option>
               ))}
             </select>
@@ -308,7 +512,26 @@ export const TransactionsPage: React.FC = () => {
             </select>
           </div>
 
-          {/* Arama Input (Plaka / Şoför) */}
+          {/* FE-812: "yetki tipi" — state/URL zaten vardı, bu seçim kutusu HİÇ yoktu (ölü alan) */}
+          <div>
+            <label className="text-[10px] font-mono font-bold text-[#d5c4ab] uppercase block mb-1">
+              Yetki Tipi
+            </label>
+            <select
+              data-testid="filter-type"
+              value={selectedType}
+              onChange={(e) => { setSelectedType(e.target.value); setCurrentPage(1); }}
+              className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-2 focus:outline-none focus:border-[#ffdca1]"
+            >
+              <option value="TÜMÜ">Tümü</option>
+              <option value="Otomatik">Otomatik (RFID/Cihaz)</option>
+              <option value="Manuel">Manuel</option>
+              <option value="Çapraz Şantiye">Çapraz Şantiye</option>
+              <option value="Çevrimdışı Senkron">Çevrimdışı Senkron</option>
+            </select>
+          </div>
+
+          {/* Arama Input (Plaka / Şoför / Tank serbest metin) */}
           <div>
             <label className="text-[10px] font-mono font-bold text-[#d5c4ab] uppercase block mb-1">
               Plaka / Arama
@@ -337,13 +560,25 @@ export const TransactionsPage: React.FC = () => {
             )}
           </span>
 
-          <button
-            onClick={handleClearFilters}
-            className="px-3 py-1 bg-transparent hover:bg-[#353535] text-[#d5c4ab] hover:text-[#e5e2e1] rounded-md text-xs transition-colors flex items-center space-x-1 cursor-pointer"
-          >
-            <span className="material-symbols-outlined text-sm">filter_alt_off</span>
-            <span>Filtreleri Temizle</span>
-          </button>
+          <div className="flex items-center gap-2">
+            {/* FE-812 Kapsam: "yoğunluk seçenekleri" — sunucuya gitmeyen, salt görüntüleme tercihi */}
+            <button
+              data-testid="density-toggle"
+              onClick={() => setIsCompactDensity(prev => !prev)}
+              className="px-3 py-1 bg-transparent hover:bg-[#353535] text-[#d5c4ab] hover:text-[#e5e2e1] rounded-md text-xs transition-colors flex items-center space-x-1 cursor-pointer"
+              title="Satır yüksekliğini değiştir"
+            >
+              <span className="material-symbols-outlined text-sm">{isCompactDensity ? 'density_small' : 'density_large'}</span>
+              <span>{isCompactDensity ? 'Sıkı Görünüm' : 'Geniş Görünüm'}</span>
+            </button>
+            <button
+              onClick={handleClearFilters}
+              className="px-3 py-1 bg-transparent hover:bg-[#353535] text-[#d5c4ab] hover:text-[#e5e2e1] rounded-md text-xs transition-colors flex items-center space-x-1 cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-sm">filter_alt_off</span>
+              <span>Filtreleri Temizle</span>
+            </button>
+          </div>
         </div>
 
       </div>
@@ -351,18 +586,18 @@ export const TransactionsPage: React.FC = () => {
       {/* SECTION 6.2 Tablo */}
       <div className={`bg-[#1c1b1b] border border-[#514532]/25 rounded-xl p-6 space-y-4 overflow-hidden transition-opacity ${isPlaceholderData ? 'opacity-60' : 'opacity-100'}`}>
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs border-collapse">
+          <table className="w-full text-left text-xs border-collapse" data-testid="transactions-table" data-density={isCompactDensity ? 'compact' : 'comfortable'}>
             <thead>
               <tr className="border-b border-[#514532]/30 text-[#d5c4ab] uppercase text-[10px] tracking-wider font-mono">
-                <th className="py-3.5 px-4">Tarih & Saat</th>
-                <th className="py-3.5 px-4">Şantiye</th>
-                <th className="py-3.5 px-4">Araç Plakası</th>
-                <th className="py-3.5 px-4">Şoför</th>
-                <th className="py-3.5 px-4">Çekilen Tank</th>
+                <SortableHeader column="created_at" label="Tarih & Saat" sortBy={sortBy} sortDir={sortDir} onSort={handleSortClick} />
+                <SortableHeader column="site_name" label="Şantiye" sortBy={sortBy} sortDir={sortDir} onSort={handleSortClick} />
+                <SortableHeader column="vehicle_plate" label="Araç Plakası" sortBy={sortBy} sortDir={sortDir} onSort={handleSortClick} />
+                <SortableHeader column="driver_name" label="Şoför" sortBy={sortBy} sortDir={sortDir} onSort={handleSortClick} />
+                <SortableHeader column="tank_name" label="Çekilen Tank" sortBy={sortBy} sortDir={sortDir} onSort={handleSortClick} />
                 <th className="py-3.5 px-4">Debi Hızı</th>
-                <th className="py-3.5 px-4">İkmal Tipi</th>
-                <th className="py-3.5 px-4">Pompa Durumu</th>
-                <th className="py-3.5 px-4 text-right">Alınan Miktar</th>
+                <SortableHeader column="type" label="İkmal Tipi" sortBy={sortBy} sortDir={sortDir} onSort={handleSortClick} />
+                <SortableHeader column="pump_status" label="Pompa Durumu" sortBy={sortBy} sortDir={sortDir} onSort={handleSortClick} />
+                <SortableHeader column="amount_liters" label="Alınan Miktar" sortBy={sortBy} sortDir={sortDir} onSort={handleSortClick} align="right" />
               </tr>
             </thead>
             <tbody className="divide-y divide-[#514532]/20 font-mono">
@@ -377,35 +612,82 @@ export const TransactionsPage: React.FC = () => {
                 </tr>
               )}
 
-              {!isLoading && transactions.map(t => (
-                <tr key={t.id} className="hover:bg-[#20201f] transition-colors">
-                  <td className="py-3.5 px-4 text-[#d5c4ab]">{t.timestamp}</td>
-                  <td className="py-3.5 px-4 font-bold text-[#e5e2e1]">{t.siteName}</td>
-                  <td className="py-3.5 px-4 font-black text-[#ffdca1] text-sm">{t.vehiclePlate}</td>
-                  <td className="py-3.5 px-4 text-[#e5e2e1]">{t.driverName}</td>
-                  <td className="py-3.5 px-4 text-[#d5c4ab]">{t.tankName}</td>
-                  <td className="py-3.5 px-4 text-[#a1e8a2]">{t.flowRateLpm} L/dk</td>
-                  <td className="py-3.5 px-4">
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#20201f] text-[#d5c4ab] border border-[#514532]/30">
-                      {t.type}
-                    </span>
-                  </td>
-                  <td className="py-3.5 px-4">
-                    <span className={`text-[10px] font-bold px-2.5 py-1 rounded border ${
-                      t.pumpStatus === 'TAMAMLANTI'
-                        ? 'bg-[#ffb800]/10 text-[#ffdca1] border-[#ffb800]/30'
-                        : t.pumpStatus === 'ANOMALİ'
-                        ? 'bg-[#93000a]/20 text-[#ffb4ab] border-[#93000a]'
-                        : 'bg-[#ff8a00]/10 text-[#ffb77f] border-[#ff8a00]/30'
-                    }`}>
-                      {t.pumpStatus}
-                    </span>
-                  </td>
-                  <td className="py-3.5 px-4 text-right font-black text-[#e5e2e1] text-sm">
-                    {t.amountLiters.toLocaleString('tr-TR')} Litre
-                  </td>
-                </tr>
-              ))}
+              {!isLoading && transactions.map(t => {
+                const cellPad = isCompactDensity ? 'py-1.5 px-4' : 'py-3.5 px-4';
+                const isExpanded = expandedRowId === t.id;
+                return (
+                  <React.Fragment key={t.id}>
+                    <tr
+                      data-testid="transaction-row"
+                      onClick={() => handleToggleRowDetail(t.id)}
+                      className={`hover:bg-[#20201f] transition-colors cursor-pointer ${isExpanded ? 'bg-[#20201f]' : ''}`}
+                    >
+                      <td className={`${cellPad} text-[#d5c4ab]`}>{t.timestamp}</td>
+                      <td className={`${cellPad} font-bold text-[#e5e2e1]`}>{t.siteName}</td>
+                      <td className={`${cellPad} font-black text-[#ffdca1] text-sm`}>{t.vehiclePlate}</td>
+                      <td className={`${cellPad} text-[#e5e2e1]`}>{t.driverName}</td>
+                      <td className={`${cellPad} text-[#d5c4ab]`}>{t.tankName}</td>
+                      <td className={`${cellPad} text-[#a1e8a2]`}>{t.flowRateLpm} L/dk</td>
+                      <td className={cellPad}>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#20201f] text-[#d5c4ab] border border-[#514532]/30">
+                          {t.type}
+                        </span>
+                      </td>
+                      <td className={cellPad}>
+                        <span className={`text-[10px] font-bold px-2.5 py-1 rounded border ${
+                          t.pumpStatus === 'TAMAMLANTI'
+                            ? 'bg-[#ffb800]/10 text-[#ffdca1] border-[#ffb800]/30'
+                            : t.pumpStatus === 'ANOMALİ'
+                            ? 'bg-[#93000a]/20 text-[#ffb4ab] border-[#93000a]'
+                            : 'bg-[#ff8a00]/10 text-[#ffb77f] border-[#ff8a00]/30'
+                        }`}>
+                          {t.pumpStatus}
+                        </span>
+                      </td>
+                      <td className={`${cellPad} text-right font-black text-[#e5e2e1] text-sm`}>
+                        {t.amountLiters.toLocaleString('tr-TR')} Litre
+                      </td>
+                    </tr>
+                    {isExpanded && (
+                      <tr data-testid="transaction-row-detail">
+                        <td colSpan={9} className="bg-[#131313] px-6 py-4">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                            <div>
+                              <span className="text-[10px] font-mono font-bold text-[#d5c4ab] uppercase block mb-1">E-İrsaliye Durumu</span>
+                              {despatchStatus === 'loading' ? (
+                                <span className="text-[#d5c4ab] inline-flex items-center gap-2">
+                                  <span className="w-3 h-3 border-2 border-[#ffdca1] border-t-transparent rounded-full animate-spin" /> Yükleniyor...
+                                </span>
+                              ) : despatchStatus === 'forbidden' ? (
+                                <span className="text-[#d5c4ab]/70" data-testid="despatch-status-forbidden">Bu bilgiyi görüntüleme yetkiniz yok.</span>
+                              ) : despatchStatus === null ? (
+                                <span className="text-[#d5c4ab]/70" data-testid="despatch-status-none">Bu ikmal için henüz e-İrsaliye oluşturulmadı.</span>
+                              ) : (
+                                <div className="space-y-1" data-testid="despatch-status-value">
+                                  <p className="text-[#e5e2e1] font-bold">{despatchStatus.documentNumber} — {despatchStatus.status}</p>
+                                  {despatchStatus.rejectReason && <p className="text-[#ffb4ab]">Red sebebi: {despatchStatus.rejectReason}</p>}
+                                  {despatchStatus.cancelReason && <p className="text-[#ffb4ab]">İptal sebebi: {despatchStatus.cancelReason}</p>}
+                                </div>
+                              )}
+                            </div>
+                            <div>
+                              <span className="text-[10px] font-mono font-bold text-[#d5c4ab] uppercase block mb-1">Telemetri Grafiği</span>
+                              {/* KAPSAM UYARLAMASI (disclosed): backend'de bu ikmale ait bir
+                                  zaman serisi (ör. debi örneklemesi) hiç SAKLANMIYOR — schema.sql'de
+                                  telemetry/sample tablosu yok, telemetry:data Socket.io olayı
+                                  canlı/geçici, kalıcı değil. Araştırıldı; sahte veriyle grafik
+                                  göstermek yerine durum açıkça bildiriliyor. */}
+                              <span className="text-[#d5c4ab]/70" data-testid="telemetry-chart-unavailable">
+                                Bu ikmal için geçmişe dönük telemetri örneklemesi saklanmıyor (yalnızca anlık canlı veri yayınlanır, kalıcı değildir) — grafik gösterilemiyor.
+                              </span>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
 
               {!isLoading && transactions.length === 0 && (
                 <tr>

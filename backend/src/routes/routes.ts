@@ -6529,10 +6529,14 @@ router.get(
         startDate?: string;
         endDate?: string;
         siteName?: string;
+        vehiclePlate?: string;
         driverName?: string;
+        tankName?: string;
         pumpStatus?: string;
         type?: string;
         search?: string;
+        sortBy?: string;
+        sortDir?: 'asc' | 'desc';
       };
 
       const result = await getTenantTransactionsPaginated(q, siteScopeFor(req.user!));
@@ -6578,7 +6582,13 @@ router.get(
  *         name: siteName
  *         schema: { type: string }
  *       - in: query
+ *         name: vehiclePlate
+ *         schema: { type: string }
+ *       - in: query
  *         name: driverName
+ *         schema: { type: string }
+ *       - in: query
+ *         name: tankName
  *         schema: { type: string }
  *       - in: query
  *         name: pumpStatus
@@ -6603,7 +6613,9 @@ router.get(
         startDate?: string;
         endDate?: string;
         siteName?: string;
+        vehiclePlate?: string;
         driverName?: string;
+        tankName?: string;
         pumpStatus?: string;
         type?: string;
         search?: string;

@@ -48,12 +48,18 @@ async function login(username: string): Promise<string> {
   return res.body.accessToken;
 }
 
-async function dispense(token: string, siteName: string, vehiclePlate: string, amountLiters: number): Promise<void> {
+async function dispense(token: string, siteName: string, vehiclePlate: string, amountLiters: number, tankName?: string): Promise<void> {
   const res = await call('POST', '/dispense', {
     token,
-    body: { siteName, vehiclePlate, amountLiters, type: 'Manuel' }
+    body: { siteName, vehiclePlate, amountLiters, type: 'Manuel', tankName }
   });
   if (res.status !== 200) throw new Error(`Ön koşul: dispense başarısız (${siteName}/${vehiclePlate}): ${JSON.stringify(res.body)}`);
+}
+
+/** FE-812 — GET /transactions (sayfalı canlı tablo) için küçük bir yardımcı. */
+async function listTransactions(token: string, query: Record<string, string>): Promise<{ status: number; body: any }> {
+  const qs = new URLSearchParams(query).toString();
+  return call('GET', `/transactions?${qs}`, { token });
 }
 
 interface ExportResult {
@@ -120,9 +126,15 @@ async function run() {
 
   // --- Ön koşul verisi ---------------------------------------------------
   const OTHER_SITE = `REP701-Diger-Saha-${RUN_TAG}`;
-  await dispense(camsaToken, TEST_SITE, '34 REP 701', 10.5);
-  await dispense(camsaToken, TEST_SITE, '34 REP 702', 20.25);
-  await dispense(camsaToken, TEST_SITE, '34 REP 703', 30.75);
+  // FE-812 — tankName'ler burada BİLEREK gerçek bir `tanks` kaydına
+  // karşılık GELMİYOR: createTransactionCore serbest metin tankName'i
+  // tolere eder (tank bulunamazsa sadece seviye düşümünü atlar, bkz. o
+  // fonksiyondaki yorum) — filtre testleri için bu kadarı yeterli.
+  const TANK_A = `REP701-Tank-A-${RUN_TAG}`;
+  const TANK_B = `REP701-Tank-B-${RUN_TAG}`;
+  await dispense(camsaToken, TEST_SITE, '34 REP 701', 10.5, TANK_A);
+  await dispense(camsaToken, TEST_SITE, '34 REP 702', 20.25, TANK_B);
+  await dispense(camsaToken, TEST_SITE, '34 REP 703', 30.75, TANK_A);
   await dispense(camsaToken, OTHER_SITE, '34 REP 999', 999);
   // Gebze Ana Şantiye SITE_MANAGER'ının KENDİ şantiyesine yaptığı bir ikmal —
   // Test 4/5'te "SITE_MANAGER kendi şantiyesini görür" kontrolü için.
@@ -210,6 +222,69 @@ async function run() {
     'Test 9: search filtresi export\'ta da uygulanıyor',
     amounts9.length === 1 && amounts9[0] === 20.25,
     `Beklenen: [20.25], Alınan: ${JSON.stringify(amounts9)}`
+  );
+
+  // === FE-812: GENİŞLETİLMİŞ filtre alanları (araç/tank) + sütun sıralama ===
+
+  // Test 10 (ASIL AC — "araç" filtresi, export'ta): vehiclePlate ILIKE,
+  // kısmi eşleşme ('702' → '34 REP 702').
+  const r10 = await exportTransactions(camsaToken, { siteName: TEST_SITE, vehiclePlate: '702' });
+  const amounts10 = dataRowAmounts(r10.workbook!.worksheets[0]);
+  check(
+    'Test 10 (ASIL AC — FE-812): vehiclePlate filtresi export\'ta çalışır (kısmi eşleşme)',
+    amounts10.length === 1 && amounts10[0] === 20.25,
+    `Beklenen: [20.25], Alınan: ${JSON.stringify(amounts10)}`
+  );
+
+  // Test 11 (ASIL AC — "tank" filtresi, export'ta): tankName EXACT eşleşme —
+  // TANK_A iki kayda (10.5 ve 30.75) sahip, TANK_B'nin 20.25'i SIZMAMALI.
+  const r11 = await exportTransactions(camsaToken, { siteName: TEST_SITE, tankName: TANK_A });
+  const amounts11 = dataRowAmounts(r11.workbook!.worksheets[0]).sort((a, b) => a - b);
+  check(
+    'Test 11 (ASIL AC — FE-812): tankName filtresi export\'ta çalışır (exact), diğer tankın kaydı sızmaz',
+    JSON.stringify(amounts11) === JSON.stringify([10.5, 30.75]),
+    `Beklenen: [10.5, 30.75], Alınan: ${JSON.stringify(amounts11)}`
+  );
+
+  // Test 12 (ASIL AC — canlı tabloda araç/tank filtresi): GET /transactions
+  // (export DEĞİL, sayfalı tablo) için AYNI filtreler.
+  const r12 = await listTransactions(camsaToken, { siteName: TEST_SITE, vehiclePlate: '701' });
+  check(
+    'Test 12 (ASIL AC — FE-812): GET /transactions vehiclePlate filtresi',
+    r12.status === 200 && r12.body.data.length === 1 && r12.body.data[0].vehicle_plate === '34 REP 701',
+    `status=${r12.status}, data=${JSON.stringify(r12.body.data?.map((d: any) => d.vehicle_plate))}`
+  );
+  const r12b = await listTransactions(camsaToken, { siteName: TEST_SITE, tankName: TANK_B });
+  check(
+    'Test 12b (ASIL AC — FE-812): GET /transactions tankName filtresi (exact)',
+    r12b.status === 200 && r12b.body.data.length === 1 && Number(r12b.body.data[0].amount_liters) === 20.25,
+    `status=${r12b.status}, data=${JSON.stringify(r12b.body.data)}`
+  );
+
+  // Test 13 (ASIL AC — "sütun sıralama"): amount_liters ASC/DESC.
+  const r13asc = await listTransactions(camsaToken, { siteName: TEST_SITE, sortBy: 'amount_liters', sortDir: 'asc' });
+  const r13desc = await listTransactions(camsaToken, { siteName: TEST_SITE, sortBy: 'amount_liters', sortDir: 'desc' });
+  const amounts13asc = r13asc.body.data?.map((d: any) => Number(d.amount_liters));
+  const amounts13desc = r13desc.body.data?.map((d: any) => Number(d.amount_liters));
+  check(
+    'Test 13 (ASIL AC — FE-812): sortBy=amount_liters&sortDir=asc artan sıralar',
+    JSON.stringify(amounts13asc) === JSON.stringify([10.5, 20.25, 30.75]),
+    `Beklenen: [10.5, 20.25, 30.75], Alınan: ${JSON.stringify(amounts13asc)}`
+  );
+  check(
+    'Test 13b (ASIL AC — FE-812): sortBy=amount_liters&sortDir=desc azalan sıralar',
+    JSON.stringify(amounts13desc) === JSON.stringify([30.75, 20.25, 10.5]),
+    `Beklenen: [30.75, 20.25, 10.5], Alınan: ${JSON.stringify(amounts13desc)}`
+  );
+
+  // Test 14 (güvenlik — whitelist dışı sortBy): rastgele/zararlı bir sortBy
+  // değeri (SQL injection denemesi DEĞİL ama izin verilen enum'un dışında)
+  // 400 ile reddedilmeli, asla ham SQL'e karışmamalı.
+  const r14 = await listTransactions(camsaToken, { siteName: TEST_SITE, sortBy: 'id; DROP TABLE transactions;--' });
+  check(
+    'Test 14 (ASIL AC — güvenlik): whitelist dışı sortBy 400 ile reddedilir',
+    r14.status === 400,
+    `status=${r14.status}, body=${JSON.stringify(r14.body)}`
   );
 
   console.log('===========================================================');

@@ -1001,10 +1001,18 @@ export interface TransactionFilters {
   startDate?: string;
   endDate?: string;
   siteName?: string;
+  vehiclePlate?: string;
   driverName?: string;
+  tankName?: string;
   pumpStatus?: string;
   type?: string;
   search?: string;
+  // FE-812 — yalnızca getTenantTransactionsPaginated (ekrandaki canlı tablo)
+  // tüketir; streamTenantTransactionsForExport/getTransactionExportAggregate
+  // bu alanları GÖRMEZDEN GELİR (export'un keyset sayfalaması sabit sıralamaya
+  // dayanır, bkz. aşağıdaki yorum).
+  sortBy?: string;
+  sortDir?: 'asc' | 'desc';
 }
 
 export interface PaginatedTransactions {
@@ -1059,9 +1067,17 @@ function buildTransactionFilterClause(
     params.push(effectiveSiteName);
     conditions.push(`site_name = $${params.length}`);
   }
+  if (filters.vehiclePlate) {
+    params.push(`%${filters.vehiclePlate}%`);
+    conditions.push(`vehicle_plate ILIKE $${params.length}`);
+  }
   if (filters.driverName) {
     params.push(filters.driverName);
     conditions.push(`driver_name = $${params.length}`);
+  }
+  if (filters.tankName) {
+    params.push(filters.tankName);
+    conditions.push(`tank_name = $${params.length}`);
   }
   if (filters.pumpStatus) {
     params.push(filters.pumpStatus);
@@ -1081,6 +1097,22 @@ function buildTransactionFilterClause(
   return { whereClause, params };
 }
 
+// FE-812 AC: "sütun sıralama." sortBy serbest metin DEĞİL — zod şeması
+// (transactionSchema.ts TRANSACTION_SORT_COLUMNS) zaten bir enum'a kısıtlıyor,
+// ama bu fonksiyon DOĞRUDAN da çağrılabildiğinden (ör. testler) ikinci bir
+// savunma hattı olarak burada da bir eşleme listesine karşı doğrulanıyor —
+// asla kullanıcı girdisi ham SQL'e enterpole edilmiyor.
+const TRANSACTION_SORT_COLUMN_MAP: Record<string, string> = {
+  created_at: 'created_at',
+  site_name: 'site_name',
+  vehicle_plate: 'vehicle_plate',
+  driver_name: 'driver_name',
+  tank_name: 'tank_name',
+  amount_liters: 'amount_liters',
+  pump_status: 'pump_status',
+  type: 'type'
+};
+
 export async function getTenantTransactionsPaginated(
   filters: TransactionFilters = {},
   siteRestriction?: string
@@ -1091,6 +1123,8 @@ export async function getTenantTransactionsPaginated(
     : 10;
   const offset = (page - 1) * pageSize;
   const { whereClause, params } = buildTransactionFilterClause(filters, siteRestriction);
+  const sortColumn = (filters.sortBy && TRANSACTION_SORT_COLUMN_MAP[filters.sortBy]) || 'created_at';
+  const sortDir = filters.sortDir === 'asc' ? 'ASC' : 'DESC';
 
   return withTenant(async (client) => {
     // Sayaç ve toplam litre, filtreye uyan TÜM kayıtlar üzerinden (yalnızca
@@ -1106,7 +1140,7 @@ export async function getTenantTransactionsPaginated(
 
     const dataParams = [...params, pageSize, offset];
     const dataResult = await client.query(
-      `SELECT * FROM transactions ${whereClause} ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      `SELECT * FROM transactions ${whereClause} ORDER BY ${sortColumn} ${sortDir}, id ${sortDir} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       dataParams
     );
 

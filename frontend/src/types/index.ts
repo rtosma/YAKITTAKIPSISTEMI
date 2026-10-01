@@ -179,6 +179,23 @@ export interface FuelTransaction {
   rfidAuth: boolean;
 }
 
+// FE-812 Kapsam: "Satır detayında ... e-İrsaliye durumu." GET
+// /transactions/:id/e-irsaliye/status — önceden hiçbir frontend sayfası bu
+// ucu KULLANMIYORDU. Bu ikmal için henüz üretilmiş bir e-İrsaliye yoksa
+// backend 404 döner (status endpoint'i, üretim ucu DEĞİL) — frontend bunu
+// hata göstermeden "Henüz oluşturulmadı" olarak ele alır.
+export interface DespatchAdviceStatus {
+  despatchAdviceDocumentId: string;
+  transactionId: string;
+  documentNumber: string;
+  status: 'ISSUED' | 'REJECTED' | 'CANCELLED' | 'SUPERSEDED';
+  rejectReason: string | null;
+  rejectedAt: string | null;
+  cancelReason: string | null;
+  cancelledAt: string | null;
+  supersededByDocumentNumber: string | null;
+}
+
 export interface Tank {
   id: string;
   name: string;
