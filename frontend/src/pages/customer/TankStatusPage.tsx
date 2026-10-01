@@ -1,10 +1,48 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { TankGauge } from '../../components/TankGauge';
-import { Tank } from '../../types';
+import { Tank, StrappingUploadError } from '../../types';
 
 export const TankStatusPage: React.FC = () => {
-  const { tanks, selectedSiteFilter, tankRefreshKey, triggerTankRefresh, addTank, updateTank, deleteTank, currentCompany, isManagerMode, currentUser, sites, isSocketConnected } = useApp();
+  const { tanks, selectedSiteFilter, tankRefreshKey, triggerTankRefresh, addTank, updateTank, deleteTank, currentCompany, isManagerMode, currentUser, sites, isSocketConnected, uploadTankStrappingTable } = useApp();
+
+  // FE-809 AC: "Strapping table yüklemesi hata raporuyla birlikte çalışmalıdır."
+  const [strappingTank, setStrappingTank] = useState<Tank | null>(null);
+  const [strappingCsv, setStrappingCsv] = useState('');
+  const [strappingErrors, setStrappingErrors] = useState<StrappingUploadError[] | null>(null);
+  const [strappingSuccess, setStrappingSuccess] = useState(false);
+  const [isUploadingStrapping, setIsUploadingStrapping] = useState(false);
+
+  const openStrappingModal = (tank: Tank) => {
+    setStrappingTank(tank);
+    setStrappingCsv('');
+    setStrappingErrors(null);
+    setStrappingSuccess(false);
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setStrappingCsv(String(reader.result || ''));
+    reader.readAsText(file);
+  };
+
+  const handleUploadStrapping = async () => {
+    if (!strappingTank || !strappingCsv.trim()) return;
+    setIsUploadingStrapping(true);
+    setStrappingErrors(null);
+    try {
+      const errors = await uploadTankStrappingTable(strappingTank.id, strappingCsv);
+      if (errors.length === 0) {
+        setStrappingSuccess(true);
+      } else {
+        setStrappingErrors(errors);
+      }
+    } finally {
+      setIsUploadingStrapping(false);
+    }
+  };
 
   const availableSites = Array.from(new Set([...sites, ...currentCompany.sites.map(s => s.name)])).filter(Boolean);
 
@@ -142,6 +180,7 @@ export const TankStatusPage: React.FC = () => {
             refreshKey={tankRefreshKey}
             onEdit={handleOpenEditModal}
             onDelete={(t) => setDeletingTank(t)}
+            onUploadStrapping={openStrappingModal}
           />
         ))}
 
@@ -374,6 +413,87 @@ export const TankStatusPage: React.FC = () => {
                 Sil ve Kaldır
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 4: UPLOAD STRAPPING TABLE (FE-809) */}
+      {strappingTank && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-lg w-full space-y-4" data-testid="strapping-upload-modal">
+            <div className="flex items-center justify-between border-b border-[#514532]/20 pb-4">
+              <h3 className="text-base font-bold text-[#e5e2e1] uppercase flex items-center space-x-2">
+                <span className="material-symbols-outlined text-[#ffdca1]">upload_file</span>
+                <span>Daldırma Cetveli Yükle — {strappingTank.name}</span>
+              </h3>
+              <button onClick={() => setStrappingTank(null)} className="text-[#d5c4ab] hover:text-[#e5e2e1]">
+                <span className="material-symbols-outlined text-lg">close</span>
+              </button>
+            </div>
+
+            {strappingSuccess ? (
+              <div className="space-y-4 text-center py-4">
+                <span className="material-symbols-outlined text-4xl text-[#a1e8a2]">check_circle</span>
+                <p className="text-sm text-[#e5e2e1] font-bold">Cetvel başarıyla kaydedildi.</p>
+                <button
+                  onClick={() => setStrappingTank(null)}
+                  className="px-5 py-2.5 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] text-[#412d00] rounded-md text-xs font-black cursor-pointer"
+                >
+                  Kapat
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <p className="text-[10px] text-[#d5c4ab]/70 font-mono">
+                  Format: her satır "mm,litre" (veya ";" ile) — mm KESİN ARTAN, litre AZALMAYAN olmalı. İlk satır başlık olabilir, "#" ile başlayan satırlar yorum sayılır.
+                </p>
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  data-testid="strapping-file-input"
+                  onChange={handleFileSelect}
+                  className="w-full text-xs text-[#d5c4ab] file:mr-3 file:py-2 file:px-3 file:rounded-md file:border-0 file:bg-[#20201f] file:text-[#ffdca1] file:text-xs file:font-bold file:cursor-pointer cursor-pointer"
+                />
+                <textarea
+                  data-testid="strapping-csv-textarea"
+                  value={strappingCsv}
+                  onChange={(e) => setStrappingCsv(e.target.value)}
+                  placeholder={'mm,litre\n0,0\n500,1250\n1000,2600\n...'}
+                  rows={6}
+                  className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] font-mono text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
+                />
+
+                {strappingErrors && strappingErrors.length > 0 && (
+                  <div data-testid="strapping-error-report" className="bg-[#93000a]/10 border border-[#93000a]/40 rounded-md p-3 space-y-1.5 max-h-40 overflow-y-auto">
+                    <p className="text-[11px] font-bold text-[#ffb4ab]">{strappingErrors.length} satırda hata bulundu:</p>
+                    {strappingErrors.map((err, i) => (
+                      <p key={i} className="text-[10px] text-[#ffb4ab] font-mono">
+                        {err.row > 0 ? `Satır ${err.row}: ` : ''}{err.message}
+                      </p>
+                    ))}
+                  </div>
+                )}
+
+                <div className="pt-2 flex items-center justify-end space-x-3">
+                  <button
+                    type="button"
+                    onClick={() => setStrappingTank(null)}
+                    className="px-4 py-2 bg-[#20201f] text-[#d5c4ab] rounded-md text-xs font-bold cursor-pointer"
+                  >
+                    İptal
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="strapping-upload-submit"
+                    onClick={handleUploadStrapping}
+                    disabled={isUploadingStrapping || !strappingCsv.trim()}
+                    className="px-5 py-2 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] text-[#412d00] rounded-md text-xs font-black cursor-pointer disabled:opacity-40"
+                  >
+                    {isUploadingStrapping ? 'Yükleniyor...' : 'Yükle'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

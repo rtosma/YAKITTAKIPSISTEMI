@@ -10,6 +10,10 @@ interface TankGaugeProps {
   refreshKey?: number;
   onEdit?: (tank: Tank) => void;
   onDelete?: (tank: Tank) => void;
+  // FE-809 Kapsam: "strapping table yükleme." FUEL-403.1'in zaten var olan
+  // CSV yükleme ucu için — bu bileşen yalnızca butonu render eder, modal
+  // çağıran sayfadadır (TankStatusPage).
+  onUploadStrapping?: (tank: Tank) => void;
 }
 
 export const TankGauge: React.FC<TankGaugeProps> = ({
@@ -19,7 +23,8 @@ export const TankGauge: React.FC<TankGaugeProps> = ({
   siteFilter = 'TÜMÜ',
   refreshKey = 0,
   onEdit,
-  onDelete
+  onDelete,
+  onUploadStrapping
 }) => {
   const [animationFinished, setAnimationFinished] = useState(false);
   const [displayLiters, setDisplayLiters] = useState(0);
@@ -141,6 +146,8 @@ export const TankGauge: React.FC<TankGaugeProps> = ({
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.4, delay: staggerDelaySec }}
+      data-testid="tank-card"
+      data-tank-name={tank.name}
       className="group bg-[#20201f] hover:bg-[#2a2a2a] border border-[#514532]/25 hover:border-[#ffdca1]/40 rounded-xl p-6 flex flex-col justify-between space-y-6 transition-all duration-150"
     >
       {/* Kart Üst Satırı: Tank Kodu + Şantiye Adı (label-md, on-surface-variant) & İkon Butonları */}
@@ -150,6 +157,16 @@ export const TankGauge: React.FC<TankGaugeProps> = ({
         </span>
 
         <div className="flex items-center space-x-1.5">
+          {onUploadStrapping && (
+            <button
+              onClick={() => onUploadStrapping(tank)}
+              title="Daldırma Cetveli (Strapping Table) Yükle"
+              data-testid="tank-strapping-upload-open"
+              className="p-1.5 text-[#d5c4ab] hover:text-[#a1e8a2] hover:bg-[#353535] rounded-md transition-colors cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-base">upload_file</span>
+            </button>
+          )}
           {onEdit && (
             <button
               onClick={() => onEdit(tank)}

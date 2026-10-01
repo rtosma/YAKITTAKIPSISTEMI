@@ -36,6 +36,7 @@ export const CustomerLayout: React.FC = () => {
     { label: 'Şoför Yönetimi', path: '/panel/drivers', icon: 'badge', id: 'drivers' },
     { label: 'Yakıt Hareketleri', path: '/panel/transactions', icon: 'receipt_long', id: 'transactions' },
     { label: 'Tank Durumu', path: '/panel/tanks', icon: 'oil_barrel', id: 'tanks' },
+    { label: 'Cihaz Yönetimi', path: '/panel/devices', icon: 'developer_board', id: 'devices' },
     { label: 'Veri Arşivleme', path: '/panel/archive', icon: 'folder_zip', id: 'archive' },
     { label: 'Bildirimler', path: '/panel/notifications', icon: 'notifications', id: 'notifications' },
     { label: 'Sistem Ayarları', path: '/panel/settings', icon: 'settings', id: 'settings' },

@@ -199,6 +199,30 @@ async function run() {
       encryptedCurrent.length > 0 && encryptedCurrent !== secret && encryptedCurrent !== newSecret && !encryptedCurrent.includes(newSecret),
       `encrypted_secret uzunluk=${encryptedCurrent.length} (base64, plaintext hex 64 karakter olurdu)`
     );
+
+    // === Test 12 (FE-809 ASIL AC — "pompa-tank ilişkisi"): PATCH .../tank
+    // ile atama → GET /hardware-devices ARTIK tank_name'i doğru yansıtır
+    // (önceden bu uçta HİÇ yoktu). ===
+    const tankName = 'Gebze Ana Tank (T-1)';
+    const assign = await call('PATCH', `/hardware-devices/${deviceId}/tank`, { token: camsaToken, body: { tankName } });
+    const listAfterAssign = await call('GET', '/hardware-devices', { token: camsaToken });
+    const listedAfterAssign = listAfterAssign.body?.data?.find((d: any) => d.device_id === deviceId);
+    check(
+      'Test 12 (ASIL AC): Tank ataması sonrası GET /hardware-devices tank_name/firmware_version/last_seen_at alanlarını döner',
+      assign.status === 200 && listedAfterAssign?.tank_name === tankName &&
+        'firmware_version' in (listedAfterAssign || {}) && 'last_seen_at' in (listedAfterAssign || {}),
+      `assign.status=${assign.status}, listedAfterAssign=${JSON.stringify(listedAfterAssign)}`
+    );
+
+    // === Test 13 (regresyon): tank ataması kaldırılır (null) ===
+    const unassign = await call('PATCH', `/hardware-devices/${deviceId}/tank`, { token: camsaToken, body: { tankName: null } });
+    const listAfterUnassign = await call('GET', '/hardware-devices', { token: camsaToken });
+    const listedAfterUnassign = listAfterUnassign.body?.data?.find((d: any) => d.device_id === deviceId);
+    check(
+      'Test 13 (regresyon): tankName null ile çağrıldığında ataması kaldırılır',
+      unassign.status === 200 && listedAfterUnassign?.tank_name === null,
+      `unassign.status=${unassign.status}, tank_name=${listedAfterUnassign?.tank_name}`
+    );
   } finally {
     // Temizlik: test cihazını kalıcı olarak bloke bırakmayalım (unblock zaten
     // yapıldı), silme endpoint'i yok — deviceId benzersiz (Date.now()) olduğu

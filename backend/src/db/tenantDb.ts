@@ -2180,6 +2180,10 @@ export interface TenantHardwareDeviceRecord {
   name: string;
   site_name: string;
   status: string;
+  tank_name: string | null;
+  firmware_version: string | null;
+  last_seen_at: string | null;
+  last_reported_rssi: number | null;
   secret_rotated_at: string | null;
   previous_secret_expires_at: string | null;
   created_at: string;
@@ -2194,7 +2198,12 @@ export interface TenantHardwareDeviceRecord {
 // IOT-307: last_clock_drift_ms/_at — panelin cihaz sağlığı görünümünün (FE-806) sapmayı
 // gösterebilmesi için (drift'in KENDİSİ artık her kabul edilen istekte middleware'ce yazılır,
 // bkz. hardwareAuthMiddleware.ts recordHardwareClockDrift).
-const HARDWARE_DEVICE_PUBLIC_COLUMNS = 'id, device_id, name, site_name, status, secret_rotated_at, previous_secret_expires_at, created_at, last_clock_drift_ms, last_clock_drift_at';
+// FE-809: tank_name/firmware_version/last_seen_at/last_reported_rssi
+// eklendi — tenant'ın KENDİ cihaz yönetimi ekranının "pompa-tank ilişkisi"
+// ve "cihaz durumu, son telemetri" Kapsam öğelerini (IOT-308'in ZATEN
+// yazdığı verilerle, FE-806'daki SUPER_ADMIN /devices ucuyla AYNI ilke)
+// karşılaması için — secret/HMAC alanları YİNE dışarıda kalır.
+const HARDWARE_DEVICE_PUBLIC_COLUMNS = 'id, device_id, name, site_name, status, tank_name, firmware_version, last_seen_at, last_reported_rssi, secret_rotated_at, previous_secret_expires_at, created_at, last_clock_drift_ms, last_clock_drift_at';
 
 export async function getTenantHardwareDevices(): Promise<TenantHardwareDeviceRecord[]> {
   return withTenant(async (client) => {

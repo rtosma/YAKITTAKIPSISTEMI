@@ -20,7 +20,10 @@ import {
   SystemMetricsSnapshot,
   SiteProvisioningResult,
   SiteDetail,
-  RfidBlacklistRecord
+  RfidBlacklistRecord,
+  TenantHardwareDevice,
+  DeviceClaimCode,
+  StrappingUploadError
 } from '../types';
 // NOTE: Oturum açıldığında firma bilgisi de dahil her şey PostgreSQL backend'inden
 // (apiFetch) çekiliyor: firma profili -> GET /companies/me (yalnızca giriş yapan
@@ -112,6 +115,19 @@ interface AppContextType {
   reportRfidCardLost: (cardUid: string, status: 'LOST' | 'BLOCKED', reason?: string) => Promise<boolean>;
   unblockRfidCardByUid: (cardUid: string) => Promise<boolean>;
   replaceRfidCardByUid: (oldCardUid: string, newCardUid: string) => Promise<boolean>;
+
+  // FE-809: tenant'ın KENDİ cihaz yönetimi (pompa-tank ilişkisi, provisioning/
+  // claim akışı) — SUPER_ADMIN'in çapraz-tenant geliştirici paneli (FE-806)
+  // İLE AYNI VERİ KAYNAĞI (hardware_devices/IOT-308) ama tenant'a kısıtlı.
+  tenantHardwareDevices: TenantHardwareDevice[];
+  fetchTenantHardwareDevices: () => Promise<void>;
+  assignDeviceTank: (deviceId: string, tankName: string | null) => Promise<boolean>;
+  deviceClaimCodes: DeviceClaimCode[];
+  fetchDeviceClaimCodes: () => Promise<void>;
+  generateDeviceClaimCode: (siteName: string, deviceName: string, expiresInMinutes?: number) => Promise<DeviceClaimCode | null>;
+  // FE-809 AC: "Strapping table yüklemesi hata raporuyla birlikte
+  // çalışmalıdır." Başarılıysa BOŞ dizi döner; satır bazlı hatalar varsa dolu.
+  uploadTankStrappingTable: (tankId: string, csvContent: string) => Promise<StrappingUploadError[]>;
 
   // FE-801 AC: "Eski veri açıkça işaretlenmelidir." — Socket.io bağlantısı
   // canlı değilken (kopuk/yeniden bağlanıyor/sekme arka planda) ekranda
@@ -262,6 +278,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [toast, setToast] = useState<ToastState | null>(null);
   const [unmatchedRfidAlerts, setUnmatchedRfidAlerts] = useState<UnmatchedRfidAlert[]>([]);
   const [rfidDenylist, setRfidDenylist] = useState<RfidBlacklistRecord[]>([]);
+  const [tenantHardwareDevices, setTenantHardwareDevices] = useState<TenantHardwareDevice[]>([]);
+  const [deviceClaimCodes, setDeviceClaimCodes] = useState<DeviceClaimCode[]>([]);
   const [selectedTenantForDetail, setSelectedTenantForDetail] = useState<Company | null>(null);
   const [tankRefreshKey, setTankRefreshKey] = useState<number>(0);
 
@@ -708,6 +726,109 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  // FE-809: tenant'ın kendi cihaz yönetimi — GET /hardware-devices BİLEREK
+  // ham (snake_case) satır döner (AUTH-202.3'ten beri değişmedi, uygulama
+  // genelinde başka tüketicisi olduğundan sözleşmesi değiştirilmedi); burada
+  // çeviriliyor.
+  const fetchTenantHardwareDevices = async () => {
+    try {
+      const response = await apiFetch('/hardware-devices');
+      if (response.success && response.data) {
+        setTenantHardwareDevices(response.data.map((d: any) => ({
+          id: d.id,
+          deviceId: d.device_id,
+          name: d.name,
+          siteName: d.site_name,
+          status: d.status,
+          tankName: d.tank_name,
+          firmwareVersion: d.firmware_version,
+          lastSeenAt: d.last_seen_at,
+          lastReportedRssi: d.last_reported_rssi
+        })));
+      }
+    } catch (err: any) {
+      console.error('Cihazlar getirilirken hata:', err);
+    }
+  };
+
+  const assignDeviceTank = async (deviceId: string, tankName: string | null): Promise<boolean> => {
+    try {
+      const response = await apiFetch(`/hardware-devices/${encodeURIComponent(deviceId)}/tank`, {
+        method: 'PATCH',
+        body: JSON.stringify({ tankName })
+      });
+      if (response.success) {
+        showToast(tankName ? `${deviceId} → ${tankName} tankına bağlandı.` : `${deviceId} tank bağlantısı kaldırıldı.`);
+        await fetchTenantHardwareDevices();
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      showToast(`Tank bağlanırken hata: ${err.message}`, 'error');
+      return false;
+    }
+  };
+
+  const fetchDeviceClaimCodes = async () => {
+    try {
+      const response = await apiFetch('/devices/claim-codes');
+      if (response.success && response.data) {
+        setDeviceClaimCodes(response.data.map((c: any) => ({
+          id: c.id,
+          code: c.code,
+          siteName: c.site_name,
+          deviceName: c.device_name,
+          status: c.status,
+          expiresAt: c.expires_at,
+          redeemedDeviceId: c.redeemed_device_id,
+          redeemedAt: c.redeemed_at,
+          createdAt: c.created_at
+        })));
+      }
+    } catch (err: any) {
+      console.error('Claim kodları getirilirken hata:', err);
+    }
+  };
+
+  const generateDeviceClaimCode = async (siteName: string, deviceName: string, expiresInMinutes?: number): Promise<DeviceClaimCode | null> => {
+    try {
+      const response = await apiFetch('/devices/claim-codes', {
+        method: 'POST',
+        body: JSON.stringify({ siteName, deviceName, expiresInMinutes })
+      });
+      if (response.success && response.data) {
+        await fetchDeviceClaimCodes();
+        const c = response.data;
+        return {
+          id: c.id, code: c.code, siteName: c.site_name, deviceName: c.device_name,
+          status: c.status, expiresAt: c.expires_at, redeemedDeviceId: c.redeemed_device_id,
+          redeemedAt: c.redeemed_at, createdAt: c.created_at
+        };
+      }
+      return null;
+    } catch (err: any) {
+      showToast(`Claim kodu üretilirken hata: ${err.message}`, 'error');
+      return null;
+    }
+  };
+
+  const uploadTankStrappingTable = async (tankId: string, csvContent: string): Promise<StrappingUploadError[]> => {
+    try {
+      await apiFetch(`/tanks/${encodeURIComponent(tankId)}/strapping-table`, {
+        method: 'POST',
+        body: JSON.stringify({ csvContent })
+      });
+      showToast('Daldırma cetveli (strapping table) başarıyla kaydedildi.');
+      return [];
+    } catch (err: any) {
+      if (err.status === 400 && Array.isArray(err.details?.rows)) {
+        return err.details.rows as StrappingUploadError[];
+      }
+      showToast(`Cetvel yüklenirken hata: ${err.message}`, 'error');
+      return [{ row: 0, message: err.message || 'Bilinmeyen hata.' }];
+    }
+  };
+
   // Toast Helper
   const showToast = (message: string, type: 'success' | 'info' | 'warning' | 'error' = 'success') => {
     const id = Date.now().toString();
@@ -914,6 +1035,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // (PUMP_OPERATOR) zaten 403 alır, gereksiz çağrı yapılmıyor.
       if (currentUser && ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'].includes(currentUser.role)) {
         fetchRfidDenylist();
+      }
+      // FE-809: cihaz yönetimi (hardware-devices/claim-codes) backend'in
+      // HARDWARE_DEVICE_MANAGER_ROLES İLE AYNI kısıtı — SITE_MANAGER burada
+      // YOK (yalnızca SUPER_ADMIN/COMPANY_OWNER cihaz provizyonlayabilir).
+      if (currentUser && ['SUPER_ADMIN', 'COMPANY_OWNER'].includes(currentUser.role)) {
+        fetchTenantHardwareDevices();
+        fetchDeviceClaimCodes();
       }
     }
   }, [isAuthenticated]);
@@ -1451,6 +1579,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         reportRfidCardLost,
         unblockRfidCardByUid,
         replaceRfidCardByUid,
+        tenantHardwareDevices,
+        fetchTenantHardwareDevices,
+        assignDeviceTank,
+        deviceClaimCodes,
+        fetchDeviceClaimCodes,
+        generateDeviceClaimCode,
+        uploadTankStrappingTable,
         isSocketConnected,
         lastTelemetryAt,
         deviceOnlineStatus,

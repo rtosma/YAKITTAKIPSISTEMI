@@ -120,9 +120,14 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}) {
     const serverTraceId: string = response.headers?.get?.(TRACE_ID_HEADER) || data?.traceId || traceId;
     setLastApiTraceId(serverTraceId);
     if (response.status >= 500) reportApiFailure({ traceId: serverTraceId, endpoint, method, status: response.status, message: errorMsg });
-    const err: Error & { traceId?: string; status?: number } = new Error(errorMsg);
+    // FE-809: satır bazlı doğrulama hataları (örn. strapping CSV, bkz.
+    // POST /tanks/:id/strapping-table'ın `details.rows`'ı) önceden burada
+    // KAYBOLUYORDU — hata yalnızca genel `message`'ı taşıyordu, çağıran
+    // taraf hiçbir zaman hangi SATIRIN neden reddedildiğini göremiyordu.
+    const err: Error & { traceId?: string; status?: number; details?: unknown } = new Error(errorMsg);
     err.traceId = serverTraceId;
     err.status = response.status;
+    err.details = data?.details;
     throw err;
   }
 

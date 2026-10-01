@@ -44,6 +44,7 @@ import { DriversPage } from './pages/customer/DriversPage';
 import { VehiclesDriversPage } from './pages/customer/VehiclesDriversPage';
 import { TransactionsPage } from './pages/customer/TransactionsPage';
 import { TankStatusPage } from './pages/customer/TankStatusPage';
+import { DeviceManagementPage } from './pages/customer/DeviceManagementPage';
 import { ArchivePage } from './pages/customer/ArchivePage';
 import { NotificationsPage } from './pages/customer/NotificationsPage';
 import { SettingsPage } from './pages/customer/SettingsPage';
@@ -110,6 +111,7 @@ export function App() {
             <Route path="yakit-hareketleri" element={<TransactionsPage />} />
             <Route path="tanks" element={<TankStatusPage />} />
             <Route path="tank-durumu" element={<TankStatusPage />} />
+            <Route path="devices" element={<DeviceManagementPage />} />
             <Route path="archive" element={<ArchivePage />} />
             <Route path="arsiv" element={<ArchivePage />} />
             <Route path="notifications" element={<NotificationsPage />} />

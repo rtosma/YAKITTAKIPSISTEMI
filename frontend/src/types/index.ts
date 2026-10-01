@@ -92,6 +92,40 @@ export interface RfidBlacklistRecord {
   updated_at: string;
 }
 
+// FE-809 Kapsam: "Pompa/tabanca tanımı ve tank ilişkisi" + "Cihaz durumu,
+// son telemetri." Bu tenant'ın KENDİ GET /hardware-devices'ı — SUPER_ADMIN'in
+// çapraz-tenant /devices'ından (FE-806, types.ts HardwareDevice) AYRI.
+export interface TenantHardwareDevice {
+  id: string;
+  deviceId: string;
+  name: string;
+  siteName: string;
+  status: string;
+  tankName: string | null;
+  firmwareVersion: string | null;
+  lastSeenAt: string | null;
+  lastReportedRssi: number | null;
+}
+
+/** FE-809 Kapsam: "Cihaz eşleştirme (provisioning) akışı ve QR/claim kodu gösterimi." IOT-304. */
+export interface DeviceClaimCode {
+  id: string;
+  code: string;
+  siteName: string;
+  deviceName: string;
+  status: string; // 'PENDING' | 'REDEEMED' | 'EXPIRED' (bkz. backend)
+  expiresAt: string;
+  redeemedDeviceId: string | null;
+  redeemedAt: string | null;
+  createdAt: string;
+}
+
+/** FE-809 AC: "Strapping table yüklemesi hata raporuyla birlikte çalışmalıdır." FUEL-403.1. */
+export interface StrappingUploadError {
+  row: number;
+  message: string;
+}
+
 // FLEET-1407 — bir aracın bakım/servis geçmişi (append-only, backend
 // vehicle_maintenance_records tablosu).
 export interface VehicleMaintenanceRecord {
