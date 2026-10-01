@@ -126,6 +126,14 @@ export interface StrappingUploadError {
   message: string;
 }
 
+/** FE-811 AC: "Acil durdurma onay gerektirmeli ve audit'lenmelidir." */
+export interface SiteEmergencyStatus {
+  siteName: string;
+  isStopped: boolean;
+  blockedDeviceCount: number;
+  totalDeviceCount: number;
+}
+
 // FLEET-1407 — bir aracın bakım/servis geçmişi (append-only, backend
 // vehicle_maintenance_records tablosu).
 export interface VehicleMaintenanceRecord {

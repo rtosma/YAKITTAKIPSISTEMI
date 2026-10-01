@@ -477,6 +477,9 @@ jobs:
       - name: Run AUTH-202.3 Hardware Device Secret Lifecycle Tests
         run: cd backend && npx tsx test/test_auth2023_hardware_device_lifecycle.ts
 
+      - name: Run FE-811 Site Emergency Stop Tests
+        run: cd backend && npx tsx test/test_fe811_emergency_stop.ts
+
       - name: Run IOT-302 Binary LoRaWAN Payload Decoder Tests
         run: cd backend && npx tsx test/test_iot302_lorawan_decoder.ts
 

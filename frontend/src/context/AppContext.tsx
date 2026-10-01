@@ -23,7 +23,8 @@ import {
   RfidBlacklistRecord,
   TenantHardwareDevice,
   DeviceClaimCode,
-  StrappingUploadError
+  StrappingUploadError,
+  SiteEmergencyStatus
 } from '../types';
 // NOTE: Oturum açıldığında firma bilgisi de dahil her şey PostgreSQL backend'inden
 // (apiFetch) çekiliyor: firma profili -> GET /companies/me (yalnızca giriş yapan
@@ -128,6 +129,14 @@ interface AppContextType {
   // FE-809 AC: "Strapping table yüklemesi hata raporuyla birlikte
   // çalışmalıdır." Başarılıysa BOŞ dizi döner; satır bazlı hatalar varsa dolu.
   uploadTankStrappingTable: (tankId: string, csvContent: string) => Promise<StrappingUploadError[]>;
+
+  // FE-811 AC: "Acil durdurma (pompa/şantiye bazında) ... onay gerektirmeli
+  // ve audit'lenmelidir." Yeni bir komut mekanizması YOK — zaten var olan
+  // cihaz bloke mekanizması (FLEET-1401) şantiye çapında toplu uygulanır.
+  siteEmergencyStatus: SiteEmergencyStatus | null;
+  fetchSiteEmergencyStatus: (siteName: string) => Promise<void>;
+  emergencyStopSite: (siteName: string, reason: string) => Promise<boolean>;
+  emergencyResumeSite: (siteName: string) => Promise<boolean>;
 
   // FE-801 AC: "Eski veri açıkça işaretlenmelidir." — Socket.io bağlantısı
   // canlı değilken (kopuk/yeniden bağlanıyor/sekme arka planda) ekranda
@@ -278,6 +287,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [toast, setToast] = useState<ToastState | null>(null);
   const [unmatchedRfidAlerts, setUnmatchedRfidAlerts] = useState<UnmatchedRfidAlert[]>([]);
   const [rfidDenylist, setRfidDenylist] = useState<RfidBlacklistRecord[]>([]);
+  const [siteEmergencyStatus, setSiteEmergencyStatus] = useState<SiteEmergencyStatus | null>(null);
   const [tenantHardwareDevices, setTenantHardwareDevices] = useState<TenantHardwareDevice[]>([]);
   const [deviceClaimCodes, setDeviceClaimCodes] = useState<DeviceClaimCode[]>([]);
   const [selectedTenantForDetail, setSelectedTenantForDetail] = useState<Company | null>(null);
@@ -826,6 +836,50 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
       showToast(`Cetvel yüklenirken hata: ${err.message}`, 'error');
       return [{ row: 0, message: err.message || 'Bilinmeyen hata.' }];
+    }
+  };
+
+  const fetchSiteEmergencyStatus = async (siteName: string) => {
+    try {
+      const response = await apiFetch(`/sites/${encodeURIComponent(siteName)}/emergency-status`);
+      if (response.success && response.data) {
+        setSiteEmergencyStatus(response.data);
+      }
+    } catch (err: any) {
+      console.error('Şantiye acil durdurma durumu getirilirken hata:', err);
+    }
+  };
+
+  const emergencyStopSite = async (siteName: string, reason: string): Promise<boolean> => {
+    try {
+      const response = await apiFetch(`/sites/${encodeURIComponent(siteName)}/emergency-stop`, {
+        method: 'POST',
+        body: JSON.stringify({ reason })
+      });
+      if (response.success) {
+        showToast(response.message || 'Şantiye acil durduruldu.', 'warning');
+        await fetchSiteEmergencyStatus(siteName);
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      showToast(`Acil durdurma başarısız: ${err.message}`, 'error');
+      return false;
+    }
+  };
+
+  const emergencyResumeSite = async (siteName: string): Promise<boolean> => {
+    try {
+      const response = await apiFetch(`/sites/${encodeURIComponent(siteName)}/emergency-resume`, { method: 'POST' });
+      if (response.success) {
+        showToast(response.message || 'Şantiye tekrar aktifleştirildi.');
+        await fetchSiteEmergencyStatus(siteName);
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      showToast(`Devam ettirme başarısız: ${err.message}`, 'error');
+      return false;
     }
   };
 
@@ -1586,6 +1640,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         fetchDeviceClaimCodes,
         generateDeviceClaimCode,
         uploadTankStrappingTable,
+        siteEmergencyStatus,
+        fetchSiteEmergencyStatus,
+        emergencyStopSite,
+        emergencyResumeSite,
         isSocketConnected,
         lastTelemetryAt,
         deviceOnlineStatus,

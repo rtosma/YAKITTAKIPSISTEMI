@@ -2310,6 +2310,68 @@ export async function unblockHardwareDevice(deviceId: string): Promise<TenantHar
 }
 
 /**
+ * FE-811 AC: "Acil durdurma (pompa/şantiye bazında) ... onay gerektirmeli ve
+ * audit'lenmelidir." Yeni bir komut/MQTT mekanizması İCAT EDİLMEDİ — zaten
+ * var olan, kanıtlanmış bloke mekanizması (hardwareAuthMiddleware'in BLOKE
+ * durumundaki bir cihazın HMAC'ini anında 403 DEVICE_BLOCKED ile reddetmesi,
+ * bkz. yukarıdaki blockHardwareDevice) o şantiyedeki TÜM cihazlara TOPLU
+ * uygulanıyor — "acil durdurma" GERÇEKTEN pompaların yakıt veremeyeceği
+ * anlamına geliyor, kozmetik bir durum bayrağı değil. "Kim durdurdu" kaydı
+ * writeAuditLog'un zaten okuduğu ambient kullanıcı context'inden (JWT) gelir.
+ */
+export async function emergencyStopSite(siteName: string, reason: string): Promise<{ siteName: string; blockedDeviceCount: number }> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      `UPDATE hardware_devices SET status = 'BLOKE' WHERE site_name = $1 AND status != 'BLOKE' RETURNING device_id`,
+      [siteName]
+    );
+    await writeAuditLog(client, {
+      action: 'SITE_EMERGENCY_STOP',
+      targetType: 'site',
+      targetId: siteName,
+      afterValue: { siteName, reason, blockedDeviceCount: result.rows.length, blockedDeviceIds: result.rows.map((r) => r.device_id) }
+    });
+    return { siteName, blockedDeviceCount: result.rows.length };
+  });
+}
+
+/**
+ * FE-811: SITE_MANAGER, GET /hardware-devices'ı GÖREMEZ (HARDWARE_DEVICE_MANAGER_ROLES
+ * = yalnızca SUPER_ADMIN/COMPANY_OWNER — cihaz rotasyon/oluşturma/nakil gibi
+ * daha geniş yetkilerle PAYLAŞILAN bir kısıt, SITE_MANAGER'a bilerek
+ * VERİLMEDİ). Acil durdurma DURUMUNU (hangi cihazların zaten bloke olduğu
+ * değil, yalnızca "şantiye şu an durduruldu mu") görebilmesi için dar, salt
+ * okunur bir uç — cihaz yönetimi yetkisi GENİŞLETİLMEDİ.
+ */
+export async function getSiteEmergencyStatus(siteName: string): Promise<{ siteName: string; isStopped: boolean; blockedDeviceCount: number; totalDeviceCount: number }> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      `SELECT COUNT(*)::int AS total, COUNT(*) FILTER (WHERE status = 'BLOKE')::int AS blocked
+       FROM hardware_devices WHERE site_name = $1`,
+      [siteName]
+    );
+    const { total, blocked } = result.rows[0];
+    return { siteName, isStopped: total > 0 && blocked === total, blockedDeviceCount: blocked, totalDeviceCount: total };
+  });
+}
+
+export async function emergencyResumeSite(siteName: string): Promise<{ siteName: string; resumedDeviceCount: number }> {
+  return withTenant(async (client) => {
+    const result = await client.query(
+      `UPDATE hardware_devices SET status = 'AKTİF' WHERE site_name = $1 AND status = 'BLOKE' RETURNING device_id`,
+      [siteName]
+    );
+    await writeAuditLog(client, {
+      action: 'SITE_EMERGENCY_RESUME',
+      targetType: 'site',
+      targetId: siteName,
+      afterValue: { siteName, resumedDeviceCount: result.rows.length, resumedDeviceIds: result.rows.map((r) => r.device_id) }
+    });
+    return { siteName, resumedDeviceCount: result.rows.length };
+  });
+}
+
+/**
  * IOT-304 AC: "Cihaz nakledildiğinde geçmiş telemetrisi eski şantiyede
  * kalmalı, yeni kayıtlar yeni şantiyeye yazılmalıdır." Bu, EK bir işlem
  * GEREKTİRMİYOR: transactions/audit_logs gibi geçmiş kayıtlar zaten

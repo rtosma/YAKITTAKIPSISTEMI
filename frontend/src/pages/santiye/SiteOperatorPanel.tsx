@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, Navigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useApp } from '../../context/AppContext';
@@ -18,7 +18,12 @@ export const SiteOperatorPanel: React.FC = () => {
     addFuelTransaction,
     calibrationMultiplier,
     calculateCalibratedLiters,
-    isAuthenticated
+    isAuthenticated,
+    isSocketConnected,
+    siteEmergencyStatus,
+    fetchSiteEmergencyStatus,
+    emergencyStopSite,
+    emergencyResumeSite
   } = useApp();
 
   // FE-803: rota /santiye-panel App.tsx'te <RoleRoute allow={SITE_PANEL}> ile
@@ -70,6 +75,38 @@ export const SiteOperatorPanel: React.FC = () => {
   const [amountLiters, setAmountLiters] = useState<number>(150);
   const [isPumpActive, setIsPumpActive] = useState<boolean>(false);
   const [reportError, setReportError] = useState<string | null>(null);
+
+  // FE-811 AC: "Acil durdurma ... onay gerektirmeli ve audit'lenmelidir."
+  const [isStopConfirmOpen, setIsStopConfirmOpen] = useState(false);
+  const [stopReason, setStopReason] = useState('');
+  const [isStopActionBusy, setIsStopActionBusy] = useState(false);
+
+  useEffect(() => {
+    fetchSiteEmergencyStatus(activeSiteName);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSiteName]);
+
+  const handleConfirmEmergencyStop = async () => {
+    if (stopReason.trim().length < 5) return;
+    setIsStopActionBusy(true);
+    try {
+      if (await emergencyStopSite(activeSiteName, stopReason.trim())) {
+        setIsStopConfirmOpen(false);
+        setStopReason('');
+      }
+    } finally {
+      setIsStopActionBusy(false);
+    }
+  };
+
+  const handleResume = async () => {
+    setIsStopActionBusy(true);
+    try {
+      await emergencyResumeSite(activeSiteName);
+    } finally {
+      setIsStopActionBusy(false);
+    }
+  };
   // TEST_PLAN §2.2 — POST /dispense'in sunucuda doğal tekrar anahtarı yok;
   // `disabled={isPumpActive}` yalnızca bir SONRAKİ render'da yansır. Aynı
   // render içindeki ikinci submit'i senkron ref durdurur (OverviewPage ile aynı
@@ -167,7 +204,35 @@ export const SiteOperatorPanel: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 md:p-8 space-y-6">
-        
+
+        {/* FE-811 AC: "Bağlantı koptuğunda kullanıcı açıkça uyarılmalıdır."
+            FE-801'in zaten dinlediği isSocketConnected — TankStatusPage İLE
+            AYNI desen; bu panelde önceden HİÇ gösterilmiyordu. */}
+        {!isSocketConnected && (
+          <div data-testid="site-connection-lost-warning" className="bg-[#93000a]/10 border border-[#93000a]/40 rounded-xl p-3.5 flex items-center gap-2.5 text-xs font-bold text-[#ffb4ab]">
+            <span className="material-symbols-outlined text-lg">wifi_off</span>
+            <span>Bağlantı yenileniyor — tank/pompa verileri ESKİ (doğrulanmamış) olabilir.</span>
+          </div>
+        )}
+
+        {/* FE-811 AC: "Acil durdurma onay gerektirmeli ve audit'lenmelidir." */}
+        {siteEmergencyStatus?.isStopped && (
+          <div data-testid="site-emergency-stopped-banner" className="bg-[#93000a]/15 border border-[#93000a]/50 rounded-xl p-4 flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center space-x-2.5 text-[#ffb4ab]">
+              <span className="material-symbols-outlined text-xl">dangerous</span>
+              <span className="text-xs font-bold">ŞANTİYE ACİL DURDURULDU — {siteEmergencyStatus.blockedDeviceCount} cihaz bloke.</span>
+            </div>
+            <button
+              data-testid="site-emergency-resume"
+              onClick={handleResume}
+              disabled={isStopActionBusy}
+              className="px-4 py-2 bg-[#a1e8a2] hover:bg-[#bbf4bd] text-[#0d3811] font-black text-xs rounded-xl cursor-pointer disabled:opacity-50"
+            >
+              {isStopActionBusy ? 'İşleniyor...' : 'Devam Ettir'}
+            </button>
+          </div>
+        )}
+
         {/* Notice Info Box for restricted site personnel */}
         <div className="bg-[#1c1b1b] border border-[#353535] p-4 rounded-2xl flex items-center justify-between flex-wrap gap-3">
           <div className="flex items-center space-x-3">
@@ -181,9 +246,22 @@ export const SiteOperatorPanel: React.FC = () => {
               </p>
             </div>
           </div>
-          <div className="text-[11px] font-mono text-[#a1e8a2] bg-[#20201f] border border-[#353535] px-3 py-1 rounded-lg flex items-center space-x-2">
-            <span className="w-2 h-2 rounded-full bg-[#a1e8a2] animate-ping"></span>
-            <span>POMPA SOLENOİD: HAZIR</span>
+          <div className="flex items-center space-x-3">
+            {!siteEmergencyStatus?.isStopped && (
+              <div className="text-[11px] font-mono text-[#a1e8a2] bg-[#20201f] border border-[#353535] px-3 py-1 rounded-lg flex items-center space-x-2">
+                <span className="w-2 h-2 rounded-full bg-[#a1e8a2] animate-ping"></span>
+                <span>POMPA SOLENOİD: HAZIR</span>
+              </div>
+            )}
+            <button
+              data-testid="site-emergency-stop-open"
+              onClick={() => setIsStopConfirmOpen(true)}
+              disabled={siteEmergencyStatus?.isStopped}
+              className="px-4 py-2 bg-[#93000a] hover:bg-[#b5000d] text-[#ffdad6] font-black text-xs rounded-xl flex items-center space-x-1.5 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              <span className="material-symbols-outlined text-base">emergency</span>
+              <span>ACİL DURDUR</span>
+            </button>
           </div>
         </div>
 
@@ -417,6 +495,63 @@ export const SiteOperatorPanel: React.FC = () => {
       <footer className="text-center text-xs text-[#d5c4ab]/60 font-mono max-w-6xl w-full mx-auto py-4 border-t border-[#353535] select-none">
         Akıllı Şantiye Saha İkmal Terminali © 2026 — Endüstriyel IoT Otomasyonu
       </footer>
+
+      {/* FE-811: Acil Durdurma Onay Diyaloğu — Teknik Not: "yanlışlıkla
+          basılmaya çok açıktır; onay diyaloğu ve 'kim durdurdu' kaydı
+          zorunludur." Gerekçe metni ZORUNLU (sunucu da reddeder, bkz.
+          emergencyStopSchema) — rastgele/dikkatsiz bir tıklama durduramaz. */}
+      {isStopConfirmOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div data-testid="site-emergency-stop-modal" className="bg-[#1c1b1b] border border-[#93000a]/50 rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl">
+            <div className="flex items-center space-x-3 text-[#ffb4ab]">
+              <div className="w-10 h-10 rounded-xl bg-[#93000a]/20 border border-[#93000a] flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-2xl">emergency</span>
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm text-[#e5e2e1] uppercase font-mono tracking-wide">ACİL DURDURMA ONAYI</h3>
+                <span className="text-[10px] text-[#ffdca1] font-mono">{activeSiteName}</span>
+              </div>
+            </div>
+
+            <div className="bg-[#141313] border border-[#353535] rounded-xl p-4 text-xs text-[#d5c4ab] font-mono leading-relaxed">
+              <p>Bu şantiyedeki <strong className="text-[#ffb4ab]">TÜM</strong> pompa/debimetre cihazları ANINDA bloke edilecek — hiçbir araç yakıt alamayacak. Bu işlem kaydınızla (kullanıcı adınız) birlikte denetim izine (audit log) yazılır.</p>
+            </div>
+
+            <div>
+              <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Durdurma Gerekçesi (zorunlu, en az 5 karakter)</label>
+              <input
+                type="text"
+                data-testid="site-emergency-stop-reason-input"
+                value={stopReason}
+                onChange={(e) => setStopReason(e.target.value)}
+                placeholder="örn. Hortum sızıntısı tespit edildi"
+                autoFocus
+                className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffb4ab]"
+              />
+            </div>
+
+            <div className="flex items-center justify-end space-x-3 pt-1">
+              <button
+                type="button"
+                onClick={() => { setIsStopConfirmOpen(false); setStopReason(''); }}
+                className="px-4 py-2.5 bg-[#20201f] hover:bg-[#353535] border border-[#514532]/40 text-[#e5e2e1] font-mono text-xs rounded-xl transition-colors cursor-pointer font-bold"
+              >
+                İptal / Vazgeç
+              </button>
+              <button
+                type="button"
+                data-testid="site-emergency-stop-confirm"
+                onClick={handleConfirmEmergencyStop}
+                disabled={isStopActionBusy || stopReason.trim().length < 5}
+                className="px-5 py-2.5 bg-gradient-to-r from-[#93000a] to-[#b5000d] hover:from-[#b5000d] hover:to-[#d4000f] text-[#ffdad6] font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer shadow-lg flex items-center space-x-1.5 disabled:opacity-40"
+              >
+                <span className="material-symbols-outlined text-base">dangerous</span>
+                <span>{isStopActionBusy ? 'Durduruluyor...' : 'Evet, Acil Durdur'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
