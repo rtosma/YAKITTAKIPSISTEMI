@@ -179,6 +179,81 @@ export interface SiteEmergencyStatus {
   totalDeviceCount: number;
 }
 
+// FE-815 Kapsam: "Alarm/anomali merkezi." AI-507'nin zaten tam olan birleşik
+// alarm yaşam döngüsü (gruplama/durum/atama/susturma/eskalasyon) — önceden
+// frontend'de hiç arayüzü yoktu (NotificationsPage.tsx tanks'tan TÜRETİLMİŞ
+// bir mock'tu, gerçek /alarms ucunu hiç kullanmıyordu).
+export type AlarmSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
+export type AlarmStatus = 'OPEN' | 'ACKNOWLEDGED' | 'INVESTIGATING' | 'RESOLVED' | 'FALSE_POSITIVE';
+
+export interface AlarmEvent {
+  id: string;
+  detail: Record<string, unknown>;
+  occurredAt: string;
+}
+
+export interface Alarm {
+  id: string;
+  alarmKey: string;
+  category: string;
+  severity: AlarmSeverity;
+  title: string;
+  siteName: string | null;
+  subjectType: string | null;
+  subjectId: string | null;
+  status: AlarmStatus;
+  assigneeId: string | null;
+  eventCount: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  snoozedUntil: string | null;
+  escalationLevel: number;
+  escalatedAt: string | null;
+  resolutionNote: string | null;
+  resolvedBy: string | null;
+  resolvedAt: string | null;
+  sourceRef: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Yalnızca GET /alarms/:id — bkz. useAlarms.ts fetchAlarm. */
+  events?: AlarmEvent[];
+}
+
+/** FE-815 — alarm atama dropdown'u (GET /users, bu PR'da eklenen küçük bir uç). */
+export interface TenantUser {
+  id: string;
+  username: string;
+  role: string;
+  siteName: string | null;
+}
+
+/** NOTIF-1605 — kullanıcının kendi tercihi (event tipi × kanal). */
+export type NotificationChannel = 'IN_APP' | 'EMAIL' | 'SMS' | 'TELEGRAM' | 'WEBHOOK';
+export interface UserNotificationPreference {
+  id: string;
+  eventType: string;
+  channel: NotificationChannel;
+  enabled: boolean;
+  updatedAt: string;
+}
+
+export interface UserNotificationMute {
+  id: string;
+  eventType: string | null;
+  mutedUntil: string;
+  createdAt: string;
+}
+
+// Backend Socket.io 'alarm:raised' olayının payload'ı (bkz. tenantDb.ts raiseAlarm).
+export interface AlarmRaisedEvent {
+  id: string;
+  category: string;
+  severity: AlarmSeverity;
+  title: string;
+  siteName: string | null;
+  status: AlarmStatus;
+}
+
 // FLEET-1407 — bir aracın bakım/servis geçmişi (append-only, backend
 // vehicle_maintenance_records tablosu).
 export interface VehicleMaintenanceRecord {

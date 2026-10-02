@@ -6840,6 +6840,20 @@ export async function raiseAlarm(
       `INSERT INTO alarm_events (id, tenant_id, alarm_id, detail) VALUES ($1,$2,$3,$4)`,
       [generateId('almev'), tenantId, id, JSON.stringify(spec.detail ?? {})]
     );
+    // FE-815 AC: "Kritik alarm ekranda anlık bildirim üretmelidir." raiseAlarm
+    // ÖNCEDEN hiçbir Socket.io olayı yayınlamıyordu (rfid:unmatched/quota:
+    // exhausted İLE AYNI desen burada HİÇ yoktu) — bir alarm merkezi canlı
+    // besleme olmadan yalnızca polling'e mahkum kalırdı. `alarm:updated`
+    // (PATCH) ve `alarm:escalated` (sweep) ZATEN vardı, yeni bir OPEN alarm
+    // için hiçbiri tetiklenmiyordu — bu yüzden burada eklendi.
+    try {
+      broadcastToTenant(tenantId, 'alarm:raised', {
+        id, category: spec.category, severity: spec.severity, title: spec.title,
+        siteName: spec.siteName ?? null, status: 'OPEN'
+      });
+    } catch (err) {
+      logger.warn({ err }, '⚠️ [AI-507] alarm:raised Socket.io yayını başarısız.');
+    }
     return { alarmId: id, isNew: true, reopened: false, suppressed: false, status: 'OPEN' };
   }
 
@@ -6874,6 +6888,19 @@ export async function raiseAlarm(
       WHERE id = $1`,
     [a.id, newSeverity, newStatus, spec.title, reopened]
   );
+  // FE-815: kapatılmış bir alarm YENİDEN açıldığında da (örn. çözüldü
+  // sayıldıktan sonra kök neden tekrar tetiklendi) ilk açılışla AYNI
+  // "yeni/aktif" niteliğini taşır — susturulmuşsa (suppressed) YAYINLANMAZ.
+  if (reopened && !snoozedActive) {
+    try {
+      broadcastToTenant(tenantId, 'alarm:raised', {
+        id: a.id, category: spec.category, severity: newSeverity, title: spec.title,
+        siteName: spec.siteName ?? null, status: newStatus
+      });
+    } catch (err) {
+      logger.warn({ err }, '⚠️ [AI-507] alarm:raised Socket.io yayını başarısız.');
+    }
+  }
   return { alarmId: a.id, isNew: false, reopened, suppressed: !!snoozedActive, status: newStatus };
 }
 
@@ -6905,6 +6932,25 @@ export interface AlarmRecord {
   source_ref: any;
   created_at: string;
   updated_at: string;
+}
+
+// FE-815 Kapsam: "Alarm atama." updateAlarm'ın assigneeId'si zaten var olan
+// bir `users.id`'yi şart koşuyor ama bu tenant'ın kullanıcılarını (isim/rol
+// görmek için) döndüren HİÇBİR uç yoktu — atama dropdown'u yalnızca ham
+// kullanıcı ID'si olmadan kurulamazdı. Parola/hash hiç seçilmiyor.
+export interface TenantUserRecord {
+  id: string;
+  username: string;
+  role: string;
+  siteName: string | null;
+}
+export async function getTenantUsers(): Promise<TenantUserRecord[]> {
+  return withTenant(async (client) => {
+    const res = await client.query(
+      `SELECT id, username, role, site_name FROM users ORDER BY role, username`
+    );
+    return res.rows.map((r) => ({ id: r.id, username: r.username, role: r.role, siteName: r.site_name }));
+  });
 }
 
 export async function getAlarms(filters: {

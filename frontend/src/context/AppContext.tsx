@@ -29,8 +29,10 @@ import {
   QuotaBalance,
   QuotaExhaustedAlert,
   CrossSiteSettlementSummaryRow,
-  DespatchAdviceStatus
+  DespatchAdviceStatus,
+  AlarmRaisedEvent
 } from '../types';
+import { playAlertBeep } from '../utils/alertSound';
 // NOTE: Oturum açıldığında firma bilgisi de dahil her şey PostgreSQL backend'inden
 // (apiFetch) çekiliyor: firma profili -> GET /companies/me (yalnızca giriş yapan
 // tenant, SITE_MANAGER için tek şantiye). INITIAL_COMPANIES yalnızca giriş
@@ -192,6 +194,13 @@ interface AppContextType {
   // bir e-İrsaliye için backend 404 döner, bu fonksiyon o durumda null döner
   // (hata toast'u GÖSTERMEZ — "henüz oluşturulmadı" normal bir durumdur).
   fetchTransactionDespatchStatus: (transactionId: string) => Promise<DespatchAdviceStatus | null>;
+
+  // FE-815 Kapsam: "Canlı alarm bildirimi ... ve okunmamış sayacı." Backend
+  // 'alarm:raised' olayı (bu PR'da eklendi, bkz. tenantDb.ts raiseAlarm) —
+  // önceden HİÇ yayınlanmıyordu. Sayaç yalnızca "Bildirimler" sayfası
+  // ziyaret edilince sıfırlanır (NotificationsPage.tsx mount effect'i).
+  unreadAlarmCount: number;
+  clearUnreadAlarmCount: () => void;
   addHardwareLog: (log: Omit<HardwareLog, 'id' | 'timestamp'>) => void;
   clearHardwareLogs: () => void;
   toggleCrossSiteStatus: (id: string) => Promise<void>;
@@ -325,6 +334,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [fuelQuotas, setFuelQuotas] = useState<FuelQuota[]>([]);
   const [quotaBalances, setQuotaBalances] = useState<Record<string, QuotaBalance>>({});
   const [quotaExhaustedAlerts, setQuotaExhaustedAlerts] = useState<QuotaExhaustedAlert[]>([]);
+  const [unreadAlarmCount, setUnreadAlarmCount] = useState(0);
   const [crossSiteSettlementSummary, setCrossSiteSettlementSummary] = useState<CrossSiteSettlementSummaryRow[]>([]);
   const [tenantHardwareDevices, setTenantHardwareDevices] = useState<TenantHardwareDevice[]>([]);
   const [deviceClaimCodes, setDeviceClaimCodes] = useState<DeviceClaimCode[]>([]);
@@ -606,6 +616,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setQuotaExhaustedAlerts(prev => [payload, ...prev.filter(a => a.permissionId !== payload.permissionId)].slice(0, 10));
     };
 
+    // FE-815 AC: "Kritik alarm ekranda anlık bildirim üretmelidir." + "okunmamış
+    // sayacı." rfid:unmatched/quota:exhausted İLE AYNI toast deseni; sesli
+    // uyarı SADECE CRITICAL için VE kullanıcı daha önce etkinleştirdiyse
+    // (bkz. utils/alertSound.ts — tarayıcı autoplay politikası).
+    const handleAlarmRaised = (payload: AlarmRaisedEvent) => {
+      setUnreadAlarmCount(prev => prev + 1);
+      showToast(`${payload.title}${payload.siteName ? ` — ${payload.siteName}` : ''}`, payload.severity === 'CRITICAL' ? 'error' : payload.severity === 'WARNING' ? 'warning' : 'info');
+      if (payload.severity === 'CRITICAL') playAlertBeep();
+    };
+
     // FE-801 AC: bağlantı koptuğunda "Bağlantı Yenileniyor..." uyarısı +
     // exponential backoff ile yeniden bağlanma (socket.io-client'ın
     // reconnectionDelay/reconnectionDelayMax ayarı bunu zaten yapar — bkz.
@@ -668,6 +688,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     socket.on('dispense:completed', handleDispenseCompleted);
     socket.on('rfid:unmatched', handleUnmatchedRfid);
     socket.on('quota:exhausted', handleQuotaExhausted);
+    socket.on('alarm:raised', handleAlarmRaised);
     socket.on('telemetry:data', handleTelemetryData);
     socket.on('device:status', handleDeviceStatusChanged);
 
@@ -695,6 +716,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       socket.off('dispense:completed', handleDispenseCompleted);
       socket.off('rfid:unmatched', handleUnmatchedRfid);
       socket.off('quota:exhausted', handleQuotaExhausted);
+      socket.off('alarm:raised', handleAlarmRaised);
       socket.off('telemetry:data', handleTelemetryData);
       socket.off('device:status', handleDeviceStatusChanged);
       disconnectSocket();
@@ -1643,6 +1665,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setQuotaExhaustedAlerts(prev => prev.filter(a => !(a.permissionId === permissionId && a.occurredAt === occurredAt)));
   };
 
+  const clearUnreadAlarmCount = () => setUnreadAlarmCount(0);
+
   // FE-810 Kapsam: "Mahsuplaşma özetine hızlı erişim (REP-715)." Tam bir
   // rapor merkezi sayfası YOK — zaten var olan genel /reports/:reportId
   // ucu (rep-715-mahsup, backend rep715CrossSite.ts) doğrudan çağrılıyor.
@@ -1811,6 +1835,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         fetchQuotaBalance,
         quotaExhaustedAlerts,
         dismissQuotaExhaustedAlert,
+        unreadAlarmCount,
+        clearUnreadAlarmCount,
         crossSiteSettlementSummary,
         fetchCrossSiteSettlementSummary,
         isSocketConnected,

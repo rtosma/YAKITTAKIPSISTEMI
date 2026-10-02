@@ -13,7 +13,8 @@ export const CustomerLayout: React.FC = () => {
     currentUser,
     isManagerMode,
     isAuthenticated,
-    sites
+    sites,
+    unreadAlarmCount
   } = useApp();
 
   if (!isAuthenticated) {
@@ -138,7 +139,12 @@ export const CustomerLayout: React.FC = () => {
                   }`}
                 >
                   <span className="material-symbols-outlined text-lg shrink-0">{item.icon}</span>
-                  <span className="truncate">{item.label}</span>
+                  <span className="truncate flex-1 text-left">{item.label}</span>
+                  {item.id === 'notifications' && unreadAlarmCount > 0 && (
+                    <span data-testid="unread-alarm-badge" className="bg-[#ffb4ab] text-[#412d00] text-[10px] font-black rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1 shrink-0">
+                      {unreadAlarmCount > 99 ? '99+' : unreadAlarmCount}
+                    </span>
+                  )}
                 </button>
               );
             })}

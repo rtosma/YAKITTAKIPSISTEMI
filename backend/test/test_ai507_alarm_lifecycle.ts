@@ -1,5 +1,6 @@
 import { Client } from 'pg';
 import Redis from 'ioredis';
+import { io as socketIoClient, Socket } from 'socket.io-client';
 
 /**
  * AI-507 — birleşik alarm yaşam döngüsü (gruplama, durum, atama, susturma,
@@ -12,6 +13,7 @@ import Redis from 'ioredis';
  */
 
 const API_URL = 'http://localhost:5000/api/v1';
+const RUN = Date.now();
 const SITE = 'Silivri Tesisleri';
 const VEH = 'AI507-VEH';
 const RECON_TANK = 'tank-silivri-1';
@@ -203,6 +205,55 @@ async function run() {
       check('Test 13: audit_logs — ALARM_UPDATED (≥3) ve ALARM_SNOOZED (≥1) yazıldı',
         (m['ALARM_UPDATED'] || 0) >= 3 && (m['ALARM_SNOOZED'] || 0) >= 1, JSON.stringify(m));
     }
+
+    // ── Test 14 (FE-815 ASIL AC — "kritik alarm anlık bildirim üretmeli"):
+    // YENİ bir CRITICAL alarm oluşunca 'alarm:raised' Socket.io olayı
+    // yayınlanır. raiseAlarm ÖNCEDEN HİÇBİR olay yayınlamıyordu (yalnızca
+    // 'alarm:updated'/'alarm:escalated' vardı) — FE-815 için eklendi. ──
+    const freshTankId = `ai507-fresh-tank-${RUN}`;
+    await q(
+      `INSERT INTO tanks (id, tenant_id, name, site_name, capacity_liters, current_level_liters, fuel_type)
+       VALUES ($1, 'comp-camsa', $2, $3, 10000, 5000, 'Motorin')`,
+      [freshTankId, `AI507 Fresh Tank ${RUN}`, SITE]
+    );
+    const socket: Socket = socketIoClient(API_URL.replace('/api/v1', ''), { path: '/socket.io', auth: { token: owner }, transports: ['websocket'] });
+    await new Promise<void>((resolve, reject) => {
+      socket.on('connect', () => resolve());
+      socket.on('connect_error', reject);
+    });
+    const raisedEvents: any[] = [];
+    socket.on('alarm:raised', (payload) => raisedEvents.push(payload));
+
+    const recon2 = await call('POST', `/tanks/${freshTankId}/reconciliations`, { token: owner, body: {
+      periodType: 'AD_HOC', periodStart: '2025-05-01T00:00:00.000Z', periodEnd: '2025-05-02T00:00:00.000Z',
+      openingBookLiters: 5000, physicalLiters: 4750 // Test 4 İLE AYNI -%5 sapma → CRITICAL, ama TAZE bir tank/alarm_key.
+    }});
+    await new Promise((r) => setTimeout(r, 800));
+    const freshKey = `STOCK_RECON:${freshTankId}`;
+    const matchingRaised = raisedEvents.find((e) => e.category === 'STOCK_RECONCILIATION' && e.severity === 'CRITICAL');
+    check(
+      'Test 14 (ASIL AC — FE-815): Yeni CRITICAL alarm → \'alarm:raised\' Socket.io olayı ANLIK yayınlanır',
+      recon2.status === 201 && !!matchingRaised && matchingRaised.status === 'OPEN',
+      `recon2=${recon2.status}, yayınlananlar=${JSON.stringify(raisedEvents)}`
+    );
+    socket.disconnect();
+    await q('DELETE FROM alarm_events WHERE alarm_id IN (SELECT id FROM alarms WHERE tenant_id=\'comp-camsa\' AND alarm_key = $1)', [freshKey]);
+    await q('DELETE FROM alarms WHERE tenant_id=\'comp-camsa\' AND alarm_key = $1', [freshKey]);
+    await q('DELETE FROM stock_reconciliations WHERE tank_id = $1', [freshTankId]);
+    await q('DELETE FROM tanks WHERE id = $1', [freshTankId]);
+
+    // ── Test 15 (FE-815 ASIL AC — "alarm atama"): GET /users — updateAlarm'ın
+    // assigneeId'si zaten var olan bir users.id şart koşuyor ama bu listeyi
+    // (isim/rol görmek için) döndüren HİÇBİR uç yoktu. ──
+    const usersList = await call('GET', '/users', { token: owner });
+    const usersPumpOp = await call('GET', '/users', { token: pumpOp });
+    check(
+      'Test 15 (ASIL AC — FE-815): GET /users kendi tenant\'ının kullanıcılarını (parola hash\'i OLMADAN) döner, PUMP_OPERATOR\'a 403',
+      usersList.status === 200 && Array.isArray(usersList.body.data) && usersList.body.data.length > 0 &&
+        usersList.body.data.every((u: any) => !('password_hash' in u) && !('passwordHash' in u)) &&
+        usersPumpOp.status === 403,
+      `status=${usersList.status}, adet=${usersList.body.data?.length}, pumpOp=${usersPumpOp.status}`
+    );
 
   } finally {
     await q("DELETE FROM transactions WHERE id LIKE 'ai507-tx-%'");
