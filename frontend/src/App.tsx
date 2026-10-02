@@ -49,6 +49,7 @@ import { TankStatusPage } from './pages/customer/TankStatusPage';
 import { DeviceManagementPage } from './pages/customer/DeviceManagementPage';
 import { ArchivePage } from './pages/customer/ArchivePage';
 import { NotificationsPage } from './pages/customer/NotificationsPage';
+import { ReportsPage } from './pages/customer/ReportsPage';
 import { SettingsPage } from './pages/customer/SettingsPage';
 import { CrossSitePage } from './pages/customer/CrossSitePage';
 import { ModulesPage } from './pages/customer/ModulesPage';
@@ -121,6 +122,8 @@ export function App() {
             <Route path="arsiv" element={<ArchivePage />} />
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="bildirimler" element={<NotificationsPage />} />
+            <Route path="reports" element={<ReportsPage />} />
+            <Route path="raporlar" element={<ReportsPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="ayarlar" element={<SettingsPage />} />
             <Route path="cross-site" element={<CrossSitePage />} />

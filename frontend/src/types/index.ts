@@ -514,3 +514,100 @@ export interface SystemMetric {
   mqttBrokerStatus: 'ONLINE' | 'DEGRADED';
   totalTransactionsToday: number;
 }
+
+// FE-816 — REP-703 ortak rapor çatısı + REP-705 zamanlanmış gönderim + REP-723
+// yönetici özet dashboard'unun backend'i zaten tamdı; bu tipler o backend'in
+// JSON sözleşmesinin birebir frontend karşılığı (bkz. reports/reportTypes.ts).
+export type ReportFilterType = 'exact' | 'ilike' | 'dateFrom' | 'dateToExclusiveNextDay' | 'in' | 'numberGte' | 'numberLte';
+
+export interface ReportFilterDef {
+  key: string;
+  type: ReportFilterType;
+  label: string;
+}
+
+export interface ReportColumnDef {
+  key: string;
+  header: string;
+  width?: number;
+}
+
+/** GET /reports — kullanıcının rolüne göre görebileceği rapor tanımları. */
+export interface ReportCatalogEntry {
+  id: string;
+  title: string;
+  description: string;
+  filters: ReportFilterDef[];
+  columns: ReportColumnDef[];
+}
+
+export interface ReportRunResult {
+  data: Record<string, unknown>[];
+  pagination: { page: number; pageSize: number; totalCount: number; totalPages: number };
+  aggregates: Record<string, number>;
+  sort: { column: string; direction: 'ASC' | 'DESC' };
+}
+
+export interface DashboardDrilldown {
+  reportId: string;
+  query: Record<string, string>;
+  path: string;
+}
+
+export interface DashboardKpi {
+  value: number;
+  unit: string;
+  label: string;
+  drilldown: DashboardDrilldown;
+}
+
+export interface ExecutiveDashboard {
+  generatedAt: string;
+  windowDays: number;
+  scope: { siteName: string | null };
+  kpis: Record<string, DashboardKpi>;
+  trends: {
+    dailyConsumption: Array<{ date: string; liters: number; transactions: number }>;
+    dailyCost: Array<{ date: string; cost: number }>;
+    stockLevel: Array<{ date: string; liters: number }>;
+    currentStockLiters: number;
+  };
+  topVehicles: Array<{ vehiclePlate: string; liters: number; cost: number; transactions: number; drilldown: DashboardDrilldown }>;
+  topSites: Array<{ siteName: string; monthLiters: number; monthCost: number; todayLiters: number; drilldown: DashboardDrilldown }>;
+  tanks: Array<{ id: string; siteName: string; tankName: string; fuelType: string; capacityLiters: number; levelLiters: number; fillPct: number | null; isCritical: boolean }>;
+  exports: { csv: string; pdf: string; tanksCsv: string };
+}
+
+export type ReportSchedulePeriod = 'DAILY' | 'WEEKLY' | 'MONTHLY';
+export type ReportDeliveryStatus = 'BEKLIYOR' | 'GÖNDERILDI' | 'BAŞARISIZ' | 'KALICI_BAŞARISIZ' | 'ATLANDI_BOŞ';
+
+export interface ReportSchedule {
+  id: string;
+  reportId: string;
+  filters: Record<string, string>;
+  format: string;
+  periodType: ReportSchedulePeriod;
+  sendHourLocal: number;
+  dayOfWeek: number | null;
+  dayOfMonth: number | null;
+  recipientUserIds: string[];
+  skipIfEmpty: boolean;
+  siteScope: string | null;
+  enabled: boolean;
+  nextRunAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ReportDelivery {
+  id: string;
+  status: ReportDeliveryStatus;
+  attempts: number;
+  rowCount: number | null;
+  deliveryMode: 'ATTACHMENT' | 'LINK' | null;
+  fileSizeBytes: number | null;
+  expiresAt: string | null;
+  lastError: string | null;
+  sentAt: string | null;
+  createdAt: string;
+}
