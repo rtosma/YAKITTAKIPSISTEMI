@@ -165,9 +165,9 @@ export const CustomerLayout: React.FC = () => {
               logoutCompany();
               navigate('/');
             }}
-            className="w-full flex items-center justify-center space-x-2 bg-[#ffb4ab]/10 hover:bg-[#ffb4ab]/20 border border-[#ffb4ab]/30 text-[#ffb4ab] py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+            className="w-full flex items-center justify-center space-x-2 bg-[#ffb4ab]/10 hover:bg-[#ffb4ab]/20 border border-[#ffb4ab]/30 text-[#ffb4ab] py-3.5 rounded-xl text-xs font-bold transition-colors cursor-pointer"
           >
-            <span className="material-symbols-outlined text-base">logout</span>
+            <span className="material-symbols-outlined text-base" aria-hidden="true">logout</span>
             <span>Çıkış Yap</span>
           </button>
         </div>
@@ -181,10 +181,13 @@ export const CustomerLayout: React.FC = () => {
           
           <div className="flex items-center space-x-4">
             <button
+              type="button"
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-              className="md:hidden p-2 text-[#e5e2e1] hover:bg-[#20201f] rounded-lg"
+              aria-label={isMobileMenuOpen ? 'Menüyü kapat' : 'Menüyü aç'}
+              aria-expanded={isMobileMenuOpen}
+              className="md:hidden p-2.5 text-[#e5e2e1] hover:bg-[#20201f] rounded-lg"
             >
-              <span className="material-symbols-outlined text-2xl">menu</span>
+              <span className="material-symbols-outlined text-2xl" aria-hidden="true">menu</span>
             </button>
 
             {/* "SİSTEM ÇEVRİMİÇİ" Green Live Badge */}
@@ -214,9 +217,10 @@ export const CustomerLayout: React.FC = () => {
             {/* Şantiye Filtresi: Firma Yöneticisi için Seçilebilir Dropdown, Şantiye Operatörü için Kilitli Rozet */}
             {isManagerMode ? (
               <div className="hidden lg:flex items-center space-x-2 bg-[#1c1b1b] border border-[#353535] px-3 py-1.5 rounded-xl">
-                <span className="material-symbols-outlined text-sm text-[#ffdca1]">location_on</span>
-                <span className="text-xs font-mono text-[#d5c4ab]">Şantiye:</span>
+                <span className="material-symbols-outlined text-sm text-[#ffdca1]" aria-hidden="true">location_on</span>
+                <span className="text-xs font-mono text-[#d5c4ab]" id="site-filter-label">Şantiye:</span>
                 <select
+                  aria-labelledby="site-filter-label"
                   value={selectedSiteFilter}
                   onChange={(e) => setSelectedSiteFilter(e.target.value)}
                   className="bg-transparent text-xs font-bold text-[#e5e2e1] focus:outline-none cursor-pointer"

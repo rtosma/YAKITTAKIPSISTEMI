@@ -224,7 +224,7 @@ export const SitesPage: React.FC = () => {
 
       {/* MODAL: ADD NEW SITE — çok adımlı sihirbaz (FE-807) */}
       {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-md w-full space-y-6">
             <div className="flex items-center justify-between border-b border-[#514532]/20 pb-4">
               <h3 className="text-base font-bold text-[#e5e2e1] uppercase flex items-center space-x-2">
@@ -397,7 +397,7 @@ export const SitesPage: React.FC = () => {
 
       {/* MODAL: DELETE SITE CONFIRMATION */}
       {siteToDelete && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#ffb4ab]/30 rounded-xl p-6 max-w-md w-full space-y-6">
             <div className="flex items-center space-x-3 text-[#ffb4ab]">
               <span className="material-symbols-outlined text-2xl">warning</span>

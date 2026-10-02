@@ -175,7 +175,7 @@ export const TenantsPage: React.FC = () => {
 
       {/* ADD COMPANY MODAL */}
       {isAddOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-6 max-w-md w-full space-y-6">
             <div className="flex items-center justify-between border-b border-[#353535] pb-4">
               <h3 className="text-base font-extrabold text-[#e5e2e1] uppercase tracking-wider flex items-center space-x-2">

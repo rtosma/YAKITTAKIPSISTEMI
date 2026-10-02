@@ -23,6 +23,30 @@
   }
 }
 
+/*
+ * FE-818 — WCAG 2.1 AA odak göstergeleri. ÖNCEDEN bu kod tabanında 134 yerde
+ * `outline-none` kullanılıyordu (bazıları `focus:border-...` ile kısmen
+ * telafi ediliyordu, çoğu HİÇ telafi etmiyordu) ve hiçbir buton/giriş alanı
+ * `focus-visible` kullanmıyordu (bkz. araştırma: 255 butonun 0'ında özel bir
+ * odak halkası vardı). Bu KÜRESEL kural, bileşen bazında `outline-none` YAZAN
+ * her yeri tek tek değiştirmeden TÜM etkileşimli öğelere tutarlı, yüksek
+ * kontrastlı bir odak halkası ekler — Tailwind'in katmanlı (@layer) yardımcı
+ * sınıfları, katmansız (bu dosyadaki gibi) kurallara göre CSS Cascade
+ * Layers'da DAHA DÜŞÜK önceliklidir, bu yüzden `outline-none` burada ezilir
+ * (ekstra `!important` gerekmez). Yalnızca KLAVYE ile gezinirken görünür
+ * (`:focus-visible`, fare/dokunma tıklamasında tetiklenmez) — AC: "Tüm
+ * etkileşimli öğeler klavye ile erişilebilir olmalıdır."
+ */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid #ffdca1;
+  outline-offset: 2px;
+}
+
 /* Custom scrollbar */
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;

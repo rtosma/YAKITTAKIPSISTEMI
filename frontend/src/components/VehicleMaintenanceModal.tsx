@@ -85,7 +85,7 @@ export const VehicleMaintenanceModal: React.FC<Props> = ({ vehicle, onClose }) =
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-2xl w-full space-y-5 max-h-[85vh] overflow-y-auto">
         <div className="flex items-center justify-between border-b border-[#514532]/20 pb-4">
           <div>

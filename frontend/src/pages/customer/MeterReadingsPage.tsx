@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Vehicle, MeterReading, BulkMeterResultRow, MissingMeterReadings } from '../../types';
+import { useEscapeToClose } from '../../hooks/useEscapeToClose';
 import {
   fetchVehicleMeterReadings,
   recordMeterReading,
@@ -46,6 +47,7 @@ export const MeterReadingsPage: React.FC = () => {
   const [isLoadingMissing, setIsLoadingMissing] = useState(false);
 
   const [historyVehicle, setHistoryVehicle] = useState<Vehicle | null>(null);
+  useEscapeToClose(() => setHistoryVehicle(null), !!historyVehicle);
   const [historyRecords, setHistoryRecords] = useState<MeterReading[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   // FE-813 Kapsam: "Düzeltme geçmişinin görüntülenmesi." Backend APPEND-ONLY
@@ -61,6 +63,7 @@ export const MeterReadingsPage: React.FC = () => {
   const [correctionOverrideReason, setCorrectionOverrideReason] = useState('');
 
   const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
+  useEscapeToClose(() => setIsBulkModalOpen(false), isBulkModalOpen);
   const [bulkPasteText, setBulkPasteText] = useState('');
   const [bulkResults, setBulkResults] = useState<BulkMeterResultRow[] | null>(null);
   const [isBulkSaving, setIsBulkSaving] = useState(false);
@@ -379,12 +382,12 @@ export const MeterReadingsPage: React.FC = () => {
 
       {/* FE-813 Kapsam: "Düzeltme geçmişinin görüntülenmesi." */}
       {historyVehicle && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-lg w-full space-y-4 max-h-[85vh] overflow-y-auto" data-testid="meter-history-modal">
             <div className="flex items-center justify-between border-b border-[#514532]/20 pb-4">
               <h3 className="text-base font-bold text-[#e5e2e1] uppercase">Sayaç Geçmişi — {historyVehicle.plate}</h3>
-              <button data-testid="meter-history-close" onClick={() => setHistoryVehicle(null)} className="text-[#d5c4ab] hover:text-[#e5e2e1] cursor-pointer">
-                <span className="material-symbols-outlined text-lg">close</span>
+              <button type="button" data-testid="meter-history-close" onClick={() => setHistoryVehicle(null)} aria-label="Kapat" className="text-[#d5c4ab] hover:text-[#e5e2e1] cursor-pointer p-2.5 -m-2.5">
+                <span className="material-symbols-outlined text-lg" aria-hidden="true">close</span>
               </button>
             </div>
             {isLoadingHistory ? (
@@ -472,15 +475,15 @@ export const MeterReadingsPage: React.FC = () => {
 
       {/* FE-813 Kapsam: "Toplu giriş: tablo yapıştırma veya Excel içe aktarma." */}
       {isBulkModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-2xl w-full space-y-4 max-h-[85vh] overflow-y-auto" data-testid="bulk-modal">
             <div className="flex items-center justify-between border-b border-[#514532]/20 pb-4">
               <div>
                 <h3 className="text-base font-bold text-[#e5e2e1] uppercase">Toplu Sayaç Girişi</h3>
                 <p className="text-xs text-[#d5c4ab] mt-1">Excel'den kopyalayıp yapıştırın: her satır "PLAKA[TAB/VİRGÜL]DEĞER" (en fazla 50 araç).</p>
               </div>
-              <button onClick={() => setIsBulkModalOpen(false)} className="text-[#d5c4ab] hover:text-[#e5e2e1] cursor-pointer">
-                <span className="material-symbols-outlined text-lg">close</span>
+              <button type="button" onClick={() => setIsBulkModalOpen(false)} aria-label="Kapat" className="text-[#d5c4ab] hover:text-[#e5e2e1] cursor-pointer p-2.5 -m-2.5">
+                <span className="material-symbols-outlined text-lg" aria-hidden="true">close</span>
               </button>
             </div>
 

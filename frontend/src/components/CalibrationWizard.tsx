@@ -91,7 +91,7 @@ export const CalibrationWizard: React.FC<Props> = ({ device, verifiesCommand, on
   const stepIndex = { REFERENCE: 1, DRAIN: 2, MEASURED: 3, DEVIATION: 4, CONFIRM: 5, DONE: 6 }[step];
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
       <div data-testid="calibration-wizard" className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-lg w-full space-y-5 max-h-[85vh] overflow-y-auto">
         <div className="flex items-center justify-between border-b border-[#514532]/20 pb-4">
           <div>

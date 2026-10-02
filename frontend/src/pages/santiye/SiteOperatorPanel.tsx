@@ -8,6 +8,7 @@ import { recordMeterReading, resolveMeterTypeForVehicleType, currentPeriodLabel,
 import { ListSkeleton } from '../../components/ListSkeleton';
 import { ErrorState } from '../../components/ErrorState';
 import { EmptyState } from '../../components/EmptyState';
+import { useEscapeToClose } from '../../hooks/useEscapeToClose';
 
 export const SiteOperatorPanel: React.FC = () => {
   const navigate = useNavigate();
@@ -85,6 +86,7 @@ export const SiteOperatorPanel: React.FC = () => {
 
   // FE-811 AC: "Acil durdurma ... onay gerektirmeli ve audit'lenmelidir."
   const [isStopConfirmOpen, setIsStopConfirmOpen] = useState(false);
+  useEscapeToClose(() => { setIsStopConfirmOpen(false); setStopReason(''); }, isStopConfirmOpen);
   const [stopReason, setStopReason] = useState('');
   const [isStopActionBusy, setIsStopActionBusy] = useState(false);
 
@@ -246,9 +248,10 @@ export const SiteOperatorPanel: React.FC = () => {
               logoutCompany();
               navigate('/santiye-login');
             }}
-            className="flex items-center space-x-1.5 bg-[#ffb4ab]/10 hover:bg-[#ffb4ab]/20 border border-[#ffb4ab]/30 text-[#ffb4ab] px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+            aria-label="Çıkış Yap"
+            className="flex items-center space-x-1.5 bg-[#ffb4ab]/10 hover:bg-[#ffb4ab]/20 border border-[#ffb4ab]/30 text-[#ffb4ab] px-3.5 py-3.5 rounded-xl text-xs font-bold transition-colors cursor-pointer"
           >
-            <span className="material-symbols-outlined text-sm">logout</span>
+            <span className="material-symbols-outlined text-sm" aria-hidden="true">logout</span>
             <span className="hidden sm:inline">Çıkış Yap</span>
           </button>
 
@@ -316,7 +319,7 @@ export const SiteOperatorPanel: React.FC = () => {
               data-testid="site-emergency-stop-open"
               onClick={() => setIsStopConfirmOpen(true)}
               disabled={siteEmergencyStatus?.isStopped}
-              className="px-4 py-2 bg-[#93000a] hover:bg-[#b5000d] text-[#ffdad6] font-black text-xs rounded-xl flex items-center space-x-1.5 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+              className="px-4 py-3.5 bg-[#93000a] hover:bg-[#b5000d] text-[#ffdad6] font-black text-xs rounded-xl flex items-center space-x-1.5 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <span className="material-symbols-outlined text-base">emergency</span>
               <span>ACİL DURDUR</span>
@@ -412,11 +415,12 @@ export const SiteOperatorPanel: React.FC = () => {
             <form onSubmit={handleStartRefuel} className="space-y-3">
               
               <div className="space-y-1">
-                <label className="text-xs font-bold text-[#d5c4ab] block">İkmal Yapılacak Araç</label>
+                <label htmlFor="dispense-vehicle" className="text-xs font-bold text-[#d5c4ab] block">İkmal Yapılacak Araç</label>
                 <select
+                  id="dispense-vehicle"
                   value={selectedVehicleId}
                   onChange={(e) => setSelectedVehicleId(e.target.value)}
-                  className="w-full p-2.5 bg-[#20201f] border border-[#353535] rounded-xl text-xs font-bold text-[#e5e2e1] outline-none cursor-pointer"
+                  className="w-full p-3.5 bg-[#20201f] border border-[#353535] rounded-xl text-xs font-bold text-[#e5e2e1] outline-none cursor-pointer"
                 >
                   {siteVehicles.map(v => (
                     <option key={v.id} value={v.id} className="bg-[#1c1b1b]">
@@ -430,11 +434,12 @@ export const SiteOperatorPanel: React.FC = () => {
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-bold text-[#d5c4ab] block">İkmal Eden Şoför</label>
+                <label htmlFor="dispense-driver" className="text-xs font-bold text-[#d5c4ab] block">İkmal Eden Şoför</label>
                 <select
+                  id="dispense-driver"
                   value={selectedDriverId}
                   onChange={(e) => setSelectedDriverId(e.target.value)}
-                  className="w-full p-2.5 bg-[#20201f] border border-[#353535] rounded-xl text-xs font-bold text-[#e5e2e1] outline-none cursor-pointer"
+                  className="w-full p-3.5 bg-[#20201f] border border-[#353535] rounded-xl text-xs font-bold text-[#e5e2e1] outline-none cursor-pointer"
                 >
                   {siteDrivers.map(d => (
                     <option key={d.id} value={d.id} className="bg-[#1c1b1b]">
@@ -449,18 +454,19 @@ export const SiteOperatorPanel: React.FC = () => {
 
               <div className="space-y-1">
                 <div className="flex justify-between items-center">
-                  <label className="text-xs font-bold text-[#d5c4ab] block">Verilecek Yakıt (Ham Litre / Pulse)</label>
+                  <label htmlFor="dispense-liters" className="text-xs font-bold text-[#d5c4ab] block">Verilecek Yakıt (Ham Litre / Pulse)</label>
                   <span className="text-[10px] font-mono text-[#ffdca1] bg-[#ffdca1]/10 px-1.5 py-0.5 rounded border border-[#ffdca1]/20">
                     Çarpan: x{calibrationMultiplier}
                   </span>
                 </div>
                 <input
+                  id="dispense-liters"
                   type="number"
                   min="1"
                   max="10000"
                   value={amountLiters}
                   onChange={(e) => setAmountLiters(Number(e.target.value))}
-                  className="w-full p-2.5 bg-[#20201f] border border-[#353535] rounded-xl text-xs font-bold font-mono text-[#a1e8a2] outline-none"
+                  className="w-full p-3.5 bg-[#20201f] border border-[#353535] rounded-xl text-xs font-bold font-mono text-[#a1e8a2] outline-none"
                 />
                 <div className="flex items-center justify-between text-[11px] font-mono pt-1 text-[#d5c4ab]">
                   <span>Net Pompa Çıkışı:</span>
@@ -474,7 +480,7 @@ export const SiteOperatorPanel: React.FC = () => {
                 <button
                   type="submit"
                   disabled={isPumpActive}
-                  className="w-full py-3 px-4 bg-[#a1e8a2] hover:bg-[#bbf4bd] text-[#0d3811] font-extrabold text-xs rounded-xl flex items-center justify-center space-x-2 transition-all cursor-pointer disabled:opacity-50 mt-4 shadow-lg"
+                  className="w-full py-4 px-4 bg-[#a1e8a2] hover:bg-[#bbf4bd] text-[#0d3811] font-extrabold text-xs rounded-xl flex items-center justify-center space-x-2 transition-all cursor-pointer disabled:opacity-50 mt-4 shadow-lg"
                 >
                   {isPumpActive ? (
                     <>
@@ -514,7 +520,7 @@ export const SiteOperatorPanel: React.FC = () => {
                 type="button"
                 data-testid="site-report-download"
                 onClick={handleDownloadReport}
-                className="flex items-center space-x-1.5 bg-[#20201f] hover:bg-[#282726] border border-[#353535] text-[#a1e8a2] px-3 py-1.5 rounded-xl text-xs font-bold cursor-pointer"
+                className="flex items-center space-x-1.5 bg-[#20201f] hover:bg-[#282726] border border-[#353535] text-[#a1e8a2] px-3.5 py-3.5 rounded-xl text-xs font-bold cursor-pointer"
               >
                 <span className="material-symbols-outlined text-sm">download</span>
                 <span>İkmal Raporunu İndir (CSV)</span>
@@ -566,6 +572,7 @@ export const SiteOperatorPanel: React.FC = () => {
           <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3">
             <select
               data-testid="meter-vehicle-select"
+              aria-label="Araç"
               value={meterVehicleId}
               onChange={(e) => { setMeterVehicleId(e.target.value); setMeterSuspicion(null); setMeterError(null); setMeterSuccess(null); }}
               className="bg-[#0e0e0e] border border-[#353535] text-[#e5e2e1] text-sm rounded-xl p-4 focus:outline-none focus:border-[#ffdca1]"
@@ -578,6 +585,7 @@ export const SiteOperatorPanel: React.FC = () => {
               type="number"
               inputMode="numeric"
               data-testid="meter-value-input"
+              aria-label="Sayaç değeri"
               value={meterValue}
               onChange={(e) => setMeterValue(e.target.value)}
               placeholder="Sayaç değeri"
@@ -637,14 +645,14 @@ export const SiteOperatorPanel: React.FC = () => {
           zorunludur." Gerekçe metni ZORUNLU (sunucu da reddeder, bkz.
           emergencyStopSchema) — rastgele/dikkatsiz bir tıklama durduramaz. */}
       {isStopConfirmOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" aria-labelledby="emergency-stop-title" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div data-testid="site-emergency-stop-modal" className="bg-[#1c1b1b] border border-[#93000a]/50 rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl">
             <div className="flex items-center space-x-3 text-[#ffb4ab]">
               <div className="w-10 h-10 rounded-xl bg-[#93000a]/20 border border-[#93000a] flex items-center justify-center shrink-0">
-                <span className="material-symbols-outlined text-2xl">emergency</span>
+                <span className="material-symbols-outlined text-2xl" aria-hidden="true">emergency</span>
               </div>
               <div>
-                <h3 className="font-extrabold text-sm text-[#e5e2e1] uppercase font-mono tracking-wide">ACİL DURDURMA ONAYI</h3>
+                <h3 id="emergency-stop-title" className="font-extrabold text-sm text-[#e5e2e1] uppercase font-mono tracking-wide">ACİL DURDURMA ONAYI</h3>
                 <span className="text-[10px] text-[#ffdca1] font-mono">{activeSiteName}</span>
               </div>
             </div>
@@ -654,15 +662,16 @@ export const SiteOperatorPanel: React.FC = () => {
             </div>
 
             <div>
-              <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Durdurma Gerekçesi (zorunlu, en az 5 karakter)</label>
+              <label htmlFor="emergency-stop-reason" className="text-xs font-mono text-[#d5c4ab] block mb-1">Durdurma Gerekçesi (zorunlu, en az 5 karakter)</label>
               <input
+                id="emergency-stop-reason"
                 type="text"
                 data-testid="site-emergency-stop-reason-input"
                 value={stopReason}
                 onChange={(e) => setStopReason(e.target.value)}
                 placeholder="örn. Hortum sızıntısı tespit edildi"
                 autoFocus
-                className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffb4ab]"
+                className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3.5 focus:outline-none focus:border-[#ffb4ab]"
               />
             </div>
 
@@ -670,7 +679,7 @@ export const SiteOperatorPanel: React.FC = () => {
               <button
                 type="button"
                 onClick={() => { setIsStopConfirmOpen(false); setStopReason(''); }}
-                className="px-4 py-2.5 bg-[#20201f] hover:bg-[#353535] border border-[#514532]/40 text-[#e5e2e1] font-mono text-xs rounded-xl transition-colors cursor-pointer font-bold"
+                className="px-4 py-3.5 bg-[#20201f] hover:bg-[#353535] border border-[#514532]/40 text-[#e5e2e1] font-mono text-xs rounded-xl transition-colors cursor-pointer font-bold"
               >
                 İptal / Vazgeç
               </button>
@@ -679,9 +688,9 @@ export const SiteOperatorPanel: React.FC = () => {
                 data-testid="site-emergency-stop-confirm"
                 onClick={handleConfirmEmergencyStop}
                 disabled={isStopActionBusy || stopReason.trim().length < 5}
-                className="px-5 py-2.5 bg-gradient-to-r from-[#93000a] to-[#b5000d] hover:from-[#b5000d] hover:to-[#d4000f] text-[#ffdad6] font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer shadow-lg flex items-center space-x-1.5 disabled:opacity-40"
+                className="px-5 py-3.5 bg-gradient-to-r from-[#93000a] to-[#b5000d] hover:from-[#b5000d] hover:to-[#d4000f] text-[#ffdad6] font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer shadow-lg flex items-center space-x-1.5 disabled:opacity-40"
               >
-                <span className="material-symbols-outlined text-base">dangerous</span>
+                <span className="material-symbols-outlined text-base" aria-hidden="true">dangerous</span>
                 <span>{isStopActionBusy ? 'Durduruluyor...' : 'Evet, Acil Durdur'}</span>
               </button>
             </div>

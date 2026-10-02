@@ -66,7 +66,7 @@ export const TenantDetailModal: React.FC = () => {
   ];
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex justify-end animate-fadeIn">
+    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex justify-end animate-fadeIn">
       <div 
         className="fixed inset-0"
         onClick={() => setSelectedTenantForDetail(null)}
@@ -258,7 +258,7 @@ export const TenantDetailModal: React.FC = () => {
 
       {/* Yıkıcı işlem onay diyaloğu (dondurma / modül kapatma) */}
       {pendingAction && (
-        <div className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#ff5f56]/50 rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl">
             <div className="flex items-center space-x-3 text-[#ff5f56]">
               <div className="w-10 h-10 rounded-xl bg-[#ff5f56]/10 border border-[#ff5f56]/30 flex items-center justify-center shrink-0">

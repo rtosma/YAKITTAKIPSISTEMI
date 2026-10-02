@@ -239,7 +239,7 @@ export const DriversPage: React.FC = () => {
 
       {/* MODAL 1: ADD DRIVER */}
       {isAddOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-md w-full space-y-6">
             <div className="flex items-center justify-between border-b border-[#514532]/20 pb-4">
               <h3 className="text-base font-bold text-[#e5e2e1] uppercase flex items-center space-x-2">
@@ -372,7 +372,7 @@ export const DriversPage: React.FC = () => {
 
       {/* MODAL 2: EDIT DRIVER */}
       {editingDriver && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-md w-full space-y-6">
             <div className="flex items-center justify-between border-b border-[#514532]/20 pb-4">
               <h3 className="text-base font-bold text-[#e5e2e1] uppercase flex items-center space-x-2">
@@ -481,7 +481,7 @@ export const DriversPage: React.FC = () => {
 
       {/* MODAL 3: DELETE CONFIRMATION */}
       {deletingDriver && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-sm w-full space-y-4 text-center">
             <div className="w-12 h-12 bg-[#93000a]/20 border border-[#93000a] text-[#ffb4ab] rounded-full flex items-center justify-center mx-auto">
               <span className="material-symbols-outlined text-2xl">warning</span>

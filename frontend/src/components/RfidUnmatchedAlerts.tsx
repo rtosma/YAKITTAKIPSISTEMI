@@ -77,7 +77,7 @@ export const RfidUnmatchedAlerts: React.FC = () => {
       </div>
 
       {assigningUid && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-sm w-full space-y-4">
             <h3 className="text-base font-bold text-[#e5e2e1]">RFID Kartını Tanımla</h3>
             <p className="text-xs text-[#d5c4ab] font-mono break-all">{assigningUid}</p>

@@ -3,6 +3,7 @@ import { useApp } from '../../context/AppContext';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { TankGauge } from '../../components/TankGauge';
 import { FleetComplianceWidget } from '../../components/FleetComplianceWidget';
+import { useEscapeToClose } from '../../hooks/useEscapeToClose';
 
 export const OverviewPage: React.FC = () => {
   const { 
@@ -19,6 +20,7 @@ export const OverviewPage: React.FC = () => {
 
   // Modal State for Quick Fuel Log
   const [isRefuelModalOpen, setIsRefuelModalOpen] = useState(false);
+  useEscapeToClose(() => setIsRefuelModalOpen(false), isRefuelModalOpen);
   const [refuelPlate, setRefuelPlate] = useState(vehicles[0]?.plate || '34 CTP 82');
   const [refuelDriver, setRefuelDriver] = useState('Ahmet Yılmaz');
   const [refuelSite, setRefuelSite] = useState(currentCompany.sites[0]?.name || 'Gebze Ana Şantiye');
@@ -319,48 +321,57 @@ export const OverviewPage: React.FC = () => {
 
       {/* QUICK REFUEL MODAL */}
       {isRefuelModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="refuel-modal-title"
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+        >
           <div className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-6 max-w-md w-full space-y-6">
             <div className="flex items-center justify-between border-b border-[#353535] pb-4">
-              <h3 className="text-base font-extrabold text-[#e5e2e1] uppercase tracking-wider flex items-center space-x-2">
+              <h3 id="refuel-modal-title" className="text-base font-extrabold text-[#e5e2e1] uppercase tracking-wider flex items-center space-x-2">
                 <span className="material-symbols-outlined text-[#ffdca1]">local_gas_station</span>
                 <span>Hızlı İkmal Kaydı</span>
               </h3>
               <button
+                type="button"
                 onClick={() => setIsRefuelModalOpen(false)}
-                className="text-[#d5c4ab] hover:text-[#e5e2e1]"
+                aria-label="Kapat"
+                className="text-[#d5c4ab] hover:text-[#e5e2e1] p-2.5 -m-2.5"
               >
-                <span className="material-symbols-outlined">close</span>
+                <span className="material-symbols-outlined" aria-hidden="true">close</span>
               </button>
             </div>
 
             <form onSubmit={handleCreateRefuel} className="space-y-4">
               <div>
-                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Şantiye</label>
+                <label htmlFor="refuel-site" className="text-xs font-mono text-[#d5c4ab] block mb-1">Şantiye</label>
                 {isManagerMode ? (
                   <select
+                    id="refuel-site"
                     value={refuelSite}
                     onChange={(e) => setRefuelSite(e.target.value)}
-                    className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                    className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3.5 focus:outline-none focus:border-[#ffdca1]"
                   >
                     {currentCompany.sites.map(s => (
                       <option key={s.id} value={s.name}>{s.name}</option>
                     ))}
                   </select>
                 ) : (
-                  <div className="w-full bg-[#131313] border border-[#a1e8a2]/30 text-[#a1e8a2] text-xs rounded-xl p-3 font-bold flex items-center space-x-1.5 select-none">
-                    <span className="material-symbols-outlined text-sm">lock</span>
+                  <div id="refuel-site" className="w-full bg-[#131313] border border-[#a1e8a2]/30 text-[#a1e8a2] text-xs rounded-xl p-3.5 font-bold flex items-center space-x-1.5 select-none">
+                    <span className="material-symbols-outlined text-sm" aria-hidden="true">lock</span>
                     <span>{currentUser?.siteName || selectedSiteFilter}</span>
                   </div>
                 )}
               </div>
 
               <div>
-                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Araç Plakası</label>
+                <label htmlFor="refuel-plate" className="text-xs font-mono text-[#d5c4ab] block mb-1">Araç Plakası</label>
                 <select
+                  id="refuel-plate"
                   value={refuelPlate}
                   onChange={(e) => setRefuelPlate(e.target.value)}
-                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3.5 focus:outline-none focus:border-[#ffdca1]"
                 >
                   {vehicles
                     .filter(v => isManagerMode || v.siteName === (currentUser?.siteName || refuelSite))
@@ -371,25 +382,27 @@ export const OverviewPage: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Şoför Adı</label>
+                <label htmlFor="refuel-driver" className="text-xs font-mono text-[#d5c4ab] block mb-1">Şoför Adı</label>
                 <input
+                  id="refuel-driver"
                   type="text"
                   value={refuelDriver}
                   onChange={(e) => setRefuelDriver(e.target.value)}
-                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3.5 focus:outline-none focus:border-[#ffdca1]"
                   required
                 />
               </div>
 
               <div>
-                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Verilen Yakıt Miktarı (Litre)</label>
+                <label htmlFor="refuel-liters" className="text-xs font-mono text-[#d5c4ab] block mb-1">Verilen Yakıt Miktarı (Litre)</label>
                 <input
+                  id="refuel-liters"
                   type="number"
                   value={refuelLiters}
                   onChange={(e) => setRefuelLiters(Number(e.target.value))}
                   min={1}
                   max={2000}
-                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] font-mono font-bold text-sm rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] font-mono font-bold text-sm rounded-xl p-3.5 focus:outline-none focus:border-[#ffdca1]"
                   required
                 />
               </div>
@@ -398,7 +411,7 @@ export const OverviewPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsRefuelModalOpen(false)}
-                  className="px-4 py-2.5 bg-[#20201f] text-[#d5c4ab] rounded-xl text-xs font-bold hover:text-[#e5e2e1]"
+                  className="px-4 py-3.5 bg-[#20201f] text-[#d5c4ab] rounded-xl text-xs font-bold hover:text-[#e5e2e1]"
                 >
                   İptal
                 </button>
@@ -406,7 +419,7 @@ export const OverviewPage: React.FC = () => {
                   type="submit"
                   disabled={isSubmittingRefuel}
                   aria-busy={isSubmittingRefuel}
-                  className="px-5 py-2.5 bg-[#ffdca1] text-[#412d00] rounded-xl text-xs font-black hover:bg-[#ffe5b9] disabled:opacity-60 disabled:cursor-not-allowed"
+                  className="px-5 py-3.5 bg-[#ffdca1] text-[#412d00] rounded-xl text-xs font-black hover:bg-[#ffe5b9] disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {isSubmittingRefuel ? 'Kaydediliyor…' : 'İkmalı Kaydet'}
                 </button>
