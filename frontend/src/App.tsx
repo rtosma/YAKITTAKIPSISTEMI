@@ -61,12 +61,39 @@ import { DevicesPage } from './pages/developer/DevicesPage';
 import { LiveLogsPage } from './pages/developer/LiveLogsPage';
 import { SystemHealthPage } from './pages/developer/SystemHealthPage';
 
+/**
+ * FE-817 — test seam for the error boundary (frontend/e2e/error-states.spec.ts).
+ * A genuine render crash can't be forced generically from outside the app
+ * in Playwright, so this component does nothing in normal use and throws
+ * ONLY when the URL explicitly carries `?__e2e_throw=1` — zero risk in
+ * production since nothing sets that param during real use.
+ *
+ * MUST stay a PURE function of the URL (no side-effecting "throw once"
+ * flag): an earlier sessionStorage-flag version made it behave differently
+ * across React's two invocations of the same render (it double-invokes a
+ * component that just threw, to tell a genuine render bug apart from a
+ * one-off fluke) — because the flag changed BETWEEN those two calls, React
+ * got an inconsistent result and errored internally ("Should not already be
+ * working", minified error #520) instead of reaching this boundary at all.
+ * The test clears the query param itself (history.replaceState) before
+ * retrying, which is also the more honest test: "Tekrar Dene" can only
+ * recover once the triggering condition is actually gone, same as a real
+ * transient-data crash.
+ */
+function DevErrorTrigger() {
+  if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('__e2e_throw') === '1') {
+    throw new Error('FE-817 E2E test tetikleyicisi: kasıtlı render hatası.');
+  }
+  return null;
+}
+
 export function App() {
   return (
     <QueryClientProvider client={queryClient}>
     <AppProvider>
       <BrowserRouter>
         <Toast />
+        <DevErrorTrigger />
         <RfidUnmatchedAlerts />
         <QuotaExhaustedAlerts />
         <Routes>

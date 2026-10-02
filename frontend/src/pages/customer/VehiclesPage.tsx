@@ -4,6 +4,7 @@ import { Vehicle } from '../../types';
 import { isValidPlate } from '../../utils/validation';
 import { VehicleMaintenanceModal } from '../../components/VehicleMaintenanceModal';
 import { RfidCardStatusModal } from '../../components/RfidCardStatusModal';
+import { EmptyState } from '../../components/EmptyState';
 
 export const VehiclesPage: React.FC = () => {
   const { vehicles, selectedSiteFilter, addVehicle, updateVehicle, deleteVehicle, currentCompany, drivers, isManagerMode, currentUser, sites, rfidDenylist } = useApp();
@@ -243,8 +244,15 @@ export const VehiclesPage: React.FC = () => {
 
             {filteredVehicles.length === 0 && (
               <tr>
-                <td colSpan={9} className="py-12 text-center text-[#d5c4ab]">
-                  Kayıtlı araç bulunamadı.
+                <td colSpan={9} className="py-6">
+                  <EmptyState
+                    icon="local_shipping"
+                    title={vehicles.length === 0 ? 'Henüz araç eklenmedi.' : 'Filtre kriterlerine uygun araç bulunamadı.'}
+                    description={vehicles.length === 0 ? 'İlk aracınızı ekleyerek başlayın.' : undefined}
+                    actionLabel={vehicles.length === 0 ? 'İlk Aracınızı Ekleyin' : undefined}
+                    onAction={vehicles.length === 0 ? handleOpenAdd : undefined}
+                    testId="vehicles-empty"
+                  />
                 </td>
               </tr>
             )}

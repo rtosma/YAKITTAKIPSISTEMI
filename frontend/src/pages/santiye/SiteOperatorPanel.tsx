@@ -5,6 +5,9 @@ import { useApp } from '../../context/AppContext';
 import { usePermissions } from '../../hooks/usePermissions';
 import { API_BASE_URL } from '../../utils/api';
 import { recordMeterReading, resolveMeterTypeForVehicleType, currentPeriodLabel, formatSuspicionDetail } from '../../hooks/useMeterReadings';
+import { ListSkeleton } from '../../components/ListSkeleton';
+import { ErrorState } from '../../components/ErrorState';
+import { EmptyState } from '../../components/EmptyState';
 
 export const SiteOperatorPanel: React.FC = () => {
   const navigate = useNavigate();
@@ -24,7 +27,10 @@ export const SiteOperatorPanel: React.FC = () => {
     siteEmergencyStatus,
     fetchSiteEmergencyStatus,
     emergencyStopSite,
-    emergencyResumeSite
+    emergencyResumeSite,
+    isLoadingInitialData,
+    initialLoadError,
+    retryInitialDataLoad
   } = useApp();
 
   // FE-803: rota /santiye-panel App.tsx'te <RoleRoute allow={SITE_PANEL}> ile
@@ -252,7 +258,12 @@ export const SiteOperatorPanel: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 md:p-8 space-y-6">
-
+        {initialLoadError ? (
+          <ErrorState error={{ message: initialLoadError }} onRetry={retryInitialDataLoad} testId="site-panel-initial-load-error" />
+        ) : isLoadingInitialData ? (
+          <ListSkeleton rows={6} testId="site-panel-initial-load-skeleton" />
+        ) : (
+        <>
         {/* FE-811 AC: "Bağlantı koptuğunda kullanıcı açıkça uyarılmalıdır."
             FE-801'in zaten dinlediği isSocketConnected — TankStatusPage İLE
             AYNI desen; bu panelde önceden HİÇ gösterilmiyordu. */}
@@ -325,6 +336,9 @@ export const SiteOperatorPanel: React.FC = () => {
               </h2>
             </div>
 
+            {siteTanks.length === 0 && (
+              <EmptyState icon="oil_barrel" title="Bu şantiyeye kayıtlı tank yok." description="Tank eklemek için firma yöneticinizle iletişime geçin." testId="site-tanks-empty" />
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {siteTanks.map((tank) => {
                 const percentage = Math.round((tank.currentLevelLiters / tank.capacityLiters) * 100);
@@ -410,6 +424,9 @@ export const SiteOperatorPanel: React.FC = () => {
                     </option>
                   ))}
                 </select>
+                {siteVehicles.length === 0 && (
+                  <p className="text-[10px] text-[#ffb4ab]" data-testid="site-vehicles-empty-hint">Bu şantiyeye kayıtlı araç yok — ikmal kaydedilemez.</p>
+                )}
               </div>
 
               <div className="space-y-1">
@@ -425,6 +442,9 @@ export const SiteOperatorPanel: React.FC = () => {
                     </option>
                   ))}
                 </select>
+                {siteDrivers.length === 0 && (
+                  <p className="text-[10px] text-[#ffb4ab]" data-testid="site-drivers-empty-hint">Bu şantiyeye kayıtlı şoför yok — ikmal kaydedilemez.</p>
+                )}
               </div>
 
               <div className="space-y-1">
@@ -534,6 +554,9 @@ export const SiteOperatorPanel: React.FC = () => {
                 ))}
               </tbody>
             </table>
+            {siteTransactions.length === 0 && (
+              <EmptyState icon="receipt_long" title="Henüz ikmal kaydı yok." description="Yukarıdaki formla ilk ikmalinizi başlatın." testId="site-transactions-empty" />
+            )}
           </div>
         </div>
 
@@ -599,6 +622,8 @@ export const SiteOperatorPanel: React.FC = () => {
             </div>
           )}
         </div>
+        </>
+        )}
 
       </main>
 

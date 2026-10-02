@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { SiteProvisioningResult } from '../../types';
+import { EmptyState } from '../../components/EmptyState';
 
 // FE-807 Kapsam: "Çok adımlı sihirbaz: şantiye bilgileri → konum/geofence →
 // sorumlu kullanıcı → özet." "Geofence" adımı BİLİNÇLİ OLARAK atlandı:
@@ -208,9 +209,15 @@ export const SitesPage: React.FC = () => {
         ))}
 
         {filteredSites.length === 0 && (
-          <div className="col-span-full py-12 flex flex-col items-center justify-center text-[#d5c4ab] bg-[#1c1b1b] border border-[#514532]/20 rounded-xl border-dashed">
-            <span className="material-symbols-outlined text-4xl mb-3 opacity-50">search_off</span>
-            <p className="font-mono text-sm">Veritabanında kayıtlı şantiye bulunamadı.</p>
+          <div className="col-span-full">
+            <EmptyState
+              icon="location_city"
+              title={dynamicSites.length === 0 ? 'Henüz şantiye eklenmedi.' : 'Arama kriterlerine uygun şantiye bulunamadı.'}
+              description={dynamicSites.length === 0 ? 'İlk şantiyenizi oluşturarak başlayın.' : undefined}
+              actionLabel={dynamicSites.length === 0 ? 'İlk Şantiyenizi Oluşturun' : undefined}
+              onAction={dynamicSites.length === 0 ? () => setIsAddModalOpen(true) : undefined}
+              testId="sites-empty"
+            />
           </div>
         )}
       </div>

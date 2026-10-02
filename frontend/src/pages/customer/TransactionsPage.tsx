@@ -5,6 +5,9 @@ import { exportToExcelWithTotals } from '../../utils/excelExporter';
 import { downloadAuthenticatedFile } from '../../utils/api';
 import { FuelTransaction, DespatchAdviceStatus } from '../../types';
 import { useTransactionsQuery, useDebouncedValue, fetchAllFilteredTransactions, TransactionQueryFilters } from '../../hooks/useTransactionsQuery';
+import { ListSkeleton } from '../../components/ListSkeleton';
+import { EmptyState } from '../../components/EmptyState';
+import { ErrorState } from '../../components/ErrorState';
 
 const DESPATCH_STATUS_VIEW_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'];
 
@@ -147,7 +150,7 @@ export const TransactionsPage: React.FC = () => {
     sortDir
   }), [currentPage, startDate, endDate, siteFilter, debouncedVehicleFilter, driverFilter, tankFilter, pumpStatusFilter, selectedType, debouncedSearchTerm, sortBy, sortDir]);
 
-  const { data, isLoading, isFetching, isPlaceholderData, isError, error } = useTransactionsQuery(filters);
+  const { data, isLoading, isFetching, isPlaceholderData, isError, error, refetch } = useTransactionsQuery(filters);
 
   const transactions = data?.transactions ?? [];
   const totalCount = data?.totalCount ?? 0;
@@ -603,16 +606,17 @@ export const TransactionsPage: React.FC = () => {
             <tbody className="divide-y divide-[#514532]/20 font-mono">
               {isLoading && (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-[#d5c4ab]">
-                    <span className="inline-flex items-center gap-2">
-                      <span className="w-4 h-4 border-2 border-[#ffdca1] border-t-transparent rounded-full animate-spin" />
-                      Yükleniyor...
-                    </span>
-                  </td>
+                  <td colSpan={9} className="py-4"><ListSkeleton rows={6} columns={9} testId="transactions-skeleton" /></td>
                 </tr>
               )}
 
-              {!isLoading && transactions.map(t => {
+              {isError && !isLoading && (
+                <tr>
+                  <td colSpan={9} className="py-4"><ErrorState error={error} onRetry={() => refetch()} testId="transactions-error" /></td>
+                </tr>
+              )}
+
+              {!isLoading && !isError && transactions.map(t => {
                 const cellPad = isCompactDensity ? 'py-1.5 px-4' : 'py-3.5 px-4';
                 const isExpanded = expandedRowId === t.id;
                 return (
@@ -689,11 +693,9 @@ export const TransactionsPage: React.FC = () => {
                 );
               })}
 
-              {!isLoading && transactions.length === 0 && (
+              {!isLoading && !isError && transactions.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="py-12 text-center text-[#d5c4ab]">
-                    Filtre kriterlerine uygun yakıt hareketi bulunamadı.
-                  </td>
+                  <td colSpan={9}><EmptyState icon="receipt_long" title="Filtre kriterlerine uygun yakıt hareketi bulunamadı." testId="transactions-empty" /></td>
                 </tr>
               )}
             </tbody>

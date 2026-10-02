@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { TankGauge } from '../../components/TankGauge';
 import { Tank, StrappingUploadError } from '../../types';
+import { EmptyState } from '../../components/EmptyState';
 
 export const TankStatusPage: React.FC = () => {
   const { tanks, selectedSiteFilter, tankRefreshKey, triggerTankRefresh, addTank, updateTank, deleteTank, currentCompany, isManagerMode, currentUser, sites, isSocketConnected, uploadTankStrappingTable } = useApp();
@@ -185,8 +186,15 @@ export const TankStatusPage: React.FC = () => {
         ))}
 
         {filteredTanks.length === 0 && (
-          <div className="col-span-full bg-[#1c1b1b] border border-[#514532]/20 rounded-xl p-12 text-center text-[#d5c4ab] font-mono">
-            Bu şantiyeye kayıtlı tank bulunamadı.
+          <div className="col-span-full">
+            <EmptyState
+              icon="oil_barrel"
+              title={tanks.length === 0 ? 'Henüz tank eklenmedi.' : 'Bu şantiyeye kayıtlı tank bulunamadı.'}
+              description={tanks.length === 0 ? 'İlk tankınızı ekleyerek başlayın.' : undefined}
+              actionLabel={tanks.length === 0 ? 'İlk Tankınızı Ekleyin' : undefined}
+              onAction={tanks.length === 0 ? handleOpenAddModal : undefined}
+              testId="tanks-empty"
+            />
           </div>
         )}
       </div>

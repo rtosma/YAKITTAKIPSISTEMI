@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Driver } from '../../types';
 import { RfidCardStatusModal } from '../../components/RfidCardStatusModal';
+import { EmptyState } from '../../components/EmptyState';
 
 export const DriversPage: React.FC = () => {
   const { drivers, selectedSiteFilter, addDriver, updateDriver, deleteDriver, currentCompany, vehicles, isManagerMode, currentUser, sites, rfidDenylist } = useApp();
@@ -220,8 +221,15 @@ export const DriversPage: React.FC = () => {
 
             {filteredDrivers.length === 0 && (
               <tr>
-                <td colSpan={9} className="py-12 text-center text-[#d5c4ab]">
-                  Kayıtlı şoför bulunamadı.
+                <td colSpan={9} className="py-6">
+                  <EmptyState
+                    icon="badge"
+                    title={drivers.length === 0 ? 'Henüz şoför eklenmedi.' : 'Filtre kriterlerine uygun şoför bulunamadı.'}
+                    description={drivers.length === 0 ? 'İlk şoförünüzü ekleyerek başlayın.' : undefined}
+                    actionLabel={drivers.length === 0 ? 'İlk Şoförünüzü Ekleyin' : undefined}
+                    onAction={drivers.length === 0 ? handleOpenAdd : undefined}
+                    testId="drivers-empty"
+                  />
                 </td>
               </tr>
             )}

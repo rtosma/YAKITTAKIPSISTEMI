@@ -1,20 +1,25 @@
 import React, { useState } from 'react';
 import { Outlet, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
+import { ListSkeleton } from '../components/ListSkeleton';
+import { ErrorState } from '../components/ErrorState';
 
 export const CustomerLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { 
-    currentCompany, 
-    selectedSiteFilter, 
-    setSelectedSiteFilter, 
-    logoutCompany, 
+  const {
+    currentCompany,
+    selectedSiteFilter,
+    setSelectedSiteFilter,
+    logoutCompany,
     currentUser,
     isManagerMode,
     isAuthenticated,
     sites,
-    unreadAlarmCount
+    unreadAlarmCount,
+    isLoadingInitialData,
+    initialLoadError,
+    retryInitialDataLoad
   } = useApp();
 
   if (!isAuthenticated) {
@@ -96,7 +101,7 @@ export const CustomerLayout: React.FC = () => {
                 MÜŞTERİ FİRMASI
               </span>
               <h2 className="text-xs font-bold text-[#e5e2e1] truncate mt-0.5">
-                {currentCompany.name}
+                {isLoadingInitialData ? 'Yükleniyor…' : currentCompany.name}
               </h2>
             </div>
           </div>
@@ -257,7 +262,13 @@ export const CustomerLayout: React.FC = () => {
 
         {/* PAGE CONTENT ROUTER OUTLET */}
         <main className="flex-1 p-6 md:p-8 space-y-8 overflow-y-auto">
-          <Outlet />
+          {initialLoadError ? (
+            <ErrorState error={{ message: initialLoadError }} onRetry={retryInitialDataLoad} testId="panel-initial-load-error" />
+          ) : isLoadingInitialData ? (
+            <ListSkeleton rows={6} testId="panel-initial-load-skeleton" />
+          ) : (
+            <Outlet />
+          )}
         </main>
 
       </div>

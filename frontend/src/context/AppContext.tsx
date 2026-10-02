@@ -201,6 +201,16 @@ interface AppContextType {
   // ziyaret edilince sıfırlanır (NotificationsPage.tsx mount effect'i).
   unreadAlarmCount: number;
   clearUnreadAlarmCount: () => void;
+
+  // FE-817 — "Hiçbir ekranda boş beyaz sayfayla veya donmuş arayüzle
+  // karşılaşılmamalı." Girişten sonraki ilk veri yüklemesinin (özellikle
+  // /companies/me) durumu: önceden bu başarısız olunca `companies` state'i
+  // sessizce `INITIAL_COMPANIES` mock'unda (bkz. mock.ts) KALIYOR ve
+  // kullanıcıya gerçek firma verisi gibi gösteriliyordu — hiçbir hata
+  // göstergesi yoktu (gerçek bulunan hata; bkz. commit mesajı).
+  isLoadingInitialData: boolean;
+  initialLoadError: string | null;
+  retryInitialDataLoad: () => void;
   addHardwareLog: (log: Omit<HardwareLog, 'id' | 'timestamp'>) => void;
   clearHardwareLogs: () => void;
   toggleCrossSiteStatus: (id: string) => Promise<void>;
@@ -334,6 +344,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [fuelQuotas, setFuelQuotas] = useState<FuelQuota[]>([]);
   const [quotaBalances, setQuotaBalances] = useState<Record<string, QuotaBalance>>({});
   const [quotaExhaustedAlerts, setQuotaExhaustedAlerts] = useState<QuotaExhaustedAlert[]>([]);
+  // FE-817: isAuthenticated true olduğu HER an (ilk giriş veya F5 sonrası
+  // token rehydrate) true'dan başlar — panel/santiye layout'ları bu bayrak
+  // true iken tam sayfa skeleton gösterir, Outlet'i DEĞİL.
+  const [isLoadingInitialData, setIsLoadingInitialData] = useState(true);
+  const [initialLoadError, setInitialLoadError] = useState<string | null>(null);
   const [unreadAlarmCount, setUnreadAlarmCount] = useState(0);
   const [crossSiteSettlementSummary, setCrossSiteSettlementSummary] = useState<CrossSiteSettlementSummaryRow[]>([]);
   const [tenantHardwareDevices, setTenantHardwareDevices] = useState<TenantHardwareDevice[]>([]);
@@ -1137,44 +1152,85 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   // Automatically fetch DB company profile, sites, vehicles, drivers, tanks &
   // transactions when user is authenticated
   // (F5 sonrası token localStorage'da kaldığından bu effect firma bilgisini yeniden kurar)
-  useEffect(() => {
-    if (isAuthenticated) {
-      fetchCompanyProfile();
-      fetchSites();
-      fetchSiteDetails();
-      fetchVehicles();
-      fetchDrivers();
-      fetchTanks();
-      fetchTransactions();
-      fetchCrossSitePermissions();
-      // Yalnızca SUPER_ADMIN — /companies tüm tenant'ları döndürür, diğer
-      // roller zaten 403 alır.
-      if (currentUser?.role === 'SUPER_ADMIN') {
-        fetchCompanies();
-        fetchHardwareDevices();
-        fetchSystemMetrics();
-      }
-      // FE-808: RFID kara listesi yönetimi RfidUnmatchedAlerts İLE AYNI rol
-      // kümesine açık (backend RFID_CARD_MANAGER_ROLES) — diğer roller
-      // (PUMP_OPERATOR) zaten 403 alır, gereksiz çağrı yapılmıyor.
-      if (currentUser && ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'].includes(currentUser.role)) {
-        fetchRfidDenylist();
-      }
-      // FE-809: cihaz yönetimi (hardware-devices/claim-codes) backend'in
-      // HARDWARE_DEVICE_MANAGER_ROLES İLE AYNI kısıtı — SITE_MANAGER burada
-      // YOK (yalnızca SUPER_ADMIN/COMPANY_OWNER cihaz provizyonlayabilir).
-      if (currentUser && ['SUPER_ADMIN', 'COMPANY_OWNER'].includes(currentUser.role)) {
-        fetchTenantHardwareDevices();
-        fetchDeviceClaimCodes();
-      }
-      // FE-810: backend QUOTA_MANAGER_ROLES İLE AYNI kısıt (/quotas,
-      // rep-715-mahsup de aynı rol kümesine açık).
-      if (currentUser && ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'].includes(currentUser.role)) {
-        fetchFuelQuotas();
-        fetchCrossSiteSettlementSummary();
-      }
+  //
+  // FE-817: `fetchCompanyProfile()` başarısız olursa (ÖNCEDEN) hiçbir şey
+  // değişmiyordu — `companies` state'i mount'ta seed edilen
+  // `INITIAL_COMPANIES` mock'unda SESSİZCE kalıyor, kullanıcı gerçek
+  // firmasıymış gibi SAHTE veri görüyordu (gerçek bulunan hata). Artık bu
+  // çağrının sonucu `initialLoadError`'a yansır; panel/santiye layout'ları
+  // bu alanı `isLoadingInitialData` ile birlikte okuyup skeleton/hata
+  // ekranı gösterir — diğer fetch'ler (sites/vehicles/...) kendi mevcut
+  // sessiz-log/toast davranışını KORUR (her biri zaten kendi boş-liste
+  // durumuna güvenle düşer, bu ticket'ın kapsamı yalnızca "hangisi
+  // KRİTİK" olan companyProfile).
+  const loadInitialData = async () => {
+    setIsLoadingInitialData(true);
+    setInitialLoadError(null);
+    const company = await fetchCompanyProfile();
+    if (!company) {
+      setInitialLoadError('Firma bilgileri yüklenemedi. İnternet bağlantınızı kontrol edip tekrar deneyin.');
+      setIsLoadingInitialData(false);
+      return;
     }
-  }, [isAuthenticated]);
+    fetchSites();
+    fetchSiteDetails();
+    fetchVehicles();
+    fetchDrivers();
+    fetchTanks();
+    fetchTransactions();
+    fetchCrossSitePermissions();
+    // Yalnızca SUPER_ADMIN — /companies tüm tenant'ları döndürür, diğer
+    // roller zaten 403 alır.
+    if (currentUser?.role === 'SUPER_ADMIN') {
+      fetchCompanies();
+      fetchHardwareDevices();
+      fetchSystemMetrics();
+    }
+    // FE-808: RFID kara listesi yönetimi RfidUnmatchedAlerts İLE AYNI rol
+    // kümesine açık (backend RFID_CARD_MANAGER_ROLES) — diğer roller
+    // (PUMP_OPERATOR) zaten 403 alır, gereksiz çağrı yapılmıyor.
+    if (currentUser && ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'].includes(currentUser.role)) {
+      fetchRfidDenylist();
+    }
+    // FE-809: cihaz yönetimi (hardware-devices/claim-codes) backend'in
+    // HARDWARE_DEVICE_MANAGER_ROLES İLE AYNI kısıtı — SITE_MANAGER burada
+    // YOK (yalnızca SUPER_ADMIN/COMPANY_OWNER cihaz provizyonlayabilir).
+    if (currentUser && ['SUPER_ADMIN', 'COMPANY_OWNER'].includes(currentUser.role)) {
+      fetchTenantHardwareDevices();
+      fetchDeviceClaimCodes();
+    }
+    // FE-810: backend QUOTA_MANAGER_ROLES İLE AYNI kısıt (/quotas,
+    // rep-715-mahsup de aynı rol kümesine açık).
+    if (currentUser && ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'].includes(currentUser.role)) {
+      fetchFuelQuotas();
+      fetchCrossSiteSettlementSummary();
+    }
+    setIsLoadingInitialData(false);
+  };
+
+  // FE-817: `mustChangePassword` true iken (ForcedPasswordChangePage'e
+  // yönlendirilir, bkz. CustomerLayout/SiteOperatorPanel'in erken return'ü)
+  // hiçbir panel verisi anlamlı değildir. ÖNCEDEN bu effect yalnızca
+  // `isAuthenticated`'a bakıyordu — geçici parolayla giriş ANINDA
+  // `fetchCompanyProfile()` ateşleniyordu, parola değişimi İSE AYNI ANDA
+  // token'ı YENİLİYORDU (gerçek bir yarış: bazen eski token'la giden bu
+  // istek net bir 401 değil, ÇİĞ bir ağ hatası olarak başarısız oluyordu —
+  // E2E'de bulundu, bkz. commit mesajı). ÖNCEDEN bunun hiçbir sonucu
+  // GÖRÜNMÜYORDU çünkü bu çağrının başarısı/başarısızlığı HİÇBİR ŞEYİ
+  // engellemiyordu — artık `initialLoadError` tüm paneli kapsadığından
+  // (AC: "boş beyaz sayfa/donmuş arayüz" DEĞİL, gerçek bir hata ekranı),
+  // bu önceden görünmez yarış durumu artık GERÇEKTEN paneli bloke ederdi.
+  // Çözüm: parola değişimi bitene (mustChangePassword false olana) kadar
+  // hiç tetikleme — bu effect o geçiş için de YENİDEN çalışır.
+  useEffect(() => {
+    if (isAuthenticated && !currentUser?.mustChangePassword) {
+      loadInitialData();
+    } else if (!isAuthenticated) {
+      setIsLoadingInitialData(false);
+    }
+  }, [isAuthenticated, currentUser?.mustChangePassword]);
+
+  const retryInitialDataLoad = () => { loadInitialData(); };
 
   // Vehicle CRUD
   const fetchVehicles = async () => {
@@ -1837,6 +1893,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         dismissQuotaExhaustedAlert,
         unreadAlarmCount,
         clearUnreadAlarmCount,
+        isLoadingInitialData,
+        initialLoadError,
+        retryInitialDataLoad,
         crossSiteSettlementSummary,
         fetchCrossSiteSettlementSummary,
         isSocketConnected,

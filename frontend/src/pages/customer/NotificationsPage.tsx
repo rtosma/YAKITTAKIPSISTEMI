@@ -10,6 +10,8 @@ import {
   NOTIFICATION_EVENT_TYPES, NOTIFICATION_EVENT_TYPE_LABELS, NOTIFICATION_CHANNELS, NOTIFICATION_CHANNEL_LABELS
 } from '../../hooks/useNotificationPreferences';
 import { enableAlertSound, isAlertSoundEnabled } from '../../utils/alertSound';
+import { ListSkeleton } from '../../components/ListSkeleton';
+import { EmptyState } from '../../components/EmptyState';
 
 const SEVERITY_STYLES: Record<string, string> = {
   INFO: 'bg-[#20201f] text-[#d5c4ab] border border-[#514532]/30',
@@ -87,7 +89,12 @@ export const NotificationsPage: React.FC = () => {
 
   useEffect(() => {
     clearUnreadAlarmCount();
-    fetchTenantUsers().then(setUsers).catch(() => {});
+    // FE-817: üçü de ÖNCEDEN hatayı tamamen SESSİZCE yutuyordu (`.catch(() =>
+    // {})`) — bu sayfanın kendi `loadAlarms`'ı (yukarıda) zaten hata toast'ı
+    // gösterdiğinden, aynı tutarlılık burada da uygulanıyor; kullanıcı en
+    // azından bir şeyin başarısız olduğunu görür (örn. atama listesi boş
+    // kalır ama neden boş olduğunu anlayamazdı).
+    fetchTenantUsers().then(setUsers).catch((err) => showToast(`Kullanıcı listesi getirilirken hata: ${err.message}`, 'error'));
     fetchNotificationPreferences().then((rows) => {
       const map: Record<string, Record<string, boolean>> = {};
       for (const row of rows) {
@@ -95,8 +102,8 @@ export const NotificationsPage: React.FC = () => {
         map[row.eventType][row.channel] = row.enabled;
       }
       setPreferences(map);
-    }).catch(() => {});
-    fetchActiveMutes().then(setMutes).catch(() => {});
+    }).catch((err) => showToast(`Bildirim tercihleri getirilirken hata: ${err.message}`, 'error'));
+    fetchActiveMutes().then(setMutes).catch((err) => showToast(`Sessize alınanlar getirilirken hata: ${err.message}`, 'error'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -285,9 +292,9 @@ export const NotificationsPage: React.FC = () => {
           </thead>
           <tbody className="divide-y divide-[#514532]/15 font-mono">
             {isLoadingAlarms ? (
-              <tr><td colSpan={7} className="py-8 text-center text-[#d5c4ab]">Yükleniyor...</td></tr>
+              <tr><td colSpan={7} className="py-4"><ListSkeleton rows={4} columns={7} testId="alarms-skeleton" /></td></tr>
             ) : alarms.length === 0 ? (
-              <tr><td colSpan={7} className="py-8 text-center text-[#d5c4ab]">Filtre kriterlerine uygun alarm yok.</td></tr>
+              <tr><td colSpan={7}><EmptyState icon="notifications_off" title="Filtre kriterlerine uygun alarm yok." testId="alarms-empty" /></td></tr>
             ) : alarms.map((a) => (
               <tr key={a.id} data-testid="alarm-row" data-alarm-id={a.id} data-status={a.status} onClick={() => openDetail(a)} className="hover:bg-[#20201f] transition-colors cursor-pointer">
                 <td className="py-3 px-4"><span className={`text-[10px] font-bold px-2 py-0.5 rounded ${SEVERITY_STYLES[a.severity]}`}>{a.severity}</span></td>

@@ -3,6 +3,8 @@ import { ResponsiveContainer, LineChart, Line, AreaChart, Area, XAxis, YAxis, To
 import { useApp } from '../../context/AppContext';
 import { downloadAuthenticatedFile } from '../../utils/api';
 import { fetchTenantUsers } from '../../hooks/useAlarms';
+import { ListSkeleton } from '../../components/ListSkeleton';
+import { ErrorState } from '../../components/ErrorState';
 import {
   fetchReportCatalog, fetchReport, reportExportEndpoint, fetchExecutiveDashboard,
   fetchReportSchedules, createReportSchedule, updateReportSchedule, deleteReportSchedule, fetchReportDeliveries,
@@ -74,25 +76,36 @@ export const ReportsPage: React.FC = () => {
   // ── Katalog (tüm raporlar için paylaşılan) ──
   const [catalog, setCatalog] = useState<ReportCatalogEntry[]>([]);
   const [isLoadingCatalog, setIsLoadingCatalog] = useState(true);
+  // FE-817: ÖNCEDEN bir katalog-fetch HATASI, boş bir katalog listesiyle
+  // (`catalog=[]`, toast 3.5sn'de kaybolur) AYIRT EDİLEMİYORDU — kullanıcı
+  // "yetkili olduğunuz rapor yok" metnini görüyordu, bu GERÇEKTEN bir
+  // yetki durumu mu yoksa başarısız bir istek mi anlayamıyordu.
+  const [catalogError, setCatalogError] = useState<unknown>(null);
   const catalogById = useMemo(() => new Map(catalog.map((r) => [r.id, r])), [catalog]);
 
-  useEffect(() => {
+  const loadCatalog = useCallback(() => {
+    setIsLoadingCatalog(true);
+    setCatalogError(null);
     fetchReportCatalog()
       .then(setCatalog)
-      .catch((err) => showToast(err.message || 'Rapor kataloğu yüklenemedi.', 'error'))
+      .catch((err) => setCatalogError(err))
       .finally(() => setIsLoadingCatalog(false));
   }, []);
+
+  useEffect(() => { loadCatalog(); }, [loadCatalog]);
 
   // ── Dashboard (REP-723) ──
   const [dashboardDays, setDashboardDays] = useState(30);
   const [dashboard, setDashboard] = useState<ExecutiveDashboard | null>(null);
   const [isLoadingDashboard, setIsLoadingDashboard] = useState(true);
+  const [dashboardError, setDashboardError] = useState<unknown>(null);
 
   const loadDashboard = useCallback((days: number) => {
     setIsLoadingDashboard(true);
+    setDashboardError(null);
     fetchExecutiveDashboard(days)
       .then(setDashboard)
-      .catch((err) => showToast(err.message || 'Yönetici özeti yüklenemedi.', 'error'))
+      .catch((err) => setDashboardError(err))
       .finally(() => setIsLoadingDashboard(false));
   }, []);
 
@@ -122,7 +135,7 @@ export const ReportsPage: React.FC = () => {
   const [filterValues, setFilterValues] = useState<Record<string, string>>({});
   const [runResult, setRunResult] = useState<ReportRunResult | null>(null);
   const [isRunning, setIsRunning] = useState(false);
-  const [runError, setRunError] = useState<string | null>(null);
+  const [runError, setRunError] = useState<unknown>(null);
   const [page, setPage] = useState(1);
   const [sort, setSort] = useState<{ sortBy?: string; sortDir?: 'asc' | 'desc' }>({});
   const [exportingFormat, setExportingFormat] = useState<string | null>(null);
@@ -132,7 +145,7 @@ export const ReportsPage: React.FC = () => {
     setRunError(null);
     fetchReport(reportId, { page: pageArg, pageSize: 20, sortBy: sortArg.sortBy, sortDir: sortArg.sortDir, filters })
       .then(setRunResult)
-      .catch((err) => { setRunResult(null); setRunError(err.message || 'Rapor çalıştırılamadı.'); })
+      .catch((err) => { setRunResult(null); setRunError(err); })
       .finally(() => setIsRunning(false));
   }, []);
 
@@ -332,7 +345,10 @@ export const ReportsPage: React.FC = () => {
             ))}
           </div>
 
-          {isLoadingDashboard && <p className="text-xs text-[#d5c4ab]">Yükleniyor…</p>}
+          {isLoadingDashboard && <ListSkeleton rows={2} variant="cards" testId="dashboard-skeleton" />}
+          {dashboardError && !isLoadingDashboard && (
+            <ErrorState error={dashboardError} onRetry={() => loadDashboard(dashboardDays)} testId="dashboard-error" />
+          )}
 
           {dashboard && (
             <>
@@ -441,24 +457,27 @@ export const ReportsPage: React.FC = () => {
               data-testid="catalog-search"
               className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
             />
-            {isLoadingCatalog && <p className="text-xs text-[#d5c4ab]">Yükleniyor…</p>}
-            <div className="space-y-2 max-h-[600px] overflow-y-auto">
-              {filteredCatalog.map((r) => (
-                <button
-                  key={r.id}
-                  data-testid="catalog-report-card"
-                  data-report-id={r.id}
-                  onClick={() => selectReport(r.id)}
-                  className={`w-full text-left p-3 rounded-xl border transition-colors ${
-                    selectedReportId === r.id ? 'border-[#ffdca1] bg-[#282726]' : 'border-[#353535] hover:bg-[#282726]'
-                  }`}
-                >
-                  <div className="text-xs font-bold text-[#e5e2e1]">{r.title}</div>
-                  <div className="text-[10px] text-[#d5c4ab] mt-0.5 line-clamp-2">{r.description}</div>
-                </button>
-              ))}
-              {!isLoadingCatalog && filteredCatalog.length === 0 && <p className="text-xs text-[#d5c4ab]">Yetkili olduğunuz rapor bulunamadı.</p>}
-            </div>
+            {isLoadingCatalog && <ListSkeleton rows={6} testId="catalog-skeleton" />}
+            {catalogError && !isLoadingCatalog && <ErrorState error={catalogError} onRetry={loadCatalog} testId="catalog-error" />}
+            {!isLoadingCatalog && !catalogError && (
+              <div className="space-y-2 max-h-[600px] overflow-y-auto">
+                {filteredCatalog.map((r) => (
+                  <button
+                    key={r.id}
+                    data-testid="catalog-report-card"
+                    data-report-id={r.id}
+                    onClick={() => selectReport(r.id)}
+                    className={`w-full text-left p-3 rounded-xl border transition-colors ${
+                      selectedReportId === r.id ? 'border-[#ffdca1] bg-[#282726]' : 'border-[#353535] hover:bg-[#282726]'
+                    }`}
+                  >
+                    <div className="text-xs font-bold text-[#e5e2e1]">{r.title}</div>
+                    <div className="text-[10px] text-[#d5c4ab] mt-0.5 line-clamp-2">{r.description}</div>
+                  </button>
+                ))}
+                {filteredCatalog.length === 0 && <p className="text-xs text-[#d5c4ab]">Yetkili olduğunuz rapor bulunamadı.</p>}
+              </div>
+            )}
           </div>
 
           <div className="lg:col-span-2 space-y-4">
@@ -508,7 +527,13 @@ export const ReportsPage: React.FC = () => {
                   </div>
                 </div>
 
-                {runError && <div className="bg-[#1c1b1b] border border-[#ffb4ab] rounded-2xl p-4 text-xs text-[#ffb4ab]" data-testid="report-run-error">{runError}</div>}
+                {runError && (
+                  <ErrorState
+                    error={runError}
+                    onRetry={() => selectedReportId && runSelectedReport(selectedReportId, filterValues, page, sort)}
+                    testId="report-run-error"
+                  />
+                )}
 
                 {runResult && (
                   <div className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-6 space-y-4">
