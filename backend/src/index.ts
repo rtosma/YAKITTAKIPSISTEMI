@@ -139,6 +139,7 @@ app.use(express.json({
 // Global middleware to parse JSON bodies
 // Apply Tenant Context is now handled by authenticateJWT middleware per-route.
 
+import path from 'path';
 import swaggerUi from 'swagger-ui-express';
 import swaggerJsdoc from 'swagger-jsdoc';
 
@@ -149,12 +150,19 @@ const swaggerOptions = {
     info: {
       title: 'Yakıttakip Sistemi API',
       version: '1.0.0',
-      description: 'Saha ikmal ve araç yakıt takip sistemi API dokümantasyonu',
+      description:
+        'Saha ikmal ve araç yakıt takip sistemi API dokümantasyonu. ' +
+        'Tüm uçlar /api/v1 altında yayınlanır; aşağıdaki yollar bu tabana görelidir.',
     },
+    // #212'den: route JSDoc'larındaki yollar /api/v1 ÖNEKİ OLMADAN yazılı
+    // (router o önekle mount ediliyor), bu yüzden önek burada olmalı. Göreli
+    // tutulması "Try it out"un sayfayı sunan origin'e gitmesini sağlar
+    // (proxy arkasında, farklı host portunda, üretimde spec değişmeden).
+    // Önceki 'http://localhost:5000' ile her deneme /api/v1'siz yola gidiyordu.
     servers: [
       {
-        url: 'http://localhost:5000',
-        description: 'Development Server',
+        url: '/api/v1',
+        description: 'API tabanı',
       },
     ],
     components: {
@@ -168,7 +176,15 @@ const swaggerOptions = {
     },
     security: [{ bearerAuth: [] }],
   },
-  apis: ['./src/routes/*.ts'], // read JSDoc from routes
+  // #212'den: swagger-jsdoc TypeScript KAYNAĞINI okur. Tek bir cwd-göreli glob,
+  // süreç başka bir dizinden başlatılınca sessizce BOŞ spec üretir; iki gerçek
+  // düzen de kapsanır: cwd=backend/ (imaj ve `npm run dev`) ve cwd=repo kökü.
+  // __dirname bilerek kullanılmıyor: tsx altında gerçek ES modülü olarak
+  // çalışır ve __dirname yoktur (yalnızca esbuild'in CJS paketinde var).
+  apis: [
+    path.join(process.cwd(), 'src/routes/*.ts'),
+    path.join(process.cwd(), 'backend/src/routes/*.ts'),
+  ],
 };
 
 // swaggerJsdoc() route dosyalarını glob'layıp JSDoc parse ediyor — yalnızca
@@ -181,6 +197,11 @@ function getSwaggerSpec(): object {
   }
   return cachedSwaggerSpec;
 }
+// #212'den: ham spec — istemci kod üretimi ve sözleşme testleri için. Bu uç
+// olmadan spec'e yalnızca UI paketini kazıyarak ulaşılabiliyordu.
+app.get('/api-docs.json', (_req: express.Request, res: express.Response) => {
+  res.json(getSwaggerSpec());
+});
 app.use('/api-docs', swaggerUi.serve, (req: express.Request, res: express.Response, next: express.NextFunction) =>
   swaggerUi.setup(getSwaggerSpec())(req, res, next)
 );

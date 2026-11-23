@@ -6758,7 +6758,7 @@ router.get(
  * @swagger
  * /reports/{reportId}/export:
  *   get:
- *     summary: Bir Raporu CSV/PDF/XLSX Olarak Dışa Aktar (REP-703, XLSX: REP-724)
+ *     summary: 'Bir Raporu CSV/PDF/XLSX Olarak Dışa Aktar (REP-703, XLSX: REP-724)'
  *     description: >
  *       Sayfalama YOKTUR — filtreye uyan TÜM kayıtlar akışla indirilir.
  *       PDF, kuyruksuz bir süreçte CPU'yu bloklamamak için satır sayısı
@@ -6963,7 +6963,7 @@ router.get(
  * @swagger
  * /management-reports/{month}/pdf:
  *   get:
- *     summary: Aylık yönetim raporu PDF'i (A: ölçülen veri, B: yapay zekâ yorumu — görsel olarak ayrı) (REP-724)
+ *     summary: 'Aylık yönetim raporu PDF''i (A: ölçülen veri, B: yapay zekâ yorumu — görsel olarak ayrı) (REP-724)'
  *     description: Firma yöneticisi tam raporu, SITE_MANAGER yalnızca kendi şantiyesinin ölçülen verisini alır. Veri bölümünün CSV/XLSX/PDF tablosu için /reports/rep-724/export?month=YYYY-MM&format=csv|xlsx|pdf.
  *     security:
  *       - bearerAuth: []
@@ -7337,7 +7337,7 @@ router.post(
  *     security:
  *       - bearerAuth: []
  *   get:
- *     summary: Veri Sahibi Başvuruları (gecikenler `overdue: true`)
+ *     summary: 'Veri Sahibi Başvuruları (gecikenler `overdue: true`)'
  *     security:
  *       - bearerAuth: []
  * /privacy/requests/{id}/access-export:
@@ -7457,7 +7457,7 @@ router.patch(
  * @swagger
  * /archives:
  *   post:
- *     summary: "Şimdi Arşiv Oluştur" — Manuel Tetikleyici (REP-702)
+ *     summary: '"Şimdi Arşiv Oluştur" — Manuel Tetikleyici (REP-702)'
  *     description: >
  *       AC: "AES-256 şifreli ZIP üretimi ve parola teslimi." Parola YALNIZCA
  *       bu yanıtta bir kez döner (ticket: "parola panelde tek seferlik
