@@ -43,7 +43,7 @@ export const INITIAL_COMPANIES: Company[] = [
     taxNumber: '4820193841',
     city: 'İstanbul / Maltepe',
     licenseStatus: 'AKTİF',
-    licenseExpiry: '2026-11-15',
+    licenseExpiry: '2028-11-15',
     lastActivityAt: null,
     sites: [
       { id: 'site-maltepe', name: 'Maltepe Santral', location: 'Maltepe E5 Yanal', activeTanksCount: 1, activeVehiclesCount: 22 },

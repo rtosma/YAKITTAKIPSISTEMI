@@ -9,9 +9,10 @@ async function seedDatabase() {
 
   const seedSql = `
 -- Insert Companies
-INSERT INTO companies (id, name, tax_number) VALUES
-('comp-camsa', 'ÇamSA Pelet & Enerji A.Ş.', '2381092831'),
-('comp-kusak', 'Kuşak Beton & İnşaat Ltd.', '4820193841')
+-- package: CREATE TABLE varsayılanı 'TEMEL' (1 şantiye) — demo firmalar sınırsız (bkz. seed_mock_data.sql)
+INSERT INTO companies (id, name, tax_number, package) VALUES
+('comp-camsa', 'ÇamSA Pelet & Enerji A.Ş.', '2381092831', 'KURUMSAL'),
+('comp-kusak', 'Kuşak Beton & İnşaat Ltd.', '4820193841', 'KURUMSAL')
 ON CONFLICT (id) DO NOTHING;
 
 -- Clean existing users to refresh hashes

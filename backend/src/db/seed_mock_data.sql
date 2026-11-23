@@ -4,10 +4,17 @@
 -- ==============================================================================
 
 -- 1. Companies (Firmalar)
-INSERT INTO companies (id, name, tax_number, code, city, license_status, license_expiry, modules) VALUES
-('comp-camsa',   'ÇamSA Pelet & Enerji A.Ş.',      '2381092831', 'CAMSA-01', 'Kocaeli / Gebze',    'AKTİF', '2027-12-31', '{"aiAnomaly":true,"eInvoice":true,"smartWarehouse":true,"maintenanceTrack":true,"driverScore":true,"crossSiteAuth":true}'),
-('comp-kusak',   'Kuşak Beton & İnşaat Ltd.',       '4820193841', 'KUSAK-02', 'İstanbul / Maltepe', 'AKTİF', '2026-11-15', '{"aiAnomaly":true,"eInvoice":false,"smartWarehouse":true,"maintenanceTrack":false,"driverScore":true,"crossSiteAuth":false}'),
-('comp-avrasya', 'Avrasya Altyapı & Mermer A.Ş.',   '9182301928', 'AVR-03',   'Bursa / İnegöl',     'AKTİF', '2027-06-30', '{"aiAnomaly":false,"eInvoice":true,"smartWarehouse":false,"maintenanceTrack":true,"driverScore":false,"crossSiteAuth":true}')
+-- package AÇIKÇA 'KURUMSAL': schema.sql'de kolonun CREATE TABLE varsayılanı 'TEMEL'
+-- (1 şantiye / 5 cihaz / 5 kullanıcı, bkz. adminDb.ts PACKAGE_LIMITS). Belirtilmezse
+-- BOŞ bir veritabanında demo firmalar daha seed'in kendi şantiyeleriyle limiti aşmış
+-- başlar (camsa: 3/1) ve şantiye/cihaz/kullanıcı oluşturma 409 döner. Eski DB'lerde
+-- ALTER ... DEFAULT 'KURUMSAL' çalıştığı için bu yalnızca yeni kurulumlarda görünüyordu.
+-- license_expiry'ler GELECEKTE kalmalı: geçmiş bir tarih firmayı salt-okunur moda
+-- alır (authMiddleware, yazmalar 402) — kusak'ın eski 2026-11-15'i böyle patladı.
+INSERT INTO companies (id, name, tax_number, code, city, license_status, license_expiry, modules, package) VALUES
+('comp-camsa',   'ÇamSA Pelet & Enerji A.Ş.',      '2381092831', 'CAMSA-01', 'Kocaeli / Gebze',    'AKTİF', '2027-12-31', '{"aiAnomaly":true,"eInvoice":true,"smartWarehouse":true,"maintenanceTrack":true,"driverScore":true,"crossSiteAuth":true}', 'KURUMSAL'),
+('comp-kusak',   'Kuşak Beton & İnşaat Ltd.',       '4820193841', 'KUSAK-02', 'İstanbul / Maltepe', 'AKTİF', '2028-11-15', '{"aiAnomaly":true,"eInvoice":false,"smartWarehouse":true,"maintenanceTrack":false,"driverScore":true,"crossSiteAuth":false}', 'KURUMSAL'),
+('comp-avrasya', 'Avrasya Altyapı & Mermer A.Ş.',   '9182301928', 'AVR-03',   'Bursa / İnegöl',     'AKTİF', '2027-06-30', '{"aiAnomaly":false,"eInvoice":true,"smartWarehouse":false,"maintenanceTrack":true,"driverScore":false,"crossSiteAuth":true}', 'KURUMSAL')
 ON CONFLICT (id) DO UPDATE SET
   name = EXCLUDED.name,
   tax_number = EXCLUDED.tax_number,
@@ -15,7 +22,8 @@ ON CONFLICT (id) DO UPDATE SET
   city = EXCLUDED.city,
   license_status = EXCLUDED.license_status,
   license_expiry = EXCLUDED.license_expiry,
-  modules = EXCLUDED.modules;
+  modules = EXCLUDED.modules,
+  package = EXCLUDED.package;
 
 -- 2. Sites (Şantiyeler)
 INSERT INTO sites (id, tenant_id, name, location) VALUES
