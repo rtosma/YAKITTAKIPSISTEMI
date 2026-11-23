@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { expect, type Page } from '@playwright/test';
-import { validVkn } from '../../../test-support/factories';
 
 /**
  * TEST-1004 — 3 panelin kritik akış testleri için ortak destek.
@@ -66,7 +65,21 @@ const slugify = (name: string): string => name.toLowerCase().replace(/ç/g, 'c')
  * Benzersiz ve GİB sağlamasından geçen VKN. ARCH-105'ten beri VKN firmalar
  * arasında tekil; sabit '1234567890' ilk firmadan sonra 409 alıyordu.
  */
-export const uniqueVkn = (): string => validVkn(100_000_000 + crypto.randomInt(0, 900_000_000));
+export function uniqueVkn(): string {
+  // GİB VKN sağlama algoritması (backend compliance/taxIdValidation.ts ve
+  // test-support/factories.ts validVkn ile aynı). Burada YİNELENİYOR: frontend
+  // bir ES modülü paketi, test-support'un package.json'u yok — Node 20'de
+  // (CI) oradan named import "Named export 'validVkn' not found" ile düşüyordu.
+  const s = String(100_000_000 + crypto.randomInt(0, 900_000_000));
+  let sum = 0;
+  for (let i = 0; i < 9; i++) {
+    const c1 = (Number(s[i]) + (9 - i)) % 10;
+    let c2 = (c1 * 2 ** (9 - i)) % 9;
+    if (c1 !== 0 && c2 === 0) c2 = 9;
+    sum += c2;
+  }
+  return s + String((10 - (sum % 10)) % 10);
+}
 
 export interface Tenant { id: string; name: string; ownerUsername: string; ownerPassword: string; ownerToken: string }
 /**

@@ -1069,6 +1069,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(32);
 -- kod tarafından yazılmıyor/okunmuyordu; yanıltıcı olduğu için kaldırıldı.
 -- Uzun vadeli oturum denetimi (audit) gerekirse ayrı bir `login_audit`
 -- tablosu eklenmeli — token durumunu aynalayan bir tablo değil.
+-- MIGRATION-CONTRACT: refresh_tokens hiçbir sürümde okunmadı/yazılmadı (main'in tokenService'i bellek içi Map, bu dal Redis kullanıyor; main'de yalnızca yorumlarda geçiyor) — eski replika bu tabloya hiç dokunmadığı için silme onu kırmaz.
 DROP TABLE IF EXISTS refresh_tokens;
 
 -- AI-504: şantiye bazında mesai saatleri + çalışma günleri. Mesai dışı alım
