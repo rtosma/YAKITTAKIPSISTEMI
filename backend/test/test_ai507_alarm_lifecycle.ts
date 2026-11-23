@@ -14,6 +14,23 @@ import { io as socketIoClient, Socket } from 'socket.io-client';
 
 const API_URL = 'http://localhost:5000/api/v1';
 const RUN = Date.now();
+// Sabit 2026-09 tarihleri test yazıldıktan haftalar sonra tarama penceresinin
+// (sinceHours) dışında kalıyor ve hiç işaret üretilmiyordu. Taban: bugünden en az
+// 7 gün önceki en yakın Pazar 00:00Z. Günlerin haftagünü ve UTC saatleri
+// orijinaliyle AYNI (Ist = UTC+3), yalnızca hafta kayar.
+const BASE_SUNDAY = (() => {
+  const d = new Date(Date.now() - 7 * 86_400_000);
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - d.getUTCDay());
+  return d;
+})();
+function at(dayOffset: number, hhmm: string): string {
+  const [h, m] = hhmm.split(':').map(Number);
+  const d = new Date(BASE_SUNDAY);
+  d.setUTCDate(d.getUTCDate() + dayOffset);
+  d.setUTCHours(h, m, 0, 0);
+  return d.toISOString();
+}
 const SITE = 'Silivri Tesisleri';
 const VEH = 'AI507-VEH';
 const RECON_TANK = 'tank-silivri-1';
@@ -73,9 +90,9 @@ async function run() {
        VALUES ($1,'comp-camsa',$2,$3,'Test Şoför',70,$4)`, [id, SITE, VEH, at]
     );
     // 3 gece alımı, 3 ayrı gün (aralarında 24 sa → "kısa aralıklı" değil).
-    await ins('ai507-tx-1', '2026-09-07T00:00:00.000Z'); // Ist Pzt 03:00
-    await ins('ai507-tx-2', '2026-09-08T00:00:00.000Z'); // Ist Sal 03:00
-    await ins('ai507-tx-3', '2026-09-09T00:00:00.000Z'); // Ist Çar 03:00
+    await ins('ai507-tx-1', at(1, '00:00')); // Ist Pzt 03:00
+    await ins('ai507-tx-2', at(2, '00:00')); // Ist Sal 03:00
+    await ins('ai507-tx-3', at(3, '00:00')); // Ist Çar 03:00
     await c.end();
   }
 
@@ -133,7 +150,7 @@ async function run() {
 
     // ── Test 6: tekrar oluşan alarm YENİDEN AÇILIR ──────────────
     await q(`INSERT INTO transactions (id, tenant_id, site_name, vehicle_plate, driver_name, amount_liters, created_at)
-             VALUES ('ai507-tx-4','comp-camsa',$1,$2,'Test Şoför',70,'2026-09-05T00:00:00.000Z')`, [SITE, VEH]);
+             VALUES ('ai507-tx-4','comp-camsa',$1,$2,'Test Şoför',70,$3)`, [SITE, VEH, at(-1, '00:00')]); // Ist Cmt 03:00
     await call('POST', '/anomaly-flags/scan', { token: owner, body: { sinceHours: 400 } });
     const det6 = await call('GET', `/alarms/${alarmId}`, { token: owner });
     check('Test 6: kapatılmış alarm yeni bir olayla YENİDEN AÇILIR (status OPEN, event_count 4, resolved_by temizlendi)',

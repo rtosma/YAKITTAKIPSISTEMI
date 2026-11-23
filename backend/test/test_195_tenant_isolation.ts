@@ -94,7 +94,14 @@ async function run() {
   // kusak'ın token'ıyla GÜNCELLEME/SİLME denemesi — RLS bu satırı kusak'ın
   // oturumuna hiç göstermemeli, işlem "bulunamadı" ile reddedilmeli. ---
   const camsaVehicles = await call('GET', '/vehicles', { token: camsa.token });
-  const targetVehicleId = camsaVehicles.body.data?.[0]?.id;
+  // Hedef PASİF OLMAYAN bir araç olmalı: liste created_at DESC sıralı ve
+  // önceki test adımları (test_auth201, RBAC matrisi) kendi araçlarını
+  // silerek temizliyor — FLEET-1401'den beri silme aracı PASİF'e çekiyor.
+  // İlk satırı almak zaten PASİF olan bir test aracını hedefliyordu ve
+  // aşağıdaki "değişmedi" kontrolü sızıntı olmadan başarısız oluyordu.
+  const targetVehicle = camsaVehicles.body.data?.find((v: any) => v.status !== 'PASİF');
+  const targetVehicleId = targetVehicle?.id;
+  const statusBefore = targetVehicle?.status;
   if (targetVehicleId) {
     // NOT: 'HACKED_BY_KUSAK' geçerli bir status enum değeri DEĞİL
     // (vehicleSchema.ts: 'AKTİF'|'BAKIMDA'|'PASİF') — Zod bunu RLS/tenant
@@ -114,11 +121,11 @@ async function run() {
 
     // Aracın GERÇEKTEN değişmediğini camsa'nın kendi oturumundan doğrula.
     const verifyUnchanged = await call('GET', '/vehicles', { token: camsa.token });
-    const stillIntact = verifyUnchanged.body.data.find((v: any) => v.id === targetVehicleId)?.status !== 'PASİF';
+    const statusAfter = verifyUnchanged.body.data.find((v: any) => v.id === targetVehicleId)?.status;
     check(
       "ID tahmini sonrası: camsa'nın aracı GERÇEKTEN değişmemiş",
-      stillIntact,
-      `araç durumu: ${verifyUnchanged.body.data.find((v: any) => v.id === targetVehicleId)?.status}`
+      statusAfter === statusBefore,
+      `araç durumu: önce=${statusBefore}, sonra=${statusAfter}`
     );
 
     const crossDeleteAttempt = await call('DELETE', `/vehicles/${targetVehicleId}`, { token: kusak.token });

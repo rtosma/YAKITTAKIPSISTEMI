@@ -132,7 +132,13 @@ async function run() {
 
     // === Gerçek akışlar ===
     for (const t of [T1, T2, T3, T4, T8]) await transmit(t);
-    for (let i = 0; i < 5; i++) await sweep(); // T4 sentinel: 5 deneme → kalıcı FAILED
+    // T4 sentinel: 5 deneme → kalıcı FAILED. COMP-602.2'den beri her başarısız
+    // deneme satırı next_retry_at ile ileri atıyor (üstel geri çekilme, 2·2^n sn)
+    // ve art arda sweep'ler onu SEÇMİYOR — beklenecek süre SQL ile geçmiş sayılır.
+    for (let i = 0; i < 5; i++) {
+      await q(`UPDATE despatch_advice_transmissions SET next_retry_at = NOW() WHERE transaction_id = $1 AND next_retry_at > NOW()`, [T4]);
+      await sweep();
+    }
     await call('POST', `/transactions/${T2}/e-irsaliye/reject`, owner, { reason: 'Miktar sevk irsaliyesiyle uyuşmuyor.' });
     await call('POST', `/transactions/${T3}/e-irsaliye/cancel`, owner, { reason: 'Sevkiyat müşteri talebiyle iptal edildi.' });
     await call('GET', `/transactions/${T7}/e-irsaliye?format=json`, owner);

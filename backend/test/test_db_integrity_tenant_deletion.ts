@@ -135,7 +135,16 @@ async function run() {
         await client.query('BEGIN');
         await client.query('SET LOCAL ROLE app_user');
         await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [OTHER_TENANT]);
-        const visibleForeign = Number((await client.query(`SELECT count(*) FROM "${t}" WHERE tenant_id <> $1`, [OTHER_TENANT])).rows[0].count);
+        let visibleForeign = 0;
+        try {
+          visibleForeign = Number((await client.query(`SELECT count(*) FROM "${t}" WHERE tenant_id <> $1`, [OTHER_TENANT])).rows[0].count);
+        } catch (err: any) {
+          // 42501: tablo app_user'a BİLEREK tamamen kapalı (REVOKE ALL — örn.
+          // data_subject_requests, retention_*; yalnızca sahip bağlantısıyla
+          // servis katmanından erişilir). Hiç okunamamak en güçlü izolasyon:
+          // sızıntı yok. Başka bir hata gerçek bir sorundur, yukarı fırlat.
+          if (err?.code !== '42501') { await client.query('ROLLBACK'); throw err; }
+        }
         await client.query('ROLLBACK');
         if (visibleForeign > 0) leaks.push(`${t} (${visibleForeign} yabancı satır görünür)`);
       }

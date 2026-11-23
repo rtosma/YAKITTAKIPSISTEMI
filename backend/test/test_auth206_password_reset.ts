@@ -5,8 +5,11 @@ import { requestPasswordReset } from '../src/services/passwordResetService';
 /**
  * AUTH-206 — şifremi unuttum / şifre sıfırlama akışı.
  *
- * Not: çalışan backend NODE_ENV=production (docker-compose) olduğundan
- * forgot-password yanıtı `devResetToken` DÖNDÜRMEZ (sızıntı koruması). Gerçek
+ * Not: `devResetToken` yalnızca üretim-DIŞI modda (CI ve yerel `npm run dev`)
+ * var olan kullanıcı için döner; üretimde (NODE_ENV=production) ASLA. Test
+ * hangi modu bekleyeceğini kendi NODE_ENV'inden alır (CI'da sunucuyla aynı
+ * job ortamı). Eskiden yalnızca üretim varsayılıyordu ve geliştirme modunda
+ * koşan CI'da Test 1 başarısız oluyordu. Gerçek
  * token'ı almak için `requestPasswordReset` doğrudan import edilip çağrılır
  * (test_ai502/test_comp601 ile aynı desen); geri kalan her şey (reset,
  * login eski/yeni, refresh iptali, tek kullanımlık, rate limit, Zod) canlı
@@ -92,9 +95,13 @@ async function run() {
     // Test 1: forgot-password — var olan kullanıcı → 200 + jenerik mesaj
     await clearRateLimits();
     const r1 = await call('POST', '/auth/forgot-password', { username: USER });
-    check('Test 1: forgot-password (var olan kullanıcı) → 200 + jenerik mesaj',
-      r1.status === 200 && r1.body.message === GENERIC_MSG && r1.body.devResetToken === undefined,
-      `status=${r1.status}, msg eşleşiyor=${r1.body.message === GENERIC_MSG}, devToken sızmadı=${r1.body.devResetToken === undefined}`);
+    const serverIsProduction = process.env.NODE_ENV === 'production';
+    const devTokenOk = serverIsProduction
+      ? r1.body.devResetToken === undefined
+      : typeof r1.body.devResetToken === 'string' && r1.body.devResetToken.length > 0;
+    check(`Test 1: forgot-password (var olan kullanıcı) → 200 + jenerik mesaj; devResetToken ${serverIsProduction ? 'DÖNMEZ (üretim)' : 'döner (üretim-dışı)'}`,
+      r1.status === 200 && r1.body.message === GENERIC_MSG && devTokenOk,
+      `status=${r1.status}, msg eşleşiyor=${r1.body.message === GENERIC_MSG}, devResetToken var=${r1.body.devResetToken !== undefined}, mod=${serverIsProduction ? 'production' : 'development'}`);
 
     // Test 2: forgot-password — VAR OLMAYAN kullanıcı → AYNI yanıt (AC 2)
     await clearRateLimits();

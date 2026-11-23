@@ -1,4 +1,5 @@
 import { Client } from 'pg';
+import Redis from 'ioredis';
 import { execSync } from 'node:child_process';
 
 /**
@@ -39,15 +40,30 @@ async function q(sql: string, params: any[] = []): Promise<any[]> {
   const c = pg(); await c.connect(); const r = await c.query(sql, params); await c.end(); return r.rows;
 }
 /**
- * Bu test host'tan doğrudan çalıştığından `new Redis({host:'localhost'})`
- * Docker Compose'un redis'iyle İLİŞKİSİZ, host'ta çalışan (varsa) BAŞKA bir
- * yerel Redis'e bağlanıp resetLoginRl'yi SESSİZCE no-op yapabilir (peer
- * session'ın FUEL-406/IOT-305 testlerinde keşfettiği tuzak — bkz. proje
- * hafızası). Bunun yerine `docker exec` ile GERÇEK compose container'ına
- * (container_name: yakittakip_redis, schema.sql ile AYNI şekilde sabit)
- * doğrudan komut çalıştırılıyor — ağ bağlantısı GEREKMİYOR.
+ * Giriş rate limit'i (IP başına 15 dk'da 10) bu dosyadaki ~9 girişle ve önceki
+ * test adımlarınınkilerle aşılır; her girişten önce sıfırlanır.
+ *
+ * Önce backend'in KULLANDIĞI Redis'e (REDIS_HOST/REDIS_PORT — CI'da servis
+ * container'ı, diğer testlerle aynı desen) bağlanılır. Eskiden yalnızca
+ * `docker exec yakittakip_redis` deneniyordu: o container CI'da YOK, sıfırlama
+ * sessizce başarısız oluyor ve Test 15'teki giriş 429 alıyordu. docker exec
+ * yolu, Redis portu host'a açık olmayan yerel compose kurulumu için yedek
+ * olarak kalıyor (host'ta alakasız bir Redis'e bağlanma tuzağı oradaydı).
  */
-function resetLoginRl(): void {
+const redis = new Redis({
+  host: process.env.REDIS_HOST || 'localhost',
+  port: parseInt(process.env.REDIS_PORT || '6379', 10),
+  lazyConnect: true,
+  maxRetriesPerRequest: 1
+});
+async function resetLoginRl(): Promise<void> {
+  try {
+    const keys = await redis.keys('rl:auth-login:*');
+    if (keys.length) await redis.del(...keys);
+    return;
+  } catch {
+    // Redis'e host'tan ulaşılamıyor — compose container'ı üzerinden dene.
+  }
   try {
     execSync("docker exec yakittakip_redis redis-cli --scan --pattern 'rl:auth-login:*' | xargs -r docker exec -i yakittakip_redis redis-cli DEL", { stdio: 'ignore' });
   } catch {
@@ -56,7 +72,7 @@ function resetLoginRl(): void {
   }
 }
 async function call(method: string, path: string, opts: { token?: string; body?: any } = {}): Promise<{ status: number; body: any }> {
-  if (path === '/auth/login') resetLoginRl();
+  if (path === '/auth/login') await resetLoginRl();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (opts.token) headers['Authorization'] = `Bearer ${opts.token}`;
   const res = await fetch(`${API_URL}${path}`, { method, headers, body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined });
@@ -248,6 +264,7 @@ async function run() {
   console.log('===========================================================');
   console.log(`SONUÇ: ${passed}/${total} test geçti.`);
   console.log('===========================================================');
+  redis.disconnect();
   process.exit(passed === total ? 0 : 1);
 }
 

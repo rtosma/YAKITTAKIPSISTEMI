@@ -7,9 +7,9 @@ import Redis from 'ioredis';
  * CANLI HTTP + doğrudan PG (src import YOK). Kobay şantiye: 'Silivri
  * Tesisleri'. Kontrollü ikmaller sabit UTC zaman damgalarıyla eklenir
  * (Istanbul = UTC+3):
- *   - ai504-tx-mesai-night  : 2026-09-09T00:30Z → Ist Çar 03:30 (gece, mesai dışı)
- *   - ai504-tx-mesai-sunday : 2026-09-06T10:00Z → Ist Paz 13:00 (çalışma günü dışı)
- *   - ai504-tx-repeat-1/2/3 : 2026-09-08 09:00 / 09:20 / 10:30 Z (Ist Sal öğle;
+ *   - ai504-tx-mesai-night  : Çar 00:30Z → Ist Çar 03:30 (gece, mesai dışı)
+ *   - ai504-tx-mesai-sunday : Paz 10:00Z → Ist Paz 13:00 (çalışma günü dışı)
+ *   - ai504-tx-repeat-1/2/3 : Sal 09:00 / 09:20 / 10:30 Z (Ist Sal öğle;
  *                             2. alım 1.'den 20 dk sonra → kısa aralıklı mükerrer)
  * Test SONUNDA (finally) tüm bu satırlar + üretilen işaretler + mesai tanımı
  * + audit kayıtları temizlenir.
@@ -17,7 +17,24 @@ import Redis from 'ioredis';
 
 const API_URL = 'http://localhost:5000/api/v1';
 const SITE = 'Silivri Tesisleri';
-const SINCE = 300; // saat — 2026-09-06'yı kapsayacak kadar geniş
+const SINCE = 360; // saat (15 gün) — BASE_SUNDAY en fazla 14 gün önce olabilir
+// Sabit 2026-09 tarihleri test yazıldıktan haftalar sonra tarama penceresinin
+// (sinceHours) dışında kalıyor ve hiç işaret üretilmiyordu. Taban: bugünden en az
+// 7 gün önceki en yakın Pazar 00:00Z. Günlerin haftagünü ve UTC saatleri
+// orijinaliyle AYNI (Ist = UTC+3), yalnızca hafta kayar.
+const BASE_SUNDAY = (() => {
+  const d = new Date(Date.now() - 7 * 86_400_000);
+  d.setUTCHours(0, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - d.getUTCDay());
+  return d;
+})();
+function at(dayOffset: number, hhmm: string): string {
+  const [h, m] = hhmm.split(':').map(Number);
+  const d = new Date(BASE_SUNDAY);
+  d.setUTCDate(d.getUTCDate() + dayOffset);
+  d.setUTCHours(h, m, 0, 0);
+  return d.toISOString();
+}
 
 const redis = new Redis({ host: process.env.REDIS_HOST || 'localhost', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
 
@@ -78,11 +95,11 @@ async function run() {
        VALUES ($1,'comp-camsa',$2,$3,'Test Şoför',80,$4)`,
       [id, SITE, plate, at]
     );
-    await ins('ai504-tx-mesai-night', 'AI504-TEST', '2026-09-09T00:30:00.000Z');
-    await ins('ai504-tx-mesai-sunday', 'AI504-TEST', '2026-09-06T10:00:00.000Z');
-    await ins('ai504-tx-repeat-1', 'AI504-REPEAT', '2026-09-08T09:00:00.000Z');
-    await ins('ai504-tx-repeat-2', 'AI504-REPEAT', '2026-09-08T09:20:00.000Z');
-    await ins('ai504-tx-repeat-3', 'AI504-REPEAT', '2026-09-08T10:30:00.000Z');
+    await ins('ai504-tx-mesai-night', 'AI504-TEST', at(3, '00:30'));
+    await ins('ai504-tx-mesai-sunday', 'AI504-TEST', at(0, '10:00'));
+    await ins('ai504-tx-repeat-1', 'AI504-REPEAT', at(2, '09:00'));
+    await ins('ai504-tx-repeat-2', 'AI504-REPEAT', at(2, '09:20'));
+    await ins('ai504-tx-repeat-3', 'AI504-REPEAT', at(2, '10:30'));
     await c.end();
   }
 

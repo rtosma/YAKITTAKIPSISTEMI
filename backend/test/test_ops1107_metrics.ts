@@ -114,6 +114,13 @@ async function run() {
     );
 
     // === Test 3: kardinalite ===
+    // Asıl koruma Δ=0 (yeni URL'ler yeni seri açmaz). Mutlak üst sınır yalnızca
+    // bir akıl sağlığı kontrolü: seri sayısı aynı süreçte o ana kadar ÇAĞRILMIŞ
+    // route/fiil/durum kombinasyonlarıyla büyür — CI'da bu testten önce ~55
+    // paket koşuyor ve tek başına koşunun ~2.000'ini aşıyor. Sınır, scrape'in
+    // reddedileceği Prometheus sample_limit'ine (20.000, docs/OBSERVABILITY.md)
+    // bağlı: onun yarısına yaklaşmak gerçek bir kardinalite sorunudur.
+    const MAX_TOTAL_SERIES = 10_000;
     const flood = async (tag: string) => {
       for (let i = 0; i < 150; i++) await call('GET', `/nonexistent-${RUN}-${tag}-${i}`);                     // tarama/404 yolları
       for (let i = 0; i < 100; i++) await call('GET', `/reports/rep-random-${RUN}-${tag}-${i}`, owner);       // parametre değerleri
@@ -130,9 +137,9 @@ async function run() {
     const forbidden = [...labelKeys].filter((k) => FORBIDDEN_LABELS.includes(k.toLowerCase()));
     const unknown = [...labelKeys].filter((k) => !ALLOWED_LABELS.has(k));
     check(
-      'Test 3 (AC — kardinalite kontrolü): 250 farklı 404 yolu/parametre değeri (1. dalga) yeni kombinasyonları açar; ikinci dalgada 250 TAMAMEN YENİ URL sonrası http_* seri sayısı DEĞİŞMEZ (Δ=0 — seri sayısı URL sayısıyla değil route/fiil/sınıf kombinasyonuyla sınırlı); route değerleri /api/v1... kalıbı, "unmatched" veya "/metrics"; yasaklı etiket (device_id, tenant_id, user_id, plaka, IP, ham url/yol) YOK; bilinmeyen etiket anahtarı yok; toplam seri < 2000',
+      'Test 3 (AC — kardinalite kontrolü): 250 farklı 404 yolu/parametre değeri (1. dalga) yeni kombinasyonları açar; ikinci dalgada 250 TAMAMEN YENİ URL sonrası http_* seri sayısı DEĞİŞMEZ (Δ=0 — seri sayısı URL sayısıyla değil route/fiil/sınıf kombinasyonuyla sınırlı); route değerleri /api/v1... kalıbı, "unmatched" veya "/metrics"; yasaklı etiket (device_id, tenant_id, user_id, plaka, IP, ham url/yol) YOK; bilinmeyen etiket anahtarı yok; toplam seri < 10.000 (Prometheus sample_limit 20.000\'in yarısı)',
       seriesB === seriesA && [...routeValues].every((r) => r === 'unmatched' || r === '/metrics' || r.startsWith('/api/v1')) && !routeValues.has(`/api/v1/reports/rep-random-${RUN}-b-1`) &&
-        forbidden.length === 0 && unknown.length === 0 && parsed3.length < 2000 && normalizeMethod('PROPFIND') === 'OTHER' && statusClass(503) === '5xx',
+        forbidden.length === 0 && unknown.length === 0 && parsed3.length < MAX_TOTAL_SERIES && normalizeMethod('PROPFIND') === 'OTHER' && statusClass(503) === '5xx',
       `http seri: ${seriesA}→${seriesB}, route değerleri=[${[...routeValues]}], yasaklı=[${forbidden}], bilinmeyen=[${unknown}], toplam=${parsed3.length}`
     );
 
@@ -152,11 +159,15 @@ async function run() {
     }
     const tank = ids.tank;
     await ins(`INSERT INTO tanks (id, tenant_id, name, capacity_liters, current_level_liters, fuel_type, site_name) VALUES ($1,$2,$3,10000,5000,'Motorin',$4)`, [tank, TENANT, `O1107 Tank ${RUN}`, GEBZE]);
+    // next_retry_at ileride: çalışan backend'in dakikalık e-İrsaliye süpürücüsü
+    // (next_retry_at <= şimdi olanları seçer) QUEUED fixture'ını ölçümden önce
+    // gönderip Δqueued=0 yapıyordu — zamanlamaya bağlı rastgele başarısızlık.
+    // Ölçülen metrikler (duruma göre sayı, queued_at'e göre yaş) bundan etkilenmez.
     for (const [tag, st, ageMin] of [['q', 'QUEUED', 90], ['f', 'FAILED', 5]] as const) {
       const id = `dtx-o1107-${RUN}-${tag}`; ids.desp.push(id);
       const txId = `tx-o1107-${RUN}-d${tag}`; ids.tx.push(txId);
       await ins(`INSERT INTO transactions (id, tenant_id, site_name, vehicle_plate, amount_liters, created_at) VALUES ($1,$2,$3,$4,5,NOW())`, [txId, TENANT, GEBZE, `O1107-${tag}`]);
-      await ins(`INSERT INTO despatch_advice_transmissions (id, tenant_id, despatch_advice_document_id, transaction_id, document_number, ettn, vehicle_plate, provider, status, xml_snapshot, queued_at) VALUES ($1,$2,$3,$4,$5,gen_random_uuid(),$6,'MOCK_GIB',$7,'<x/>', NOW() - ($8 || ' minutes')::interval)`, [id, TENANT, `dad-o1107-${RUN}-${tag}`, txId, `IRS2099${String(RUN).slice(-9)}${tag}`.slice(0, 32), `O1107-${tag}`, st, String(ageMin)]);
+      await ins(`INSERT INTO despatch_advice_transmissions (id, tenant_id, despatch_advice_document_id, transaction_id, document_number, ettn, vehicle_plate, provider, status, xml_snapshot, queued_at, next_retry_at) VALUES ($1,$2,$3,$4,$5,gen_random_uuid(),$6,'MOCK_GIB',$7,'<x/>', NOW() - ($8 || ' minutes')::interval, NOW() + INTERVAL '2 hours')`, [id, TENANT, `dad-o1107-${RUN}-${tag}`, txId, `IRS2099${String(RUN).slice(-9)}${tag}`.slice(0, 32), `O1107-${tag}`, st, String(ageMin)]);
     }
     const nid = `notif-o1107-${RUN}`; ids.notif.push(nid);
     const uid = (await q(`SELECT id FROM users WHERE username = 'camsa'`))[0].id;
