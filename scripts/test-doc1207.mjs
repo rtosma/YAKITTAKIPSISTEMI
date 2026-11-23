@@ -84,14 +84,19 @@ const fe = (f) => read(f);
 const site = fe('frontend/src/pages/santiye/SiteOperatorPanel.tsx');
 const tx = fe('frontend/src/pages/customer/TransactionsPage.tsx');
 const layout = fe('frontend/src/layouts/CustomerLayout.tsx');
-const labels = [['Pompayı Başlat & İkmal Et', site], ['İkmal başlatma yetkiniz yok', site], ['Debi (L/dk)', site], ['Pompa Akışı Aktif', site], ['Excel Olarak İndir', tx], ['Filtreleri Temizle', tx], ['Yakıt Hareketleri', layout], ['Tank Durumu', layout], ['Bildirimler', layout]];
+const labels = [['Pompayı Başlat & İkmal Et', site], ['İkmal başlatma yetkiniz yok', site], ['Debi (L/dk)', site], ['Pompa Akışı Aktif', site], ['Excel', tx], ['Km / Motor-Saat Girişi', site], ['Onayla ve Kaydet', site], ['ACİL DURDUR', site], ['Evet, Acil Durdur', site], ['Devam Ettir', site], ['Filtreleri Temizle', tx], ['Yakıt Hareketleri', layout], ['Tank Durumu', layout], ['Bildirimler', layout]];
 const missingLabels = labels.filter(([l, src]) => !src.includes(l) || !manual.includes(l)).map(([l]) => l);
 check('Panel drift\'i: el kitabında anılan ekran/düğme adları arayüzde GERÇEKTEN var (ve belgede yazıldığı gibi)', missingLabels.length === 0, `uyuşmayan=[${missingLabels}]`);
-const pagesDir = readdirSync(path.join(ROOT, 'frontend/src/pages/customer')).concat(readdirSync(path.join(ROOT, 'frontend/src/pages/santiye')));
-const kmScreen = pagesDir.some((f) => /km|odometer|meter|sayac/i.test(f)) || /meter-readings/.test(site + tx);
-const liveScreen = pagesDir.some((f) => /live|canli/i.test(f)); const alarmScreen = pagesDir.some((f) => /alarm/i.test(f));
-check('"Henüz yok" iddiaları doğru: km girişi (FE-813), canlı ikmal ekranı (FE-811) ve alarm merkezi (FE-815) için arayüzde sayfa YOK — biri eklenirse bu test kırılır ve el kitabı §4.3 güncellenmek zorundadır',
-  !kmScreen && !liveScreen && !alarmScreen && /FE-813/.test(manual) && /FE-811/.test(manual) && /FE-815/.test(manual), `km=${kmScreen} canlı=${liveScreen} alarm=${alarmScreen}`);
+// FE-811/813/815 (1-2 Ekim) yayına girdi: el kitabı §4.3 artık bunları "henüz yok" diye
+// anmamalı, şantiye paneline gelen ikisini (km girişi, acil durdurma) §4.1'de anlatmalı
+// (düğme adları yukarıdaki drift kontrolünde). Alarm merkezi yönetici panelinde kalıyor.
+const kmInSitePanel = /meter-value-input/.test(site);
+const stopInSitePanel = /site-emergency/.test(site);
+const alarmCenter = /alarm-table/.test(fe('frontend/src/pages/customer/NotificationsPage.tsx'));
+const staleClaims = (manual.match(/[Hh]enüz yok[^|\n]*\(FE-81[135]\)/g) ?? []);
+check('Yeni ekranlar el kitabında doğru: km girişi (FE-813) ve acil durdurma (FE-811) şantiye panelinde ve §4.1\'de anlatılıyor; alarm merkezi (FE-815) yönetici panelinde; §4.3\'te "henüz yok" iddiası kalmadı',
+  kmInSitePanel && stopInSitePanel && alarmCenter && staleClaims.length === 0 && /### 4\.3/.test(manual) && /Alarm merkezi/.test(manual),
+  `km=${kmInSitePanel} acilDurdur=${stopInSitePanel} alarmMerkezi=${alarmCenter} eskiİddia=[${staleClaims}]`);
 
 // ── Kullanılabilirlik testi + bağlantılar + CI ─────────────────────────────────
 const ut = read('docs/operator/KULLANILABILIRLIK_TESTI.md');

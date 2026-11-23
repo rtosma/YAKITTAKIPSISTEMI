@@ -263,22 +263,22 @@ Ekran 16 harf × 4 satırdır. Aşağıda **ekranda gördüğünüz yazı** kal�
 Panele telefon veya bilgisayardan tarayıcıyla girilir. Şantiye şefi/pompa operatörü **Şantiye Girişi** ile, yönetici **Yönetici Girişi** ile girer. İlk girişte **parolanızı değiştirmeniz** istenir; parolayı kimseyle paylaşmayın.
 
 ### 4.1 Şantiye paneli (şantiye şefi ve pompa operatörü)
-- **Saha Pompa İkmali:** panelden elle ikmal kaydı açılabilir: **Plaka** (araç), **İkmal Eden Şoför**, **Miktar (Litre)** seçilir ve **Pompayı Başlat & İkmal Et**'e basılır. Akış sürerken *Pompa Akışı Aktif...* ve **Debi (L/dk)** görünür. (Yalnızca ikmal yetkisi olan kullanıcılar; yoksa *İkmal başlatma yetkiniz yok* yazar.)
+- **Saha Pompa İkmali:** panelden elle ikmal kaydı açılabilir: **Plaka** (araç), **İkmal Eden Şoför**, **Miktar (Litre)** seçilir ve **Pompayı Başlat & İkmal Et**'e basılır. **Canlı ikmal ekranı:** akış sürerken *Pompa Akışı Aktif...* ve **Debi (L/dk)** görünür. (Yalnızca ikmal yetkisi olan kullanıcılar; yoksa *İkmal başlatma yetkiniz yok* yazar.)
 - **İkmal Kaydı listesi:** son ikmaller *Tarih/Saat, Plaka, Şoför, Miktar, Durum* olarak listelenir. **Hareket sorgulama** için bu listeye ve yönetici panelindeki *Yakıt Hareketleri*'ne bakın.
+- **Km / motor saati girişi** (*Km / Motor-Saat Girişi* bölümü): araçların sayaç okumasını buradan girin. **Araç** listesinden plakayı seçin. Plakanın yanında sayaç türü yazar (*Km* ya da *Motor-Saat*). **Sayaç değeri**ni yazıp **Kaydet**'e basın. Değer şüpheliyse (örneğin önceki okumadan küçükse) sistem uyarır. Değer doğruysa kısa bir gerekçe yazıp **Onayla ve Kaydet**'e basın; emin değilseniz yöneticiye sorun.
+- **ACİL DURDUR:** panelin üstündeki kırmızı düğme, şantiyedeki **tüm** pompaları uzaktan kilitler. Hiçbir araç yakıt alamaz. Açılan pencereye durdurma gerekçesini yazın (en az 5 karakter). Sonra **Evet, Acil Durdur**'a basın. İşlem adınızla kayda geçer. Tehlike geçince **Devam Ettir** ile pompalar yeniden açılır. Bu düğme pompadaki fiziksel düğmenin **yerine geçmez** (§5.1).
 
 ### 4.2 Yönetici paneli (şantiye şefi yetkisi varsa)
-- **Yakıt Hareketleri:** ikmalleri **plaka** (arama kutusu), **şoför**, **şantiye** ve tarihe göre süzün; toplam litre üstte görünür; **Excel Olarak İndir** ile liste indirilir, **Filtreleri Temizle** ile baştan başlarsınız. *Anomali / Şüpheli* işaretli kayıtlara özellikle bakın. Yanlış bir kayıt görürseniz **kaydı değiştirmeyin**, yöneticiye bildirin.
+- **Yakıt Hareketleri:** ikmalleri **plaka** (arama kutusu), **şoför**, **şantiye** ve tarihe göre süzün; toplam litre üstte görünür; **Excel** düğmesiyle liste indirilir, **Filtreleri Temizle** ile baştan başlarsınız. *Anomali / Şüpheli* işaretli kayıtlara özellikle bakın. Yanlış bir kayıt görürseniz **kaydı değiştirmeyin**, yöneticiye bildirin.
 - **Tank Durumu:** tank seviyesi (litre ve yüzde; kritik/uyarı/güvenli). İkmal bitince kendiliğinden güncellenir.
 - **Bildirimler:** sistemin uyarıları burada listelenir (limit, kota, düşük stok, şüpheli ikmal gibi). Uyarılar ayrıca e-posta/SMS/Telegram ile de gelebilir (hangisinin geleceğini yönetici ayarlar). Her gün bakın.
 
-### 4.3 Şu an panelde olmayan ekranlar (yakında)
-| İhtiyaç | Şu an ne yapmalı |
+### 4.3 Şantiye panelinde olmayan ekranlar
+| İhtiyaç | Ne yapmalı |
 |---|---|
-| **Km / motor saati girişi** (araç sayaç okuması) | Ayrı bir giriş ekranı henüz yok (FE-813). Sayaç okumalarını **yöneticiye yazılı bildirin**; yönetici sisteme girer. |
-| **Canlı ikmal ekranı ve acil durdurma düğmesi** (panel) | Henüz yok (FE-811). Canlı bilgiyi **pompa ekranından** izleyin; acil durdurma için **fiziksel düğme** kullanılır (§5). |
-| **Alarm merkezi** | Henüz yok (FE-815). Alarmlar **Bildirimler**'de (ve ayarlıysa e-posta/SMS/Telegram'da) görünür. |
+| **Alarm merkezi** (alarmları görme, susturma, çözme) | Yalnızca **yönetici panelinde** (§4.2), **Bildirimler** sayfasında. Şantiye paneli hesabıyla bu sayfa görünmez. Alarm olduğunu düşünüyorsanız **yöneticiye haber verin**; alarmlar ayarlıysa e-posta/SMS/Telegram ile de gelir. |
 
-*Bu tablo, ekranlar yayına girdikçe güncellenir.*
+*Bu tablo, ekranlar değiştikçe güncellenir.*
 
 ---
 
