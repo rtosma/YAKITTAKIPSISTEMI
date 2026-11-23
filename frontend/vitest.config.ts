@@ -8,8 +8,9 @@ import { defineConfig } from 'vitest/config';
  * Neden AYRI bir dosya (vite.config.ts'e `test` alanı eklemek yerine): prod build yapılandırmasını test yapılandırmasıyla karıştırmamak için.
  *
  * COVERAGE — "tüm koda aynı eşik anlamsızdır": arayüzde (sayfa/bileşen) eşik DÜŞÜK, mantık modüllerinde YÜKSEK:
- *   - Genel (tüm src): %20 — arayüz kodu çoğunlukla Playwright e2e ile sınanır; bu taban yalnızca çöküşü (testlerin silinmesi/bozulması) yakalar.
- *     Ölçüm anındaki gerçek değer ≈ %24; taban geliştikçe YÜKSELTİLİR (asla düşürülmez).
+ *   - Genel (tüm src): %30 — arayüz kodu çoğunlukla Playwright e2e ile sınanır; bu taban yalnızca çöküşü (testlerin silinmesi/bozulması) yakalar.
+ *     Taban geliştikçe YÜKSELTİLİR (asla düşürülmez). Geçmiş: %20 (ölçüm ≈%24) → FE-805…818 testsiz eklenince %16.8'e düştü (CI
+ *     koşmadığı için görülmedi) → müşteri paneli duman testleriyle (CustomerPages.smoke.test.tsx) ≈%32 → taban %30.
  *   - Mantık modülleri (api istemcisi, yetki matrisi, doğrulama, Sentry): dosya başına %70+ (satır/ifade), dal %70.
  * Backend eşikleri: backend/vitest.config.ts (hesap motorlarında %90).
  */
@@ -32,7 +33,7 @@ export default defineConfig({
       include: ['src/**/*.{ts,tsx}'],
       exclude: ['src/**/*.test.{ts,tsx}', 'src/test/**', 'src/mock/**', 'src/types/**', 'src/types.ts', 'src/main.tsx', 'src/vite-env.d.ts'],
       thresholds: {
-        lines: 20, statements: 20, functions: 10, branches: 15,
+        lines: 30, statements: 30, functions: 16, branches: 20,
         ...Object.fromEntries(LOGIC_FILES.map((f) => [f, { lines: 70, statements: 70, functions: 60, branches: 70 }]))
       }
     }

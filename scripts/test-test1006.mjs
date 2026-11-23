@@ -62,7 +62,7 @@ const bcfg = read('backend/vitest.config.ts');
 const fcfg = read('frontend/vitest.config.ts');
 const engineFiles = [...(/ENGINE_FILES = \[([\s\S]*?)\];/.exec(bcfg)?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1]);
 const otherFiles = [...(/OTHER_UNIT_FILES = \[([\s\S]*?)\];/.exec(bcfg)?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1]);
-check('Eşik değerleri ticket önerisiyle uyumlu: backend hesap motorları dosya başına %90 (satır/fonksiyon/dal/ifade), kapsamdaki tüm dosyalar %70; frontend arayüz için DÜŞÜK genel taban (< %50) ve mantık modülleri %70', /lines: 90, functions: 90, branches: 90, statements: 90/.test(bcfg) && /lines: 70, functions: 70, branches: 70, statements: 70/.test(bcfg) && /lines: 20, statements: 20/.test(fcfg) && /lines: 70, statements: 70, functions: 60, branches: 70/.test(fcfg), '');
+check('Eşik değerleri ticket önerisiyle uyumlu: backend hesap motorları dosya başına %90 (satır/fonksiyon/dal/ifade), kapsamdaki tüm dosyalar %70; frontend arayüz için DÜŞÜK genel taban (< %50) ve mantık modülleri %70', /lines: 90, functions: 90, branches: 90, statements: 90/.test(bcfg) && /lines: 70, functions: 70, branches: 70, statements: 70/.test(bcfg) && (() => { const m = /lines: (\d+), statements: (\d+)/.exec(fcfg); return !!m && +m[1] > 0 && +m[1] < 50 && +m[2] > 0 && +m[2] < 50; })() && /lines: 70, statements: 70, functions: 60, branches: 70/.test(fcfg), '');
 
 const listTs = (dir) => (existsSync(path.join(ROOT, dir)) ? readdirSync(path.join(ROOT, dir)).filter((f) => f.endsWith('.ts')).map((f) => `${dir}/${f}`) : []);
 const mustBeEngines = [...listTs('backend/src/fuel'), ...listTs('backend/src/fleet')].map((f) => f.replace('backend/', ''));

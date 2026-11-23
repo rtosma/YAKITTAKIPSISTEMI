@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { API_BASE_URL, apiFetch, TOKENS_REFRESHED_EVENT, UNAUTHORIZED_EVENT } from './api';
+import { API_BASE_URL, apiFetch, downloadAuthenticatedFile, TOKENS_REFRESHED_EVENT, UNAUTHORIZED_EVENT } from './api';
 
 /**
  * TEST_PLAN.md §3.2 — `utils/api.ts` (401 → sessiz yenileme → oturum düşürme).
@@ -274,5 +274,62 @@ describe('apiFetch — eşzamanlılık', () => {
     // KRİTİK: iki ayrı yenileme, refresh token rotasyonu nedeniyle
     // ikincisini "token reuse" durumuna düşürüp tüm oturumları iptal ettirirdi.
     expect(refreshCallCount).toBe(1);
+  });
+});
+
+/**
+ * Raporlar/irsaliye/export indirmeleri (FE-812/816) — apiFetch'ten ayrı küçük
+ * yardımcı: aynı Bearer kuralı, ama gövde blob olarak işlenip tarayıcıya
+ * indirilir. Hata yolunda sunucu mesajı korunmalı (kullanıcı neden
+ * indirilemediğini görmeli) ve object URL sızdırılmamalı.
+ */
+describe('downloadAuthenticatedFile', () => {
+  function stubDownloadDom() {
+    const createObjectURL = vi.fn(() => 'blob:test-url');
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('URL', Object.assign(Object.create(URL), { createObjectURL, revokeObjectURL }));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    return { createObjectURL, revokeObjectURL, click };
+  }
+
+  it('Bearer token ile ister, blob\'u verilen dosya adıyla indirir ve object URL\'i bırakır', async () => {
+    localStorage.setItem(ACCESS_KEY, 'acc-1');
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: async () => new Blob(['a,b\n1,2']) } as unknown as Response);
+    vi.stubGlobal('fetch', fetchMock);
+    const { createObjectURL, revokeObjectURL, click } = stubDownloadDom();
+    let downloadName = '';
+    click.mockImplementation(function (this: HTMLAnchorElement) { downloadName = this.download; });
+
+    await downloadAuthenticatedFile('/reports/rep-711/export?format=csv', 'ikmal.csv');
+
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/reports/rep-711/export?format=csv`, { headers: { Authorization: 'Bearer acc-1' } });
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(downloadName).toBe('ikmal.csv');
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:test-url');
+    expect(document.querySelector('a[download]')).toBeNull(); // geçici <a> DOM'dan kaldırıldı
+  });
+
+  it('token yokken Authorization başlığı göndermez', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, blob: async () => new Blob(['x']) } as unknown as Response);
+    vi.stubGlobal('fetch', fetchMock);
+    stubDownloadDom();
+    await downloadAuthenticatedFile('/x', 'x.pdf');
+    expect(fetchMock).toHaveBeenCalledWith(`${API_BASE_URL}/x`, { headers: {} });
+  });
+
+  it('hata yanıtında sunucunun mesajını fırlatır ve hiçbir şey indirmez', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(makeResponse({ status: 403, body: { message: 'Bu raporu görme yetkiniz yok.' } })));
+    const { createObjectURL } = stubDownloadDom();
+    await expect(downloadAuthenticatedFile('/x', 'x.csv')).rejects.toThrow('Bu raporu görme yetkiniz yok.');
+    expect(createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it('hata gövdesi JSON değilse statusText\'e, o da yoksa genel mesaja düşer', async () => {
+    const notJson = (statusText: string) => ({ ok: false, status: 500, statusText, json: async () => { throw new SyntaxError('not json'); } }) as unknown as Response;
+    stubDownloadDom();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(notJson('Internal Server Error')));
+    await expect(downloadAuthenticatedFile('/x', 'x.csv')).rejects.toThrow('Internal Server Error');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(notJson('')));
+    await expect(downloadAuthenticatedFile('/x', 'x.csv')).rejects.toThrow('Dosya indirilemedi.');
   });
 });
