@@ -1,4 +1,5 @@
 import http from 'http';
+import { resetLoginRateLimit } from './helpers/loginRateLimit';
 
 /**
  * AUTH-201 regression suite for POST /auth/refresh.
@@ -78,6 +79,7 @@ async function run(): Promise<void> {
   console.log('\n📋 [AUTH-201] REFRESH KİMLİK & EŞZAMANLILIK REGRESYON TESTİ\n');
 
   // --- A) Identity is preserved across rotation, for a NON-camsa tenant -------
+  await resetLoginRateLimit();
   const login = await postJson('/api/v1/auth/login', { username: 'kusak', password: '123456' });
   if (login.status !== 200 || !login.data?.refreshToken) {
     console.error('❌ Ön koşul: kusak girişi başarısız. Seed uygulanmış mı?', login.status, login.data);
@@ -114,6 +116,7 @@ async function run(): Promise<void> {
   );
 
   // --- B) Single use holds under concurrency ---------------------------------
+  await resetLoginRateLimit();
   const fresh = await postJson('/api/v1/auth/login', { username: 'gebze-santiye', password: '123456' });
   if (fresh.status !== 200 || !fresh.data?.refreshToken) {
     console.error('❌ Ön koşul: gebze-santiye girişi başarısız.', fresh.status, fresh.data);
