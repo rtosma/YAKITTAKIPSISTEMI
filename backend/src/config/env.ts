@@ -16,6 +16,19 @@ import { z } from 'zod';
  * özgü bir ConfigModule değil.
  */
 
+// Süreç saat dilimi HER ZAMAN UTC. Kod tabanı yerel (İstanbul) saati sistem
+// saatinden değil sabit +3 ofsetle kendisi hesaplıyor (bkz. tenantDb.ts
+// istanbulLocalParts) ve sistemin UTC olduğunu varsayıyor. Aksi halde
+// node-postgres DATE kolonlarını YEREL gece yarısı olarak ayrıştırır ve
+// toISOString() pozitif ofsetli bir dilimde (örn. TZ=Europe/Istanbul) her
+// tarihi BİR GÜN geri kaydırır: belge son kullanma 2026-12-08 → 2026-12-07.
+// Docker/CI zaten UTC'de olduğu için bu yalnızca TZ'si ayarlı bir sunucuda
+// veya yerel geliştirmede görünürdü. Bu modül import zincirinde ilk
+// değerlendirilenlerden olduğundan (logger/havuzlar buna bağımlı) atama
+// herhangi bir tarih dönüşümünden önce gerçekleşir; Node TZ'yi her atamada
+// yeniden okur.
+process.env.TZ = 'UTC';
+
 // .env.example'daki placeholder'lar — üretimde JWT/MQTT sırlarından biri hâlâ
 // bu değerlerden birindeyse "yapılandırılmış görünüyor ama aslında değil"
 // durumudur (bkz. loadConfig()'teki POSTGRES_PASSWORD'ün neden bu listeye
