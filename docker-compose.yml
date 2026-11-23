@@ -30,11 +30,17 @@ services:
       # göre çalıştırır, bu yüzden 02- öneki şemadan SONRA çalışmasını garanti eder.
       - ./backend/src/db/seed_mock_data.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-yakittakip_db}"]
-      interval: 10s
+      # -h 127.0.0.1: ilk kurulumda imaj initdb.d betiklerini YALNIZCA unix
+      # soketinden dinleyen geçici bir sunucuyla çalıştırır; soket üzerinden
+      # pg_isready o sırada "hazır" der ve backend şema/seed bitmeden
+      # başlatılır. TCP yalnızca init bitip gerçek sunucu açılınca yanıt verir.
+      # Bu yüzden init süresi artık sağlık kontrolüne dahil: start_period 60s,
+      # boş volume'de şema + seed'in uygulanmasına yetecek pay.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-yakittakip_db}"]
+      interval: 5s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 60s
     networks:
       - yakit_network
 
