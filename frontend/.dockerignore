@@ -4,8 +4,11 @@ node_modules
 .npm-cache
 dist
 coverage
+# Vite build modunda .env.production/.env.*.local da OKUNUR ve VITE_ değerleri
+# bundle'a gömülür — yalnızca .env/.env.local'i hariç tutmak yetmez.
 .env
-.env.local
+.env.*
+!.env.example
 *.log
 npm-debug.log*
 .gemini

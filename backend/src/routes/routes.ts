@@ -1,32 +1,153 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, createTenantSite, deleteTenantSite } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getVehicleSiteAssignmentHistory, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, getTenantSiteDetails, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, isTenantModuleEnabled, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getTenantUsers, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, emergencyStopSite, emergencyResumeSite, getSiteEmergencyStatus, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant, createLabSample, getLabSamples, getLabSample, cancelLabSample, recordLabTestResult, getLabTestResults, getNonConformingLabResults, computeDriverBehaviorScores, getDriverBehaviorScores, getDriverBehaviorScoreHistory, getTankStockForecasts, runTankStockAlertSweepForCurrentTenant, computeDeviceHealthScores, getDeviceHealthScores, getDeviceHealthScoreHistory, getDeviceOnlineSla, getDeviceFirmwareInventory, createFireRecord, getFireRecords, approveFireRecord, rejectFireRecord, getFireRecordSiteComparison, getSmsMonthlyUsageForCurrentTenant, upsertTenantNotificationChannels, getTenantNotificationChannels, setUserNotificationPreference, getUserNotificationPreferencesForCurrentUser, createUserNotificationMute, getActiveUserNotificationMutes, createSupplier, updateSupplier, getSuppliers, getSupplier, createFuelPurchaseWaybill, getFuelPurchaseWaybill, getSupplierPurchaseHistory, getDespatchIntegratorCircuitStatus, runDespatchAdviceStatusPollForCurrentTenant, bulkResendFailedDespatchAdviceTransmissions, runDespatchAdviceStuckDetectionForCurrentTenant } from '../db/tenantDb';
+import { downloadDespatchAdviceDocument } from '../services/despatchAdviceDownloadService';
+import { recordDispenseCompleted, registry } from '../observability/metrics';
+import { getExecutiveDashboard } from '../services/executiveDashboardService';
+import { executiveDashboardQuerySchema } from '../schemas/dashboardSchema';
+import { streamTransactionsToExcel } from '../services/transactionExportService';
+import { getReportDefinition, listReportsForRole, runReport, streamReportToCsv, streamReportToPdf, streamReportToXlsx, auditReportExport, assertPiiFilterAccess, assertReportQueryValid, ReportQueryParams } from '../reports';
+import { reportRunQuerySchema, reportExportQuerySchema, reportIdParamsSchema } from '../schemas/reportSchema';
+import { generateAndStoreAnomalyReport } from '../services/consumptionAnomalyService';
+import { generateAnomalyReportSchema } from '../schemas/consumptionAnomalySchema';
+import { monthParamsSchema, generateMonthlyReportBodySchema, GenerateMonthlyReportDTO } from '../schemas/monthlyManagementReportSchema';
+import { generateMonthlyManagementReport, deliverMonthlyManagementReport, getMonthlyReportRecord, listMonthlyReportRecords, compileMonthlyFacts, buildMonthlyReportPdfForViewer, previousMonthOf } from '../services/monthlyManagementReportService';
+import { generateDespatchAdviceXml } from '../compliance/despatchAdviceXmlService';
+import { setStrappingTableSchema, tankVolumeQuerySchema, parseStrappingCsv } from '../schemas/strappingTableSchema';
+import { blockRfidCardSchema, replaceRfidCardSchema } from '../schemas/rfidCardSchema';
+import { checkReadiness } from '../services/readinessService';
+import { createQuotaSchema, updateQuotaSchema } from '../schemas/quotaSchema';
+import { createFuelIntakeSchema, listFuelIntakeQuerySchema } from '../schemas/fuelIntakeSchema';
+import { createSupplierSchema, updateSupplierSchema, createFuelPurchaseWaybillSchema } from '../schemas/supplierSchema';
+import { createReconciliationSchema, listReconciliationQuerySchema } from '../schemas/stockReconciliationSchema';
+import { createManualDispenseSchema, rejectManualDispenseSchema, listManualDispenseQuerySchema, manualDispenseRatioQuerySchema } from '../schemas/manualDispenseSchema';
+import { createFireRecordSchema, approveFireRecordSchema, rejectFireRecordSchema, listFireRecordQuerySchema, fireRecordSiteComparisonQuerySchema } from '../schemas/fireRecordSchema';
+import { setWorkingHoursSchema, scanAnomalySchema, listAnomalyFlagQuerySchema, reviewAnomalyFlagSchema } from '../schemas/anomalyFlagSchema';
+import { emergencyStopSchema } from '../schemas/siteEmergencyStopSchema';
+import { computeDriverBehaviorScoresSchema, listDriverBehaviorScoresQuerySchema, driverBehaviorScoreHistoryQuerySchema } from '../schemas/driverBehaviorScoreSchema';
+import { computeDeviceHealthScoresSchema, listDeviceHealthScoresQuerySchema, deviceHealthScoreHistoryQuerySchema, deviceOnlineSlaQuerySchema } from '../schemas/deviceHealthScoreSchema';
+import { updateAlarmSchema, snoozeAlarmSchema, listAlarmQuerySchema } from '../schemas/alarmSchema';
+import { validateTaxIdSchema, createRecipientSchema } from '../schemas/recipientSchema';
+import { setDeviceTankSchema, fuelStockSummaryQuerySchema } from '../schemas/fuelTypeSchema';
+import { recordMeterReadingSchema, bulkMeterReadingSchema, missingMeterQuerySchema, remindMeterSchema } from '../schemas/meterReadingSchema';
+import { fleetConsumptionQuerySchema, fleetComparisonQuerySchema, fleetTrendQuerySchema } from '../schemas/fleetConsumptionSchema';
+import { vehicleConsumptionAnomalyQuerySchema, consumptionAnomalyScanSchema } from '../schemas/consumptionAnomalySchemaFleet';
+import { setVehicleFuelLimitSchema, temporaryFuelLimitIncreaseSchema } from '../schemas/vehicleFuelLimitSchema';
+import { enqueueDespatchAdviceTransmissionSchema, despatchAdviceTransmissionListQuerySchema, bulkResendDespatchAdviceTransmissionSchema } from '../schemas/despatchAdviceTransmissionSchema';
+import { rejectDespatchAdviceSchema, cancelDespatchAdviceSchema } from '../schemas/despatchAdviceDispositionSchema';
+import { createVehicleMaintenanceRecordSchema, totalCostOfOwnershipQuerySchema } from '../schemas/vehicleMaintenanceSchema';
+import { addVehicleComplianceDeadlineSchema, registerVehicleTireSchema, recordTireTreadDepthSchema } from '../schemas/vehicleComplianceSchema';
+import { createInventoryItemSchema, recordInventoryMovementSchema, recordInventoryCountSchema } from '../schemas/inventorySchema';
+import { createLabSampleSchema, cancelLabSampleSchema, recordLabTestResultSchema } from '../schemas/labSampleSchema';
+import { tenantLifecycleReasonSchema } from '../schemas/tenantLifecycleSchema';
+import { validateTaxId } from '../compliance/taxIdValidation';
+import { getEInvoiceObligation } from '../services/taxpayerRegistryService';
+import { totpSetupSchema, totpEnableSchema, totpVerifySchema, totpDisableSchema } from '../schemas/totpSchema';
+import { generateTotpSecret, verifyTotp, buildOtpauthUri, generateRecoveryCodes, normalizeRecoveryCode } from '../services/totpService';
+import { isServerShuttingDown } from '../utils/shutdown';
+import { getAllCompanies, createCompanyWithOwner, updateCompanyAdmin, getAllHardwareDevices, redeemDeviceClaimCode, getUserAuthById, getUserTotp, saveUserTotpSecret, enableUserTotp, deleteUserTotp, setTotpRecoveryHashes, touchTotpLastUsed, insertAuthAuditLog, isPackageLimitReached, getCompanyModuleAddons, addCompanyModuleAddon, removeCompanyModuleAddon, reapplyPackageDefaults, PACKAGE_TIERS, getCompanyLicenseSnapshot, getTenantLifecycleStatus, freezeCompany, unfreezeCompany, scheduleTenantDeletion, cancelTenantDeletion, approveTenantDeletion, exportTenantDataEncrypted, getArchiveSettings, updateArchiveSettings, getModuleCatalog, getFuelCostSettings, updateFuelCostMethod, createFirmwareArtifact, getFirmwareArtifacts } from '../db/adminDb';
+import { startFirmwareRollout, getFirmwareRollouts, getFirmwareRollout, reportRolloutDeviceRollback } from '../services/firmwareRolloutService';
+import { getNotifications, markNotificationRead, sendTestNotification, notifyAlarmEscalationRecipients } from '../services/notificationService';
+import { listNotificationQuerySchema, updateNotificationChannelsSchema, sendTestNotificationSchema, setUserNotificationPreferenceSchema, createUserNotificationMuteSchema } from '../schemas/notificationSchema';
+import { createFirmwareArtifactSchema, listFirmwareArtifactQuerySchema, startFirmwareRolloutSchema, listFirmwareRolloutQuerySchema, reportRolloutRollbackSchema } from '../schemas/firmwareRolloutSchema';
+import { generateArchiveForTenant, listTenantArchives, verifyAndConsumeArchiveDownload } from '../services/tenantArchiveService';
+import { createDataSubjectRequest, listDataSubjectRequests, fulfillAccessRequest, fulfillErasureRequest, rejectDataSubjectRequest, anonymizeExpiredSubjects } from '../services/privacyService';
+import { createDsrSchema, dsrIdParamsSchema, dsrRejectSchema, anonymizeExpiredSchema } from '../schemas/privacySchema';
+import { PII_INVENTORY } from '../privacy/piiInventory';
+import { maskDriverForRole, maskPersonnelForRole } from '../privacy/piiPolicy';
+import { getRetentionPolicies, setRetentionDays, listRetentionArchives, runRetentionPurge } from '../services/retentionService';
+import { retentionClassParamsSchema, retentionPolicyUpdateSchema, retentionRunSchema } from '../schemas/retentionSchema';
+import { archiveSettingsSchema, createArchiveSchema, archiveIdParamsSchema, archiveDownloadParamsSchema } from '../schemas/archiveSchema';
+import {
+  createReportSchedule,
+  listReportSchedulesForCurrentTenant,
+  getReportSchedule,
+  updateReportSchedule,
+  deleteReportSchedule,
+  listReportDeliveriesForSchedule,
+  verifyAndConsumeReportDeliveryDownload
+} from '../services/reportScheduleService';
+import { createReportScheduleSchema, updateReportScheduleSchema, reportScheduleIdParamsSchema, reportDeliveryDownloadParamsSchema } from '../schemas/reportScheduleSchema';
+import { setFuelBudget, listFuelBudgets, deleteFuelBudget } from '../services/fuelBudgetService';
+import { setFuelBudgetSchema, listFuelBudgetsQuerySchema, fuelBudgetIdParamsSchema } from '../schemas/fuelBudgetSchema';
+import { fuelCostSettingsSchema } from '../schemas/fuelCostSchema';
+import { runLicenseExpiryWarningSweep } from '../services/licenseWarningService';
+import { getUsageMeteringHistory, computeUsageMeteringForCurrentTenant } from '../services/usageMeteringService';
+import { uploadVehicleDocument, getVehicleDocuments, getVehicleDocumentContent, generateVehicleDocumentDownloadLink, verifyAndConsumeVehicleDocumentDownload } from '../services/vehicleDocumentService';
+import {
+  createPersonnel, getPersonnelList, getPersonnel, createLeaveRequest, getLeaveRequestsForPersonnel, getLeaveBalance,
+  getLeaveCalendar, getPendingLeaveApprovals, approveLeaveRequestAsSiteManager, approveLeaveRequestAsCompanyOwner,
+  rejectLeaveRequest, cancelLeaveRequest
+} from '../services/personnelLeaveService';
+import { createPersonnelSchema, createLeaveRequestSchema, rejectLeaveRequestSchema } from '../schemas/personnelLeaveSchema';
+import { uploadVehicleDocumentSchema } from '../schemas/vehicleDocumentSchema';
 import { validateRequest } from '../middleware/validateMiddleware';
-import { createVehicleSchema } from '../schemas/vehicleSchema';
+import { createVehicleSchema, updateVehicleSchema } from '../schemas/vehicleSchema';
 import { createDriverSchema, updateDriverSchema } from '../schemas/driverSchema';
-import { dispenseRequestSchema } from '../schemas/transactionSchema';
-import { loginSchema } from '../schemas/authSchema';
-import { verifyPassword } from '../utils/password';
+import { createTankSchema, updateTankSchema } from '../schemas/tankSchema';
+import { dispenseRequestSchema, transactionQuerySchema, transactionExportQuerySchema, syncBatchSchema } from '../schemas/transactionSchema';
+import { dispenseRequestAuthSchema, dispenseHeartbeatSchema, dispenseFinalizeSchema } from '../schemas/dispenseSessionSchema';
+import { createCrossSitePermissionSchema, updateCrossSitePermissionStatusSchema } from '../schemas/crossSiteSchema';
+import { createCompanySchema, updateCompanySchema, moduleAddonSchema } from '../schemas/companySchema';
+import { loginSchema, changePasswordSchema, forgotPasswordSchema, resetPasswordSchema } from '../schemas/authSchema';
+import { config } from '../config/env';
+import { requestPasswordReset, finalizePasswordReset } from '../services/passwordResetService';
+import { createSiteSchema } from '../schemas/siteSchema';
+import { createHardwareDeviceSchema, relocateHardwareDeviceSchema, createDeviceClaimCodeSchema, claimDeviceSchema } from '../schemas/hardwareDeviceSchema';
+import { requestCalibrationSchema, calibrationAckSchema, testIntakeSchema } from '../schemas/calibrationSchema';
+import { setFailOpenPolicySchema } from '../schemas/failOpenPolicySchema';
+import { verifyPassword, hashPassword } from '../utils/password';
+import { NotFoundError, ForbiddenError, BadRequestError, UnauthorizedError, ConflictError } from '../utils/errors';
 import { pool } from '../db/postgresPool';
 import {
   generateAccessToken,
   generateRefreshToken,
   rotateRefreshToken,
   revokeRefreshToken,
+  revokeAllUserTokens,
+  verifyAccessToken,
+  generatePendingTwoFactorToken,
+  verifyPendingTwoFactorToken,
+  listUserSessions,
+  revokeSession,
+  revokeOtherSessions,
   JwtUserPayload,
   UserRole
 } from '../services/tokenService';
 import { authenticateJWT, authorizeRoles, AuthenticatedRequest } from '../middleware/authMiddleware';
 import { hardwareAuthMiddleware } from '../middleware/hardwareAuthMiddleware';
+import { lorawanWebhookAuth } from '../middleware/lorawanWebhookAuthMiddleware';
+import { redisPool } from '../db/redisPool';
+import { broadcastToTenant } from '../socket/socketServer';
+import { logger } from '../utils/logger';
+import { loginRateLimiter, refreshRateLimiter, hardwareRateLimiter, lorawanWebhookRateLimiter, passwordResetPerMinuteLimiter, passwordResetPerHourLimiter, passwordResetSubmitLimiter } from '../middleware/rateLimitMiddleware';
+import { lorawanUplinkSchema } from '../schemas/lorawanWebhookSchema';
+import { ingestLoRaWANUplink } from '../services/lorawanUplinkService';
+import { checkLockout, recordFailedLogin, clearFailedLogins } from '../services/accountLockoutService';
+import { runWithTenant } from '../context/tenantContext';
+import { mqttService } from '../iot/mqttClient';
+import * as dispenseSessionService from '../services/dispenseSessionService';
 
 const router = Router();
+
+/**
+ * AUTH-201.4 AC: "SITE_MANAGER başka şantiyenin verisini sorgulayamamalıdır."
+ * SUPER_ADMIN/COMPANY_OWNER için undefined döner (tüm şantiyeleri görürler);
+ * SITE_MANAGER için kendi şantiyesine kısıtlar — istemcinin query/body'de
+ * gönderdiği herhangi bir siteName'e değil, JWT'deki (giriş sırasında DB'den
+ * okunan, sahtesi üretilemeyen) siteName'e göre.
+ */
+function siteScopeFor(user: JwtUserPayload): string | undefined {
+  return user.role === 'SITE_MANAGER' ? user.siteName : undefined;
+}
+
+// FLEET-1403 AC (KVKK/COMP-606): "Kişisel veriler yetkisiz rollere maskelenmiş gösterilmelidir." — kural COMP-606'da
+// privacy/piiPolicy.ts'e taşındı (TC + telefon; TAM görenler = kaydı düzenleyebilen roller, diğer HER rol maskeli/fail-closed).
 
 /**
  * @swagger
  * /health:
  *   get:
- *     tags: [System]
- *     security: []
  *     summary: API Sağlık Durumu Kontrolü
  *     description: Sistemin ayakta olup olmadığını kontrol eder.
  *     responses:
@@ -37,56 +158,76 @@ router.get('/health', (_req: Request, res: Response) => {
   res.json({
     status: 'UP',
     timestamp: new Date().toISOString(),
+    // OPS-1110: dağıtım/rollback sonrası "hangi sürüm trafik alıyor?" sorusunun tek adımlı cevabı.
+    version: config.APP_VERSION,
     service: 'Yakıttakip Backend API [ARCH-101 / RES-901 / AUTH-201 (PostgreSQL Connected)]'
   });
 });
 
 /**
  * @swagger
- * /tenant-info:
+ * /health/live:
  *   get:
- *     tags: [System]
- *     summary: AsyncLocalStorage Tenant Bağlamını Oku (Tanılama)
+ *     summary: Liveness Probe (RES-906)
  *     description: >
- *       AsyncLocalStorage üzerinde tutulan kiracı (tenant) bağlamını okumayı amaçlayan
- *       tanılama ucudur. Veritabanına HİÇBİR sorgu atmaz, hiçbir veri yazmaz.
- *
- *
- *       DİKKAT - GERÇEK DAVRANIŞ: Bu route'a hiçbir kimlik doğrulama ara katmanı bağlı
- *       DEĞİLDİR (`authenticateJWT` yok). Bağlamı kuran `TenantContextService`
- *       (middleware/tenantMiddleware.ts) uygulamada hiçbir yerde import edilmez veya
- *       mount edilmez - bkz. index.ts:49 yorumu. AsyncLocalStorage bağlamı yalnızca
- *       `authenticateJWT` içinde `tenantStorage.run()` ile kurulduğu için bu handler
- *       daima bağlamsız çalışır: `getTenantStore()` her zaman `undefined` döner ve
- *       `res.json` (JSON.stringify) `context` anahtarını gövdeden tamamen düşürür.
- *
- *
- *       Sonuç: yanıt gövdesi - geçerli bir Bearer token gönderilse de, `X-Tenant-ID`
- *       başlığı veya `tenantId` query parametresi verilse de - HER ZAMAN yalnızca
- *       `{ "success": true, "message": "..." }` içerir. `context` alanı PRATİKTE HİÇ
- *       DÖNMEZ; kodda yazılı olması yanıltıcıdır (canlı olarak doğrulandı).
- *     security: []
+ *       Süreç ayakta mı — bağımlılıklara (DB/Redis/MQTT) BAKMAZ (Kritik Not
+ *       3: aksi halde Redis kesintisi sonsuz konteyner restart'ına yol açar).
+ *       Kapanma sırasında bile 200 döner (süreç canlı, yalnızca readiness
+ *       düşer). index.ts'teki shutdown-503 middleware'i bu yolu muaf tutar.
  *     responses:
  *       200:
- *         description: >
- *           Normal çalışmada tek olası yanıttır; handler kendi başına başka bir durum
- *           kodu üretmez. Gövde `context` alanı OLMADAN gelir. (Tek istisna route'a
- *           özgü değildir: sunucu graceful shutdown modundayken global ara katman
- *           tüm isteklere 503 SERVICE_UNAVAILABLE döner - bkz. index.ts:25-34.)
- *         headers:
- *           X-Trace-ID:
- *             description: >
- *               İstek izleme kimliği. İstemci `X-Trace-ID` başlığı gönderirse değer
- *               aynen yankılanır (doğrulandı: serbest metin de kabul edilir), aksi
- *               halde sunucu bir UUID v4 üretir. Bu nedenle format garantisi yoktur.
- *             schema:
- *               type: string
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/TenantInfoResponse'
+ *         description: Süreç canlı.
  */
-router.get('/tenant-info', (_req: Request, res: Response) => {
+router.get('/health/live', (_req: Request, res: Response) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ status: 'UP', shuttingDown: isServerShuttingDown(), timestamp: new Date().toISOString() });
+});
+
+/**
+ * @swagger
+ * /health/ready:
+ *   get:
+ *     summary: Readiness Probe (RES-906)
+ *     description: >
+ *       DB + Redis + MQTT erişilebilir VE sunucu kapanma modunda değilse 200,
+ *       aksi halde 503 (bağımlılık bazlı durum gövdededir). Sonuç 3 sn
+ *       cache'lenir (Kritik Not 1). SIGTERM alındığında derhal 503 döner ki
+ *       orkestratör trafiği bu pod'dan çeksin.
+ *     responses:
+ *       200:
+ *         description: Hazır — trafik alabilir.
+ *       503:
+ *         description: Hazır değil (bağımlılık erişilemez ya da kapanıyor).
+ */
+router.get('/health/ready', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    if (isServerShuttingDown()) {
+      res.status(503).json({ ready: false, reason: 'SHUTTING_DOWN', checkedAt: new Date().toISOString() });
+      return;
+    }
+    const result = await checkReadiness();
+    res.status(result.ready ? 200 : 503).json(result);
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/tenant-info
+ * Returns AsyncLocalStorage context state for current request
+ *
+ * TEST_PLAN.md §0.1 (GAP-2): Bu uç KİMLİK DOĞRULAMASIZ açıktı. Sızdırdığı bir
+ * veri yoktu (context yalnızca authenticateJWT içinde tenantStorage.run ile
+ * kurulduğundan, kimlik doğrulamasız çağrıda `context` zaten undefined
+ * dönüyordu) — ama bu, güvenliğin kodun BAŞKA bir yerindeki bir tesadüfe
+ * bağlı olması demekti: tenant context'ini authenticateJWT'den ÖNCE dolduran
+ * bir ara katman (ör. traceId/IP) eklendiği anda bu uç sessizce bir bilgi
+ * ifşası hâline gelirdi. Tanılama amaçlı bir uç olduğu için kaldırılmadı,
+ * kimlik doğrulaması arkasına alındı — böylece hem güvenli oldu hem de
+ * GERÇEKTEN işe yarar hâle geldi (artık dolu bir context döndürüyor).
+ */
+router.get('/tenant-info', authenticateJWT, (_req: Request, res: Response) => {
   const store = getTenantStore();
   res.json({
     success: true,
@@ -95,204 +236,51 @@ router.get('/tenant-info', (_req: Request, res: Response) => {
   });
 });
 
+/** AUTH-209: checkLockout/recordFailedLogin'in 3 çağrı noktasında da aynı 423 yanıtı üretmesi için. */
+function respondAccountLocked(res: Response, remainingSeconds: number | undefined): void {
+  res.status(423).json({
+    success: false,
+    error: 'ACCOUNT_LOCKED',
+    message: `Çok fazla hatalı giriş denemesi nedeniyle hesap geçici olarak kilitlendi. Yaklaşık ${Math.ceil((remainingSeconds || 0) / 60)} dakika sonra tekrar deneyin.`
+  });
+}
+
 /**
- * @swagger
- * /auth/login:
- *   post:
- *     tags: [Auth]
- *     summary: Kullanıcı Girişi (PostgreSQL + Argon2id + JWT)
- *     description: |
- *       Kullanıcı adı ve parola ile oturum açar. Kullanıcı `users` tablosunda
- *       `LOWER(username)` üzerinden aranır, parola Argon2id ile doğrulanır ve
- *       başarılı olursa 15 dakikalık access token ile 7 günlük tek kullanımlık
- *       refresh token üretilir.
- *
- *       **Koddan doğrulanmış davranış notları:**
- *
- *       - Public uçtur. `authenticateJWT` uygulanmaz; global `bearerAuth`
- *         gereksinimi bu operasyonda `security: []` ile geçersiz kılınmıştır.
- *       - Kullanıcı adına arama öncesinde `trim()` + `toLowerCase()` uygulanır,
- *         yani giriş büyük/küçük harf duyarsızdır. Bu işlem Zod doğrulamasından
- *         SONRA yapıldığı için `" ab "` (4 karakter) `minLength: 3` kuralını
- *         geçer ve veritabanında `"ab"` olarak aranır.
- *       - `users.username` sütunu `VARCHAR(64) UNIQUE`tir, yani tüm kiracılarda
- *         globaldir; sorguda `tenant_id` filtresi yoktur. Kiracı bağlamı bulunan
- *         kullanıcı satırından türetilir.
- *       - Sorgu tenant bağlamı kurulmadan doğrudan `pool.query` ile çalışır.
- *         `users` tablosunda RLS açık (`FORCE ROW LEVEL SECURITY`) olmasına rağmen
- *         uygulama havuzu `postgres` süper kullanıcısıyla bağlandığı için RLS
- *         atlanır; giriş bu sayede çalışır.
- *       - Kullanıcı bulunamadığında ve parola yanlış olduğunda birebir AYNI gövde
- *         döner (`INVALID_CREDENTIALS`); kullanıcı adı sayımı (enumeration) mümkün değildir.
- *       - Gövdedeki bilinmeyen alanlar Zod tarafından sessizce silinir (hata verilmez).
- *       - Yanıttaki `expiresInSeconds` sabit `900` yazılıdır; access token gerçekten
- *         `15m` ile imzalanır (tutarlı).
- *       - `user.username` istekte gönderilen hali değil, veritabanındaki yazımıyla döner.
- *       - `user.siteName` KOŞULLU alandır: DB'deki `site_name` NULL/boş ise alan
- *         JSON'dan tamamen düşer (COMPANY_OWNER hesaplarında genellikle yoktur,
- *         SITE_MANAGER hesaplarında bulunur).
- *       - `role` değeri DB'den ham okunur (`VARCHAR(32) DEFAULT 'SITE_MANAGER'`);
- *         veritabanı seviyesinde enum kısıtı yoktur, listelenen değerler
- *         `tokenService.UserRole` tipinden gelir.
- *       - Refresh token yalnızca süreç belleğindeki Map'te tutulur
- *         (`tokenService.refreshTokenStore`); şemadaki `refresh_tokens` TABLOSUNA
- *         YAZILMAZ. Sunucu yeniden başladığında tüm refresh tokenlar geçersiz olur.
- *       - Bu uçta hız sınırlama (rate limit) YOKTUR; kaba kuvvet denemeleri engellenmez.
- *     security: []
- *     requestBody:
- *       required: true
- *       description: Giriş bilgileri. `loginSchema` (Zod) ile doğrulanır.
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [username, password]
- *             description: >
- *               Zod `loginSchema` karşılığı. Şemada tanımlı olmayan alanlar
- *               reddedilmez, sessizce silinir.
- *             properties:
- *               username:
- *                 type: string
- *                 minLength: 3
- *                 description: >
- *                   Kullanıcı adı. Doğrulamadan SONRA trim + lowercase uygulandığı için
- *                   giriş büyük/küçük harf duyarsızdır. Eksik veya string değilse
- *                   "Kullanıcı adı zorunludur.", kısaysa
- *                   "Kullanıcı adı en az 3 karakter olmalıdır." mesajı döner.
- *                 example: camsa
- *               password:
- *                 type: string
- *                 format: password
- *                 minLength: 6
- *                 description: >
- *                   Düz metin parola; sunucuda Argon2id hash'i ile karşılaştırılır.
- *                   Eksik veya string değilse "Parola zorunludur.", kısaysa
- *                   "Parola en az 6 karakter olmalıdır." mesajı döner.
- *                 example: "123456"
- *           example:
- *             username: camsa
- *             password: "123456"
- *     responses:
- *       200:
- *         description: >
- *           Kimlik doğrulama başarılı. Tokenlar gövdenin ÜST seviyesindedir
- *           (`data` zarfı yoktur).
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/LoginResponse'
- *             examples:
- *               companyOwner:
- *                 summary: COMPANY_OWNER (siteName alanı YOK)
- *                 value:
- *                   success: true
- *                   message: PostgreSQL & Argon2id doğrulaması başarılı. JWT tokenlar üretildi.
- *                   accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJ1c3ItY2Ftc2Etb3duZXIifQ.SIGNATURE
- *                   refreshToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI4NGUxIn0.SIGNATURE
- *                   tokenType: Bearer
- *                   expiresInSeconds: 900
- *                   user:
- *                     userId: usr-camsa-owner
- *                     tenantId: comp-camsa
- *                     username: camsa
- *                     role: COMPANY_OWNER
- *               siteManager:
- *                 summary: SITE_MANAGER (siteName alanı VAR)
- *                 value:
- *                   success: true
- *                   message: PostgreSQL & Argon2id doğrulaması başarılı. JWT tokenlar üretildi.
- *                   accessToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiJ1c3ItZ2ViemUtbWdyIn0.SIGNATURE
- *                   refreshToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJiMDIzIn0.SIGNATURE
- *                   tokenType: Bearer
- *                   expiresInSeconds: 900
- *                   user:
- *                     userId: usr-gebze-mgr
- *                     tenantId: comp-camsa
- *                     username: gebze-santiye
- *                     role: SITE_MANAGER
- *                     siteName: Gebze Ana Şantiye
- *       400:
- *         description: >
- *           Zod doğrulaması başarısız (`VALIDATION_ERROR`) — alan bazlı Türkçe mesajlar
- *           `errors` dizisinde döner. Zod dışı bir ayrıştırma hatasında aynı 400 durumuyla
- *           `errors` alanı olmadan `BAD_REQUEST` gövdesi döner (pratikte nadir), bu yüzden
- *           `errors` alanı ZORUNLU DEĞİLDİR.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ValidationErrorResponse'
- *             examples:
- *               validationError:
- *                 summary: Zod alan hataları (validateMiddleware)
- *                 value:
- *                   success: false
- *                   error: VALIDATION_ERROR
- *                   message: Gelen istek verileri doğrulanamadı.
- *                   errors:
- *                     - field: username
- *                       message: Kullanıcı adı en az 3 karakter olmalıdır.
- *                     - field: password
- *                       message: Parola zorunludur.
- *               badRequest:
- *                 summary: Zod dışı ayrıştırma hatası (errors alanı yok)
- *                 value:
- *                   success: false
- *                   error: BAD_REQUEST
- *                   message: Girdi verileri okunamadı.
- *       401:
- *         description: >
- *           Kullanıcı adı bulunamadı VEYA Argon2id parola doğrulaması başarısız.
- *           İki durum da aynı gövdeyi döndürür.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: INVALID_CREDENTIALS
- *               message: Girilen kullanıcı adı veya şifre hatalı.
- *       500:
- *         description: >
- *           Veritabanı sorgusu veya Argon2id doğrulaması sırasında beklenmeyen hata
- *           (`DB_ERROR`). Bu uçta ham DB mesajı istemciye SIZDIRILMAZ, sabit bir metin
- *           döner ve `traceId` gövdede bulunmaz (yalnızca `X-Trace-ID` yanıt başlığında).
- *           Gövde geçersiz JSON ise istek handler'a hiç ulaşmaz; `globalErrorHandler`
- *           body-parser hatasını tanımadığı için `traceId` içeren `INTERNAL_SERVER_ERROR`
- *           gövdesiyle yine 500 döndürür (aslında 400 olmalıydı — bilinen sapma).
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             examples:
- *               dbError:
- *                 summary: Route içi catch (traceId yok)
- *                 value:
- *                   success: false
- *                   error: DB_ERROR
- *                   message: Veritabanı bağlantı hatası oluştu.
- *               malformedJson:
- *                 summary: Bozuk JSON gövdesi (globalErrorHandler, traceId var)
- *                 value:
- *                   success: false
- *                   traceId: 58f00403-b7ab-4aa2-9810-35fc340ce50c
- *                   error: INTERNAL_SERVER_ERROR
- *                   message: Sunucu tarafında beklenmeyen bir hata oluştu. Lütfen traceId ile sistem yöneticisine başvurun.
+ * POST /api/v1/auth/login
+ * User login querying PostgreSQL database, Argon2id verification, and JWT Token issuance
  */
 router.post(
   '/auth/login',
+  loginRateLimiter,
   validateRequest({ body: loginSchema }),
-  async (req: Request, res: Response) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const { username, password } = req.body;
     const lowerUser = username.trim().toLowerCase();
 
     try {
+      // AUTH-209: hesap kilitliyse Argon2id'nin ~ms mertebesindeki CPU
+      // maliyetine hiç girmeden erken çık — kilitli bir hesaba karşı hızlı
+      // art arda istek atmak login ucunu bir DoS vektörüne çevirmesin.
+      // Var olmayan bir kullanıcı adı da aynı yolu izler (aşağıdaki
+      // recordFailedLogin çağrıları) — "kilitli" ile "yanlış şifre" yanıtları
+      // arasındaki fark hangi kullanıcı adlarının gerçekten var olduğunu
+      // sızdırmamalı.
+      const lockStatus = await checkLockout(lowerUser);
+      if (lockStatus.locked) {
+        return respondAccountLocked(res, lockStatus.remainingSeconds);
+      }
+
       // Query PostgreSQL Database users table
       const dbRes = await pool.query(
-        'SELECT id, tenant_id, username, password_hash, role, site_name FROM users WHERE LOWER(username) = $1',
+        'SELECT id, tenant_id, username, password_hash, role, site_name, must_change_password, temp_password_expires_at FROM users WHERE LOWER(username) = $1',
         [lowerUser]
       );
 
       if (dbRes.rows.length === 0) {
+        const afterFailure = await recordFailedLogin(lowerUser);
+        if (afterFailure.locked) {
+          return respondAccountLocked(res, afterFailure.remainingSeconds);
+        }
         return res.status(401).json({
           success: false,
           error: 'INVALID_CREDENTIALS',
@@ -305,10 +293,47 @@ router.post(
       // Verify Argon2id password hash against stored DB hash
       const isValidPassword = await verifyPassword(dbUser.password_hash, password);
       if (!isValidPassword) {
+        const afterFailure = await recordFailedLogin(lowerUser);
+        if (afterFailure.locked) {
+          return respondAccountLocked(res, afterFailure.remainingSeconds);
+        }
         return res.status(401).json({
           success: false,
           error: 'INVALID_CREDENTIALS',
           message: 'Girilen kullanıcı adı veya şifre hatalı.'
+        });
+      }
+
+      await clearFailedLogins(lowerUser);
+
+      // ARCH-108 AC: "dondurulmuş tenant'ların kullanıcıları KİMLİK
+      // DOĞRULAYAMAMALI" — authMiddleware.ts'teki kontrol yalnızca ZATEN
+      // var olan bir access token'ı reddeder; buradaki kontrol olmasa
+      // dondurulmuş bir tenant'ın kullanıcısı YENİ bir token alıp o kontrolü
+      // (LICENSE_GATE_ALLOWLIST'teki /auth/me gibi uçlar hariç) atlayamasa
+      // bile en azından YENİ oturum açabilirdi — bu ikisi tamamlayıcıdır.
+      // SUPER_ADMIN muaf (authMiddleware'deki AYNI gerekçe).
+      if (dbUser.role !== 'SUPER_ADMIN') {
+        const license = await getCompanyLicenseSnapshot(dbUser.tenant_id);
+        if (license && (license.accountStatus === 'DONDURULDU' || license.accountStatus === 'SILME_BEKLIYOR')) {
+          return res.status(403).json({
+            success: false,
+            error: license.accountStatus === 'DONDURULDU' ? 'TENANT_FROZEN' : 'TENANT_PENDING_DELETION',
+            message: 'Firmanızın hesabı dondurulmuştur. Giriş için platform yöneticinizle iletişime geçin.'
+          });
+        }
+      }
+
+      // AUTH-204: geçici parola 72 saat sonra geçersiz olur (bkz.
+      // db/tenantDb.ts createSiteWithManager) — parola doğru olsa bile süresi
+      // dolmuş bir geçici parolayla giriş reddedilir; kullanıcı şirket
+      // yöneticisinden yeni bir şantiye/hesap oluşturulmasını istemelidir
+      // (henüz kendi kendine "yeni geçici parola iste" ucu yok).
+      if (dbUser.must_change_password && dbUser.temp_password_expires_at && new Date(dbUser.temp_password_expires_at) < new Date()) {
+        return res.status(401).json({
+          success: false,
+          error: 'TEMP_PASSWORD_EXPIRED',
+          message: 'Geçici parolanızın süresi doldu. Yeni bir geçici parola için firma yöneticinizle iletişime geçin.'
         });
       }
 
@@ -317,11 +342,42 @@ router.post(
         tenantId: dbUser.tenant_id,
         username: dbUser.username,
         role: dbUser.role as UserRole,
-        siteName: dbUser.site_name || undefined
+        siteName: dbUser.site_name || undefined,
+        mustChangePassword: dbUser.must_change_password === true
       };
 
-      const accessToken = generateAccessToken(payload);
-      const refreshToken = generateRefreshToken(dbUser.id, dbUser.tenant_id);
+      // AUTH-207: parola doğru — ama 2FA gerekiyorsa TAM token DEĞİL, yalnızca
+      // 5 dk ömürlü bir "kısmi" token dönülür. requires2fa: kullanıcının 2FA'sı
+      // zaten kurulu (opt-in, bayraktan bağımsız). requires2faSetup: rol
+      // zorunlu (config.TOTP_ENFORCED) ama henüz kurmamış.
+      const totpRow = await getUserTotp(dbUser.id);
+      if (totpRow?.enabled) {
+        return res.json({
+          success: true,
+          requires2fa: true,
+          partialToken: generatePendingTwoFactorToken(dbUser.id, dbUser.tenant_id, 'VERIFY'),
+          partialTokenExpiresInSeconds: 300,
+          message: 'Parola doğrulandı. İkinci adım: doğrulayıcı uygulamanızdaki 6 haneli kod (POST /auth/2fa/verify).'
+        });
+      }
+      if (REQUIRED_2FA_ROLES.has(dbUser.role) && config.TOTP_ENFORCED) {
+        return res.json({
+          success: true,
+          requires2faSetup: true,
+          partialToken: generatePendingTwoFactorToken(dbUser.id, dbUser.tenant_id, 'SETUP'),
+          partialTokenExpiresInSeconds: 300,
+          message: 'Bu rol için iki adımlı doğrulama zorunludur. POST /auth/2fa/setup ile kurun.'
+        });
+      }
+
+      // AUTH-208: refresh token ÖNCE üretilir (yeni oturum ailesi) ki access
+      // token'a o oturumun sid'i gömülebilsin.
+      const newSession = await generateRefreshToken(dbUser.id, dbUser.tenant_id, {
+        userAgent: req.headers['user-agent'] ?? null,
+        ipAddress: req.ip ?? null
+      });
+      const refreshToken = newSession.token;
+      const accessToken = generateAccessToken({ ...payload, sid: newSession.sessionId });
 
       res.json({
         success: true,
@@ -335,181 +391,24 @@ router.post(
           tenantId: dbUser.tenant_id,
           username: dbUser.username,
           role: dbUser.role,
-          siteName: dbUser.site_name || undefined
+          siteName: dbUser.site_name || undefined,
+          mustChangePassword: dbUser.must_change_password === true
         }
       });
     } catch (err: any) {
-      console.error('Login DB Error:', err);
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: 'Veritabanı bağlantı hatası oluştu.'
-      });
+      // Diğer uçlarla aynı: globalErrorHandler durum kodunu korur (ör. Redis
+      // yazamıyorsa checkLockout'un 503'ü). Önceden HER hata — Redis dahil —
+      // 500 "Veritabanı bağlantı hatası" olarak yanlış raporlanıyordu.
+      next(err);
     }
   }
 );
 
 /**
- * @swagger
- * /auth/refresh:
- *   post:
- *     tags: [Auth]
- *     summary: Refresh Token Rotasyonu (Tek Kullanımlık)
- *     description: |
- *       Geçerli bir refresh token karşılığında YENİ bir access token (900 sn) ve YENİ bir
- *       refresh token (7 gün) üretir. JWT ile korunmaz; yetkilendirme tamamen istek
- *       gövdesindeki `refreshToken` alanına dayanır.
- *
- *       **Kimlik nereden geliyor (services/tokenService.ts:149-183):**
- *       Yeni tokenların kimliği çağırandan DEĞİL, refresh tokenın kendi sunucu tarafı store
- *       kaydından ve o kayda göre yapılan taze bir `users` okumasından (`findAuthUserById`)
- *       türetilir. `rotateRefreshToken` artık payload argümanı almaz; route bir kimlik iddia
- *       edemez. Her rotasyonda satır yeniden okunduğu için rol/kiracı değişiklikleri en geç bir
- *       access token ömrü (15 dk) içinde yansır.
- *
- *       **Rotasyon ve hırsızlık tespiti (tokenService.ts:99-135):**
- *       - Sunulan token tek kullanımlıktır: imza doğrulandıktan sonra kayıt `used` ve
- *         `isRevoked` olarak işaretlenir, bir daha kullanılamaz. Bu adım tek bir senkron event
- *         loop turunda çalışır (check-then-act yarışı yok).
- *       - Token store'da yoksa ya da zaten kullanılmış/iptal edilmişse hırsızlık varsayılır:
- *         token içindeki `userId` için `revokeAllUserTokens()` çalışır ve 401
- *         `TOKEN_REUSE_DETECTED` döner.
- *       - İmzalı claim'ler (`userId`/`tenantId`) store kaydıyla uyuşmazsa (bozuk store veya
- *         sızmış `JWT_REFRESH_SECRET`) her iki kimliğin de tüm tokenları iptal edilir ve yine
- *         401 `TOKEN_REUSE_DETECTED` döner.
- *       - Token tüketildikten sonra kullanıcı satırı bulunamazsa (silinmiş kullanıcı) token
- *         bilinçli olarak yanmış bırakılır, tüm oturumlar iptal edilir ve 401
- *         `INVALID_REFRESH_TOKEN` döner. Mesaj kullanıcı varlığını sızdırmamak için geneldir.
- *
- *       **Diğer doğrulanmış davranışlar:**
- *       - Yanıtta `user` nesnesi YOKTUR; `POST /auth/login` yanıtından tek farkı budur.
- *       - Gövde Zod ile doğrulanmaz; yalnızca `refreshToken` truthy kontrolü yapılır
- *         (routes.ts:137). Eksik alan, `""`, `null`, `false`, `0` -> 400. String olmayan
- *         truthy değerler (örn. `123`) bu kontrolü geçer ve `jwt.verify` aşamasında
- *         401 `INVALID_REFRESH_TOKEN` üretir.
- *       - Rotasyon store'u süreç belleğindeki bir `Map`'tir, kalıcı değildir. Backend yeniden
- *         başlatıldığında tüm kayıtlar silinir; imzası hâlâ geçerli olan eski refresh tokenlar
- *         "store'da yok" sayılır ve 401 `INVALID_REFRESH_TOKEN` değil, 401
- *         `TOKEN_REUSE_DETECTED` alır. Çok örnekli (multi-instance) dağıtımda da rotasyon
- *         örnekler arasında paylaşılmaz; tek kullanımlık garantisi tek sürece bağlıdır.
- *       - 401 yanıtlarının `message` alanı `err.message` ham geçirildiği için hata kodunu
- *         metnin içinde tekrarlar ve `traceId` içermez.
- *     security: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [refreshToken]
- *             properties:
- *               refreshToken:
- *                 type: string
- *                 description: >
- *                   Daha önce `POST /auth/login` veya bu endpoint tarafından üretilmiş,
- *                   henüz kullanılmamış refresh token.
- *           example:
- *             refreshToken: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJhOWYzYzJkMS0...
- *     responses:
- *       200:
- *         description: >
- *           Rotasyon başarılı. Eski refresh token bu andan itibaren geçersizdir; istemci
- *           yanıttaki yeni `refreshToken` değerini saklamak zorundadır.
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               required: [success, message, accessToken, refreshToken, tokenType, expiresInSeconds]
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: Token rotasyonu başarılı. Yeni erişim ve yenileme tokenları üretildi.
- *                 accessToken:
- *                   type: string
- *                   description: >
- *                     Yeni JWT access token (15 dk). Taşıdığı `userId`, `tenantId`, `username`,
- *                     `role`, `siteName` değerleri veritabanından taze okunmuştur.
- *                 refreshToken:
- *                   type: string
- *                   description: Yeni tek kullanımlık refresh token (7 gün).
- *                 tokenType:
- *                   type: string
- *                   enum: [Bearer]
- *                   example: Bearer
- *                 expiresInSeconds:
- *                   type: integer
- *                   description: Sabit kodlu değer (routes.ts:157), access token ömrüyle uyumludur.
- *                   example: 900
- *       400:
- *         description: İstek gövdesinde `refreshToken` alanı yok veya falsy bir değer.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: MISSING_REFRESH_TOKEN
- *               message: İstek gövdesinde refreshToken alanı zorunludur.
- *       401:
- *         description: >
- *           Token imzası geçersiz / süresi dolmuş ya da tokenın sahibi artık mevcut değil
- *           (`INVALID_REFRESH_TOKEN`); veya token daha önce kullanılmış, iptal edilmiş,
- *           store'da bulunamamış ya da claim'leri store kaydıyla uyuşmuyor
- *           (`TOKEN_REUSE_DETECTED`). İlk durumun ikinci varyantında ve ikinci durumda ilgili
- *           kullanıcının tüm aktif oturumları iptal edilir.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             examples:
- *               invalidToken:
- *                 summary: Geçersiz veya süresi dolmuş token
- *                 value:
- *                   success: false
- *                   error: INVALID_REFRESH_TOKEN
- *                   message: 'INVALID_REFRESH_TOKEN: Geçersiz veya süresi dolmuş refresh token.'
- *               userGone:
- *                 summary: Token tüketildi ancak kullanıcı satırı bulunamadı
- *                 value:
- *                   success: false
- *                   error: INVALID_REFRESH_TOKEN
- *                   message: 'INVALID_REFRESH_TOKEN: Oturumunuz geçersiz. Lütfen tekrar giriş yapınız.'
- *               tokenReuse:
- *                 summary: Tekrar kullanım tespiti - tüm oturumlar kapatıldı
- *                 value:
- *                   success: false
- *                   error: TOKEN_REUSE_DETECTED
- *                   message: 'TOKEN_REUSE_DETECTED: Şüpheli çoklu token kullanımı tespit edildi! Tüm aktif oturumlarınız güvenlik nedeniyle kapatıldı.'
- *       500:
- *         description: >
- *           İki ayrı kaynak: (a) rotasyon sırasında token dışı bir hata oluşursa (veritabanı
- *           kesintisi, bağlantı havuzunun tükenmesi) handler `DB_ERROR` döndürür - bu gövde
- *           `traceId` İÇERMEZ (routes.ts:167-174); (b) istek gövdesi geçerli JSON olarak
- *           ayrıştırılamazsa `express.json` hatası globalErrorHandler'ın son bloğuna düşer
- *           (400 yerine 500) ve yanıt `traceId` içerir.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             examples:
- *               dbError:
- *                 summary: Rotasyon sırasında altyapı hatası
- *                 value:
- *                   success: false
- *                   error: DB_ERROR
- *                   message: Veritabanı bağlantı hatası oluştu.
- *               malformedJson:
- *                 summary: Ayrıştırılamayan istek gövdesi
- *                 value:
- *                   success: false
- *                   traceId: 58f00403-b7ab-4aa2-9810-35fc340ce50c
- *                   error: INTERNAL_SERVER_ERROR
- *                   message: Sunucu tarafında beklenmeyen bir hata oluştu. Lütfen traceId ile sistem yöneticisine başvurun.
+ * POST /api/v1/auth/refresh
+ * Single-use JWT Refresh Token Rotation with Token Reuse Detection
  */
-router.post('/auth/refresh', async (req: Request, res: Response) => {
+router.post('/auth/refresh', refreshRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   const { refreshToken } = req.body;
 
   if (!refreshToken) {
@@ -521,10 +420,39 @@ router.post('/auth/refresh', async (req: Request, res: Response) => {
   }
 
   try {
-    // Identity is resolved inside the service from the refresh token's own
-    // store record + a fresh DB read. The route must not - and now cannot -
-    // supply one.
-    const newTokens = await rotateRefreshToken(refreshToken);
+    // Resolve the refresh token's real owner from PostgreSQL — rotateRefreshToken
+    // calls this with the userId/tenantId taken from the verified token record,
+    // so the caller can never dictate whose identity the new tokens carry.
+    const newTokens = await rotateRefreshToken(refreshToken, async (userId, tenantId) => {
+      const dbRes = await pool.query(
+        'SELECT id, tenant_id, username, role, site_name, must_change_password FROM users WHERE id = $1 AND tenant_id = $2',
+        [userId, tenantId]
+      );
+      if (dbRes.rows.length === 0) return null;
+
+      const dbUser = dbRes.rows[0];
+
+      // AUTH-207: zorunlu bir rol 2FA kurmadan (config.TOTP_ENFORCED açıkken)
+      // yenileme yapamaz — mevcut oturumun eski access token'ı 15 dk içinde
+      // düşer, sonra yeniden login + kurulum akışına girer.
+      if (REQUIRED_2FA_ROLES.has(dbUser.role) && config.TOTP_ENFORCED) {
+        const t = await getUserTotp(dbUser.id);
+        if (!t?.enabled) return null;
+      }
+
+      const payload: JwtUserPayload = {
+        userId: dbUser.id,
+        tenantId: dbUser.tenant_id,
+        username: dbUser.username,
+        role: dbUser.role as UserRole,
+        siteName: dbUser.site_name || undefined,
+        // AUTH-204: yeniden okunuyor (eski token'daki değere güvenilmiyor) —
+        // parola değiştirildikten sonra rotasyonla basılan yeni token'ın
+        // hâlâ eski mustChangePassword:true taşımaması için.
+        mustChangePassword: dbUser.must_change_password === true
+      };
+      return payload;
+    }, { userAgent: req.headers['user-agent'] ?? null, ipAddress: req.ip ?? null });
 
     res.json({
       success: true,
@@ -537,243 +465,127 @@ router.post('/auth/refresh', async (req: Request, res: Response) => {
   } catch (err: any) {
     const message: string = err?.message || '';
     const isReuse = message.includes('TOKEN_REUSE_DETECTED');
-    const isInvalid = message.includes('INVALID_REFRESH_TOKEN');
-
-    // Anything else (DB outage, connection pool exhaustion...) is an
-    // infrastructure failure, not a token problem. Mirror /auth/login's
-    // 500 DB_ERROR instead of mislabelling it as an auth error.
-    if (!isReuse && !isInvalid) {
-      console.error('Refresh Rotation Error:', err);
-      return res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: 'Veritabanı bağlantı hatası oluştu.'
-      });
-    }
-
+    const isTokenError = isReuse || message.includes('INVALID_REFRESH_TOKEN') || message.includes('SESSION_REVOKED');
+    // #212'den: yalnızca token'a ait bilinen hatalar 401. Postgres/Redis
+    // kesintisi gibi beklenmeyen bir hata 401'e çevrilirse (a) istemci
+    // oturumu geçersiz sanıp kullanıcıyı çıkarır, (b) ham sürücü mesajı
+    // yanıta sızar. Onları global hata yakalayıcıya bırak (traceId + genel
+    // mesaj; havuz zaman aşımı → yeniden denenebilir 503).
+    if (!isTokenError) return next(err);
     res.status(401).json({
       success: false,
       error: isReuse ? 'TOKEN_REUSE_DETECTED' : 'INVALID_REFRESH_TOKEN',
-      message: message
+      message
     });
   }
 });
 
 /**
  * @swagger
- * /auth/logout:
+ * /auth/forgot-password:
  *   post:
- *     tags: [Auth]
- *     summary: Oturum Kapatma (Refresh Token İptali)
- *     description: |
- *       Gövdede gönderilen `refreshToken` değerini bellek içi token deposunda iptal (revoke) eder.
- *       Kimlik doğrulaması GEREKTİRMEZ — bu route'ta `authenticateJWT` yoktur, bu yüzden
- *       kök seviyedeki `bearerAuth` gereksinimi `security: []` ile geçersiz kılınmıştır.
- *
- *       GERÇEK DAVRANIŞ (routes.ts:177-187, tokenService.ts:135-145) — dokümanla kod arasında
- *       fark olmaması için aşağıdakiler olduğu gibi belgelenmiştir:
- *
- *       - İstek gövdesi tamamen OPSİYONELDİR. `refreshToken` gönderilmezse hiçbir iptal
- *         yapılmaz; yanıt yine `200` ve yine "yenileme tokenı iptal edildi" mesajıdır.
- *         Yanıt mesajı, iptalin gerçekten olup olmadığını YANSITMAZ.
- *       - Token geçersiz, süresi dolmuş veya imzası hatalıysa `revokeRefreshToken` içindeki
- *         `jwt.verify` hatası sessizce yutulur (boş catch) → yine `200` döner.
- *         Bu uç hiçbir zaman `400` veya `401` üretmez; tamamen idempotenttir.
- *       - İmzası geçerli bir token gönderilse bile, tokenın `jti` değeri süreç belleğindeki
- *         depoda bulunamazsa hiçbir şey yapılmaz (tokenService.ts:138-141) — yine `200`.
- *       - Doğrulama (Zod) şeması YOKTUR. Sadece `refreshToken` alanının truthy olup olmadığına
- *         bakılır; tip, uzunluk veya biçim kontrolü yapılmaz.
- *       - İptal kaydı süreç belleğindeki bir `Map` üzerinde tutulur (tokenService.ts:32).
- *         Sunucu yeniden başlarsa tüm depo sıfırlanır; birden fazla instance çalışıyorsa
- *         iptal diğer instance'lara yayılmaz.
- *       - ACCESS TOKEN İPTAL EDİLMEZ. JWT stateless doğrulanır ve kara liste yoktur;
- *         eldeki `accessToken` kalan ömrü (900 sn) boyunca geçerli kalmaya devam eder.
- *       - Sahiplik kontrolü yoktur: refresh token dizesini bilen herkes, kimlik doğrulaması
- *         olmadan o tokenı iptal edebilir.
+ *     summary: Şifre Sıfırlama Talebi (AUTH-206)
+ *     description: >
+ *       Kullanıcı adı için tek kullanımlık, 30 dk geçerli bir sıfırlama
+ *       token'ı üretir (hash'i Redis'te). Kullanıcının var olup olmadığından
+ *       BAĞIMSIZ olarak HER ZAMAN aynı 200 mesajı döner (enumeration
+ *       koruması). Rate limit: kullanıcı başına 1/dk ve 5/saat. Gerçek
+ *       e-posta/SMS iletimi #159'a bağlı — o zamana kadar üretim-dışı
+ *       ortamlarda token yanıtta `devResetToken` olarak döner.
  *     security: []
- *     requestBody:
- *       required: false
- *       description: "Gövde opsiyoneldir; boş gövde (`{}`) veya hiç gövde göndermemek de 200 döner."
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               refreshToken:
- *                 type: string
- *                 description: >-
- *                   POST /auth/login veya POST /auth/refresh ile alınmış refresh token.
- *                   Gönderilmezse istek yine başarılı sayılır, ancak hiçbir token iptal edilmez.
- *                 example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI5ZjNiMWEyYy00ZDVlLTRmNmEtOGI3Yy0xZDJlM2Y0YTViNmMiLCJ1c2VySWQiOiJ1c3ItY2Ftc2Etb3duZXIifQ.s1gn4tur3"
- *           example:
- *             refreshToken: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI5ZjNiMWEyYy00ZDVlLTRmNmEtOGI3Yy0xZDJlM2Y0YTViNmMiLCJ1c2VySWQiOiJ1c3ItY2Ftc2Etb3duZXIifQ.s1gn4tur3"
  *     responses:
  *       200:
- *         description: >-
- *           İstek işlendi. Geçerli ve depoda kayıtlı bir token gönderildiyse iptal edilmiştir;
- *           token gönderilmediyse, geçersizse veya depoda yoksa hiçbir işlem yapılmamıştır.
- *           Yanıt gövdesi her durumda birebir aynıdır.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessMessage'
- *             example:
- *               success: true
- *               message: "Oturum kapatıldı ve yenileme tokenı iptal edildi."
- *       500:
- *         description: >-
- *           Handler'ın kendisi hata üretmez (senkron kod, dış bağımlılık yok). Bu kod yalnızca
- *           istek gövdesi bozuk JSON olduğunda veya gövde `express.json()` boyut sınırını
- *           (varsayılan 100kb) aştığında oluşur: body-parser hatası `globalErrorHandler`
- *           içindeki catch-all dalına düşer ve 400 yerine 500 olarak döner
- *           (errorHandler.ts, AppError/ZodError dışındaki son blok).
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               traceId: "58f00403-b7ab-4aa2-9810-35fc340ce50c"
- *               error: "INTERNAL_SERVER_ERROR"
- *               message: "Sunucu tarafında beklenmeyen bir hata oluştu. Lütfen traceId ile sistem yöneticisine başvurun."
+ *         description: Talep alındı (kullanıcı var olsun olmasın aynı yanıt).
+ *       429:
+ *         description: Rate limit aşıldı.
  */
-router.post('/auth/logout', (req: Request, res: Response) => {
-  const { refreshToken } = req.body;
-  if (refreshToken) {
-    revokeRefreshToken(refreshToken);
-  }
+router.post(
+  '/auth/forgot-password',
+  passwordResetPerHourLimiter,
+  passwordResetPerMinuteLimiter,
+  validateRequest({ body: forgotPasswordSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { username } = req.body as { username: string };
+      const resetToken = await requestPasswordReset(username);
 
-  res.json({
-    success: true,
-    message: 'Oturum kapatıldı ve yenileme tokenı iptal edildi.'
-  });
-});
+      const body: Record<string, unknown> = {
+        success: true,
+        message: 'Eğer bu kullanıcı adı sistemde kayıtlıysa, şifre sıfırlama talimatları ilgili kanaldan iletilmiştir.'
+      };
+      // #159 (bildirim kanalı) tamamlanana kadar üretim-DIŞI ortamlarda
+      // token'ı doğrudan döndür ki akış uçtan uca kullanılabilir/test
+      // edilebilir olsun. Üretimde ASLA sızmaz.
+      if (!config.isProduction && resetToken) {
+        body.devResetToken = resetToken;
+      }
+      res.json(body);
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
 
 /**
  * @swagger
- * /auth/me:
- *   get:
- *     tags: [Auth]
- *     summary: Oturum Açmış Kullanıcının Kimlik Bilgileri
+ * /auth/reset-password:
+ *   post:
+ *     summary: Şifre Sıfırlamayı Tamamla (AUTH-206)
  *     description: >
- *       Geçerli bir access token ile çağrıldığında, token içindeki kullanıcı
- *       claim'lerini geri döndürür.
- *
- *
- *       DAVRANIŞ NOTLARI (GET /auth/me handler kodundan doğrulanmıştır):
- *
- *
- *       1. Bu uç VERİTABANINA GİTMEZ. Yanıt tamamen JWT access token içinden
- *       çözülen claim'lerden üretilir (authenticateJWT ara katmanının doldurduğu
- *       req.user). Kullanıcının rolü, şantiyesi veya hesabı veritabanında
- *       değiştirilse ya da silinse bile bu uç, token süresi (15 dk) dolana kadar
- *       ESKİ değerleri döndürmeye devam eder. Canlı yetki/hesap doğrulaması için
- *       kullanılamaz.
- *
- *
- *       2. Rol kontrolü YOKTUR. Zincirde yalnızca authenticateJWT vardır,
- *       authorizeRoles kullanılmaz; her rol (SUPER_ADMIN, COMPANY_OWNER,
- *       SITE_MANAGER, PUMP_OPERATOR, DRIVER) erişebilir ve bu uç 403 DÖNDÜRMEZ.
- *
- *
- *       3. Yanıt zarfı `{ success, message, user }` biçimindedir. Diğer uçlardaki
- *       `data` alanı burada YOKTUR; kullanıcı bilgisi `user` altında gelir.
- *
- *
- *       4. `user.siteName` KOŞULLU bir alandır. Değer, giriş sırasında users
- *       tablosundaki site_name sütunundan token'a yazılır; yalnızca bu sütunu
- *       dolu olan hesaplarda (tipik olarak SITE_MANAGER) döner. COMPANY_OWNER
- *       gibi hesapların yanıtında alan hiç bulunmaz (undefined olduğu için
- *       JSON.stringify tarafından atılır). Zorunlu kabul edilmemelidir.
- *
- *
- *       5. Token'ın `iat` / `exp` alanları verifyAccessToken içinde yanıta
- *       taşınmaz; bu uçta token geçerlilik süresi bilgisi yoktur.
- *
- *
- *       6. Handler senkrondur; try/catch, veritabanı ya da başka I/O içermez.
- *       Bu uçtan 500 DB_ERROR üretilmez.
- *     security:
- *       - bearerAuth: []
+ *       Geçerli bir token + yeni parola ile şifreyi günceller. Token TEK
+ *       KULLANIMLIK (kullanılır kullanılmaz silinir), 30 dk geçerli.
+ *       Başarıda kullanıcının TÜM aktif oturumları (refresh token'ları)
+ *       iptal edilir. Geçersiz/kullanılmış token → jenerik 400.
+ *     security: []
  *     responses:
  *       200:
- *         description: >
- *           Token geçerli; token içindeki kullanıcı claim'leri döndürüldü.
- *           (Kullanıcının veritabanında hâlâ var olduğu DOĞRULANMAMIŞTIR.)
- *         headers:
- *           X-Trace-ID:
- *             description: >
- *               traceMiddleware tarafından her yanıta eklenen korelasyon kimliği.
- *               İstemci X-Trace-ID başlığı gönderirse o değer korunur, aksi halde
- *               yeni bir UUID v4 üretilir.
- *             schema:
- *               type: string
- *               example: 63efeccf-5ac9-4076-9bd0-2c18f4cecae9
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               required: [success, message, user]
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: Kimlik bilgileri doğrulandı.
- *                 user:
- *                   $ref: '#/components/schemas/AuthUser'
- *             examples:
- *               companyOwner:
- *                 summary: COMPANY_OWNER — siteName alanı YOK
- *                 value:
- *                   success: true
- *                   message: Kimlik bilgileri doğrulandı.
- *                   user:
- *                     userId: usr-camsa-owner
- *                     tenantId: comp-camsa
- *                     username: camsa
- *                     role: COMPANY_OWNER
- *               siteManager:
- *                 summary: SITE_MANAGER — siteName alanı VAR
- *                 value:
- *                   success: true
- *                   message: Kimlik bilgileri doğrulandı.
- *                   user:
- *                     userId: usr-gebze-mgr
- *                     tenantId: comp-camsa
- *                     username: gebze-santiye
- *                     role: SITE_MANAGER
- *                     siteName: Gebze Ana Şantiye
- *       401:
- *         description: >
- *           Kimlik doğrulanamadı. İki farklı hata kodu üretilebilir -
- *           `UNAUTHORIZED` (Authorization başlığı yok ya da "Bearer " ön ekiyle
- *           başlamıyor) ve `INVALID_TOKEN` (imza geçersiz veya token süresi dolmuş).
- *           Bu gövdelerde `traceId` alanı BULUNMAZ; izleme kimliği yalnızca
- *           X-Trace-ID yanıt başlığındadır.
- *         headers:
- *           X-Trace-ID:
- *             description: İstek korelasyon kimliği (hata gövdesinde tekrarlanmaz).
- *             schema:
- *               type: string
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             examples:
- *               missingHeader:
- *                 summary: Authorization başlığı yok / Bearer öneki eksik
- *                 value:
- *                   success: false
- *                   error: UNAUTHORIZED
- *                   message: Erişim engellendi. Geçerli bir Authorization Bearer token gereklidir.
- *               invalidToken:
- *                 summary: Token bozuk veya süresi dolmuş
- *                 value:
- *                   success: false
- *                   error: INVALID_TOKEN
- *                   message: Oturum süreniz doldu veya geçersiz token. Lütfen tekrar giriş yapınız.
+ *         description: Parola güncellendi.
+ *       400:
+ *         description: Geçersiz/süresi dolmuş token veya parola kuralı ihlali.
+ *       429:
+ *         description: Rate limit aşıldı.
+ */
+router.post(
+  '/auth/reset-password',
+  passwordResetSubmitLimiter,
+  validateRequest({ body: resetPasswordSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { token, newPassword } = req.body as { token: string; newPassword: string };
+      await finalizePasswordReset(token, newPassword);
+      res.json({
+        success: true,
+        message: 'Şifreniz başarıyla güncellendi. Lütfen yeni şifrenizle giriş yapın.'
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/v1/auth/logout
+ * Revokes current refresh token
+ */
+router.post('/auth/logout', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { refreshToken } = req.body;
+    if (refreshToken) {
+      await revokeRefreshToken(refreshToken);
+    }
+
+    res.json({
+      success: true,
+      message: 'Oturum kapatıldı ve yenileme tokenı iptal edildi.'
+    });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/auth/me
+ * Protected endpoint returning authenticated user profile & roles
  */
 router.get('/auth/me', authenticateJWT, (req: AuthenticatedRequest, res: Response) => {
   res.json({
@@ -783,11 +595,4418 @@ router.get('/auth/me', authenticateJWT, (req: AuthenticatedRequest, res: Respons
   });
 });
 
+// ── AUTH-207: TOTP tabanlı iki adımlı doğrulama (2FA) ───────────────────
+const REQUIRED_2FA_ROLES = new Set(['SUPER_ADMIN', 'COMPANY_OWNER']);
+
+interface TwoFactorActor {
+  userId: string;
+  tenantId: string;
+  role?: string;
+  viaPartial: boolean;
+  partialMode?: 'VERIFY' | 'SETUP';
+}
+
+/**
+ * 2FA uçları authenticateJWT KULLANMAZ (kısmi token onu geçemez). Aktörü
+ * ya tam bir access token'dan (opt-in kurulum / devre dışı bırakma) ya da
+ * gövdedeki `partialToken`'dan (login akışının 2. adımı) çözer.
+ */
+function resolveTwoFactorActor(req: Request): TwoFactorActor {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith('Bearer ')) {
+    try {
+      const p = verifyAccessToken(auth.slice(7)); // pending2fa token'ı için fırlatır
+      return { userId: p.userId, tenantId: p.tenantId, role: p.role, viaPartial: false };
+    } catch {
+      /* tam token değil — partialToken'a düş */
+    }
+  }
+  const partial = (req.body && (req.body as any).partialToken) as string | undefined;
+  if (partial) {
+    const p = verifyPendingTwoFactorToken(partial); // geçersizse fırlatır
+    return { userId: p.userId, tenantId: p.tenantId, viaPartial: true, partialMode: p.mode };
+  }
+  throw new UnauthorizedError('2FA işlemi için geçerli bir oturum ya da partialToken gerekli.', { error: 'NO_AUTH' });
+}
+
+async function buildLoginTokens(req: Request, base: JwtUserPayload): Promise<{ accessToken: string; refreshToken: string; tokenType: string; expiresInSeconds: number }> {
+  const session = await generateRefreshToken(base.userId, base.tenantId, {
+    userAgent: req.headers['user-agent'] ?? null,
+    ipAddress: req.ip ?? null
+  });
+  return {
+    accessToken: generateAccessToken({ ...base, sid: session.sessionId }),
+    refreshToken: session.token,
+    tokenType: 'Bearer',
+    expiresInSeconds: 900
+  };
+}
+
+async function payloadForUserId(userId: string): Promise<JwtUserPayload | null> {
+  const u = await getUserAuthById(userId);
+  if (!u) return null;
+  const full = await pool.query('SELECT site_name, must_change_password FROM users WHERE id = $1', [userId]);
+  return {
+    userId: u.id,
+    tenantId: u.tenant_id,
+    username: u.username,
+    role: u.role as UserRole,
+    siteName: full.rows[0]?.site_name || undefined,
+    mustChangePassword: full.rows[0]?.must_change_password === true
+  };
+}
+
+/**
+ * @swagger
+ * /auth/2fa/setup:
+ *   post:
+ *     summary: TOTP Kurulumunu Başlat (AUTH-207)
+ *     description: >
+ *       Yeni bir TOTP sırrı + `otpauth://` URI (istemci QR çizer) + 10 tek
+ *       kullanımlık kurtarma kodu döner. Kodlar YALNIZCA bu yanıtta gösterilir.
+ *       Henüz etkinleştirilmez — POST /auth/2fa/enable ile ilk doğru kod
+ *       girilince aktifleşir. Tam token veya login'in `partialToken`'ı ile.
+ *     security: []
+ */
+router.post('/auth/2fa/setup', validateRequest({ body: totpSetupSchema }), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const actor = resolveTwoFactorActor(req);
+    const user = await getUserAuthById(actor.userId);
+    if (!user) throw new NotFoundError('Kullanıcı bulunamadı.');
+
+    const existing = await getUserTotp(actor.userId);
+    if (existing?.enabled) {
+      throw new ConflictError('2FA zaten etkin. Önce POST /auth/2fa/disable ile kapatın.', { error: 'ALREADY_ENABLED' });
+    }
+
+    const secretBase32 = generateTotpSecret();
+    const recoveryCodes = generateRecoveryCodes(10);
+    const hashes = await Promise.all(recoveryCodes.map((c) => hashPassword(normalizeRecoveryCode(c))));
+    await saveUserTotpSecret(actor.userId, actor.tenantId, secretBase32, hashes);
+    await insertAuthAuditLog(actor.tenantId, actor.userId, 'TOTP_SETUP_INITIATED', actor.userId, { viaPartial: actor.viaPartial });
+
+    res.json({
+      success: true,
+      data: {
+        secretBase32,
+        otpauthUri: buildOtpauthUri(secretBase32, user.username),
+        recoveryCodes,
+        message: 'Sırrı doğrulayıcı uygulamanıza ekleyin, sonra POST /auth/2fa/enable ile 6 haneli kodu doğrulayın. Kurtarma kodlarını güvenli bir yere kaydedin — tekrar gösterilmez.'
+      }
+    });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/2fa/enable:
+ *   post:
+ *     summary: TOTP'yi Etkinleştir (AUTH-207)
+ *     description: >
+ *       `{ code }` — kurulumdaki sırdan üretilmiş 6 haneli kod. İlk doğru kodda
+ *       2FA aktifleşir. Kurulum akışı `partialToken` (SETUP) ile geldiyse bu
+ *       adımda tam token çifti de döner (login tamamlanır).
+ *     security: []
+ */
+router.post('/auth/2fa/enable', validateRequest({ body: totpEnableSchema }), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const actor = resolveTwoFactorActor(req);
+    const row = await getUserTotp(actor.userId);
+    if (!row) throw new BadRequestError('Önce POST /auth/2fa/setup ile kurulum yapın.', { error: 'NOT_SET_UP' });
+    if (row.enabled) throw new ConflictError('2FA zaten etkin.', { error: 'ALREADY_ENABLED' });
+    if (!verifyTotp(row.secret_base32, req.body.code)) {
+      throw new UnauthorizedError('Doğrulama kodu geçersiz. Uygulamanızdaki güncel kodu girin.', { error: 'INVALID_CODE' });
+    }
+    await enableUserTotp(actor.userId);
+    await insertAuthAuditLog(actor.tenantId, actor.userId, 'TOTP_ENABLED', actor.userId, {});
+
+    if (actor.viaPartial && actor.partialMode === 'SETUP') {
+      const base = await payloadForUserId(actor.userId);
+      if (!base) throw new NotFoundError('Kullanıcı bulunamadı.');
+      const tokens = await buildLoginTokens(req, base);
+      return res.json({ success: true, enabled: true, message: '2FA etkinleştirildi ve giriş tamamlandı.', ...tokens });
+    }
+    res.json({ success: true, enabled: true, message: '2FA etkinleştirildi.' });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/2fa/verify:
+ *   post:
+ *     summary: Login'in 2. Adımı — TOTP veya Kurtarma Kodu (AUTH-207)
+ *     description: >
+ *       `{ partialToken, code }` VEYA `{ partialToken, recoveryCode }`. Başarılı
+ *       olunca tam access + refresh token döner. Kurtarma kodları TEK
+ *       KULLANIMLIKTIR (kullanılınca listeden silinir).
+ *     security: []
+ */
+router.post('/auth/2fa/verify', validateRequest({ body: totpVerifySchema }), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const actor = resolveTwoFactorActor(req);
+    if (!actor.viaPartial) {
+      throw new BadRequestError('Bu uç yalnızca login akışının partialToken\'ı ile kullanılır.', { error: 'FULL_TOKEN_NOT_ALLOWED' });
+    }
+    const row = await getUserTotp(actor.userId);
+    if (!row || !row.enabled) {
+      throw new BadRequestError('Bu hesapta etkin bir 2FA yok.', { error: 'TOTP_NOT_ENABLED' });
+    }
+
+    let usedRecovery = false;
+    let recoveryRemaining = row.recovery_codes_total;
+
+    if (req.body.code) {
+      if (!verifyTotp(row.secret_base32, req.body.code)) {
+        throw new UnauthorizedError('Doğrulama kodu geçersiz.', { error: 'INVALID_CODE' });
+      }
+      await touchTotpLastUsed(actor.userId);
+    } else {
+      const candidate = normalizeRecoveryCode(req.body.recoveryCode);
+      let matchIdx = -1;
+      for (let i = 0; i < row.recovery_code_hashes.length; i++) {
+        if (await verifyPassword(row.recovery_code_hashes[i], candidate)) { matchIdx = i; break; }
+      }
+      if (matchIdx === -1) {
+        throw new UnauthorizedError('Kurtarma kodu geçersiz veya daha önce kullanılmış.', { error: 'INVALID_RECOVERY_CODE' });
+      }
+      const remaining = row.recovery_code_hashes.filter((_, i) => i !== matchIdx);
+      await setTotpRecoveryHashes(actor.userId, remaining);
+      usedRecovery = true;
+      recoveryRemaining = remaining.length;
+      await insertAuthAuditLog(actor.tenantId, actor.userId, 'TOTP_RECOVERY_USED', actor.userId, { remaining: remaining.length });
+    }
+
+    const base = await payloadForUserId(actor.userId);
+    if (!base) throw new NotFoundError('Kullanıcı bulunamadı.');
+    const tokens = await buildLoginTokens(req, base);
+    if (!usedRecovery) {
+      await insertAuthAuditLog(actor.tenantId, actor.userId, 'TOTP_LOGIN', actor.userId, {});
+    }
+    res.json({
+      success: true,
+      message: usedRecovery ? 'Kurtarma kodu ile giriş yapıldı.' : 'İki adımlı doğrulama başarılı.',
+      usedRecoveryCode: usedRecovery,
+      recoveryCodesRemaining: usedRecovery ? recoveryRemaining : undefined,
+      ...tokens
+    });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/2fa/disable:
+ *   post:
+ *     summary: 2FA'yı Devre Dışı Bırak (AUTH-207)
+ *     description: >
+ *       Tam token gerektirir; `{ code }` ile yeniden doğrulama ister. Başarılı
+ *       olunca 2FA kaldırılır ve kullanıcının DİĞER tüm oturumları kapatılır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/auth/2fa/disable', validateRequest({ body: totpDisableSchema }), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const actor = resolveTwoFactorActor(req);
+    if (actor.viaPartial) {
+      throw new UnauthorizedError('2FA devre dışı bırakma tam bir oturum gerektirir.', { error: 'FULL_TOKEN_REQUIRED' });
+    }
+    const row = await getUserTotp(actor.userId);
+    if (!row || !row.enabled) throw new BadRequestError('Etkin bir 2FA yok.', { error: 'TOTP_NOT_ENABLED' });
+    if (!verifyTotp(row.secret_base32, req.body.code)) {
+      throw new UnauthorizedError('Doğrulama kodu geçersiz.', { error: 'INVALID_CODE' });
+    }
+    await deleteUserTotp(actor.userId);
+    await revokeAllUserTokens(actor.userId);
+    await insertAuthAuditLog(actor.tenantId, actor.userId, 'TOTP_DISABLED', actor.userId, {});
+    res.json({ success: true, enabled: false, message: '2FA devre dışı bırakıldı. Güvenlik nedeniyle diğer oturumlar da kapatıldı.' });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/2fa/status:
+ *   get:
+ *     summary: 2FA Durumu (AUTH-207)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/auth/2fa/status', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const row = await getUserTotp(req.user!.userId);
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      success: true,
+      data: {
+        enabled: !!row?.enabled,
+        recoveryCodesRemaining: row ? row.recovery_code_hashes.length : 0,
+        requiredForRole: REQUIRED_2FA_ROLES.has(req.user!.role) && config.TOTP_ENFORCED
+      }
+    });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/2fa/users/{userId}:
+ *   delete:
+ *     summary: Bir Kullanıcının 2FA'sını Sıfırla (AUTH-207)
+ *     description: >
+ *       SUPER_ADMIN, aynı firmadaki bir kullanıcının 2FA'sını (cihaz
+ *       kaybı/kilitlenme durumunda) kaldırır ve oturumlarını kapatır. Kullanıcı
+ *       sonraki girişte yeniden kurmak zorunda kalır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete('/auth/2fa/users/:userId', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const target = await getUserAuthById(req.params.userId);
+    if (!target || target.tenant_id !== req.user!.tenantId) {
+      throw new NotFoundError('Kullanıcı bu firmada bulunamadı.', { error: 'USER_NOT_FOUND' });
+    }
+    const removed = await deleteUserTotp(req.params.userId);
+    if (!removed) throw new NotFoundError('Bu kullanıcıda kayıtlı 2FA yok.', { error: 'NO_TOTP' });
+    await revokeAllUserTokens(req.params.userId);
+    await insertAuthAuditLog(req.user!.tenantId, req.user!.userId, 'TOTP_RESET_BY_ADMIN', req.params.userId, { targetUserId: req.params.userId });
+    res.json({ success: true, message: 'Kullanıcının 2FA kaydı sıfırlandı ve oturumları kapatıldı.' });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+// ── AUTH-208: aktif oturum/cihaz listesi + uzaktan oturum kapatma ───────
+const SESSION_ADMIN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'];
+
+/**
+ * Hedef kullanıcının çağıranın kendi kullanıcısı mı, yoksa (yetkiliyse) aynı
+ * tenant'taki bir kullanıcı mı olduğunu çözer. Yetki yoksa/başka tenant ise
+ * hata fırlatır.
+ */
+async function resolveSessionTargetUserId(req: AuthenticatedRequest): Promise<string> {
+  const requested = (req.query.userId as string | undefined) || (req.body?.userId as string | undefined);
+  if (!requested || requested === req.user!.userId) return req.user!.userId;
+  if (!SESSION_ADMIN_ROLES.includes(req.user!.role)) {
+    throw new ForbiddenError('Başka bir kullanıcının oturumlarını görüntüleme/kapatma yetkiniz yok.', { error: 'FORBIDDEN' });
+  }
+  const r = await pool.query('SELECT 1 FROM users WHERE id = $1 AND tenant_id = $2', [requested, req.user!.tenantId]);
+  if (r.rows.length === 0) {
+    throw new NotFoundError('Kullanıcı bu firmada bulunamadı.', { error: 'USER_NOT_FOUND' });
+  }
+  return requested;
+}
+
+/**
+ * @swagger
+ * /auth/sessions:
+ *   get:
+ *     summary: Aktif Oturum/Cihaz Listesi (AUTH-208)
+ *     description: >
+ *       Kullanıcının aktif oturumları (refresh token ailesi başına bir satır)
+ *       — cihaz etiketi, IP, oluşturulma ve son kullanım zamanı, `current`
+ *       bayrağı. `?userId=` ile COMPANY_OWNER/SUPER_ADMIN aynı firmadaki başka
+ *       bir kullanıcının oturumlarını görebilir.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/auth/sessions', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const targetUserId = await resolveSessionTargetUserId(req);
+    const isSelf = targetUserId === req.user!.userId;
+    const sessions = await listUserSessions(targetUserId, isSelf ? req.user!.sid : undefined);
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, totalCount: sessions.length, data: sessions });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/sessions/logout-others:
+ *   post:
+ *     summary: Diğer Tüm Oturumları Kapat (AUTH-208)
+ *     description: Çağıranın MEVCUT oturumu dışındaki tüm oturumlarını iptal eder.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/auth/sessions/logout-others', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user!.sid) {
+      throw new BadRequestError('Bu access token bir oturum kimliği (sid) taşımıyor — lütfen yeniden giriş yapın.', { error: 'NO_SESSION_CONTEXT' });
+    }
+    const closed = await revokeOtherSessions(req.user!.userId, req.user!.sid);
+    await auditSessionRevocation(req.user!.userId, { scope: 'OTHERS', keptSessionId: req.user!.sid, closedCount: closed, by: req.user!.userId });
+    res.json({ success: true, message: `${closed} oturum kapatıldı.`, data: { closedCount: closed } });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /auth/sessions/{sessionId}:
+ *   delete:
+ *     summary: Belirli Bir Oturumu Uzaktan Kapat (AUTH-208)
+ *     description: >
+ *       Oturumun tüm refresh token'larını iptal eder ve 15 dk boyunca access
+ *       token'ını da deny-list'e alır. `?userId=` ile yetkili, başka bir
+ *       kullanıcının oturumunu kapatabilir.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete('/auth/sessions/:sessionId', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const targetUserId = await resolveSessionTargetUserId(req);
+    const count = await revokeSession(targetUserId, req.params.sessionId);
+    if (count === 0) {
+      throw new NotFoundError('Böyle bir aktif oturum bulunamadı.', { error: 'SESSION_NOT_FOUND' });
+    }
+    await auditSessionRevocation(targetUserId, {
+      scope: 'SINGLE',
+      sessionId: req.params.sessionId,
+      revokedTokenCount: count,
+      by: req.user!.userId,
+      self: targetUserId === req.user!.userId
+    });
+    res.json({ success: true, message: 'Oturum kapatıldı.', data: { sessionId: req.params.sessionId, revokedTokenCount: count } });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /companies/me:
+ *   get:
+ *     summary: Oturum Açan Firmanın Profili
+ *     description: >
+ *       JWT'deki tenant'a ait firma bilgisini döndürür (ad, kod, vergi no, şehir,
+ *       lisans, modüller, şantiyeler). SITE_MANAGER rolünde yalnızca kullanıcının
+ *       kendi şantiyesi listelenir; COMPANY_OWNER tüm şantiyeleri görür.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Firma profili başarıyla getirildi.
+ *       404:
+ *         description: Tenant'a karşılık gelen firma bulunamadı.
+ */
+router.get('/companies/me', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const profile = await getTenantCompanyProfile({
+      role: req.user?.role,
+      siteName: req.user?.siteName
+    });
+    res.json({ success: true, data: profile });
+  } catch (error: any) {
+    if (error.message === 'COMPANY_NOT_FOUND') {
+      return next(new NotFoundError('Oturum açan kullanıcının firma kaydı bulunamadı.'));
+    }
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /usage-metering:
+ *   get:
+ *     summary: Kullanım/Faturalama Geçmişi (BILL-1704)
+ *     description: >
+ *       Oturum açan firmanın dönemsel (aylık) kullanım ölçümü kayıtlarını
+ *       (aktif cihaz sayısı, cihaz-gün, ikmal sayısı, telemetri paket
+ *       sayısı, üretilen e-belge sayısı) en yeniden en eskiye listeler.
+ *       Kayıtlar append-only'dir (bir dönem bir kez hesaplanır).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/usage-metering', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const limit = req.query.limit ? Number(req.query.limit) : 24;
+    const history = await getUsageMeteringHistory(limit);
+    res.json({ success: true, data: history });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /usage-metering/compute-now:
+ *   post:
+ *     summary: Bir Dönemin Kullanım Ölçümünü Hemen Hesapla (BILL-1704)
+ *     description: >
+ *       index.ts'teki günlük süpürücünün (bir önceki ay için) yaptığı işi bu
+ *       tenant için MANUEL tetikler — ops/test için, ayın bitmesini beklemeden
+ *       (`periodLabel` verilmezse bir önceki ay hesaplanır). Aynı dönem için
+ *       tekrar çağrılması güvenlidir (append-only, ON CONFLICT DO NOTHING —
+ *       zaten hesaplanmış bir dönem SESSİZCE atlanır, `data: null` döner).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/usage-metering/compute-now', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const periodLabel = typeof req.body?.periodLabel === 'string'
+      ? req.body.periodLabel
+      : new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth() - 1, 1)).toISOString().slice(0, 7);
+    const record = await computeUsageMeteringForCurrentTenant(periodLabel);
+    res.json({ success: true, data: record });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /companies:
+ *   get:
+ *     summary: Tüm Kiracı Firmalar (Süper Admin)
+ *     description: >
+ *       Platformdaki tüm firmaları (tenant'ları) tenant sınırı olmadan
+ *       listeler. Yalnızca SUPER_ADMIN erişebilir — Geliştirici (Süper
+ *       Admin) panelindeki "Tüm Firmalar" sayfası içindir.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Firma listesi başarıyla getirildi.
+ */
+router.get('/companies', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const companies = await getAllCompanies();
+    res.json({ success: true, totalCount: companies.length, data: companies });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /companies:
+ *   post:
+ *     summary: Yeni Kiracı Firma Oluştur (Süper Admin)
+ *     description: Yeni bir firma + ilk şantiyesi + COMPANY_OWNER giriş hesabını oluşturur.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Firma oluşturuldu.
+ */
+router.post(
+  '/companies',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  validateRequest({ body: createCompanySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const newCompany = await createCompanyWithOwner(req.body, req.user!.userId);
+      res.json({ success: true, message: 'Firma başarıyla oluşturuldu.', data: newCompany });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /companies/{id}:
+ *   patch:
+ *     summary: Firma Lisans/Modül Güncelle (Süper Admin)
+ *     description: Bir firmanın lisans durumunu ve/veya modül izinlerini günceller.
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Firma güncellendi.
+ */
+router.patch(
+  '/companies/:id',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  validateRequest({ body: updateCompanySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const updated = await updateCompanyAdmin(req.params.id, req.body, req.user!.userId);
+      res.json({ success: true, message: 'Firma güncellendi.', data: updated });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /companies/{id}/module-addons:
+ *   get:
+ *     summary: Firmanın Ek Modül Satın Alımları (BILL-1703, Süper Admin)
+ *     description: >
+ *       Firmanın PAKETİNDEN bağımsız, tek tek açılmış (satın alınmış) ek
+ *       modülleri listeler — paket değişse/yeniden uygulansa bile kaybolmaz.
+ *     security:
+ *       - bearerAuth: []
+ */
+/**
+ * @swagger
+ * /admin/module-catalog:
+ *   get:
+ *     summary: Modül Fiyat Kataloğu — Bilgi Amaçlı (BILL-1703, Süper Admin)
+ *     description: >
+ *       Her modülün aylık listelenen fiyatı (TL, KDV hariç) ve hangi
+ *       paketlerde zaten dahil olduğu — satış/destek ekibinin bir firmaya ek
+ *       modül satarken danışacağı TEK kaynak. Gerçek bir tahsilat/ödeme
+ *       entegrasyonu DEĞİLDİR (ticket'ın kendi kapsam sınırı) — yalnızca
+ *       bilgi amaçlıdır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/admin/module-catalog', authenticateJWT, authorizeRoles('SUPER_ADMIN'), (req: AuthenticatedRequest, res: Response) => {
+  res.json({ success: true, data: getModuleCatalog() });
+});
+
+router.get('/companies/:id/module-addons', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const addons = await getCompanyModuleAddons(req.params.id);
+    res.json({ success: true, data: addons });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /companies/{id}/module-addons:
+ *   post:
+ *     summary: Ek Modül Satın Alımı Ekle (BILL-1703, Süper Admin)
+ *     description: >
+ *       Bir modülü firmanın paketinden bağımsız olarak kalıcı şekilde açar
+ *       (etkisi anında başlar) ve audit_logs'a MODULE_ADDON_GRANTED olarak yazar.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/companies/:id/module-addons',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  validateRequest({ body: moduleAddonSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await addCompanyModuleAddon(req.params.id, req.body.moduleName, req.user!.userId);
+      const addons = await getCompanyModuleAddons(req.params.id);
+      res.json({ success: true, message: 'Ek modül eklendi.', data: addons });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /companies/{id}/module-addons/{moduleName}:
+ *   delete:
+ *     summary: Ek Modül Satın Alımını Kaldır (BILL-1703, Süper Admin)
+ *     description: >
+ *       Ek modülü kaldırır — firmanın paketi o modülü zaten içeriyorsa erişim
+ *       KESİLMEZ, yalnızca paketin varsayılan değerine döner. audit_logs'a
+ *       MODULE_ADDON_REVOKED olarak yazar.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.delete('/companies/:id/module-addons/:moduleName', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    await removeCompanyModuleAddon(req.params.id, req.params.moduleName, req.user!.userId);
+    const addons = await getCompanyModuleAddons(req.params.id);
+    res.json({ success: true, message: 'Ek modül kaldırıldı.', data: addons });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/package-defaults/{package}/reapply:
+ *   post:
+ *     summary: Paket Varsayılanlarını Mevcut Firmalara Yeniden Uygula (BILL-1703, Süper Admin)
+ *     description: >
+ *       Bir paket tanımı (kodda) DEĞİŞTİĞİNDE o paketteki TÜM firmalara
+ *       OTOMATİK yansımaz — bu uç, SUPER_ADMIN'in bilerek tetiklediği
+ *       KONTROLLÜ bir yayılım. Her firma için modules = paket varsayılanı +
+ *       ek modül satın alımları (addon'lar hep korunur) olarak yeniden
+ *       kurulur; daha önceki ad-hoc (addon olmayan) manuel override'lar
+ *       KASITLI olarak silinir. Her değişen firma için audit_logs'a
+ *       PACKAGE_DEFAULTS_REAPPLIED yazılır.
+ *     parameters:
+ *       - in: path
+ *         name: package
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [TEMEL, PROFESYONEL, KURUMSAL]
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/admin/package-defaults/:package/reapply', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const packageTier = req.params.package;
+    if (!(PACKAGE_TIERS as string[]).includes(packageTier)) {
+      throw new BadRequestError(`Geçersiz paket: ${packageTier}. Geçerli değerler: ${PACKAGE_TIERS.join(', ')}`);
+    }
+    const results = await reapplyPackageDefaults(packageTier as (typeof PACKAGE_TIERS)[number], req.user!.userId);
+    res.json({
+      success: true,
+      data: { packageTier, companiesChecked: results.length, companiesChanged: results.filter((r) => r.changed).length, results }
+    });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/companies/{id}/lifecycle:
+ *   get:
+ *     summary: Tenant Yaşam Döngüsü Durumu (ARCH-108, Süper Admin)
+ *     description: 'account_status (AKTİF/DONDURULDU/SILME_BEKLIYOR) + silme onay sayacı.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/admin/companies/:id/lifecycle', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: await getTenantLifecycleStatus(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/companies/{id}/freeze:
+ *   post:
+ *     summary: Tenant'ı Dondur (ARCH-108, Süper Admin)
+ *     description: '`{ reason }`. Girişi engeller, veriyi KORUR (hiçbir satır silinmez/değiştirilmez).'
+ *     security:
+ *       - bearerAuth: []
+ * /admin/companies/{id}/unfreeze:
+ *   post:
+ *     summary: Dondurmayı Kaldır (ARCH-108, Süper Admin)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/admin/companies/:id/freeze',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  validateRequest({ body: tenantLifecycleReasonSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await freezeCompany(req.params.id, req.body.reason, req.user!.userId);
+      res.json({ success: true, data: await getTenantLifecycleStatus(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post('/admin/companies/:id/unfreeze', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    await unfreezeCompany(req.params.id, req.user!.userId);
+    res.json({ success: true, data: await getTenantLifecycleStatus(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/companies/{id}/schedule-deletion:
+ *   post:
+ *     summary: Kalıcı Silmeyi Planla (ARCH-108, Süper Admin)
+ *     description: >
+ *       `{ reason }`. Firmayı DONDURUR + 30 günlük bekleme süresini başlatır.
+ *       Süre dolmadan `approve-deletion` çağrıları reddedilir.
+ *     security:
+ *       - bearerAuth: []
+ * /admin/companies/{id}/cancel-deletion:
+ *   post:
+ *     summary: Planlanmış Silmeyi İptal Et (ARCH-108, Süper Admin)
+ *     description: 'Firma AKTİF''e döner, toplanan onaylar silinir.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/admin/companies/:id/schedule-deletion',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  validateRequest({ body: tenantLifecycleReasonSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await scheduleTenantDeletion(req.params.id, req.body.reason, req.user!.userId);
+      res.json({ success: true, data: await getTenantLifecycleStatus(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post('/admin/companies/:id/cancel-deletion', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    await cancelTenantDeletion(req.params.id, req.user!.userId);
+    res.json({ success: true, data: await getTenantLifecycleStatus(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/companies/{id}/approve-deletion:
+ *   post:
+ *     summary: Kalıcı Silmeyi Onayla — İki Farklı Süper Admin Gerekir (ARCH-108)
+ *     description: >
+ *       30 günlük bekleme süresi dolmadan reddedilir. Aynı SUPER_ADMIN'in
+ *       ikinci çağrısı sayacı artırmaz (idempotent) — GERÇEKTEN farklı bir
+ *       SUPER_ADMIN onaylayınca (`approvalsCount>=2`) firma VE tüm verisi
+ *       AYNI çağrıda kalıcı olarak silinir (`executed:true`).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/admin/companies/:id/approve-deletion', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await approveTenantDeletion(req.params.id, req.user!.userId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/companies/{id}/export:
+ *   get:
+ *     summary: Şifreli Tenant Veri Dışa Aktarımı (ARCH-108, Süper Admin)
+ *     description: >
+ *       Tenant'a ait TÜM tablolardaki (information_schema'dan tenant_id
+ *       kolonuna göre ÇALIŞMA ZAMANINDA keşfedilir — sabit liste yok) satırları
+ *       tek bir JSON belgesinde toplayıp AES-256-GCM ile şifreler, ikili
+ *       (application/octet-stream) olarak indirir.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/admin/companies/:id/export', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const encrypted = await exportTenantDataEncrypted(req.params.id);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="tenant-export-${req.params.id}-${new Date().toISOString().slice(0, 10)}.bin"`);
+    res.send(encrypted);
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /devices:
+ *   get:
+ *     summary: Kayıtlı IoT Donanımları (Süper Admin)
+ *     description: >
+ *       HMAC-SHA256 ile kayıtlı ESP32/debimetre cihazlarını, Redis'teki
+ *       gerçek son bilinen bağlantı durumuyla (MQTT LWT/veri akışından)
+ *       birlikte listeler. Hiç bağlanmamış bir cihaz OFFLINE görünür —
+ *       bu, önceki mock veriden farklı olarak sistemin gerçek durumudur.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cihaz listesi başarıyla getirildi.
+ */
+router.get('/devices', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const registeredDevices = await getAllHardwareDevices();
+    const devices = await Promise.all(
+      registeredDevices.map(async (d) => {
+        const status = await redisPool.getDeviceState(d.device_id);
+        return {
+          deviceCode: d.device_id,
+          name: d.name,
+          siteName: d.site_name,
+          tenantId: d.tenant_id,
+          registrationStatus: d.status,
+          status,
+          lastHeartbeatAt: d.last_heartbeat_at ? new Date(d.last_heartbeat_at).toISOString() : null,
+          healthScore: d.health_score,
+          firmwareVersion: d.firmware_version,
+          signalRssi: d.last_reported_rssi
+        };
+      })
+    );
+    res.json({ success: true, totalCount: devices.length, data: devices });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/system-metrics:
+ *   get:
+ *     summary: Geliştirici Paneli Sistem Metrikleri Özeti (FE-806, SUPER_ADMIN)
+ *     description: >
+ *       OPS-1107'nin ZATEN var olan Prometheus registry'sinden (backend
+ *       içi, /metrics ile AYNI kaynak — yeni bir ölçüm eklenmez, yalnızca
+ *       SUPER_ADMIN oturumu için tarayıcıdan erişilebilir seçilmiş bir alt
+ *       küme okunur) küçük, isimlendirilmiş bir özet döner. `/metrics`'in
+ *       kendisi (Prometheus exposition format, nginx tarafından proxy'lenmez,
+ *       ayrı bir taşıyıcı token ile korunur) BİLEREK değiştirilmedi.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/admin/system-metrics', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const sumValues = (values: { value: number; labels: Record<string, unknown> }[]): number =>
+      values.reduce((acc, v) => acc + v.value, 0);
+    const byLabel = (values: { value: number; labels: Record<string, unknown> }[], labelKey: string): Record<string, number> => {
+      const out: Record<string, number> = {};
+      for (const v of values) out[String(v.labels[labelKey])] = v.value;
+      return out;
+    };
+
+    const [httpTotalM, mqttMessagesM, mqttErrorsM, mqttRejectedM, devicesM, despatchQueueM, despatchOldestM, notifRetryM, notifCircuitM, despatchCircuitM, dbPoolM] = await Promise.all([
+      registry.getSingleMetric('http_requests_total')?.get(),
+      registry.getSingleMetric('yakit_mqtt_messages_total')?.get(),
+      registry.getSingleMetric('yakit_mqtt_processing_errors_total')?.get(),
+      registry.getSingleMetric('yakit_mqtt_rejected_total')?.get(),
+      registry.getSingleMetric('yakit_devices')?.get(),
+      registry.getSingleMetric('yakit_despatch_queue')?.get(),
+      registry.getSingleMetric('yakit_despatch_oldest_queued_age_seconds')?.get(),
+      registry.getSingleMetric('yakit_notifications_retry_queue')?.get(),
+      registry.getSingleMetric('yakit_notification_circuit_open')?.get(),
+      registry.getSingleMetric('yakit_despatch_integrator_circuit_open')?.get(),
+      registry.getSingleMetric('yakit_db_pool_connections')?.get()
+    ]);
+
+    const httpValues = (httpTotalM?.values || []) as { value: number; labels: Record<string, unknown> }[];
+    const httpTotalCount = sumValues(httpValues);
+    const httpErrorCount = httpValues
+      .filter((v) => String(v.labels.status).startsWith('5'))
+      .reduce((acc, v) => acc + v.value, 0);
+
+    res.json({
+      success: true,
+      data: {
+        mqtt: {
+          messagesTotal: sumValues((mqttMessagesM?.values || []) as any),
+          errorsTotal: sumValues((mqttErrorsM?.values || []) as any),
+          rejectedTotal: sumValues((mqttRejectedM?.values || []) as any)
+        },
+        devices: byLabel((devicesM?.values || []) as any, 'state'),
+        despatchQueue: {
+          ...byLabel((despatchQueueM?.values || []) as any, 'status'),
+          oldestQueuedAgeSeconds: sumValues((despatchOldestM?.values || []) as any)
+        },
+        notifications: {
+          retryQueue: sumValues((notifRetryM?.values || []) as any),
+          circuitOpenChannels: sumValues((notifCircuitM?.values || []) as any)
+        },
+        despatchIntegratorCircuitOpen: sumValues((despatchCircuitM?.values || []) as any) === 1,
+        http: {
+          totalRequests: httpTotalCount,
+          errorRequests: httpErrorCount,
+          errorRatePct: httpTotalCount > 0 ? Number(((httpErrorCount / httpTotalCount) * 100).toFixed(2)) : 0
+        },
+        dbPool: byLabel((dbPoolM?.values || []) as any, 'state')
+      }
+    });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * AUTH-202.3 — Cihaz Provisioning, Rotasyon ve Bloke Etme (kendi tenant'ı).
+ * SUPER_ADMIN/COMPANY_OWNER dışındaki roller (SITE_MANAGER, PUMP_OPERATOR)
+ * donanım kaydı yönetemez — bu, sahadaki fiziksel cihazların ait olduğu
+ * güvenlik sınırıdır, günlük operasyon değil.
+ */
+const HARDWARE_DEVICE_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /hardware-devices:
+ *   get:
+ *     summary: Kendi Tenant'ının Cihaz Kayıtları (AUTH-202.3)
+ *     description: Secret'lar ASLA döndürülmez — yalnızca provisioning/rotasyon anında, tek seferlik.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cihaz listesi başarıyla getirildi.
+ */
+router.get('/hardware-devices', authenticateJWT, authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const devices = await getTenantHardwareDevices();
+    res.json({ success: true, totalCount: devices.length, data: devices });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /hardware-devices:
+ *   post:
+ *     summary: Yeni Cihaz Provisioning (AUTH-202.3)
+ *     description: >
+ *       256-bit rastgele bir secret üretir, AES-256-GCM ile şifreleyip saklar.
+ *       Üretilen secret yalnızca BU yanıtta düz metin olarak döner — bir daha
+ *       asla geri okunamaz, cihaza güvenli bir kanaldan (QR/tek seferlik) aktarılmalıdır.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cihaz oluşturuldu, secret tek seferlik döndü.
+ */
+router.post(
+  '/hardware-devices',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: createHardwareDeviceSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      // BILL-1702 AC: "limit aşımında yeni kayıt engelleme."
+      const deviceLimit = await isPackageLimitReached(req.user!.tenantId, 'devices');
+      if (deviceLimit.reached) {
+        throw new ConflictError(
+          `Paket limitine ulaşıldı: cihaz sayısı (${deviceLimit.current}/${deviceLimit.limit}). Devam etmek için paketinizi yükseltin.`
+        );
+      }
+
+      const { device, secret } = await createHardwareDevice(req.body);
+      res.json({
+        success: true,
+        message: 'Cihaz kaydedildi. Secret yalnızca bu yanıtta gösterilecek, tekrar alınamaz.',
+        data: { ...device, secret }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/{deviceId}/rotate-secret:
+ *   post:
+ *     summary: Cihaz Secret Rotasyonu (AUTH-202.3)
+ *     description: >
+ *       Yeni bir secret üretir; eski secret 24 saatlik bir geçiş penceresi
+ *       boyunca da geçerli kalır (henüz komutu almamış cihazlar sahada
+ *       kilitlenmesin diye). Yeni secret yalnızca bu yanıtta döner.
+ *     parameters:
+ *       - in: path
+ *         name: deviceId
+ *         required: true
+ *         schema: { type: string }
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Secret rotasyonu tamamlandı.
+ */
+router.post(
+  '/hardware-devices/:deviceId/rotate-secret',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { device, secret } = await rotateHardwareDeviceSecret(req.params.deviceId);
+      res.json({
+        success: true,
+        message: 'Secret rotasyonu tamamlandı. Yeni secret yalnızca bu yanıtta gösterilecek.',
+        data: { ...device, secret }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/{deviceId}/block:
+ *   post:
+ *     summary: Cihazı Bloke Et (AUTH-202.3)
+ *     description: Sızıntı şüphesinde cihazın paketlerini anında (403) reddetmeye başlar.
+ *     parameters:
+ *       - in: path
+ *         name: deviceId
+ *         required: true
+ *         schema: { type: string }
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cihaz bloke edildi.
+ */
+router.post(
+  '/hardware-devices/:deviceId/block',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const device = await blockHardwareDevice(req.params.deviceId);
+      res.json({ success: true, message: 'Cihaz bloke edildi.', data: device });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/hardware-devices/:deviceId/unblock',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const device = await unblockHardwareDevice(req.params.deviceId);
+      res.json({ success: true, message: 'Cihazın bloku kaldırıldı.', data: device });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/{deviceId}/relocate:
+ *   post:
+ *     summary: Cihazı Başka Şantiyeye Nakil Et (IOT-304)
+ *     description: >
+ *       Yalnızca cihazın GELECEKTEKİ site_name'ini günceller — geçmiş
+ *       ikmal/denetim kayıtları kendi satırlarındaki site_name'i taşıdığından
+ *       (canlı bir referans değil) bozulmaz.
+ *     parameters:
+ *       - in: path
+ *         name: deviceId
+ *         required: true
+ *         schema: { type: string }
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Cihaz nakledildi.
+ */
+router.post(
+  '/hardware-devices/:deviceId/relocate',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: relocateHardwareDeviceSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const device = await relocateHardwareDevice(req.params.deviceId, req.body.siteName);
+      res.json({ success: true, message: 'Cihaz nakledildi.', data: device });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/{deviceId}/tank:
+ *   patch:
+ *     summary: Pompa-Tank Eşlemesi (FUEL-407)
+ *     description: >
+ *       `{ tankName }` — bu pompanın beslendiği tank. Bir tank birden çok
+ *       pompaya bağlanabilir. `tankName: null` eşlemeyi kaldırır. Eşleme
+ *       varsa request-auth istekteki tankName ile karşılaştırılır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch(
+  '/hardware-devices/:deviceId/tank',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: setDeviceTankSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await setHardwareDeviceTank(req.params.deviceId, req.body.tankName ?? null);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fuel-stock-summary:
+ *   get:
+ *     summary: Yakıt Tipi Bazında Stok ve İkmal Özeti (FUEL-407)
+ *     description: '?days (varsayılan 30). Tank stoğu + dönem ikmali, yakıt tipi (grup) bazında.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fuel-stock-summary',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ query: fuelStockSummaryQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { days: number };
+      res.json({ success: true, data: await getFuelStockSummary(q.days) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── FLEET-1404 + RES-903: araç sayaç (km / motor-saat) girişi + doğrulama ──
+const METER_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /vehicles/{id}/meter-readings:
+ *   post:
+ *     summary: Araç Sayaç Girişi (FLEET-1404)
+ *     description: >
+ *       `{ value, meterType?, readingAt?, periodLabel?, note?, overrideReason?,
+ *       correctsReadingId? }`. RES-903: geri giden / absürt sıçrama / mükerrer
+ *       dönem tespit edilirse `overrideReason` (gerekçeli onay) olmadan 409.
+ *       Düzeltme için `correctsReadingId` verin (eski satır SİLİNMEZ).
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Araç Sayaç Geçmişi (FLEET-1404 — append-only)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicles/:id/meter-readings',
+  authenticateJWT,
+  authorizeRoles(...METER_MANAGER_ROLES),
+  validateRequest({ body: recordMeterReadingSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await recordMeterReading(req.params.id, req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/vehicles/:id/meter-readings',
+  authenticateJWT,
+  authorizeRoles(...METER_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const readings = await getVehicleMeterReadings(req.params.id);
+      res.json({ success: true, totalCount: readings.length, data: readings });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /meter-readings/bulk:
+ *   post:
+ *     summary: Toplu Sayaç Girişi (FLEET-1404 — 50 araç)
+ *     description: '`{ items: [{ vehiclePlate, value, ... }] }` (1..50). Satır bazlı sonuç döner.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/meter-readings/bulk',
+  authenticateJWT,
+  authorizeRoles(...METER_MANAGER_ROLES),
+  validateRequest({ body: bulkMeterReadingSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await recordMeterReadingsBulk(req.body.items, req.user!.userId);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /meter-readings/missing:
+ *   get:
+ *     summary: Eksik Sayaç Girişi Olan Araçlar (FLEET-1404)
+ *     description: '?periodLabel=YYYY-AA (zorunlu), ?meterType=KM|MOTOR_SAAT. Şantiye bazında gruplanır.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/meter-readings/missing',
+  authenticateJWT,
+  authorizeRoles(...METER_MANAGER_ROLES),
+  validateRequest({ query: missingMeterQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { periodLabel: string; meterType?: 'KM' | 'MOTOR_SAAT' };
+      res.json({ success: true, data: await getMissingMeterReadings(q.periodLabel, q.meterType) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /meter-readings/missing/remind:
+ *   post:
+ *     summary: Eksik Girişli Şantiyelere Hatırlatma (FLEET-1404)
+ *     description: '`{ periodLabel, meterType? }`. Şantiye bazında audit + WebSocket meter-reading:reminder.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/meter-readings/missing/remind',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  validateRequest({ body: remindMeterSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await remindMissingMeterReadings(req.body.periodLabel, req.body.meterType, req.user!.userId);
+      const tenantId = req.user?.tenantId;
+      if (tenantId) {
+        try {
+          for (const s of result.bySite) {
+            broadcastToTenant(tenantId, 'meter-reading:reminder', { periodLabel: result.periodLabel, siteName: s.siteName, missingCount: s.missingCount });
+          }
+        } catch { /* */ }
+      }
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── FLEET-1405: L/100km ve L/motor-saat tüketim hesap motoru ────────────
+const FLEET_CONSUMPTION_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /fleet/consumption:
+ *   get:
+ *     summary: Dönemsel Tüketim Raporu — L/100km / L/saat (FLEET-1405)
+ *     description: >
+ *       `?periodLabel=YYYY-AA` (zorunlu), `?vehicleId=` (verilmezse tüm aktif
+ *       filo). Dönem başı/sonu sayaç okuması eksikse veya kullanım
+ *       sıfır/negatifse o araç EKSIK_VERI/GECERSIZ_VERI olarak işaretlenip
+ *       hesaptan (ortalamalardan) dışlanır — tahmini değer üretilmez (Kritik Not).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fleet/consumption',
+  authenticateJWT,
+  authorizeRoles(...FLEET_CONSUMPTION_ROLES),
+  validateRequest({ query: fleetConsumptionQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { periodLabel: string; vehicleId?: string };
+      res.json({ success: true, data: await getFleetConsumptionReport(q.periodLabel, q.vehicleId) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fleet/consumption/comparison:
+ *   get:
+ *     summary: Araç Tipi/Şantiye Bazında Ortalama + Sapma (FLEET-1405)
+ *     description: '?periodLabel=YYYY-AA, ?groupBy=vehicle_type|site_name (varsayılan vehicle_type)'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fleet/consumption/comparison',
+  authenticateJWT,
+  authorizeRoles(...FLEET_CONSUMPTION_ROLES),
+  validateRequest({ query: fleetComparisonQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { periodLabel: string; groupBy: 'vehicle_type' | 'site_name' };
+      res.json({ success: true, data: await getFleetConsumptionComparison(q.periodLabel, q.groupBy) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fleet/consumption/trend:
+ *   get:
+ *     summary: Araç Bazlı Dönem Karşılaştırması / Trend (FLEET-1405)
+ *     description: '?vehicleId= (zorunlu), ?periods= (2-24, varsayılan 6) — son N ayın peş peşe raporu + % değişim.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fleet/consumption/trend',
+  authenticateJWT,
+  authorizeRoles(...FLEET_CONSUMPTION_ROLES),
+  validateRequest({ query: fleetTrendQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { vehicleId: string; periods: number };
+      res.json({ success: true, data: await getFleetConsumptionTrend(q.vehicleId, q.periods) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fleet/consumption/anomaly:
+ *   get:
+ *     summary: Araç Tüketim Anomalisi Önizleme (AI-503)
+ *     description: >
+ *       `?vehicleId=&periodLabel=YYYY-AA`. Aracın kendi geçmişine (z-score +
+ *       %sapma) ve aynı tipteki benzerlerine (peer, bilgi amaçlı) göre
+ *       değerlendirir. Alarm ÜRETMEZ (salt önizleme) — yalnızca
+ *       POST /fleet/consumption/anomaly-scan alarm oluşturur. Geçmişi
+ *       <3 dönem olan araçlar için anomalous her zaman false (AC).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fleet/consumption/anomaly',
+  authenticateJWT,
+  authorizeRoles(...FLEET_CONSUMPTION_ROLES),
+  validateRequest({ query: vehicleConsumptionAnomalyQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { vehicleId: string; periodLabel: string };
+      res.json({ success: true, data: await getVehicleConsumptionAnomaly(q.vehicleId, q.periodLabel) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fleet/consumption/anomaly-scan:
+ *   post:
+ *     summary: Filo Geneli Tüketim Anomalisi Taraması (AI-503)
+ *     description: >
+ *       `{ periodLabel }`. Tüm aktif filoyu tarar; tespit edilen anomaliler
+ *       AI-507 birleşik alarm yaşam döngüsüne (CONSUMPTION_ANOMALY kategorisi)
+ *       akar. Yalnızca SUPER_ADMIN/COMPANY_OWNER.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/fleet/consumption/anomaly-scan',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  validateRequest({ body: consumptionAnomalyScanSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await scanConsumptionAnomalies(req.body.periodLabel);
+      const tenantId = req.user?.tenantId;
+      if (tenantId && result.anomalies > 0) {
+        try {
+          broadcastToTenant(tenantId, 'consumption-anomaly:scanned', { periodLabel: result.periodLabel, anomalies: result.anomalies });
+        } catch { /* */ }
+      }
+      res.json({ success: true, data: { periodLabel: result.periodLabel, scanned: result.scanned, anomalies: result.anomalies, insufficientData: result.insufficientData, results: result.results } });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── FLEET-1406: araç bazlı dönemsel yakıt limiti ────────────────────────
+const VEHICLE_LIMIT_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+// Geçici artış onayı yalnızca üst düzey — bir SITE_MANAGER kendi koyduğu
+// limiti kendine geçici olarak artıramaz (AC: "onay" gerçek bir onay olmalı).
+const VEHICLE_LIMIT_APPROVER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /vehicles/{id}/fuel-limit:
+ *   put:
+ *     summary: Araç Yakıt Limiti Tanımla/Güncelle (FLEET-1406)
+ *     description: >
+ *       `{ periodType, limitLiters, enforcement, status? }`. `enforcement`
+ *       REJECT ise limit dolunca ikmal reddedilir/kısılır; WARN ise yalnızca
+ *       AI-507 alarmı üretilir, ikmal engellenmez. Çapraz şantiye kotasından
+ *       (FUEL-402) FARKLI bir kavramdır — ikisi birlikte değerlendirilir, en
+ *       kısıtlayıcı olan kazanır.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Araç Yakıt Limiti + Anlık Kullanım (FLEET-1406)
+ *     description: 'Limit tanımlı değilse hasLimit:false döner. 5 sn önbelleklidir.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put(
+  '/vehicles/:id/fuel-limit',
+  authenticateJWT,
+  authorizeRoles(...VEHICLE_LIMIT_MANAGER_ROLES),
+  validateRequest({ body: setVehicleFuelLimitSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const limit = await setVehicleFuelLimit(req.params.id, req.body, req.user!.userId);
+      res.json({ success: true, data: limit });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/vehicles/:id/fuel-limit',
+  authenticateJWT,
+  authorizeRoles(...VEHICLE_LIMIT_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getVehicleFuelLimitBalance(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /vehicles/{id}/fuel-limit/temporary-increase:
+ *   post:
+ *     summary: Geçici Limit Artışı — Onaylı (FLEET-1406)
+ *     description: >
+ *       `{ additionalLiters, untilDate, reason }`. Kalıcı limiti DEĞİŞTİRMEZ;
+ *       yalnızca belirtilen tarihe kadar geçerli bir ek pay tanımlar. Yalnızca
+ *       SUPER_ADMIN/COMPANY_OWNER onaylayabilir (audit'lenir — AC).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicles/:id/fuel-limit/temporary-increase',
+  authenticateJWT,
+  authorizeRoles(...VEHICLE_LIMIT_APPROVER_ROLES),
+  validateRequest({ body: temporaryFuelLimitIncreaseSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const limit = await approveTemporaryFuelLimitIncrease(req.params.id, req.body, req.user!.userId);
+      res.json({ success: true, data: limit });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+const DESPATCH_TRANSMISSION_VIEW_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+// Kuyruğu manuel süpürmek (normalde her ~1 dk'da bir otomatik çalışan
+// setInterval'ı beklemeden) idari bir eylem — AI-503'ün anomaly-scan
+// endpoint'iyle AYNI kısıtlama.
+const DESPATCH_TRANSMISSION_SWEEP_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /transactions/{id}/e-irsaliye/transmit:
+ *   post:
+ *     summary: e-İrsaliyeyi Entegratör İletim Kuyruğuna Al (COMP-602.1)
+ *     description: >
+ *       Belge no + ETTN tahsis eder (COMP-601 ile idempotent), UBL XML'ini
+ *       üretip XSD'ye karşı doğrular ve `despatch_advice_transmissions`
+ *       kuyruğuna QUEUED olarak ekler. Alıcı KAĞIT süreçteyse (COMP-605)
+ *       409 döner — elektronik iletim kuyruğa alınamaz. Aynı belge için
+ *       tekrar çağrılırsa mevcut kuyruk satırı (durumu ne olursa olsun)
+ *       döner, yeniden kuyruğa EKLENMEZ.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/transactions/:id/e-irsaliye/transmit',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_VIEW_ROLES),
+  validateRequest({ body: enqueueDespatchAdviceTransmissionSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await enqueueDespatchAdviceTransmission(req.params.id, siteScopeFor(req.user!), req.body.recipientTaxId ?? null);
+      res.json({ success: true, data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /despatch-advice-transmissions:
+ *   get:
+ *     summary: e-İrsaliye İletim Kuyruğu/Geçmişi (COMP-602.1)
+ *     description: '`?status=&transactionId=` ile filtrelenebilir. En yeni 200 kayıt.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/despatch-advice-transmissions',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_VIEW_ROLES),
+  validateRequest({ query: despatchAdviceTransmissionListQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { status?: string; transactionId?: string };
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getDespatchAdviceTransmissions(q) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /despatch-advice-transmissions/circuit-status:
+ *   get:
+ *     summary: e-İrsaliye Entegratör Devre Kesici Durumu (COMP-602.2)
+ *     description: >
+ *       AC: "panelde görünür uyarı." Devre GLOBAL'dir (tüm tenant'lar arasında
+ *       paylaşılan tek entegratör bağlantısını temsil eder) — bu yüzden ':id'
+ *       ile karışmaması için sabit yoldan ÖNCE tanımlanmıştır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/despatch-advice-transmissions/circuit-status',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_VIEW_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getDespatchIntegratorCircuitStatus() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/despatch-advice-transmissions/:id',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_VIEW_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getDespatchAdviceTransmission(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /despatch-advice-transmissions/sweep:
+ *   post:
+ *     summary: İletim Kuyruğunu Hemen Süpür (COMP-602.1)
+ *     description: >
+ *       Otomatik süpürücü (index.ts, her ~1 dk) zaten çalışır; bu endpoint
+ *       testler/idari müdahale için AYNI süpürmeyi hemen tetikler. Yalnızca
+ *       SUPER_ADMIN/COMPANY_OWNER.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/despatch-advice-transmissions/sweep',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_SWEEP_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await runDespatchAdviceTransmissionSweepForCurrentTenant() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /despatch-advice-transmissions/status-poll:
+ *   post:
+ *     summary: Gönderilmiş Belgelerin GİB Durumunu Hemen Yokla (COMP-602.2)
+ *     description: >
+ *       Otomatik yoklayıcı (index.ts) zaten çalışır; bu endpoint testler/idari
+ *       müdahale için AYNI yoklamayı hemen tetikler. Yalnızca SUPER_ADMIN/COMPANY_OWNER.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/despatch-advice-transmissions/status-poll',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_SWEEP_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await runDespatchAdviceStatusPollForCurrentTenant() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /despatch-advice-transmissions/bulk-resend:
+ *   post:
+ *     summary: Toplu Yeniden Gönderim (COMP-604)
+ *     description: >
+ *       AC: "Toplu yeniden gönderim yalnızca uygun durumdaki (FAILED)
+ *       belgelerde çalışmalıdır." Listede FAILED OLMAYAN bir id varsa TÜM
+ *       istek reddedilir (409) — hiçbir satır değişmez. Yeni belge/kayıt
+ *       ÜRETMEZ: var olan satırı sıfırlayıp AYNI iletim kuyruğuna
+ *       (COMP-602.1 sweep) geri verir.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/despatch-advice-transmissions/bulk-resend',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_SWEEP_ROLES),
+  validateRequest({ body: bulkResendDespatchAdviceTransmissionSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await bulkResendFailedDespatchAdviceTransmissions(req.body.ids) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /despatch-advice-transmissions/stuck-scan:
+ *   post:
+ *     summary: Takılı Kalan Belgeleri Şimdi Tara (COMP-604)
+ *     description: >
+ *       Otomatik günlük tarayıcı (index.ts) zaten çalışır; bu endpoint
+ *       testler/idari müdahale için AYNI taramayı hemen tetikler.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/despatch-advice-transmissions/stuck-scan',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_SWEEP_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await runDespatchAdviceStuckDetectionForCurrentTenant() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// İptal, red işleminden daha ağır bir hukuki eylem (sertifika üretir) — bu
+// yüzden VEHICLE_LIMIT_APPROVER_ROLES/DESPATCH_TRANSMISSION_SWEEP_ROLES ile
+// AYNI daha dar rol kümesi. Red/yeniden gönderim ise transmit ile AYNI kapsam.
+const DESPATCH_DISPOSITION_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const DESPATCH_CANCEL_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /transactions/{id}/e-irsaliye/status:
+ *   get:
+ *     summary: e-İrsaliye Yaşam Döngüsü Durumu (COMP-603)
+ *     description: 'ISSUED | REJECTED | CANCELLED | SUPERSEDED. Belge yoksa 404.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/transactions/:id/e-irsaliye/status',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_VIEW_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getDespatchAdviceStatus(req.params.id, siteScopeFor(req.user!)) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /transactions/{id}/e-irsaliye/reject:
+ *   post:
+ *     summary: Alıcı Reddi Kaydet (COMP-603)
+ *     description: >
+ *       `{ reason }`. Yalnızca GERÇEKTEN gönderilmiş (SENT) bir belge
+ *       reddedilebilir. Red sebebi kaydedilir — düzeltme için
+ *       POST .../resubmit ile yeni belge numarası alınır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/transactions/:id/e-irsaliye/reject',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_DISPOSITION_ROLES),
+  validateRequest({ body: rejectDespatchAdviceSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await rejectDespatchAdvice(req.params.id, req.body.reason, siteScopeFor(req.user!)) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /transactions/{id}/e-irsaliye/cancel:
+ *   post:
+ *     summary: Belgeyi İptal Et — Sertifika Üretir (COMP-603)
+ *     description: >
+ *       `{ reason }`. Yasal iptal süresi (72 saat) aşılmışsa 400. Yalnızca
+ *       SUPER_ADMIN/COMPANY_OWNER. Simüle edilmiş bir iptal sertifika
+ *       referansı üretir (gerçek HSM/PKI bu ortamda yok — COMP-601 ile
+ *       AYNI kapsam sınırı).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/transactions/:id/e-irsaliye/cancel',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_CANCEL_ROLES),
+  validateRequest({ body: cancelDespatchAdviceSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await cancelDespatchAdvice(req.params.id, req.body.reason, siteScopeFor(req.user!)) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /transactions/{id}/e-irsaliye/resubmit:
+ *   post:
+ *     summary: Düzeltip Yeniden Gönder — Yeni Belge No (COMP-603)
+ *     description: >
+ *       Yalnızca REJECTED veya CANCELLED durumundaki bir belge için. Eski
+ *       belge SUPERSEDED olur, YENİ bir belge numarası + ETTN tahsis edilir.
+ *       Yeni belge otomatik iletim kuyruğuna EKLENMEZ — ayrıca
+ *       POST .../transmit çağrılmalıdır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/transactions/:id/e-irsaliye/resubmit',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_DISPOSITION_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await resubmitDespatchAdvice(req.params.id, siteScopeFor(req.user!)) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+const MAINTENANCE_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const MAINTENANCE_SCAN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /vehicles/{id}/maintenance-records:
+ *   post:
+ *     summary: Bakım-Servis Kaydı Ekle (FLEET-1407)
+ *     description: '`{ maintenanceType, performedAt, odometerValue?, costAmount, operationsDescription, nextDueDate?, nextDueMeterValue? }`. Append-only — düzeltme yeni kayıtla yapılır.'
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Aracın Bakım Geçmişi (FLEET-1407)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicles/:id/maintenance-records',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  validateRequest({ body: createVehicleMaintenanceRecordSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await createVehicleMaintenanceRecord(req.params.id, req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/vehicles/:id/maintenance-records',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getVehicleMaintenanceRecords(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /vehicles/{id}/total-cost-of-ownership:
+ *   get:
+ *     summary: Araç Bazlı Toplam Sahip Olma Maliyeti (FLEET-1407)
+ *     description: >
+ *       `?sinceDate=YYYY-AA-GG` (opsiyonel). Bakım maliyeti (gerçek) + yakıt
+ *       maliyeti (fuel_intake_receipts'in litre-ağırlıklı ortalama birim
+ *       fiyatıyla TAHMİNİ — ikmal kayıtları birim fiyat taşımıyor).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/vehicles/:id/total-cost-of-ownership',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  validateRequest({ query: totalCostOfOwnershipQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { sinceDate?: string };
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getVehicleTotalCostOfOwnership(req.params.id, q.sinceDate) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /maintenance-records/{id}:
+ *   get:
+ *     summary: Tekil Bakım Kaydı (FLEET-1407)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/maintenance-records/:id',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getVehicleMaintenanceRecord(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /maintenance-records/{id}/consumption-impact:
+ *   get:
+ *     summary: Bakım Öncesi/Sonrası Tüketim Karşılaştırması (FLEET-1407)
+ *     description: 'Bakım tarihinden önceki/sonraki 30 günlük L/100km (veya L/motor-saat) karşılaştırması.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/maintenance-records/:id/consumption-impact',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getMaintenanceConsumptionImpact(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /vehicles/{id}/documents:
+ *   post:
+ *     summary: Araç Belgesi Yükle (FLEET-1409)
+ *     description: >
+ *       Ruhsat/muayene raporu/egzoz raporu/sigorta poliçesi (PDF/JPG/PNG,
+ *       max 10MB, base64 gövdede). documentType MUAYENE_RAPORU/EGZOZ_RAPORU/
+ *       SIGORTA_POLICESI ise ve expiryDate verilmişse, FLEET-1408'in uyum
+ *       takvimine (vehicle_compliance_deadlines) OTOMATİK işlenir — ayrı bir
+ *       alarm mekanizması yoktur. Önceki belge SİLİNMEZ (append-only,
+ *       geçmiş belge listede kalır, yalnızca en yenisi "güncel" sayılır).
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Aracın Tüm Belgeleri (FLEET-1409)
+ *     description: 'Yalnızca metadata (dosya içeriği DAHİL DEĞİL) — her kayıt isCurrent/daysUntilExpiry/isExpired/isExpiringSoon taşır.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicles/:id/documents',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  validateRequest({ body: uploadVehicleDocumentSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const meta = await uploadVehicleDocument(req.params.id, req.body, req.user!.userId);
+      res.json({ success: true, message: 'Belge yüklendi.', data: meta });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get('/vehicles/:id/documents', authenticateJWT, authorizeRoles(...MAINTENANCE_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await getVehicleDocuments(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /vehicle-documents/{id}/content:
+ *   get:
+ *     summary: Belge Önizleme/İndirme (FLEET-1409)
+ *     description: >
+ *       Ham dosya bayt akışı (doğru Content-Type ile) — JSON değil. Her
+ *       erişim audit_logs'a VEHICLE_DOCUMENT_DOWNLOADED olarak yazılır (AC:
+ *       "indirme audit'i").
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/vehicle-documents/:id/content', authenticateJWT, authorizeRoles(...MAINTENANCE_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const doc = await getVehicleDocumentContent(req.params.id, req.user!.userId);
+    res.setHeader('Content-Type', doc.mimeType);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.fileName)}"`);
+    res.send(doc.fileContent);
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /vehicle-documents/{id}/download-link:
+ *   post:
+ *     summary: Presigned İndirme Bağlantısı Üret (FLEET-1409)
+ *     description: >
+ *       AC: "Belgeler ... presigned URL ile indirilebilmelidir." 24 saat
+ *       geçerli, JWT'siz bir indirme bağlantısı üretir (parola paylaşımı
+ *       gerektirmez — REP-702'nin arşiv indirme bağlantısıyla AYNI desen).
+ *       Yeni bir bağlantı istemek ÖNCEKİ bağlantıyı anında geçersiz kılar.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicle-documents/:id/download-link',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const link = await generateVehicleDocumentDownloadLink(req.params.id, req.user!.userId);
+      res.status(201).json({
+        success: true,
+        data: { downloadUrl: `/api/v1/vehicle-documents/${link.documentId}/download/${link.token}`, expiresAt: link.expiresAt }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /vehicle-documents/{id}/download/{token}:
+ *   get:
+ *     summary: Presigned Belge İndirme Bağlantısı (FLEET-1409)
+ *     description: >
+ *       JWT GEREKTİRMEZ — auth/login ve REP-702'nin arşiv indirmesiyle AYNI
+ *       pre-auth istisnası (bkz. check-no-raw-pool-query.mjs ALLOWLIST
+ *       yorumu). Tenant bulunduktan SONRA runWithTenant içinde token hash +
+ *       süre kontrol edilir, indirme audit'lenir.
+ *     security: []
+ */
+router.get('/vehicle-documents/:id/download/:token', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const lookup = await pool.query('SELECT tenant_id FROM vehicle_documents WHERE id = $1', [req.params.id]);
+    if (lookup.rows.length === 0) {
+      throw new NotFoundError('Geçersiz veya süresi dolmuş indirme bağlantısı.');
+    }
+    const tenantId = lookup.rows[0].tenant_id;
+
+    const doc = await runWithTenant({ tenantId }, () => verifyAndConsumeVehicleDocumentDownload(req.params.id, req.params.token));
+    res.setHeader('Content-Type', doc.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(doc.fileName)}"`);
+    res.send(doc.fileContent);
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+// ============================================================================
+// HR-1801: PERSONEL İZİN TAKİP MODÜLÜ
+// ============================================================================
+const HR_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /personnel:
+ *   post:
+ *     summary: Personel Kaydı Oluştur (HR-1801)
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Personel Listesi (HR-1801)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/personnel', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), validateRequest({ body: createPersonnelSchema }), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, message: 'Personel kaydedildi.', data: await createPersonnel(req.body, req.user!.userId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.get('/personnel', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: (await getPersonnelList()).map((p) => maskPersonnelForRole(p, req.user!.role)) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.get('/personnel/:id', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: maskPersonnelForRole(await getPersonnel(req.params.id), req.user!.role) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /personnel/{id}/leave-requests:
+ *   post:
+ *     summary: İzin Talebi Oluştur (HR-1801)
+ *     description: >
+ *       AC: "çakışma tespiti" — aynı personelin bekleyen/onaylı başka bir
+ *       izniyle tarih aralığı örtüşüyorsa 409 ile reddedilir. Yanıt ayrıca
+ *       personel bir şoförse (driver_id) o an bir araca atanmış mı
+ *       (`vehicleAssignmentConflict`, bilgilendirici — engelleyici DEĞİL)
+ *       bilgisini taşır.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Personelin İzin Geçmişi (HR-1801)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/personnel/:id/leave-requests',
+  authenticateJWT,
+  authorizeRoles(...HR_MANAGER_ROLES),
+  validateRequest({ body: createLeaveRequestSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await createLeaveRequest(req.params.id, req.body, req.user!.userId);
+      res.json({ success: true, message: 'İzin talebi oluşturuldu.', data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+router.get('/personnel/:id/leave-requests', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await getLeaveRequestsForPersonnel(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /personnel/{id}/leave-balance:
+ *   get:
+ *     summary: İzin Bakiyesi (HR-1801)
+ *     parameters:
+ *       - in: query
+ *         name: year
+ *         schema:
+ *           type: integer
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/personnel/:id/leave-balance', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const year = req.query.year ? Number(req.query.year) : new Date().getUTCFullYear();
+    res.json({ success: true, data: await getLeaveBalance(req.params.id, year) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /leave-requests/pending:
+ *   get:
+ *     summary: Bekleyen Onaylar (HR-1801)
+ *     description: >
+ *       NOTIF-1601 (bildirim servisi) bu kod tabanında yok — bu uç onun
+ *       yerine geçer. SITE_MANAGER: TALEP_EDILDI. COMPANY_OWNER/SUPER_ADMIN:
+ *       TALEP_EDILDI (kısayoldan onaylayabilir) + SAHA_ONAYLANDI.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/leave-requests/pending', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await getPendingLeaveApprovals(req.user!.role) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /leave-calendar:
+ *   get:
+ *     summary: İzin Takvimi (HR-1801)
+ *     parameters:
+ *       - in: query
+ *         name: startDate
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: endDate
+ *         required: true
+ *         schema:
+ *           type: string
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/leave-calendar', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const { startDate, endDate } = req.query as { startDate?: string; endDate?: string };
+    if (!startDate || !endDate) throw new BadRequestError('startDate ve endDate zorunludur.');
+    res.json({ success: true, data: await getLeaveCalendar(startDate, endDate) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.post('/leave-requests/:id/approve-site', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'SITE_MANAGER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, message: 'Saha onayı verildi.', data: await approveLeaveRequestAsSiteManager(req.params.id, req.user!.userId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.post('/leave-requests/:id/approve-company', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, message: 'Firma onayı verildi.', data: await approveLeaveRequestAsCompanyOwner(req.params.id, req.user!.userId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.post(
+  '/leave-requests/:id/reject',
+  authenticateJWT,
+  authorizeRoles(...HR_MANAGER_ROLES),
+  validateRequest({ body: rejectLeaveRequestSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, message: 'İzin talebi reddedildi.', data: await rejectLeaveRequest(req.params.id, req.body.rejectionReason, req.user!.userId) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+router.post('/leave-requests/:id/cancel', authenticateJWT, authorizeRoles(...HR_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, message: 'İzin talebi iptal edildi.', data: await cancelLeaveRequest(req.params.id, req.user!.userId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /fleet/maintenance/upcoming:
+ *   get:
+ *     summary: Yaklaşan/Geciken Bakımlar (FLEET-1407)
+ *     security:
+ *       - bearerAuth: []
+ * /fleet/maintenance/reminder-scan:
+ *   post:
+ *     summary: Bakım Hatırlatma Taramasını Şimdi Çalıştır (FLEET-1407)
+ *     description: 'Otomatik günlük süpürücü zaten çalışır; bu AI-507 alarmı hemen tetikler. Yalnızca SUPER_ADMIN/COMPANY_OWNER.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fleet/maintenance/upcoming',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_MANAGER_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getUpcomingMaintenanceReminders() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/fleet/maintenance/reminder-scan',
+  authenticateJWT,
+  authorizeRoles(...MAINTENANCE_SCAN_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await runMaintenanceReminderSweepForCurrentTenant() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+const COMPLIANCE_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const COMPLIANCE_SCAN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /vehicles/{id}/compliance-deadlines:
+ *   post:
+ *     summary: Muayene/Egzoz/Sigorta Son Tarihi Ekle (FLEET-1408)
+ *     description: '`{ deadlineType, issuedAt, dueDate, referenceNo?, note? }`. Append-only — yenileme yeni kayıtla yapılır.'
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Aracın Yasal Teslim Tarihi Geçmişi (FLEET-1408)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicles/:id/compliance-deadlines',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  validateRequest({ body: addVehicleComplianceDeadlineSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await addVehicleComplianceDeadline(req.params.id, req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/vehicles/:id/compliance-deadlines',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getVehicleComplianceDeadlines(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/vehicles/:id/compliance-deadlines/current',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getCurrentVehicleComplianceDeadlines(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /vehicles/{id}/tires:
+ *   post:
+ *     summary: Lastik Kaydı/Değişimi (FLEET-1408)
+ *     description: >
+ *       `{ position, brandModel?, installedAt, installedMeterValue, expectedLifespanKm, treadDepthMm }`.
+ *       Aynı konumda aktif bir lastik varsa otomatik "DEĞİŞTİRİLDİ" işaretlenir.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Aracın Lastikleri (FLEET-1408)
+ *     description: '`?includeReplaced=true` ile değiştirilmiş lastikler de listelenir.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/vehicles/:id/tires',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  validateRequest({ body: registerVehicleTireSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const tire = await registerVehicleTire(req.params.id, req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: tire });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/vehicles/:id/tires',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getVehicleTires(req.params.id, req.query.includeReplaced === 'true') });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /tires/{id}/tread-depth:
+ *   patch:
+ *     summary: Diş Derinliği Ölçümü Kaydet (FLEET-1408)
+ *     description: '`{ treadDepthMm, measuredAt }`. Sadece AKTİF lastikler için.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch(
+  '/tires/:id/tread-depth',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  validateRequest({ body: recordTireTreadDepthSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const tire = await recordTireTreadDepth(req.params.id, req.body.treadDepthMm, req.body.measuredAt);
+      res.json({ success: true, data: tire });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/tires/:id/status',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getVehicleTireStatus(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fleet/compliance/dashboard:
+ *   get:
+ *     summary: Filo Uygunluk Panosu (FLEET-1408)
+ *     description: 'Yaklaşan/geciken muayene-egzoz-sigorta + lastik değişimi ihtiyacı. Geciken kalemler critical:true.'
+ *     security:
+ *       - bearerAuth: []
+ * /fleet/compliance/scan:
+ *   post:
+ *     summary: Uygunluk Taramasını Şimdi Çalıştır (FLEET-1408)
+ *     description: 'Otomatik günlük süpürücü zaten çalışır; bu AI-507 alarmını hemen tetikler. Yalnızca SUPER_ADMIN/COMPANY_OWNER.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fleet/compliance/dashboard',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_MANAGER_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getFleetComplianceDashboard() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/fleet/compliance/scan',
+  authenticateJWT,
+  authorizeRoles(...COMPLIANCE_SCAN_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await runFleetComplianceSweepForCurrentTenant() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+const INVENTORY_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const INVENTORY_SCAN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /inventory-items:
+ *   post:
+ *     summary: Malzeme Kartı Oluştur (INV-1506)
+ *     description: '`{ code, name, unit, siteName?, storageLocation?, criticalStockLevel, initialStock? }`.'
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Malzeme Kartlarını Listele (INV-1506)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/inventory-items',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  validateRequest({ body: createInventoryItemSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const item = await createInventoryItem(req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: item });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/inventory-items',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getInventoryItems(siteScopeFor(req.user!)) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/inventory-items/:id',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getInventoryItem(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /inventory-items/{id}/movements:
+ *   post:
+ *     summary: Stok Hareketi Kaydet — Giriş/Çıkış (INV-1506)
+ *     description: >
+ *       `{ movementType: 'GİRİŞ'|'ÇIKIŞ', quantity, relatedVehicleId?, relatedMaintenanceRecordId?, note? }`.
+ *       Stok kritik eşiğe düşer/altına inerse anında AI-507 (INVENTORY_LOW_STOCK) alarmı üretir.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Malzeme Kartının Hareket Geçmişi (INV-1506)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/inventory-items/:id/movements',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  validateRequest({ body: recordInventoryMovementSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const movement = await recordInventoryMovement(req.params.id, req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: movement });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/inventory-items/:id/movements',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getInventoryMovements(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /inventory-items/{id}/count:
+ *   post:
+ *     summary: Envanter Sayımı — Fark Otomatik Düzeltme Kaydı (INV-1506)
+ *     description: '`{ countedQuantity, note? }`. Fiziksel sayılan miktar girilir; fark SAYIM_DÜZELTME olarak kaydedilir.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/inventory-items/:id/count',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  validateRequest({ body: recordInventoryCountSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const movement = await recordInventoryCount(req.params.id, req.body.countedQuantity, req.body.note, req.user!.userId);
+      res.status(201).json({ success: true, data: movement });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /inventory/critical-stock:
+ *   get:
+ *     summary: Kritik Stoktaki Malzemeler (INV-1506)
+ *     security:
+ *       - bearerAuth: []
+ * /inventory/critical-stock-scan:
+ *   post:
+ *     summary: Kritik Stok Taramasını Şimdi Çalıştır (INV-1506)
+ *     description: 'Otomatik günlük süpürücü zaten çalışır; bu AI-507 alarmını hemen tetikler. Yalnızca SUPER_ADMIN/COMPANY_OWNER.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/inventory/critical-stock',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_MANAGER_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getCriticalStockItems() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/inventory/critical-stock-scan',
+  authenticateJWT,
+  authorizeRoles(...INVENTORY_SCAN_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await runInventoryCriticalStockSweepForCurrentTenant() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+const LAB_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /lab-samples:
+ *   post:
+ *     summary: Laboratuvar Numunesi Kaydet (INV-1507)
+ *     description: '`{ sampleType, siteName, location?, referenceNo?, collectedAt, note? }`.'
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Numuneleri Listele (INV-1507)
+ *     description: '`?status=&siteName=` filtreleri (SITE_MANAGER kendi şantiyesiyle kısıtlıdır).'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/lab-samples',
+  authenticateJWT,
+  authorizeRoles(...LAB_MANAGER_ROLES),
+  validateRequest({ body: createLabSampleSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const sample = await createLabSample(req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: sample });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/lab-samples',
+  authenticateJWT,
+  authorizeRoles(...LAB_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+      res.json({ success: true, data: await getLabSamples({ siteRestriction: siteScopeFor(req.user!), status }) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/lab-samples/:id',
+  authenticateJWT,
+  authorizeRoles(...LAB_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getLabSample(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /lab-samples/{id}/cancel:
+ *   post:
+ *     summary: Numuneyi İptal Et (INV-1507)
+ *     description: '`{ reason }`.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/lab-samples/:id/cancel',
+  authenticateJWT,
+  authorizeRoles(...LAB_MANAGER_ROLES),
+  validateRequest({ body: cancelLabSampleSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await cancelLabSample(req.params.id, req.body.reason, req.user!.userId) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /lab-samples/{id}/results:
+ *   post:
+ *     summary: Test Sonucu Kaydet (INV-1507)
+ *     description: >
+ *       `{ testType, testedAt, resultValue?, unit?, specMin?, specMax?, conformity?, note? }`.
+ *       Append-only. UYGUNSUZ sonuç AI-507'ye (LAB_NONCONFORMING_RESULT, CRITICAL) akar.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Numunenin Test Sonuçları (INV-1507)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/lab-samples/:id/results',
+  authenticateJWT,
+  authorizeRoles(...LAB_MANAGER_ROLES),
+  validateRequest({ body: recordLabTestResultSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await recordLabTestResult(req.params.id, req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/lab-samples/:id/results',
+  authenticateJWT,
+  authorizeRoles(...LAB_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getLabTestResults(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /lab/nonconforming-results:
+ *   get:
+ *     summary: Şartname Dışı (UYGUNSUZ) Sonuçlar — Geçmiş Rapor (INV-1507)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/lab/nonconforming-results',
+  authenticateJWT,
+  authorizeRoles(...LAB_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getNonConformingLabResults(siteScopeFor(req.user!)) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * FUEL-404.1 — K-Factor Uzaktan Kalibrasyon: Komut, Ack, Geri Alma, Geçmiş.
+ * Ticket'ın "Teknik Yığın"ı NestJS + IOT-305 komut kuyruğu + Drizzle
+ * öneriyor — IOT-305 (genel amaçlı bir komut kuyruğu servisi) bu kod
+ * tabanında hiç yok; FUEL-401'de zaten inşa edilen mqttService.publishCommand
+ * (FORCE_CUTOFF için kullanılan aynı mekanizma) yeniden kullanıldı. Cihazın
+ * ack/nack'ı, sync-batch/dispense-finalize ile AYNI desende bir HMAC
+ * korumalı HTTP ucuna (POST /telemetry/calibration-ack) POST edilir — MQTT
+ * üzerinden bir "ack topic'i" dinlemek yerine (mqttClient.ts'e yeni bir
+ * abonelik + tenant/cihaz eşleştirme mantığı eklemeyi gerektirirdi, IOT-301
+ * dayanıklılık testlerini de etkileme riski taşırdı).
+ */
+router.post(
+  '/devices/:deviceId/calibration',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: requestCalibrationSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const command = await requestKFactorCalibration({
+        deviceId: req.params.deviceId,
+        newKFactor: req.body.newKFactor,
+        reason: req.body.reason,
+        referenceMeasurement: req.body.referenceMeasurement,
+        requestedByUserId: req.user!.userId
+      });
+
+      if (command.status === 'BEKLIYOR') {
+        mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
+        await markCalibrationSent(command.id);
+      }
+
+      res.json({
+        success: true,
+        message: command.status === 'IKINCI_ONAY_BEKLIYOR'
+          ? 'Değişiklik %20 eşiğini aştığından ikinci onay bekleniyor — cihaza HENÜZ gönderilmedi.'
+          : 'Kalibrasyon komutu cihaza gönderildi, ack bekleniyor.',
+        data: command
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/devices/:deviceId/calibration/:commandId/approve',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const command = await approveKFactorCalibration(req.params.commandId, req.user!.userId);
+      mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
+      await markCalibrationSent(command.id);
+      res.json({ success: true, message: 'İkinci onay verildi, kalibrasyon komutu cihaza gönderildi.', data: command });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/devices/:deviceId/calibration/rollback',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const command = await rollbackKFactorCalibration(req.params.deviceId, req.user!.userId);
+      mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
+      await markCalibrationSent(command.id);
+      res.json({ success: true, message: 'Bir önceki onaylı kalibrasyona geri alma komutu gönderildi.', data: command });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/devices/:deviceId/calibration-history',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const history = await getCalibrationHistory(req.params.deviceId);
+      res.json({ success: true, totalCount: history.length, data: history });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * FUEL-404.2 — Kalibrasyon Test Alımı Sihirbazı (Referans Kap ile Sapma
+ * Hesabı). Ticket'ın FE-814 sihirbaz arayüzü kapsam dışı (bu backend-only
+ * bir oturum) — burada yalnızca teknisyenin elle girdiği ölçümü işleyip
+ * sapma/öneriyi hesaplayan API var. #68 (FW-1304, akışmetre pals sayımı)
+ * bir firmware bağımlılığı ve bu proje ESP-IDF firmware içermiyor — test
+ * alımının "gerçek" tarafı (cihazın fiilen dispense edip totalizatör
+ * okuması) zaten var olan dispense/telemetri altyapısıyla saha teknisyeni
+ * tarafından fiziksel olarak yapılır, buradaki uç yalnızca SONUCU
+ * (referans hacim + ölçülen hacim) kaydeder.
+ */
+router.post(
+  '/devices/:deviceId/test-intake',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: testIntakeSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await recordCalibrationTestIntake({
+        deviceId: req.params.deviceId,
+        tankName: req.body.tankName,
+        siteName: req.body.siteName,
+        referenceVolumeLiters: req.body.referenceVolumeLiters,
+        measuredLiters: req.body.measuredLiters,
+        ambientTemperatureCelsius: req.body.ambientTemperatureCelsius,
+        verifiesCalibrationCommandId: req.body.verifiesCalibrationCommandId,
+        requestedByUserId: req.user!.userId
+      });
+      res.json({
+        success: true,
+        message: result.basedOnSingleMeasurement
+          ? 'Test alımı kaydedildi. Yalnızca tek ölçüme dayanıyor — güvenilir bir öneri için en az bir test alımı daha yapılması önerilir.'
+          : 'Test alımı kaydedildi.',
+        data: result.intake,
+        recommendedKFactor: result.recommendedKFactor,
+        basedOnSingleMeasurement: result.basedOnSingleMeasurement
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/devices/:deviceId/test-intakes',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const intakes = await getCalibrationTestIntakes(req.params.deviceId);
+      res.json({ success: true, totalCount: intakes.length, data: intakes });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * FUEL-410 — Hibrit Fail-Open Politika Motoru. Ticket'ın "Teknik Yığın"ı
+ * IOT-305 komut kuyruğu + FW-1310 + Drizzle + REP-711 öneriyor — hiçbiri bu
+ * kod tabanında yok. Politika, MQTT/komut kuyruğuyla cihaza İTİLMİYOR;
+ * cihaz periyodik olarak GET /telemetry/fail-open-policy ile ÇEKİYOR (mevcut
+ * dispense/sync-batch/calibration-ack'in HMAC korumalı HTTP deseniyle
+ * tutarlı) — "dağıtım bekliyor" durumu, cihazın en son çektiği politika
+ * id'sinin GEÇERLİ id'den farklı olmasıyla izleniyor.
+ */
+router.post(
+  '/policies/fail-open',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: setFailOpenPolicySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const policy = await setFailOpenPolicy({
+        siteName: req.body.siteName,
+        offlineDispenseAllowed: req.body.offlineDispenseAllowed,
+        maxLitersPerVehicle: req.body.maxLitersPerVehicle,
+        maxDailyDispensesPerVehicle: req.body.maxDailyDispensesPerVehicle,
+        whitelistFreshnessHours: req.body.whitelistFreshnessHours,
+        failClose: req.body.failClose,
+        updatedByUserId: req.user!.userId
+      });
+      res.json({ success: true, message: 'Fail-open politikası kaydedildi.', data: policy });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/policies/fail-open',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const policies = await getFailOpenPolicies();
+      res.json({ success: true, totalCount: policies.length, data: policies });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/policies/fail-open/deployment-status',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const status = await getFailOpenPolicyDeploymentStatus();
+      res.json({ success: true, totalCount: status.length, data: status });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/policies/fail-open/offline-ratio-alerts',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const alerts = await getOfflineDispenseRatioAlerts();
+      res.json({ success: true, totalCount: alerts.length, data: alerts });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /ai/consumption-anomaly-reports:
+ *   post:
+ *     summary: Şoför/Araç Tüketim Anomali Analizi Üret (AI-502)
+ *     description: >
+ *       Son N gündeki (varsayılan 7) ikmalleri araç/şoför bazında özetleyip
+ *       Google Gemini'ye analiz ettirir; sonuç Zod ile doğrulanıp kalıcı
+ *       olarak saklanır. Tenant'ta `aiAnomaly` modülü kapalıysa 403,
+ *       GEMINI_API_KEY tanımlı değilse 503 döner.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Rapor üretildi ve kaydedildi.
+ *       403:
+ *         description: aiAnomaly modülü bu tenant için kapalı.
+ *       503:
+ *         description: GEMINI_API_KEY yapılandırılmamış veya AI servisine ulaşılamadı.
+ */
+router.post(
+  '/ai/consumption-anomaly-reports',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: generateAnomalyReportSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const enabled = await isTenantModuleEnabled('aiAnomaly');
+      if (!enabled) {
+        throw new ForbiddenError('Tüketim anomali analizi (aiAnomaly) modülü bu firma için kapatılmış.');
+      }
+      const { periodDays } = req.body as { periodDays: number };
+      const report = await generateAndStoreAnomalyReport(periodDays, req.user!.userId);
+      res.json({ success: true, data: report });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /ai/consumption-anomaly-reports:
+ *   get:
+ *     summary: Geçmiş Tüketim Anomali Raporlarını Listele (AI-502)
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Rapor geçmişi (en yeniden en eskiye).
+ */
+router.get(
+  '/ai/consumption-anomaly-reports',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const reports = await getConsumptionAnomalyReports();
+      res.json({ success: true, totalCount: reports.length, data: reports });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── AI-504: mesai dışı / kısa aralıklı mükerrer alım tespiti ────────────
+const ANOMALY_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const ANOMALY_SCAN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /sites/{siteName}/working-hours:
+ *   get:
+ *     summary: Şantiye Mesai Saatleri (AI-504)
+ *     description: Tanım yoksa varsayılan (07:00-19:00, Pzt-Cmt, is247:false) döner (isDefault:true).
+ *     security:
+ *       - bearerAuth: []
+ *   put:
+ *     summary: Şantiye Mesai Saatleri Tanımla/Güncelle (AI-504)
+ *     description: >
+ *       `{ startMinute, endMinute, workingDays:[1..7], is247?, rapidRepeatWindowMinutes? }`.
+ *       is247:true → şantiye mesai-dışı kuralından TAMAMEN muaf (7/24 / vardiyalı).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/sites/:siteName/working-hours',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getSiteWorkingHours(decodeURIComponent(req.params.siteName)) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.put(
+  '/sites/:siteName/working-hours',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_MANAGER_ROLES),
+  validateRequest({ body: setWorkingHoursSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rec = await setSiteWorkingHours(decodeURIComponent(req.params.siteName), req.body, req.user!.userId);
+      res.json({ success: true, data: rec });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /sites/{siteName}/emergency-status:
+ *   get:
+ *     summary: Şantiye Acil Durdurma Durumu (FE-811)
+ *     description: >
+ *       Cihaz yönetimi yetkisi gerektirmez — ANOMALY_MANAGER_ROLES (working-hours
+ *       ile AYNI, SITE_MANAGER dahil) yalnızca "durduruldu mu" bilgisini görür.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/sites/:siteName/emergency-status',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await getSiteEmergencyStatus(decodeURIComponent(req.params.siteName));
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /sites/{siteName}/emergency-stop:
+ *   post:
+ *     summary: Şantiye Acil Durdurma (FE-811)
+ *     description: >
+ *       Bu şantiyedeki TÜM cihazları ANINDA bloke eder (yeni bir
+ *       komut/MQTT mekanizması YOK — zaten var olan HMAC bloke kontrolü,
+ *       hardwareAuthMiddleware'in BLOKE bir cihazı 403 DEVICE_BLOCKED ile
+ *       reddetmesi, toplu uygulanır). Gerçekten pompaların durmasını
+ *       sağlar. Rol kümesi working-hours ile AYNI (ANOMALY_MANAGER_ROLES
+ *       — SITE_MANAGER dahil, kendi vardiyasında acil durdurabilmeli).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/sites/:siteName/emergency-stop',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_MANAGER_ROLES),
+  validateRequest({ body: emergencyStopSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await emergencyStopSite(decodeURIComponent(req.params.siteName), req.body.reason);
+      res.json({ success: true, message: `${result.blockedDeviceCount} cihaz bloke edildi.`, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /sites/{siteName}/emergency-resume:
+ *   post:
+ *     summary: Şantiye Acil Durdurmayı Kaldır (FE-811)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/sites/:siteName/emergency-resume',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await emergencyResumeSite(decodeURIComponent(req.params.siteName));
+      res.json({ success: true, message: `${result.resumedDeviceCount} cihaz tekrar aktifleştirildi.`, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /anomaly-flags/scan:
+ *   post:
+ *     summary: Anomali Taramasını Şimdi Çalıştır (AI-504)
+ *     description: >
+ *       index.ts'teki saatlik süpürücünün yaptığı işi bu tenant için manuel
+ *       tetikler. `{ sinceHours? }` (varsayılan 168). Yeni işaretler için
+ *       audit_logs (ANOMALY_SCAN) + WebSocket 'anomaly:flagged'. Yalnızca
+ *       SUPER_ADMIN / COMPANY_OWNER.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/anomaly-flags/scan',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_SCAN_ROLES),
+  validateRequest({ body: scanAnomalySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await runAnomalyDetectionForCurrentTenant({ sinceHours: req.body.sinceHours });
+      const tenantId = req.user?.tenantId;
+      if (tenantId && result.newFlags.MESAI_DISI + result.newFlags.KISA_ARALIK_MUKERRER > 0) {
+        try {
+          broadcastToTenant(tenantId, 'anomaly:flagged', { source: 'manual-scan', ...result });
+        } catch (broadcastErr) {
+          logger.warn({ err: broadcastErr }, '[AI-504] anomaly:flagged yayını başarısız.');
+        }
+      }
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /anomaly-flags:
+ *   get:
+ *     summary: Anomali İnceleme Kuyruğu (AI-504)
+ *     description: '?type (MESAI_DISI|KISA_ARALIK_MUKERRER), ?status (ACIK|INCELENDI|MUAF), ?siteName, ?from, ?to'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/anomaly-flags',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_MANAGER_ROLES),
+  validateRequest({ query: listAnomalyFlagQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { type?: string; status?: string; siteName?: string; from?: string; to?: string };
+      const flags = await getAnomalyFlags(q);
+      res.json({ success: true, totalCount: flags.length, data: flags });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/anomaly-flags/:id',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getAnomalyFlag(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.patch(
+  '/anomaly-flags/:id',
+  authenticateJWT,
+  authorizeRoles(...ANOMALY_MANAGER_ROLES),
+  validateRequest({ body: reviewAnomalyFlagSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rec = await reviewAnomalyFlag(req.params.id, req.user!.userId, req.body);
+      res.json({ success: true, data: rec });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── AI-506: şoför davranış skorlama motoru ─────────────────────────────
+const DRIVER_SCORE_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const DRIVER_SCORE_COMPUTE_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /drivers/behavior-scores/compute:
+ *   post:
+ *     summary: Şoför Davranış Skorlarını Hesapla (AI-506)
+ *     description: >
+ *       index.ts'teki günlük süpürücünün yaptığı işi bu tenant için manuel
+ *       tetikler. `{ periodDays?, minTransactions?, driverName? }`
+ *       (varsayılan 90 gün / min 5 işlem). Eşiğin altındaki şoförler
+ *       atlanır (skor üretilmez). Yalnızca SUPER_ADMIN / COMPANY_OWNER.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/drivers/behavior-scores/compute',
+  authenticateJWT,
+  authorizeRoles(...DRIVER_SCORE_COMPUTE_ROLES),
+  validateRequest({ body: computeDriverBehaviorScoresSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await computeDriverBehaviorScores(req.body);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /drivers/behavior-scores:
+ *   get:
+ *     summary: Şoför Davranış Skorları — Her Şoförün EN GÜNCEL Skoru (AI-506)
+ *     description: >
+ *       `?siteName ?minScore ?maxScore`. Geçmiş için bkz.
+ *       /drivers/{driverName}/behavior-scores/history.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/drivers/behavior-scores',
+  authenticateJWT,
+  authorizeRoles(...DRIVER_SCORE_MANAGER_ROLES),
+  validateRequest({ query: listDriverBehaviorScoresQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { siteName?: string; minScore?: number; maxScore?: number };
+      const rows = await getDriverBehaviorScores(q);
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /drivers/{driverName}/behavior-scores/history:
+ *   get:
+ *     summary: Bir Şoförün Skor Geçmişi (AI-506)
+ *     description: '`?limit` (varsayılan 30, en yeniden en eskiye).'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/drivers/:driverName/behavior-scores/history',
+  authenticateJWT,
+  authorizeRoles(...DRIVER_SCORE_MANAGER_ROLES),
+  validateRequest({ query: driverBehaviorScoreHistoryQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { limit: number };
+      const rows = await getDriverBehaviorScoreHistory(req.params.driverName, q.limit);
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── IOT-308: cihaz sağlık skoru, sürüm envanteri, online SLA ───────────
+// AI-506'daki DRIVER_SCORE_MANAGER_ROLES/COMPUTE_ROLES ayrımıyla AYNI mantık
+// — okuma (izleme) SITE_MANAGER'a da açık, hesaplama tetikleme YALNIZCA
+// SUPER_ADMIN/COMPANY_OWNER (HARDWARE_DEVICE_MANAGER_ROLES'ün AKSİNE, çünkü
+// sağlık skoru SITE_MANAGER için de anlamlı bir izleme/gözlem verisi —
+// cihaz yönetimi/provizyon MUTASYONU değil).
+const DEVICE_HEALTH_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const DEVICE_HEALTH_COMPUTE_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /hardware-devices/health-scores/compute:
+ *   post:
+ *     summary: Cihaz Sağlık Skorlarını Hesapla (IOT-308)
+ *     description: >
+ *       index.ts'teki günlük süpürücünün yaptığı işi bu tenant için manuel
+ *       tetikler. `{ periodDays?, minSamples?, deviceId? }` (varsayılan 30
+ *       gün / min 1 presence olayı). Hiç presence verisi olmayan cihazlar
+ *       atlanır. Yalnızca SUPER_ADMIN / COMPANY_OWNER.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/hardware-devices/health-scores/compute',
+  authenticateJWT,
+  authorizeRoles(...DEVICE_HEALTH_COMPUTE_ROLES),
+  validateRequest({ body: computeDeviceHealthScoresSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await computeDeviceHealthScores(req.body);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/health-scores:
+ *   get:
+ *     summary: Cihaz Sağlık Skorları — Her Cihazın EN GÜNCEL Skoru (IOT-308)
+ *     description: '`?siteName ?minScore ?maxScore`. Geçmiş için bkz. /hardware-devices/{deviceId}/health-score/history.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/hardware-devices/health-scores',
+  authenticateJWT,
+  authorizeRoles(...DEVICE_HEALTH_MANAGER_ROLES),
+  validateRequest({ query: listDeviceHealthScoresQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { siteName?: string; minScore?: number; maxScore?: number };
+      const rows = await getDeviceHealthScores(q);
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/{deviceId}/health-score/history:
+ *   get:
+ *     summary: Bir Cihazın Sağlık Skoru Geçmişi (IOT-308)
+ *     description: '`?limit` (varsayılan 30, en yeniden en eskiye).'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/hardware-devices/:deviceId/health-score/history',
+  authenticateJWT,
+  authorizeRoles(...DEVICE_HEALTH_MANAGER_ROLES),
+  validateRequest({ query: deviceHealthScoreHistoryQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { limit: number };
+      const rows = await getDeviceHealthScoreHistory(req.params.deviceId, q.limit);
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/{deviceId}/online-sla:
+ *   get:
+ *     summary: Cihaz Online SLA (IOT-308)
+ *     description: '`?months` (varsayılan 1) — device_presence_events geçmişinden online oranı.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/hardware-devices/:deviceId/online-sla',
+  authenticateJWT,
+  authorizeRoles(...DEVICE_HEALTH_MANAGER_ROLES),
+  validateRequest({ query: deviceOnlineSlaQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { months: number };
+      const result = await getDeviceOnlineSla(req.params.deviceId, q.months);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /hardware-devices/firmware-inventory:
+ *   get:
+ *     summary: Cihaz Firmware Sürüm Envanteri (IOT-308)
+ *     description: >
+ *       Her cihazın kendi bildirdiği (varsa) firmware sürümü + son görülme
+ *       zamanı. IOT-306 (OTA) henüz yok — bu yalnızca bir ENVANTER listesi,
+ *       bir dağıtım/rollout mekanizması DEĞİL.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/hardware-devices/firmware-inventory',
+  authenticateJWT,
+  authorizeRoles(...DEVICE_HEALTH_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rows = await getDeviceFirmwareInventory();
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── IOT-306: OTA firmware dağıtım servisi (sürüm, kanal, kademeli rollout) ─
+const FIRMWARE_ARTIFACT_MANAGER_ROLES = ['SUPER_ADMIN'] as const;
+const FIRMWARE_ROLLOUT_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /firmware-artifacts:
+ *   post:
+ *     summary: Firmware Artefaktı Kaydet (IOT-306)
+ *     description: >
+ *       Donanım envanteri gibi platform genelinde (tenant'a özel değil) —
+ *       yalnızca SUPER_ADMIN. sha256 + imza zorunlu.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Firmware Artefakt Kataloğu (IOT-306)
+ *     description: '?hardwareRevision, ?channel'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/firmware-artifacts',
+  authenticateJWT,
+  authorizeRoles(...FIRMWARE_ARTIFACT_MANAGER_ROLES),
+  validateRequest({ body: createFirmwareArtifactSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const artifact = await createFirmwareArtifact(req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: artifact });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/firmware-artifacts',
+  authenticateJWT,
+  authorizeRoles(...FIRMWARE_ROLLOUT_MANAGER_ROLES),
+  validateRequest({ query: listFirmwareArtifactQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { hardwareRevision?: string; channel?: string };
+      const rows = await getFirmwareArtifacts(q);
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /firmware-rollouts:
+ *   post:
+ *     summary: Kademeli OTA Rollout Başlat (IOT-306)
+ *     description: >
+ *       AC: "Cihaz grubuna kademeli dağıtım (%10→%50→%100) yapılabilmelidir."
+ *       İkmal yapan cihazlar bu turda ATLANIR (AC). Bir aşamanın başarısızlık
+ *       oranı %20'yi (varsayılan) aşarsa rollout otomatik DURDURULDU'ya düşer
+ *       ve sonraki aşamalara HİÇ geçilmez.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Rollout Listesi (IOT-306)
+ *     description: '?status'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/firmware-rollouts',
+  authenticateJWT,
+  authorizeRoles(...FIRMWARE_ROLLOUT_MANAGER_ROLES),
+  validateRequest({ body: startFirmwareRolloutSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await startFirmwareRollout(req.body.firmwareArtifactId, req.body.siteName ?? null, req.user!.userId);
+      res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/firmware-rollouts',
+  authenticateJWT,
+  authorizeRoles(...FIRMWARE_ROLLOUT_MANAGER_ROLES),
+  validateRequest({ query: listFirmwareRolloutQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { status?: string };
+      const rows = await getFirmwareRollouts(q);
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/firmware-rollouts/:id',
+  authenticateJWT,
+  authorizeRoles(...FIRMWARE_ROLLOUT_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getFirmwareRollout(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /firmware-rollouts/{id}/devices/{deviceId}/report-rollback:
+ *   post:
+ *     summary: Cihaz Tarafı A/B Rollback Bildirimi (IOT-306, FW-1311 bağımlılığı)
+ *     description: >
+ *       AC: "Cihaz tarafı rollback sinyalinin izlenmesi." FW-1311 (güvenli
+ *       OTA + A/B partition rollback) bu depoda YOK — cihazın kendisi bu
+ *       endpoint'e bildirimde bulunduğu varsayılır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/firmware-rollouts/:id/devices/:deviceId/report-rollback',
+  authenticateJWT,
+  authorizeRoles(...FIRMWARE_ROLLOUT_MANAGER_ROLES),
+  validateRequest({ body: reportRolloutRollbackSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await reportRolloutDeviceRollback(req.params.id, req.params.deviceId, req.body.reason);
+      res.json({ success: true, data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── NOTIF-1601: bildirim çekirdeği ──────────────────────────────────────
+/**
+ * @swagger
+ * /notifications:
+ *   get:
+ *     summary: Bildirim Geçmişi (NOTIF-1601)
+ *     description: >
+ *       Tenant geneli (kullanıcıya özel olmayan) + oturum sahibine özel
+ *       bildirimler. `?unreadOnly=true` yalnızca okunmamışları döndürür.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/notifications',
+  authenticateJWT,
+  validateRequest({ query: listNotificationQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { unreadOnly?: boolean };
+      const rows = await getNotifications({ userId: req.user!.userId, unreadOnly: q.unreadOnly });
+      res.json({ success: true, totalCount: rows.length, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /notifications/{id}/read:
+ *   post:
+ *     summary: Bildirimi Okundu İşaretle (NOTIF-1601 AC — kullanıcı bazlı okundu bilgisi)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/notifications/:id/read',
+  authenticateJWT,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await markNotificationRead(req.params.id);
+      res.json({ success: true, data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /notifications/sms-usage:
+ *   get:
+ *     summary: Bu Ayki SMS Kullanımı (NOTIF-1603 AC — gönderim maliyeti takibi)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/notifications/sms-usage',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getSmsMonthlyUsageForCurrentTenant() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+const NOTIFICATION_CHANNEL_ADMIN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /notifications/channels:
+ *   put:
+ *     summary: Telegram/Webhook Kanal Yapılandırması (NOTIF-1604 AC — token şifreli saklanır)
+ *     description: >
+ *       Kısmi güncelleme — yalnızca gönderilen alanlar değişir. webhookUrl
+ *       veya webhookSecret gönderilirse devre kesici (ardışık başarısızlık
+ *       sayacı + devre dışı durumu) SIFIRLANIR.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Kanal Yapılandırma Durumu (NOTIF-1604)
+ *     description: 'Sırların KENDİSİNİ DÖNDÜRMEZ — yalnızca "yapılandırılmış mı" ve devre kesici durumu.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put(
+  '/notifications/channels',
+  authenticateJWT,
+  authorizeRoles(...NOTIFICATION_CHANNEL_ADMIN_ROLES),
+  validateRequest({ body: updateNotificationChannelsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await upsertTenantNotificationChannels(req.body);
+      res.json({
+        success: true,
+        data: {
+          telegramConfigured: !!record.telegram_bot_token_encrypted,
+          webhookConfigured: !!record.webhook_url,
+          webhookDisabled: record.webhook_disabled_at !== null,
+          webhookConsecutiveFailures: record.webhook_consecutive_failures
+        }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/notifications/channels',
+  authenticateJWT,
+  authorizeRoles(...NOTIFICATION_CHANNEL_ADMIN_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await getTenantNotificationChannels();
+      res.json({
+        success: true,
+        data: {
+          telegramConfigured: !!record?.telegram_bot_token_encrypted,
+          webhookConfigured: !!record?.webhook_url,
+          webhookDisabled: record?.webhook_disabled_at !== null && record?.webhook_disabled_at !== undefined,
+          webhookConsecutiveFailures: record?.webhook_consecutive_failures ?? 0
+        }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /notifications/channels/test-send:
+ *   post:
+ *     summary: Kanal Test Gönderimi (NOTIF-1604 AC — kanal bazlı test gönderimi düğmesi)
+ *     description: 'Sonucu SENKRON döndürür (notifyEvent gibi fire-and-forget DEĞİL) — bir yönetici sonucu ANINDA görmeli.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/notifications/channels/test-send',
+  authenticateJWT,
+  authorizeRoles(...NOTIFICATION_CHANNEL_ADMIN_ROLES),
+  validateRequest({ body: sendTestNotificationSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await sendTestNotification(req.user!.tenantId, req.body.channel, req.body.userId);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── NOTIF-1605: kullanıcı bazlı abonelik ve sessize alma ───────────────
+/**
+ * @swagger
+ * /notifications/preferences:
+ *   get:
+ *     summary: Bildirim Tercihlerim (NOTIF-1605)
+ *     description: 'Oturum sahibinin kayıtlı tüm tercihleri. Kaydı OLMAYAN event tipi × kanal çiftleri VARSAYILAN olarak açıktır (bkz. tenantDb.ts getUserNotificationPreference).'
+ *     security:
+ *       - bearerAuth: []
+ *   put:
+ *     summary: Bildirim Tercihimi Güncelle (NOTIF-1605 AC — event tipi × kanal bazında açma/kapama)
+ *     description: >
+ *       Self-servis — userId İSTEKTEN DEĞİL, oturumdan okunur (bir kullanıcı
+ *       yalnızca KENDİ tercihini değiştirebilir). Güvenlik kritik bildirimler
+ *       IN_APP kanalında bu tercihten BAĞIMSIZ olarak her zaman teslim edilir
+ *       (bkz. notificationService.ts isDeliveryAllowedByPreference).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/notifications/preferences',
+  authenticateJWT,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rows = await getUserNotificationPreferencesForCurrentUser(req.user!.userId);
+      res.json({ success: true, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.put(
+  '/notifications/preferences',
+  authenticateJWT,
+  validateRequest({ body: setUserNotificationPreferenceSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await setUserNotificationPreference(req.user!.userId, req.body.eventType, req.body.channel, req.body.enabled);
+      res.json({ success: true, data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /notifications/mute:
+ *   post:
+ *     summary: Bildirimleri Sessize Al (NOTIF-1605 AC — zaman sınırlı sessize alma, otomatik kalkma)
+ *     description: >
+ *       `eventType` gönderilmezse TÜM bildirim tipleri sessize alınır.
+ *       Süre dakika cinsindendir (en fazla 7 gün) — bir temizlik işi YOK,
+ *       `muted_until > NOW()` karşılaştırmasıyla süre dolduğunda kayıt
+ *       KENDİLİĞİNDEN etkisiz hale gelir (bkz. tenantDb.ts isUserNotificationMuted).
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Aktif Sessize Almalarım (NOTIF-1605)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/notifications/mute',
+  authenticateJWT,
+  validateRequest({ body: createUserNotificationMuteSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const record = await createUserNotificationMute(req.user!.userId, req.body.eventType ?? null, req.body.durationMinutes);
+      res.json({ success: true, data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/notifications/mute',
+  authenticateJWT,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rows = await getActiveUserNotificationMutes(req.user!.userId);
+      res.json({ success: true, data: rows });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── AI-507: birleşik alarm yaşam döngüsü ───────────────────────────────
+const ALARM_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /users:
+ *   get:
+ *     summary: Tenant Kullanıcı Listesi (FE-815 — alarm atama dropdown'u)
+ *     description: >
+ *       updateAlarm'ın assigneeId'si zaten var olan bir users.id şart
+ *       koşuyor ama bu listeyi (isim/rol görmek için) döndüren HİÇBİR uç
+ *       yoktu. Parola hash'i hiç seçilmez.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/users',
+  authenticateJWT,
+  authorizeRoles(...ALARM_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getTenantUsers() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /alarms:
+ *   get:
+ *     summary: Alarm Kuyruğu (AI-507)
+ *     description: >
+ *       Varsayılan: RESOLVED/FALSE_POSITIVE ve susturulmuş alarmlar HARİÇ,
+ *       CRITICAL ve eskalasyon önce. `?status ?category ?severity ?siteName
+ *       ?assigneeId ?includeSnoozed=true ?includeResolved=true`.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/alarms',
+  authenticateJWT,
+  authorizeRoles(...ALARM_MANAGER_ROLES),
+  validateRequest({ query: listAlarmQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const alarms = await getAlarms(req.query as any);
+      res.json({ success: true, totalCount: alarms.length, data: alarms });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /alarms/false-positive-feedback:
+ *   get:
+ *     summary: Yanlış-Pozitif Geri Beslemesi (AI-507)
+ *     description: Kategori bazında FALSE_POSITIVE oranları — eşik kalibrasyonu için.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/alarms/false-positive-feedback',
+  authenticateJWT,
+  authorizeRoles(...ALARM_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getFalsePositiveFeedback() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/alarms/:id',
+  authenticateJWT,
+  authorizeRoles(...ALARM_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getAlarm(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /alarms/{id}:
+ *   patch:
+ *     summary: Alarm Durum/Atama/Çözüm Güncelle (AI-507)
+ *     description: >
+ *       `{ status?, assigneeId?, resolutionNote? }`. RESOLVED / FALSE_POSITIVE
+ *       için resolutionNote zorunlu. Değişiklik audit_logs'a (ALARM_UPDATED).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.patch(
+  '/alarms/:id',
+  authenticateJWT,
+  authorizeRoles(...ALARM_MANAGER_ROLES),
+  validateRequest({ body: updateAlarmSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const alarm = await updateAlarm(req.params.id, req.user!.userId, req.body);
+      const tenantId = req.user?.tenantId;
+      if (tenantId) {
+        try { broadcastToTenant(tenantId, 'alarm:updated', { id: alarm.id, status: alarm.status, assigneeId: alarm.assignee_id }); } catch { /* */ }
+      }
+      res.json({ success: true, data: alarm });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /alarms/{id}/snooze:
+ *   post:
+ *     summary: Alarmı Sustur (AI-507)
+ *     description: '`{ minutes }` (1..43200). Süre boyunca varsayılan listede ve eskalasyonda görünmez.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/alarms/:id/snooze',
+  authenticateJWT,
+  authorizeRoles(...ALARM_MANAGER_ROLES),
+  validateRequest({ body: snoozeAlarmSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const alarm = await snoozeAlarm(req.params.id, req.user!.userId, req.body.minutes);
+      res.json({ success: true, data: alarm });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /alarms/run-escalation:
+ *   post:
+ *     summary: Eskalasyon Turunu Şimdi Çalıştır (AI-507)
+ *     description: >
+ *       index.ts saatlik süpürücüsünün yaptığı işi bu tenant için manuel
+ *       tetikler (ops + entegrasyon testi). Yalnızca SUPER_ADMIN.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/alarms/run-escalation',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const escalated = await runAlarmEscalationForCurrentTenant();
+      const tenantId = req.user?.tenantId;
+      if (tenantId && escalated.length > 0) {
+        await notifyAlarmEscalationRecipients(tenantId, escalated);
+        try {
+          for (const a of escalated) {
+            broadcastToTenant(tenantId, 'alarm:escalated', { id: a.id, title: a.title, escalationLevel: a.escalation_level, siteName: a.site_name, notifyRole: a.notify_role, chainExhausted: a.chain_exhausted });
+          }
+        } catch { /* */ }
+      }
+      res.json({ success: true, data: { escalatedCount: escalated.length, escalated } });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /telemetry/fail-open-policy:
+ *   get:
+ *     summary: Cihazın Şantiyesi İçin Geçerli Fail-Open Politikasını Çekmesi (FUEL-410)
+ *     description: >
+ *       Cihaz bunu periyodik olarak çeker (önerilen: whitelist tazelik
+ *       süresinden daha sık) — sunucuya erişemediği anlarda EN SON çektiği
+ *       bu politikayı kendi yerel önbelleğinden uygular.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Geçerli politika döndü.
+ */
+router.get(
+  '/telemetry/fail-open-policy',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; siteName: string; tenantId: string };
+    try {
+      const policy = await runWithTenant({ tenantId: hw.tenantId }, async () => {
+        const effective = await getEffectiveFailOpenPolicy(hw.siteName);
+        await recordFailOpenPolicyDelivery(hw.deviceId, effective.id);
+        return effective;
+      });
+      res.json({ success: true, data: policy });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── AUTH-210: RFID kart kayıp/blokaj/kara liste ──────────────────────────
+const RFID_CARD_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /rfid-cards/{cardUid}/block:
+ *   post:
+ *     summary: RFID Kartını Kara Listeye Al (AUTH-210)
+ *     description: >
+ *       `{ status: 'LOST'|'BLOCKED', reason? }`. Kart derhal ikmal
+ *       yetkilendirmesinde (WHITELIST'ten ÖNCE) reddedilir; Redis denylist
+ *       cache'i anında invalide edilir (online cihazlar AC 1: 10 sn içinde).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/rfid-cards/:cardUid/block',
+  authenticateJWT,
+  authorizeRoles(...RFID_CARD_MANAGER_ROLES),
+  validateRequest({ body: blockRfidCardSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const b = req.body as { status: 'LOST' | 'BLOCKED'; reason?: string };
+      const record = await blockRfidCard({ cardUid: req.params.cardUid, status: b.status, reason: b.reason }, req.user!.userId);
+      res.status(201).json({ success: true, data: record });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /rfid-cards/{cardUid}/unblock:
+ *   post:
+ *     summary: RFID Kartını Kara Listeden Çıkar — kart bulundu (AUTH-210)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/rfid-cards/:cardUid/unblock',
+  authenticateJWT,
+  authorizeRoles(...RFID_CARD_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await unblockRfidCard(req.params.cardUid, req.user!.userId);
+      res.json({ success: true, ...result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /rfid-cards/replace:
+ *   post:
+ *     summary: RFID Kartı Değiştir — geçmişi yeni karta devret (AUTH-210)
+ *     description: >
+ *       `{ oldCardUid, newCardUid }`. Eski kart REPLACED olarak kara listeye
+ *       alınır; drivers.rfid_card_id / vehicles.rfid_tag yeni uid'e taşınır.
+ *       İkmal geçmişi (transactions) sürücü adı/plaka ile anahtarlandığından
+ *       otomatik korunur. Yeni kart kendisi kara listedeyse 409.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/rfid-cards/replace',
+  authenticateJWT,
+  authorizeRoles(...RFID_CARD_MANAGER_ROLES),
+  validateRequest({ body: replaceRfidCardSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const b = req.body as { oldCardUid: string; newCardUid: string };
+      const result = await replaceRfidCard(b, req.user!.userId);
+      res.json({ success: true, data: { ...b, ...result } });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/rfid-cards/denylist',
+  authenticateJWT,
+  authorizeRoles(...RFID_CARD_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const denylist = await getRfidDenylist();
+      res.json({ success: true, totalCount: denylist.length, data: denylist });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /rfid-cards/denylist-deployment-status:
+ *   get:
+ *     summary: Denylist Dağıtım Durumu — blok komutunu alamayan cihazlar (AUTH-210 AC 3)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/rfid-cards/denylist-deployment-status',
+  authenticateJWT,
+  authorizeRoles(...RFID_CARD_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const status = await getRfidDenylistDeploymentStatus();
+      const staleCount = status.filter((s) => s.status === 'DAĞITIM_BEKLIYOR').length;
+      res.json({ success: true, totalCount: status.length, staleCount, data: status });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /telemetry/rfid-denylist:
+ *   get:
+ *     summary: Cihazın RFID Kara Listesini Çekmesi (AUTH-210)
+ *     description: >
+ *       HMAC-doğrulamalı cihaz, kendi tenant'ının güncel denylist'ini
+ *       (sürüm + kart uid'leri) çeker; çekiş zamanı/sürümü kaydedilir
+ *       (deployment-status bunu izler). Cihaz bu listeyi yerel olarak
+ *       DENYLIST'İ WHITELIST'TEN ÖNCE uygulamalıdır (AC 2, firmware tarafı).
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Güncel denylist döndü.
+ */
+router.get(
+  '/telemetry/rfid-denylist',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; siteName: string; tenantId: string };
+    try {
+      const payload = await runWithTenant({ tenantId: hw.tenantId }, async () => {
+        const dl = await getRfidDenylistForDevice();
+        await recordRfidDenylistPull(hw.deviceId, dl.version);
+        return dl;
+      });
+      res.json({ success: true, data: payload });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /telemetry/calibration-ack:
+ *   post:
+ *     summary: Cihazın Kalibrasyon Komutunu Onaylaması/Reddetmesi (FUEL-404.1)
+ *     description: >
+ *       AC: "Cihaz onayı alınmadan değişiklik 'uygulandı' gösterilmemelidir."
+ *       hardware_devices.k_factor yalnızca ACK üzerine güncellenir.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Ack/nack işlendi.
+ */
+router.post(
+  '/telemetry/calibration-ack',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  validateRequest({ body: calibrationAckSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; tenantId: string };
+    try {
+      const command = await runWithTenant({ tenantId: hw.tenantId }, () =>
+        req.body.status === 'ACK'
+          ? recordCalibrationAck(hw.deviceId, req.body.commandId, req.body.appliedKFactor)
+          : recordCalibrationNack(hw.deviceId, req.body.commandId, req.body.reason)
+      );
+      res.json({ success: true, message: 'Kalibrasyon durumu kaydedildi.', data: command });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * IOT-304 — Cihaz Provisioning ve Eşleştirme (Device Claim) Akışı.
+ * Ticket'ın "Teknik Yığın"ı NestJS + Drizzle + EMQX API (kimlik/ACL) + QR
+ * üretimi öneriyor. Drizzle/NestJS yerine (kod tabanı geneliyle tutarlı)
+ * raw-pg kullanıldı. EMQX'in HTTP Yönetim API'si üzerinden CİHAZ BAŞINA MQTT
+ * kimlik bilgisi/ACL üretimi BİLİNÇLİ OLARAK YAPILMADI — bu proje şu anda
+ * TÜM cihazlar (ve backend'in kendisi) için TEK bir paylaşılan MQTT
+ * kullanıcı adı/şifresi kullanıyor (bkz. docker/emqx/entrypoint.sh); bunu
+ * cihaz başına dinamik hale getirmek EMQX yönetim API'sine yeni bir servis
+ * katmanı + docker-compose'a yeni bir admin API anahtarı eklemeyi gerektiren,
+ * bu ticket'ın "Efor: S" etiketinin çok ötesinde ayrı bir altyapı işi —
+ * ayrı bir ticket olarak ele alınmalı. Bunun yerine "eşleştirilmemiş cihaz
+ * veri gönderememeli" AC'si HTTP/HMAC katmanında zaten TAM olarak sağlanıyor:
+ * hardwareAuthMiddleware, hardware_devices'ta kaydı OLMAYAN bir device_id'yi
+ * UNAUTHORIZED_DEVICE ile reddediyor — claim edilmemiş bir cihazın zaten
+ * hiçbir secret'ı yok, bu yüzden geçerli bir HMAC üretemez.
+ * QR üretimi de aynı gerekçeyle atlandı (bkz. tenantDb.ts createDeviceClaimCode
+ * yorumu) — sunucu yalnızca kriptografik olarak güçlü kodu üretir/doğrular.
+ */
+
+/**
+ * @swagger
+ * /devices/claim-codes:
+ *   post:
+ *     summary: Yeni Cihaz Claim Kodu Üret (IOT-304)
+ *     description: Tek kullanımlık, süreli (varsayılan 15dk) bir kod üretir.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Claim kodu oluşturuldu.
+ */
+router.post(
+  '/devices/claim-codes',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  validateRequest({ body: createDeviceClaimCodeSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const claim = await createDeviceClaimCode(req.body);
+      res.json({ success: true, message: 'Claim kodu oluşturuldu.', data: claim });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/devices/claim-codes',
+  authenticateJWT,
+  authorizeRoles(...HARDWARE_DEVICE_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const codes = await getTenantClaimCodes();
+      res.json({ success: true, totalCount: codes.length, data: codes });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /devices/claim:
+ *   post:
+ *     summary: Claim Kodunu Tüketip Cihazı Eşleştir (IOT-304)
+ *     description: >
+ *       Kimlik doğrulaması YOK (JWT/HMAC) — cihazın henüz secret'ı yok, bu
+ *       endpoint'in amacı tam olarak onu üretmek. Yetkilendirme, kodun
+ *       kendisinin (yüksek entropili, tek kullanımlık, süreli) bilinmesiyle
+ *       sağlanır. Secret yalnızca bu yanıtta döner.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Cihaz eşleştirildi, secret tek seferlik döndü.
+ */
+router.post(
+  '/devices/claim',
+  hardwareRateLimiter,
+  validateRequest({ body: claimDeviceSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { device, secret } = await redeemDeviceClaimCode(req.body);
+      res.json({
+        success: true,
+        message: 'Cihaz başarıyla eşleştirildi. Secret yalnızca bu yanıtta gösterilecek, tekrar alınamaz.',
+        data: {
+          deviceId: device.device_id,
+          name: device.name,
+          siteName: device.site_name,
+          serialNumber: device.serial_number,
+          macAddress: device.mac_address,
+          model: device.model,
+          hardwareRevision: device.hardware_revision,
+          secret
+        }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
 /**
  * @swagger
  * /sites:
  *   get:
- *     tags: [Sites]
  *     summary: Şantiye Listesi
  *     description: Firmaya ait sistemde kayıtlı olan (kullanıcılar, tanklar, araçlar, şoförler üzerinden çıkarılan) tüm benzersiz şantiyeleri listeler.
  *     security:
@@ -796,7 +5015,7 @@ router.get('/auth/me', authenticateJWT, (req: AuthenticatedRequest, res: Respons
  *       200:
  *         description: Şantiye listesi başarıyla getirildi.
  */
-router.get('/sites', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/sites', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
     const sites = await getTenantSites();
     res.json({
@@ -804,318 +5023,133 @@ router.get('/sites', authenticateJWT, async (req: AuthenticatedRequest, res: Res
       data: sites
     });
   } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: 'DB_ERROR',
-      message: error.message
-    });
+    next(error);
   }
 });
 
 /**
  * @swagger
- * /sites:
- *   post:
- *     tags: [Sites]
- *     summary: Yeni Şantiye Ekle (upsert)
+ * /sites/details:
+ *   get:
+ *     summary: Şantiye Kayıtları — id/ad/konum (FE-807)
  *     description: >
- *       Oturum açmış firmaya (tenant) ait `sites` tablosuna yeni bir şantiye kaydeder.
- *       `tenant_id` daima JWT içindeki bağlamdan alınır; gövdeden gönderilemez ve PostgreSQL
- *       RLS ile zorlanır.
- *
- *       DAVRANIŞ NOTLARI (gerçek kod davranışı):
- *
- *       1. UPSERT'tir, saf INSERT değildir. SQL `ON CONFLICT (tenant_id, name) DO UPDATE SET
- *       location = EXCLUDED.location` kullanır. Aynı ada sahip bir şantiye zaten varsa 409
- *       DÖNMEZ; mevcut kaydın `location` alanı güncellenir ve yanıtta MEVCUT kaydın orijinal
- *       `id` ve `created_at` değerleri döner (istek sırasında üretilen yeni `site-<epoch_ms>`
- *       kimliği atılır). İşlem bu yüzden idempotenttir, ancak `message` alanı her iki durumda
- *       da "başarıyla eklendi" der - güncelleme yapıldığı bilgisini vermez.
- *
- *       2. Başarıda HTTP 200 döner, 201 Created DEĞİL. `Location` başlığı da gönderilmez.
- *
- *       3. `siteName` sunucuda `.trim()` edilir ve trim edilmiş hali kaydedilir.
- *       Yalnızca boşluk karakterlerinden oluşan bir değer 400 ile reddedilir.
- *
- *       4. `location` HİÇ doğrulanmaz. Falsy ise (alan yok, boş string, null, 0, false)
- *       sunucu `'Türkiye'` atar. Tip kontrolü yoktur; string olmayan bir değer doğrudan
- *       PostgreSQL'e gider.
- *
- *       5. Uzunluk sınırı uygulama katmanında YOKTUR. DB kısıtları `name VARCHAR(128)` ve
- *       `location VARCHAR(255)`; aşılırsa 500 DB_ERROR olarak ham PostgreSQL hata metniyle
- *       döner (bkz. 500 yanıtı).
- *
- *       6. Eklenen şantiye `GET /sites` listesinde görünür (o uç `sites`, `users`, `tanks`,
- *       `vehicles`, `drivers` tablolarının UNION'unu döndürür).
- *
- *       7. İstek gövdesi camelCase (`siteName`), yanıt gövdesi ham DB satırı olduğu için
- *       snake_case'dir (`name`, `tenant_id`, `created_at`).
+ *       GET /sites (yukarıda) BİLEREK yalnızca ad döner ve vehicles/tanks/
+ *       drivers/users'ta REFERANS edilen ama `sites` tablosunda hiç kaydı
+ *       olmayan adları da kapsar (uygulama genelindeki filtre/dropdown'lar
+ *       bunu bekliyor). Bu uç AYRI, dar amaçlıdır — yalnızca GERÇEKTEN
+ *       `sites` tablosunda kaydı olanların id/ad/konumunu döner.
  *     security:
  *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       description: >
- *         Yalnızca `siteName` zorunludur ve tek doğrulaması "truthy + string + trim sonrası boş
- *         değil" kontrolüdür (Zod kullanılmaz). `location` opsiyoneldir, doğrulanmaz ve
- *         gönderilmezse `'Türkiye'` olur. Tanımsız ek alanlar yok sayılır (destructuring).
- *       content:
- *         application/json:
- *           schema:
- *             $ref: '#/components/schemas/CreateSiteRequest'
- *           examples:
- *             tamGovde:
- *               summary: Konum ile birlikte
- *               value:
- *                 siteName: "Kocaeli 2. Şantiye"
- *                 location: "Kocaeli / Gebze"
- *             sadeceAd:
- *               summary: Yalnızca ad (location varsayılan 'Türkiye' olur)
- *               value:
- *                 siteName: "Silivri Tesisleri"
- *     responses:
- *       200:
- *         description: >
- *           Şantiye eklendi VEYA aynı adlı şantiye zaten mevcut olduğu için konumu güncellendi.
- *           Her iki durumda da 200 ve aynı gövde şekli döner.
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   description: Şantiye adı gövdeye enterpole edilir; upsert durumunda da aynı metin döner.
- *                   example: "'Kocaeli 2. Şantiye' şantiyesi veritabanına başarıyla eklendi."
- *                 data:
- *                   $ref: '#/components/schemas/Site'
- *             example:
- *               success: true
- *               message: "'Kocaeli 2. Şantiye' şantiyesi veritabanına başarıyla eklendi."
- *               data:
- *                 id: "site-1757268144351"
- *                 tenant_id: "comp-camsa"
- *                 name: "Kocaeli 2. Şantiye"
- *                 location: "Kocaeli / Gebze"
- *                 created_at: "2026-09-07T18:22:24.351Z"
- *       400:
- *         description: >
- *           `siteName` eksik, string değil ya da trim sonrası boş (VALIDATION_ERROR).
- *           DİKKAT - bu uç Zod/validateRequest kullanmaz, bu yüzden gövdede `errors` dizisi
- *           BULUNMAZ; şekil sade ErrorResponse'tur.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: "VALIDATION_ERROR"
- *               message: "Geçerli bir şantiye adı giriniz."
- *       401:
- *         description: >
- *           Authorization başlığı yok veya 'Bearer ' önekiyle başlamıyor (UNAUTHORIZED),
- *           ya da token geçersiz/süresi dolmuş (INVALID_TOKEN).
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: "INVALID_TOKEN"
- *               message: "Oturum süreniz doldu veya geçersiz token. Lütfen tekrar giriş yapınız."
- *       403:
- *         description: >
- *           Token geçerli ancak rol yetersiz. Yalnızca SUPER_ADMIN ve COMPANY_OWNER bu ucu
- *           çağırabilir; SITE_MANAGER, PUMP_OPERATOR ve DRIVER reddedilir.
- *           Mesaj, izinli rol listesini dinamik olarak içerir.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: "FORBIDDEN"
- *               message: "Yetkisiz erişim. Bu işlemi gerçekleştirme yetkiniz bulunmamaktadır. (Gerekli Rol: SUPER_ADMIN, COMPANY_OWNER)"
- *       500:
- *         description: >
- *           Veritabanı hatası; işlem ROLLBACK edilir. Tipik nedenler - `name` 128 veya
- *           `location` 255 karakteri aşması, string olmayan `location` tipi, bağlantı havuzu
- *           hatası. Ayrıca JWT içinde tenantId yoksa `createTenantSite` TENANT_CONTEXT_MISSING
- *           fırlatır ve aynı 500 DB_ERROR gövdesiyle döner. Route kendi catch bloğunu
- *           kullandığı için gövdede `traceId` YOKTUR ve `message` ham PostgreSQL hata metnini içerir (bilinen bilgi sızıntısı).
- *           İzleme için `X-Trace-ID` yanıt başlığına bakınız.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: "DB_ERROR"
- *               message: "value too long for type character varying(128)"
+ */
+router.get('/sites/details', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const sites = await getTenantSiteDetails();
+    res.json({ success: true, data: sites });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/sites
+ * AUTH-204: Yeni şantiyeyi ve o şantiyenin SITE_MANAGER kullanıcısını
+ * (okunabilir kullanıcı adı + tek seferlik gösterilen geçici parola) TEK
+ * işlemde oluşturur.
  */
 router.post(
   '/sites',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  validateRequest({ body: createSiteSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const { siteName, location } = req.body;
-      if (!siteName || typeof siteName !== 'string' || !siteName.trim()) {
-        return res.status(400).json({
-          success: false,
-          error: 'VALIDATION_ERROR',
-          message: 'Geçerli bir şantiye adı giriniz.'
-        });
+      // BILL-1702 AC: "limit aşımında yeni kayıt engelleme" — bu uç hem yeni
+      // bir ŞANTİYE hem yeni bir KULLANICI (SITE_MANAGER) oluşturduğu için
+      // ikisi de kontrol edilir.
+      const siteLimit = await isPackageLimitReached(req.user!.tenantId, 'sites');
+      if (siteLimit.reached) {
+        throw new ConflictError(
+          `Paket limitine ulaşıldı: şantiye sayısı (${siteLimit.current}/${siteLimit.limit}). Devam etmek için paketinizi yükseltin.`
+        );
+      }
+      const userLimit = await isPackageLimitReached(req.user!.tenantId, 'users');
+      if (userLimit.reached) {
+        throw new ConflictError(
+          `Paket limitine ulaşıldı: kullanıcı sayısı (${userLimit.current}/${userLimit.limit}). Devam etmek için paketinizi yükseltin.`
+        );
       }
 
-      const trimmedSiteName = siteName.trim();
-      const newSite = await createTenantSite(trimmedSiteName, location || 'Türkiye');
+      const { siteName, location } = req.body;
+      const provisioned = await createSiteWithManager(siteName, location || 'Türkiye');
 
       res.json({
         success: true,
-        message: `'${trimmedSiteName}' şantiyesi veritabanına başarıyla eklendi.`,
-        data: newSite
+        message: `'${siteName}' şantiyesi ve şantiye yöneticisi hesabı başarıyla oluşturuldu. Geçici parola yalnızca bu yanıtta gösterilir — kaydedin.`,
+        data: {
+          site: provisioned.site,
+          manager: {
+            username: provisioned.username,
+            temporaryPassword: provisioned.temporaryPassword,
+            passwordExpiresAt: provisioned.passwordExpiresAt
+          }
+        }
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
 
 /**
- * @swagger
- * /sites/{siteName}:
- *   delete:
- *     tags: [Sites]
- *     summary: Şantiye Sil
- *     description: |
- *       Firmaya ait bir şantiyeyi `sites` tablosundan siler ve o şantiyeye bağlı kayıtları
- *       TEK bir veritabanı transaction'ı içinde yeniden atar. Bağlı kayıtlar SİLİNMEZ:
- *
- *       - `vehicles.site_name` -> `'Atanmadı'`
- *       - `drivers.site_name`  -> `'Atanmadı'`
- *       - `tanks.site_name`    -> `'Atanmadı'`
- *       - `users.site_name`    -> `NULL`
- *
- *       Kiracı izolasyonu PostgreSQL RLS ile sağlanır (`SET LOCAL ROLE app_user` +
- *       `app.current_tenant_id`). SQL'de ayrıca `tenant_id` filtresi YOKTUR; izolasyon
- *       tamamen beş tablonun da üzerinde tanımlı `FORCE ROW LEVEL SECURITY` politikalarına
- *       dayanır (schema.sql:111-152), bu nedenle başka bir firmanın şantiyesi bu uçtan
- *       etkilenemez.
- *
- *       GERÇEK DAVRANIŞ NOTLARI (koddan doğrulanmıştır):
- *
- *       - **404 DÖNMEZ.** Var olmayan bir şantiye adı için `DELETE ... WHERE name = $1`
- *         sıfır satır etkiler, `deleteTenantSite()` koşulsuz `true` döner ve uç yine
- *         **200** + "başarıyla silindi" mesajı üretir. Uç idempotenttir ve yanıt,
- *         gerçekten silinen satır sayısını bildirmez.
- *       - Silmeden sonra `GET /sites` çıktısında bu ad kaybolur, ancak yeniden atanan
- *         araç/şoför/tank kayıtları yüzünden listede **`Atanmadı`** adlı yeni bir giriş
- *         belirebilir (`GET /sites`, beş tablonun UNION'ı üzerinden türetilir).
- *       - İstek gövdesi okunmaz; gövde gönderilse bile tamamen yok sayılır.
- *       - Yol parametresi Express tarafından zaten çözüldükten (decode) sonra handler
- *         içinde `decodeURIComponent` ile **ikinci kez** çözülür (routes.ts:285).
- *         Bu yüzden `%` karakteri içeren şantiye adları bu uçla silinemez; ayrıntı için
- *         500 yanıtına bakınız.
- *       - Koddaki `400 VALIDATION_ERROR` dalı pratikte ERİŞİLEMEZDİR: Express
- *         `/sites/:siteName` rotası boş yol parçasıyla eşleşmez, `DELETE /sites/`
- *         isteği bu operasyona hiç ulaşmadan router seviyesindeki 404 NOT_FOUND'a düşer.
- *       - Uçta hiçbir uzunluk/biçim doğrulaması yoktur. `sites.name` sütunu `VARCHAR(128)`
- *         olduğundan 128 karakterden uzun bir ad hiçbir kayıtla eşleşemez; istek yine de
- *         reddedilmez, 200 döner.
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: siteName
- *         required: true
- *         description: >
- *           Silinecek şantiyenin ADI (id değil). URL kodlaması uygulanmalıdır
- *           (örn. "Silivri Tesisleri" -> "Silivri%20Tesisleri"). Çift decode hatası
- *           nedeniyle adında "%" karakteri geçen şantiyeler bu uçla silinemez.
- *         schema:
- *           type: string
- *         example: Silivri Tesisleri
- *     responses:
- *       200:
- *         description: >
- *           İşlem tamamlandı. Şantiye kaydı hiç bulunmasa bile bu yanıt döner (idempotent).
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessMessage'
- *             example:
- *               success: true
- *               message: "'Silivri Tesisleri' şantiyesi veritabanından başarıyla silindi."
- *       401:
- *         description: >
- *           Authorization başlığı yok veya "Bearer " ile başlamıyor (UNAUTHORIZED);
- *           ya da token geçersiz / süresi dolmuş (INVALID_TOKEN).
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: UNAUTHORIZED
- *               message: Erişim engellendi. Geçerli bir Authorization Bearer token gereklidir.
- *       403:
- *         description: >
- *           Rol yetersiz. Bu ucu yalnızca SUPER_ADMIN ve COMPANY_OWNER çağırabilir;
- *           SITE_MANAGER ve PUMP_OPERATOR reddedilir.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: FORBIDDEN
- *               message: 'Yetkisiz erişim. Bu işlemi gerçekleştirme yetkiniz bulunmamaktadır. (Gerekli Rol: SUPER_ADMIN, COMPANY_OWNER)'
- *       500:
- *         description: |
- *           İki ayrı gövde şekli vardır:
- *
- *           1. **`DB_ERROR`** — route içi `catch` bloğundan gelir: veritabanı/transaction
- *              hatası (transaction ROLLBACK edilir), eksik tenant bağlamı
- *              (`TENANT_CONTEXT_MISSING`) veya `%25` ile kodlanmış (yani gerçek `%`
- *              içeren) bir addan doğan ikinci decode `URIError`'ı. Ham hata metni
- *              `message` alanına olduğu gibi yazılır (DB detayı sızabilir) ve bu yanıtta
- *              `traceId` BULUNMAZ; route içi catch globalErrorHandler'ı atlar.
- *           2. **`INTERNAL_SERVER_ERROR`** — yol parçası hatalı yüzde kodlaması içeriyorsa
- *              (örn. sonu `%` ile biten ham URL) Express'in kendi `decode_param` adımı
- *              handler'a hiç girmeden hata fırlatır. globalErrorHandler bunu bilinmeyen
- *              istisna olarak ele alır, `traceId` ekler ve genel mesaj döner
- *              (Express'in `status = 400` işareti dikkate ALINMAZ).
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             examples:
- *               dbError:
- *                 summary: Route içi catch (traceId yok)
- *                 value:
- *                   success: false
- *                   error: DB_ERROR
- *                   message: URI malformed
- *               unhandled:
- *                 summary: Express decode hatası (globalErrorHandler)
- *                 value:
- *                   success: false
- *                   traceId: 8f3c1e0a-4b2d-4f11-9c3e-77a0d2b5e901
- *                   error: INTERNAL_SERVER_ERROR
- *                   message: Sunucu tarafında beklenmeyen bir hata oluştu. Lütfen traceId ile sistem yöneticisine başvurun.
+ * POST /api/v1/auth/change-password
+ * AUTH-204: hem ilk girişte zorunlu değiştirme hem kullanıcının kendi
+ * isteğiyle değiştirmesi için — authenticateJWT'nin
+ * PASSWORD_CHANGE_GATE_ALLOWLIST'i bu ucu mustChangePassword=true iken de
+ * geçirir. Başarılı değişiklikten sonra mustChangePassword:false taşıyan
+ * taze bir token çifti döner — istemcinin yeniden login olmasına gerek yok.
+ */
+router.post(
+  '/auth/change-password',
+  authenticateJWT,
+  validateRequest({ body: changePasswordSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { currentPassword, newPassword } = req.body;
+      await changeOwnPassword(req.user!.userId, currentPassword, newPassword);
+
+      const payload: JwtUserPayload = { ...req.user!, mustChangePassword: false };
+      // AUTH-208: parola değişimi sonrası taze token çifti — yeni bir oturum
+      // ailesi başlatır (eski refresh token ayrıca rotasyon görmediği için).
+      const changeSession = await generateRefreshToken(payload.userId, payload.tenantId, {
+        userAgent: req.headers['user-agent'] ?? null,
+        ipAddress: req.ip ?? null
+      });
+      const refreshToken = changeSession.token;
+      const accessToken = generateAccessToken({ ...payload, sid: changeSession.sessionId });
+
+      res.json({
+        success: true,
+        message: 'Parolanız başarıyla güncellendi.',
+        accessToken,
+        refreshToken,
+        tokenType: 'Bearer',
+        expiresInSeconds: 900
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * DELETE /api/v1/sites/:siteName
+ * Delete a site for the tenant in DB
  */
 router.delete(
   '/sites/:siteName',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const { siteName } = req.params;
       if (!siteName) {
@@ -1134,11 +5168,7 @@ router.delete(
         message: `'${decodedSiteName}' şantiyesi veritabanından başarıyla silindi.`
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -1147,7 +5177,6 @@ router.delete(
  * @swagger
  * /vehicles:
  *   get:
- *     tags: [Vehicles]
  *     summary: Araç Listesi
  *     description: RLS kurallarına göre oturum açmış firmanın araçlarını getirir.
  *     security:
@@ -1156,209 +5185,50 @@ router.delete(
  *       200:
  *         description: Araç listesi başarıyla getirildi.
  */
-router.get('/vehicles', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/vehicles', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const vehicles = await getTenantVehicles();
-    const store = getTenantStore();
+    const vehicles = await getTenantVehicles(siteScopeFor(req.user!));
 
     res.json({
       success: true,
-      tenantId: store?.tenantId || req.user?.tenantId,
+      // authenticateJWT her zaman req.user.tenantId'yi (ve aynı değeri taşıyan
+      // AsyncLocalStorage store'unu) JWT payload'undan set eder — ikisi asla
+      // farklılaşmaz, o yüzden burada ayrıca getTenantStore() çağırıp
+      // fallback yapmaya gerek yok.
+      tenantId: req.user?.tenantId,
       totalCount: vehicles.length,
       data: vehicles
     });
   } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: 'DB_ERROR',
-      message: error.message
-    });
+    next(error);
   }
 });
 
 /**
- * @swagger
- * /vehicles:
- *   post:
- *     tags: [Vehicles]
- *     summary: Yeni Araç Ekle
- *     description: >
- *       Oturum açmış firmanın (tenant) araç filosuna yeni bir araç kaydeder.
- *       `tenant_id` yalnızca JWT içindeki değerden alınır; istek gövdesinden okunmaz.
- *       INSERT işlemi `SET LOCAL ROLE app_user` + `app.current_tenant_id` ile RLS
- *       koruması altında çalışır.
- *
- *
- *       GERÇEK DAVRANIŞ NOTLARI (kod ile birebir):
- *
- *
- *       1. Başarıda **201 değil 200** döner (`res.json`, açık durum kodu yok).
- *
- *       2. `fuelCapacityLiters` doğrulama için ZORUNLUDUR, ancak kaydedilmez.
- *       `vehicles` tablosunda böyle bir sütun yoktur; handler'daki `vehicleData`
- *       eşlemesi bu alanı INSERT'e hiç aktarmaz — değer sessizce atılır ve
- *       yanıtta da görünmez.
- *
- *       3. `status` oluşturma sırasında GÖNDERİLEMEZ. Zod şeması bilinmeyen
- *       anahtarları sessizce siler (`validateRequest` `req.body`'yi parse
- *       sonucuyla değiştirir), bu yüzden `sanitizedBody.status` daima
- *       `undefined` olur ve kayıt her zaman `AKTİF` durumuyla açılır.
- *       (`site_name` snake_case varyantı da aynı sebeple hiç okunamaz;
- *       yalnızca camelCase `siteName` işe yarar.)
- *
- *       4. `type` gönderilmezse Zod tarafından `Kamyon` olarak doldurulur ve
- *       DB'ye `vehicle_type` sütununa yazılır. Değer bir enum'a karşı
- *       doğrulanmaz.
- *
- *       5. `siteName` gönderilmezse `Gebze Ana Şantiye` atanır. Değer mevcut
- *       şantiyelere karşı DOĞRULANMAZ; serbest metin olduğu gibi yazılır ve
- *       `GET /sites` bu sütunu UNION ile taradığı için sonrasında listede
- *       yeni bir şantiye gibi görünür (`sites` tablosuna satır EKLENMEZ).
- *
- *       6. Yanıttaki `data`, `RETURNING *` sonucu olan HAM DB satırıdır:
- *       alan adları snake_case'dir ve `created_at` DAHİLDİR. Not: `GET /vehicles`
- *       satırları elle map'lediği için `created_at` alanını DÜŞÜRÜR — aynı kaynağın
- *       iki ucu farklı alan kümesi döndürür.
- *
- *       7. `plate` ve `rfid_tag` üzerinde UNIQUE kısıtı yoktur; aynı plaka
- *       birden çok kez eklenebilir, hata dönmez.
- *
- *
- *       Gerekli rol: SUPER_ADMIN, COMPANY_OWNER veya SITE_MANAGER.
- *       SITE_MANAGER kendi şantiyesiyle sınırlandırılmaz; herhangi bir
- *       `siteName` değeri gönderebilir.
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             $ref: '#/components/schemas/CreateVehicleRequest'
- *           example:
- *             plate: 34 CTP 82
- *             brandModel: Volvo FMX 460 Damperli
- *             type: Kamyon
- *             rfidTag: TAG-882910
- *             fuelCapacityLiters: 400
- *             siteName: Gebze Ana Şantiye
- *     responses:
- *       200:
- *         description: >
- *           Araç kaydedildi. (201 değil 200 döner.) `data` alanı `RETURNING *`
- *           ile gelen ham `vehicles` satırıdır.
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               required: [success, message, data]
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: Araç başarıyla doğrulandı ve kaydedildi.
- *                 data:
- *                   $ref: '#/components/schemas/Vehicle'
- *             example:
- *               success: true
- *               message: Araç başarıyla doğrulandı ve kaydedildi.
- *               data:
- *                 id: veh-1788805324772
- *                 tenant_id: comp-camsa
- *                 plate: 34 CTP 82
- *                 brand_model: Volvo FMX 460 Damperli
- *                 vehicle_type: Kamyon
- *                 rfid_tag: TAG-882910
- *                 site_name: Gebze Ana Şantiye
- *                 status: AKTİF
- *                 created_at: '2026-09-07T18:22:04.772Z'
- *       400:
- *         description: >
- *           Zod doğrulaması başarısız (validateMiddleware). Gövde
- *           `errors: [{field, message}]` dizisi içerir — global hata
- *           işleyicinin `details` alanı BU uçta kullanılmaz.
- *           Sık görülen durumlar: geçersiz plaka formatı, `brandModel` < 2 karakter,
- *           `rfidTag` < 3 karakter, eksik veya pozitif olmayan `fuelCapacityLiters`.
- *           DİKKAT: `fuelCapacityLiters` sayısal STRING olarak gönderilirse
- *           (`"400"`) coerce YOKTUR ve mesaj yanıltıcı biçimde
- *           `Yakıt kapasitesi zorunludur.` olur.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ValidationErrorResponse'
- *             example:
- *               success: false
- *               error: VALIDATION_ERROR
- *               message: Gelen istek verileri doğrulanamadı.
- *               errors:
- *                 - field: plate
- *                   message: 'Geçersiz Türkiye plaka formatı. (Örn: 34 CTP 82)'
- *                 - field: fuelCapacityLiters
- *                   message: Yakıt kapasitesi zorunludur.
- *       401:
- *         description: >
- *           `Authorization: Bearer ...` başlığı yok veya `Bearer ` ile başlamıyor
- *           (`UNAUTHORIZED`), ya da token geçersiz/süresi dolmuş (`INVALID_TOKEN`).
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: INVALID_TOKEN
- *               message: Oturum süreniz doldu veya geçersiz token. Lütfen tekrar giriş yapınız.
- *       403:
- *         description: >
- *           Token geçerli ancak rol yetersiz (ör. PUMP_OPERATOR).
- *           Mesaj izin verilen rol listesini dinamik olarak içerir.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: FORBIDDEN
- *               message: 'Yetkisiz erişim. Bu işlemi gerçekleştirme yetkiniz bulunmamaktadır. (Gerekli Rol: SUPER_ADMIN, COMPANY_OWNER, SITE_MANAGER)'
- *       500:
- *         description: >
- *           Veritabanı hatası. Route kendi `catch` bloğunda yanıtı yazar:
- *           `error: DB_ERROR` ve `message` alanında HAM PostgreSQL hata metni
- *           döner (`traceId` YOKTUR — global hata işleyici bu yolda devrede değildir).
- *           Bilinen tetikleyiciler: VARCHAR taşması (brand_model>128,
- *           vehicle_type>64, rfid_tag>64, site_name>128 karakter — Zod bu üst
- *           sınırları kontrol etmez; `plate` regex ile en fazla 11 karaktere
- *           sınırlandığı için taşamaz), `id` çakışması (`veh- + Date.now()`;
- *           aynı milisaniyede iki kayıt birincil anahtar ihlali verir) ve
- *           `TENANT_CONTEXT_MISSING`.
- *           AYRI DURUM: gövde bozuk JSON ise hata route'a hiç ulaşmaz;
- *           `express.json` hatayı global işleyiciye düşürür ve yanıt
- *           `error: INTERNAL_SERVER_ERROR` + `traceId` biçiminde olur.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: DB_ERROR
- *               message: value too long for type character varying(128)
+ * POST /api/v1/vehicles
+ * Protected endpoint requiring COMPANY_OWNER or SITE_MANAGER role
  */
 router.post(
   '/vehicles',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
   validateRequest({ body: createVehicleSchema }),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const sanitizedBody = req.body;
       const vehicleData = {
         plate: sanitizedBody.plate,
         brand_model: sanitizedBody.brandModel,
-        vehicle_type: sanitizedBody.type,
+        vehicle_type: sanitizedBody.type || 'Kamyon',
         rfid_tag: sanitizedBody.rfidTag,
         site_name: sanitizedBody.siteName || sanitizedBody.site_name || 'Gebze Ana Şantiye',
-        status: sanitizedBody.status || 'AKTİF'
+        status: sanitizedBody.status || 'AKTİF',
+        fuel_capacity_liters: sanitizedBody.fuelCapacityLiters ?? null,
+        assigned_driver_name: sanitizedBody.assignedDriver ?? null,
+        fuel_type: sanitizedBody.fuelType ?? null,
+        meter_type: sanitizedBody.meterType ?? null,
+        year_of_manufacture: sanitizedBody.yearOfManufacture ?? null,
+        avg_consumption_expectation: sanitizedBody.avgConsumptionExpectation ?? null
       };
 
       const newVehicle = await createVehicle(vehicleData);
@@ -1369,205 +5239,37 @@ router.post(
         data: newVehicle
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
 
 /**
- * @swagger
- * /vehicles/{id}:
- *   put:
- *     tags:
- *       - Vehicles
- *     summary: Araç Güncelle
- *     description: >
- *       Var olan bir aracın bilgilerini kısmi olarak günceller (PATCH benzeri davranış).
- *       Sadece gövdede gönderilen ve truthy olan alanlar güncellenir; gönderilmeyen alanlar
- *       mevcut değerlerini korur. Kiracı izolasyonu PostgreSQL RLS ile sağlanır
- *       (vehicles_tenant_isolation_policy / app.current_tenant_id).
- *       Gerekli rol: SUPER_ADMIN, COMPANY_OWNER veya SITE_MANAGER.
- *
- *
- *       DOĞRULAMA YOKTUR (routes.ts:387): Bu uçta hiçbir Zod şeması çalıştırılmaz.
- *       createVehicleSchema yalnızca POST /vehicles üzerinde uygulanır, bu nedenle
- *       Türkiye plaka regex'i GÜNCELLEMEDE DOĞRULANMAZ - plate alanına herhangi bir metin
- *       yazılabilir (tek sınır VARCHAR(32)). rfidTag için de uzunluk kontrolü yapılmaz.
- *       Create/update arasındaki bu asimetri bilerek belgelenmiştir.
- *
- *
- *       TRUTHY FİLTRESİ: Alanlar `...(x && { ... })` kalıbıyla toplanır. Boş string ("")
- *       veya null gönderilen alan SESSİZCE yok sayılır - bir alanı boşaltmak mümkün değildir.
- *
- *
- *       BOŞ GÖVDE 400 DEĞİL 500 DÖNER: Hiçbir güncellenebilir alan gönderilmezse
- *       (`{}` veya yalnızca bilinmeyen alanlar) updateVehicle (tenantDb.ts:225)
- *       "Güncellenecek alan bulunamadı." hatası fırlatır; route'un catch bloğu bunu
- *       500 DB_ERROR olarak döner.
- *
- *
- *       BULUNAMAYAN ARAÇ 404 DEĞİL 500 DÖNER: Kayıt yoksa ya da RLS politikası satırı
- *       başka bir kiracıya ait olduğu için gizliyorsa UPDATE 0 satır etkiler ve
- *       "Araç bulunamadı veya yetkiniz yok." hatası yine 500 DB_ERROR olarak yanıtlanır.
- *       Bu uç HİÇBİR ZAMAN 404 üretmez.
- *
- *
- *       KABUL EDİLMEYEN ALAN: fuelCapacityLiters - POST /vehicles'ta zorunlu olmasına
- *       rağmen burada hiç okunmaz ve vehicles tablosunda karşılığı yoktur.
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         description: >
- *           Güncellenecek aracın birincil anahtarı (vehicles.id, VARCHAR(64)).
- *           createVehicle tarafından "veh-<epoch_ms>" biçiminde üretilir.
- *           Sunucu tarafında biçim doğrulaması yapılmaz.
- *         schema:
- *           type: string
- *         example: veh-1757268144351
- *     requestBody:
- *       required: true
- *       description: >
- *         Tüm alanlar opsiyoneldir, ancak en az biri truthy olmalıdır (aksi halde 500 DB_ERROR).
- *         İstek gövdesi camelCase, yanıt ise snake_case DB satırıdır. Listelenmeyen alanlar
- *         (ör. fuelCapacityLiters, id, tenant_id, created_at) sessizce yok sayılır.
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             description: >
- *               Sunucu tarafında Zod doğrulaması YOKTUR; buradaki kısıtlar yalnızca
- *               veritabanı sütun tiplerinden (schema.sql) türetilmiştir.
- *             properties:
- *               plate:
- *                 type: string
- *                 maxLength: 32
- *                 description: >
- *                   Araç plakası. DİKKAT - POST /vehicles'taki plaka regex'i burada
- *                   UYGULANMAZ; doğrulanmamış herhangi bir metin kabul edilir.
- *                   32 karakteri aşarsa PostgreSQL hatası 500 DB_ERROR olarak döner.
- *                 example: 34 CTP 82
- *               brandModel:
- *                 type: string
- *                 maxLength: 128
- *                 description: vehicles.brand_model sütununa yazılır.
- *                 example: Volvo FMX 460 Damperli
- *               type:
- *                 type: string
- *                 maxLength: 64
- *                 description: vehicles.vehicle_type sütununa yazılır (alan adı farklıdır).
- *                 example: Kamyon
- *               rfidTag:
- *                 type: string
- *                 maxLength: 64
- *                 description: >
- *                   vehicles.rfid_tag sütununa yazılır. Benzersizlik kısıtı yoktur;
- *                   aynı etiket birden fazla araca atanabilir.
- *                 example: TAG-882910
- *               siteName:
- *                 type: string
- *                 maxLength: 128
- *                 description: >
- *                   vehicles.site_name sütununa yazılır. Şantiyenin sites tablosunda
- *                   gerçekten var olup olmadığı KONTROL EDİLMEZ (yabancı anahtar yoktur).
- *                 example: Gebze Ana Şantiye
- *               status:
- *                 type: string
- *                 maxLength: 32
- *                 description: >
- *                   Serbest metin; enum kısıtı yoktur. Uygulamada kullanılan değerler
- *                   AKTİF, PASİF, BAKIMDA.
- *                 example: AKTİF
- *           example:
- *             plate: 34 CTP 82
- *             brandModel: Volvo FMX 460 Damperli
- *             siteName: Gebze Ana Şantiye
- *             status: BAKIMDA
- *     responses:
- *       200:
- *         description: >
- *           Araç güncellendi. data alanı UPDATE ... RETURNING * sonucudur; bu nedenle
- *           created_at DAHİL tüm sütunları snake_case olarak içerir. DİKKAT: GET /vehicles
- *           bundan FARKLIDIR - orada getTenantVehicles satırları elle map ettiği için
- *           created_at düşer. Vehicle şeması GET davranışını yansıtır.
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: Araç başarıyla güncellendi.
- *                 data:
- *                   $ref: '#/components/schemas/Vehicle'
- *       401:
- *         description: >
- *           Authorization başlığı yok veya "Bearer " öneki eksik (UNAUTHORIZED);
- *           token bozuk ya da süresi dolmuş (INVALID_TOKEN).
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: INVALID_TOKEN
- *               message: Oturum süreniz doldu veya geçersiz token. Lütfen tekrar giriş yapınız.
- *       403:
- *         description: Rol yetersiz (authorizeRoles reddetti).
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: FORBIDDEN
- *               message: >-
- *                 Yetkisiz erişim. Bu işlemi gerçekleştirme yetkiniz bulunmamaktadır.
- *                 (Gerekli Rol: SUPER_ADMIN, COMPANY_OWNER, SITE_MANAGER)
- *       500:
- *         description: >
- *           Bu uçtaki TEK hata gövdesi ailesi. Dört ayrı durum aynı 500 DB_ERROR kodunu üretir:
- *           (1) araç bulunamadı veya RLS gizledi - "Araç bulunamadı veya yetkiniz yok.";
- *           (2) güncellenecek alan yok - "Güncellenecek alan bulunamadı.";
- *           (3) token yükünde tenantId yok - "TENANT_CONTEXT_MISSING";
- *           (4) gerçek veritabanı hatası (uzunluk taşması vb.) - ham PostgreSQL metni
- *           message alanında istemciye sızar. Bu yanıtlarda traceId BULUNMAZ; izleme için
- *           her yanıtta gönderilen X-Trace-ID başlığı kullanılmalıdır. Ayrıca bozuk JSON
- *           gövdesi route'a hiç ulaşmadan globalErrorHandler'a düşer ve traceId'li
- *           INTERNAL_SERVER_ERROR üretir.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: DB_ERROR
- *               message: Araç bulunamadı veya yetkiniz yok.
+ * PUT /api/v1/vehicles/:id
+ * Protected endpoint requiring COMPANY_OWNER or SITE_MANAGER role
  */
 router.put(
   '/vehicles/:id',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  validateRequest({ body: updateVehicleSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const id = req.params.id;
-      const { plate, brandModel, type, rfidTag, siteName, status } = req.body;
+      const { plate, brandModel, type, rfidTag, siteName, status, fuelCapacityLiters, assignedDriver, fuelType, meterType, yearOfManufacture, avgConsumptionExpectation } = req.body;
       const updateData = {
         ...(plate && { plate }),
         ...(brandModel && { brand_model: brandModel }),
         ...(type && { vehicle_type: type }),
         ...(rfidTag && { rfid_tag: rfidTag }),
         ...(siteName && { site_name: siteName }),
-        ...(status && { status })
+        ...(status && { status }),
+        ...(fuelCapacityLiters !== undefined && { fuel_capacity_liters: fuelCapacityLiters }),
+        ...(assignedDriver !== undefined && { assigned_driver_name: assignedDriver }),
+        ...(fuelType !== undefined && { fuel_type: fuelType }),
+        ...(meterType !== undefined && { meter_type: meterType }),
+        ...(yearOfManufacture !== undefined && { year_of_manufacture: yearOfManufacture }),
+        ...(avgConsumptionExpectation !== undefined && { avg_consumption_expectation: avgConsumptionExpectation })
       };
 
       const updatedVehicle = await updateVehicle(id, updateData);
@@ -1578,138 +5280,56 @@ router.put(
         data: updatedVehicle
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
 
 /**
- * @swagger
- * /vehicles/{id}:
- *   delete:
- *     tags:
- *       - Vehicles
- *     summary: Araç Sil
- *     description: >
- *       Verilen `id` değerine sahip aracı, oturum açmış firmanın (tenant) RLS kapsamı
- *       içinde siler. İstek gövdesi okunmaz; tüm bilgi path parametresinden alınır.
- *
- *
- *       DİKKAT — Bu uç, silme işleminin gerçekleşip gerçekleşmediğini DOĞRULAMAZ.
- *       Katman, tek bir koşullu silme ifadesi çalıştırır ve etkilenen satır sayısını
- *       hiç kontrol etmez. Bu nedenle:
- *
- *
- *       * Var olmayan bir `id` gönderilirse yine 200 ve "başarıyla silindi" mesajı döner.
- *
- *       * Başka bir firmaya ait bir `id` gönderilirse RLS politikası
- *       (`vehicles_tenant_isolation_policy`, FOR ALL / USING) satırı gizler,
- *       hiçbir kayıt silinmez, ancak yanıt yine 200 olur.
- *
- *       * Sonuç olarak bu uç 404 DÖNMEZ ve 200 yanıtı bir kaydın gerçekten
- *       silindiğinin kanıtı değildir. İstemci, silme sonrası `GET /vehicles` ile
- *       listeyi tazelemelidir.
- *
- *
- *       İşlem idempotenttir: aynı `id` için tekrarlanan çağrılar hep 200 döner.
- *       Yanıt gövdesinde `data` alanı YOKTUR, yalnızca `success` ve `message` bulunur.
- *       `vehicles` tablosuna işaret eden yabancı anahtar bulunmadığından yayılan
- *       (cascade) bir yan etki oluşmaz.
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         description: >
- *           Silinecek aracın birincil anahtarı (`vehicles.id`, VARCHAR(64)).
- *           Seed kayıtlarda `veh-1`, `veh-2`; API üzerinden oluşturulanlarda
- *           `veh-<epoch_ms>` biçimindedir. Doğrulanmaz; eşleşmezse yine 200 döner.
- *         schema:
- *           type: string
- *           maxLength: 64
- *         example: veh-1
- *     responses:
- *       200:
- *         description: >
- *           İstek işlendi. UYARI: Bu yanıt bir kaydın gerçekten silindiğini garanti
- *           etmez; eşleşen satır yoksa da 200 döner.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/SuccessMessage'
- *             example:
- *               success: true
- *               message: Araç kaydı başarıyla silindi.
- *       401:
- *         description: >
- *           Authorization başlığı yok veya `Bearer ` ile başlamıyor (`UNAUTHORIZED`);
- *           ya da token geçersiz/süresi dolmuş (`INVALID_TOKEN`).
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: UNAUTHORIZED
- *               message: Erişim engellendi. Geçerli bir Authorization Bearer token gereklidir.
- *       403:
- *         description: >
- *           Token geçerli ancak rol yetersiz. İzinli roller: SUPER_ADMIN, COMPANY_OWNER,
- *           SITE_MANAGER. PUMP_OPERATOR ve DRIVER rolleri bu hatayı alır.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: FORBIDDEN
- *               message: 'Yetkisiz erişim. Bu işlemi gerçekleştirme yetkiniz bulunmamaktadır. (Gerekli Rol: SUPER_ADMIN, COMPANY_OWNER, SITE_MANAGER)'
- *       500:
- *         description: >
- *           Veritabanı/bağlantı hatası ya da tenant bağlamının okunamaması
- *           (`TENANT_CONTEXT_MISSING`). Route kendi catch bloğunda yanıtı yazdığı için
- *           gövdede `traceId` BULUNMAZ ve ham PostgreSQL hata metni `message` alanına
- *           sızar.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: DB_ERROR
- *               message: TENANT_CONTEXT_MISSING
+ * DELETE /api/v1/vehicles/:id
+ * FLEET-1401: HTTP metodu/URL'i (istemci sözleşmesi) DEĞİŞMEDİ ama gerçek
+ * bir silme DEĞİLDİR — bkz. tenantDb.ts deleteVehicle: aracı 'PASİF'e alır,
+ * satırı ve tüm geçmişini korur.
+ * Protected endpoint requiring COMPANY_OWNER or SITE_MANAGER role
  */
 router.delete(
   '/vehicles/:id',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       await deleteVehicle(req.params.id);
       res.json({
         success: true,
-        message: 'Araç kaydı başarıyla silindi.'
+        message: 'Araç pasife alındı — geçmiş kayıtları (ikmal, bakım, atama) korunuyor.'
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
 
 /**
  * @swagger
+ * /vehicles/{id}/assignment-history:
+ *   get:
+ *     summary: Araç Şantiye Atama Geçmişi (FLEET-1401)
+ *     description: Bir aracın (güncel + geçmiş) şantiye atamalarının append-only kaydı.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/vehicles/:id/assignment-history', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await getVehicleSiteAssignmentHistory(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
  * /drivers:
  *   get:
- *     tags: [Drivers]
  *     summary: Şoför Listesi
  *     description: RLS kurallarına göre oturum açmış firmanın şoförlerini getirir.
  *     security:
@@ -1718,23 +5338,19 @@ router.delete(
  *       200:
  *         description: Şoför listesi başarıyla getirildi.
  */
-router.get('/drivers', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/drivers', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const drivers = await getTenantDrivers();
-    const store = getTenantStore();
+    const drivers = await getTenantDrivers(siteScopeFor(req.user!));
+    const maskedDrivers = drivers.map((d) => maskDriverForRole(d, req.user!.role));
 
     res.json({
       success: true,
-      tenantId: store?.tenantId || req.user?.tenantId,
+      tenantId: req.user?.tenantId,
       totalCount: drivers.length,
-      data: drivers
+      data: maskedDrivers
     });
   } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: 'DB_ERROR',
-      message: error.message
-    });
+    next(error);
   }
 });
 
@@ -1742,7 +5358,6 @@ router.get('/drivers', authenticateJWT, async (req: AuthenticatedRequest, res: R
  * @swagger
  * /drivers:
  *   post:
- *     tags: [Drivers]
  *     summary: Yeni Şoför Ekle
  *     description: Yeni şoför ekler.
  *     security:
@@ -1756,9 +5371,9 @@ router.post(
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
   validateRequest({ body: createDriverSchema }),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const { name, tcNo, phone, licenseType, rfidCardId, siteName, status } = req.body;
+      const { name, tcNo, phone, licenseType, rfidCardId, siteName, status, assignedVehiclePlate } = req.body;
       const driverData = {
         name,
         tc_no: tcNo,
@@ -1766,7 +5381,8 @@ router.post(
         license_type: licenseType,
         rfid_card_id: rfidCardId,
         site_name: siteName || 'Gebze Ana Şantiye',
-        status: status || 'AKTİF'
+        status: status || 'AKTİF',
+        assigned_vehicle_plate: assignedVehiclePlate
       };
 
       const newDriver = await createDriver(driverData);
@@ -1777,11 +5393,7 @@ router.post(
         data: newDriver
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -1790,7 +5402,6 @@ router.post(
  * @swagger
  * /drivers/{id}:
  *   put:
- *     tags: [Drivers]
  *     summary: Şoför Güncelle
  *     description: Var olan bir şoförün bilgilerini günceller.
  *     parameters:
@@ -1810,10 +5421,10 @@ router.put(
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
   validateRequest({ body: updateDriverSchema }),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const id = req.params.id;
-      const { name, tcNo, phone, licenseType, rfidCardId, siteName, status } = req.body;
+      const { name, tcNo, phone, licenseType, rfidCardId, siteName, status, assignedVehiclePlate } = req.body;
       const updateData = {
         ...(name && { name }),
         ...(tcNo && { tc_no: tcNo }),
@@ -1821,7 +5432,8 @@ router.put(
         ...(licenseType && { license_type: licenseType }),
         ...(rfidCardId && { rfid_card_id: rfidCardId }),
         ...(siteName && { site_name: siteName }),
-        ...(status && { status })
+        ...(status && { status }),
+        ...(assignedVehiclePlate !== undefined && { assigned_vehicle_plate: assignedVehiclePlate })
       };
 
       const updatedDriver = await updateDriver(id, updateData);
@@ -1832,11 +5444,7 @@ router.put(
         data: updatedDriver
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -1845,7 +5453,6 @@ router.put(
  * @swagger
  * /drivers/{id}:
  *   delete:
- *     tags: [Drivers]
  *     summary: Şoför Sil
  *     description: Var olan bir şoförü siler.
  *     parameters:
@@ -1864,7 +5471,7 @@ router.delete(
   '/drivers/:id',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       await deleteDriver(req.params.id);
       res.json({
@@ -1872,11 +5479,7 @@ router.delete(
         message: 'Şoför kaydı başarıyla silindi.'
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -1885,7 +5488,6 @@ router.delete(
  * @swagger
  * /tanks:
  *   get:
- *     tags: [Tanks]
  *     summary: Tank Listesi
  *     description: RLS kurallarına göre oturum açmış firmanın tanklarını getirir.
  *     security:
@@ -1894,23 +5496,18 @@ router.delete(
  *       200:
  *         description: Tank listesi başarıyla getirildi.
  */
-router.get('/tanks', authenticateJWT, async (req: AuthenticatedRequest, res: Response) => {
+router.get('/tanks', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
   try {
-    const tanks = await getTenantTanks();
-    const store = getTenantStore();
+    const tanks = await getTenantTanks(siteScopeFor(req.user!));
 
     res.json({
       success: true,
-      tenantId: store?.tenantId || req.user?.tenantId,
+      tenantId: req.user?.tenantId,
       totalCount: tanks.length,
       data: tanks
     });
   } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: 'DB_ERROR',
-      message: error.message
-    });
+    next(error);
   }
 });
 
@@ -1918,7 +5515,6 @@ router.get('/tanks', authenticateJWT, async (req: AuthenticatedRequest, res: Res
  * @swagger
  * /tanks:
  *   post:
- *     tags: [Tanks]
  *     summary: Yeni Tank Ekle
  *     description: Yeni tank ekler.
  *     security:
@@ -1931,16 +5527,21 @@ router.post(
   '/tanks',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  validateRequest({ body: createTankSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
-      const { name, capacityLiters, currentLevelLiters, fuelType, siteName, status } = req.body;
+      const { name, capacityLiters, currentLevelLiters, fuelType, siteName, status, deadVolumeLiters, sensorDevEui, sensorMountHeightMm, operationalStatus } = req.body;
       const tankData = {
         name,
         capacity_liters: capacityLiters,
         current_level_liters: currentLevelLiters,
         fuel_type: fuelType || 'Motorin',
         site_name: siteName || 'Gebze Ana Şantiye',
-        status: status || 'GÜVENLİ'
+        status: status || 'GÜVENLİ',
+        dead_volume_liters: deadVolumeLiters,
+        sensor_dev_eui: sensorDevEui,
+        sensor_mount_height_mm: sensorMountHeightMm,
+        operational_status: operationalStatus
       };
 
       const newTank = await createTank(tankData);
@@ -1951,11 +5552,7 @@ router.post(
         data: newTank
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -1964,7 +5561,6 @@ router.post(
  * @swagger
  * /tanks/{id}:
  *   put:
- *     tags: [Tanks]
  *     summary: Tank Güncelle
  *     description: Var olan bir tankın bilgilerini günceller.
  *     parameters:
@@ -1983,17 +5579,29 @@ router.put(
   '/tanks/:id',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  validateRequest({ body: updateTankSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const id = req.params.id;
-      const { name, capacityLiters, currentLevelLiters, fuelType, siteName, status } = req.body;
+      const {
+        name, capacityLiters, currentLevelLiters, fuelType, siteName, status, lowStockThresholdLiters, reorderLeadDays,
+        deadVolumeLiters, sensorDevEui, sensorMountHeightMm, operationalStatus
+      } = req.body;
       const updateData = {
         ...(name && { name }),
         ...(capacityLiters !== undefined && { capacity_liters: capacityLiters }),
         ...(currentLevelLiters !== undefined && { current_level_liters: currentLevelLiters }),
         ...(fuelType && { fuel_type: fuelType }),
         ...(siteName && { site_name: siteName }),
-        ...(status && { status })
+        ...(status && { status }),
+        ...(lowStockThresholdLiters !== undefined && { low_stock_threshold_liters: lowStockThresholdLiters }),
+        ...(reorderLeadDays !== undefined && { reorder_lead_days: reorderLeadDays }),
+        ...(deadVolumeLiters !== undefined && { dead_volume_liters: deadVolumeLiters }),
+        // sensorDevEui: null GÖNDERİLİRSE eşleştirme KALDIRILIR (sensör söküldü/değiştirildi) —
+        // bu yüzden `!== undefined` (falsy ama anlamlı bir null'ı da geçirir), `sensorDevEui &&` DEĞİL.
+        ...(sensorDevEui !== undefined && { sensor_dev_eui: sensorDevEui }),
+        ...(sensorMountHeightMm !== undefined && { sensor_mount_height_mm: sensorMountHeightMm }),
+        ...(operationalStatus && { operational_status: operationalStatus })
       };
 
       const updatedTank = await updateTank(id, updateData);
@@ -2004,11 +5612,7 @@ router.put(
         data: updatedTank
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
     }
   }
 );
@@ -2017,7 +5621,6 @@ router.put(
  * @swagger
  * /tanks/{id}:
  *   delete:
- *     tags: [Tanks]
  *     summary: Tank Sil
  *     description: Var olan bir tankı siler.
  *     parameters:
@@ -2036,7 +5639,7 @@ router.delete(
   '/tanks/:id',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
-  async (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       await deleteTank(req.params.id);
       res.json({
@@ -2044,11 +5647,803 @@ router.delete(
         message: 'Tank kaydı başarıyla silindi.'
       });
     } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: 'DB_ERROR',
-        message: error.message
-      });
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /tanks/stock-forecast:
+ *   get:
+ *     summary: Tank Bazlı Stok Tahmini — Eşik + Tahmini Bitiş Süresi (INV-1504)
+ *     description: >
+ *       Her tank için son 14 günün ortalama tüketimine göre tahmini bitiş
+ *       süresi + sabit litre eşiği (varsa). AC: "uyarının panelde
+ *       gösterilmesi."
+ *     security:
+ *       - bearerAuth: []
+ * /tanks/stock-forecast-scan:
+ *   post:
+ *     summary: Stok Tahmini Taramasını Şimdi Çalıştır (INV-1504)
+ *     description: 'Otomatik periyodik süpürücü zaten çalışır; bu AI-507 alarmını hemen tetikler. Yalnızca SUPER_ADMIN/COMPANY_OWNER.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/tanks/stock-forecast',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getTankStockForecasts() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/tanks/stock-forecast-scan',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await runTankStockAlertSweepForCurrentTenant() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /tanks/{id}/strapping-table:
+ *   post:
+ *     summary: Tank Daldırma Cetveli / Silindir Formülü Tanımla (FUEL-403.1)
+ *     description: >
+ *       csvContent (ham CSV), points (nokta dizisi) veya cylinderConfig
+ *       alanlarından TAM OLARAK biri. CSV/points monotonluk (mm kesin artan,
+ *       litre azalmayan) denetiminden geçmezse 400 + satır bazlı hatalar.
+ *       Her çağrı YENİ bir versiyon yazar (geçmiş silinmez); Redis cache
+ *       invalide edilir.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Tank Cetvel Versiyon Geçmişi (FUEL-403.1)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/tanks/:id/strapping-table',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ body: setStrappingTableSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const tankName = await getTankNameById(req.params.id);
+      const b = req.body as { csvContent?: string; points?: any[]; cylinderConfig?: any; notes?: string };
+
+      let points = b.points as { levelMm: number; volumeLiters: number }[] | undefined;
+      if (b.csvContent) {
+        const parsed = parseStrappingCsv(b.csvContent);
+        if (parsed.errors.length > 0) {
+          // setTankStrappingTable'ın monotonluk hatasıyla AYNI şekil: details.rows
+          res.status(400).json({
+            success: false,
+            error: 'STRAPPING_CSV_INVALID',
+            message: 'CSV cetveli ayrıştırılamadı — satır bazlı hatalar var.',
+            details: { rows: parsed.errors }
+          });
+          return;
+        }
+        points = parsed.points;
+      }
+
+      const result = await setTankStrappingTable(
+        tankName,
+        { points, cylinderConfig: b.cylinderConfig, notes: b.notes },
+        req.user!.userId
+      );
+      res.status(201).json({ success: true, data: { tankName, ...result } });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/tanks/:id/strapping-table',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const tankName = await getTankNameById(req.params.id);
+      const [effective, history] = await Promise.all([
+        getEffectiveTankVolumeModel(tankName),
+        getTankStrappingTableHistory(tankName)
+      ]);
+      res.json({ success: true, data: { tankName, effective, versionCount: history.length, history } });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /tanks/{id}/volume:
+ *   get:
+ *     summary: Seviye→Hacim (ham + 15°C standart) Hesabı (FUEL-403.2)
+ *     description: >
+ *       ?levelMm=<int> zorunlu, ?tempC=<num> ve ?density15=<num> opsiyonel.
+ *       Cetvel/silindir formülü üzerinden lineer interpolasyonla ham hacim +
+ *       ASTM D1250 VCF ile 15°C standart hacim. tempC yoksa
+ *       temperatureCorrected:false (ham=standart).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/tanks/:id/volume',
+  authenticateJWT,
+  validateRequest({ query: tankVolumeQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const tankName = await getTankNameById(req.params.id);
+      const q = req.query as unknown as { levelMm: number; tempC?: number; density15?: number };
+      const result = await computeTankVolume(tankName, q.levelMm, q.tempC ?? null, q.density15);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── FUEL-408: tank dolum (alım irsaliyesi) girişi + stok artışı ──────────
+// Dolum bir mali/stok kaydıdır ve tanker teslimatı şantiye sorumlusu
+// gözetiminde tutanaklanır — PUMP_OPERATOR bilinçli olarak hariç.
+const INTAKE_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+// ── INV-1502: tedarikçi tanımı ve yakıt alım irsaliyesi ──────────────────
+// Tedarikçi/irsaliye de mali bir kayıttır — aynı roller (FUEL-408 ile aynı gerekçe).
+/**
+ * @swagger
+ * /suppliers:
+ *   post:
+ *     summary: Tedarikçi Kartı Oluştur (INV-1502)
+ *     description: VKN, GİB algoritmasıyla (compliance/taxIdValidation.ts) doğrulanır.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Tedarikçi Listesi (INV-1502)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/suppliers',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  validateRequest({ body: createSupplierSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const supplier = await createSupplier(req.body, req.user!.userId);
+      res.status(201).json({ success: true, message: 'Tedarikçi kaydedildi.', data: supplier });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/suppliers',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const suppliers = await getSuppliers();
+      res.json({ success: true, totalCount: suppliers.length, data: suppliers });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /suppliers/{id}:
+ *   get:
+ *     summary: Tedarikçi Detayı (INV-1502)
+ *     security:
+ *       - bearerAuth: []
+ *   put:
+ *     summary: Tedarikçi Güncelle (INV-1502)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/suppliers/:id',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getSupplier(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.put(
+  '/suppliers/:id',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  validateRequest({ body: updateSupplierSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const supplier = await updateSupplier(req.params.id, req.body);
+      res.json({ success: true, message: 'Tedarikçi güncellendi.', data: supplier });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /suppliers/{id}/purchase-history:
+ *   get:
+ *     summary: Tedarikçi Bazlı Alım Geçmişi ve Fiyat Karşılaştırması (INV-1502)
+ *     description: AC — irsaliyeler + her birinin bağlı dolum satırlarındaki birim fiyatlar, ortalama.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/suppliers/:id/purchase-history',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getSupplierPurchaseHistory(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fuel-waybills:
+ *   post:
+ *     summary: Alım İrsaliyesi Başlığı Oluştur (INV-1502)
+ *     description: >
+ *       Bir irsaliye BİRDEN ÇOK tanka boşaltılabilir (Teknik Not) — bu başlık,
+ *       ardından POST /tanks/:id/intakes çağrılarına `waybillId` ile birden
+ *       çok kez (her seferinde farklı bir tank için) bağlanır. Aynı tedarikçide
+ *       mükerrer irsaliye no'su reddedilir (AC).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/fuel-waybills',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  validateRequest({ body: createFuelPurchaseWaybillSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const waybill = await createFuelPurchaseWaybill(req.body, req.user!.userId);
+      res.status(201).json({ success: true, message: 'İrsaliye kaydedildi.', data: waybill });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fuel-waybills/{id}:
+ *   get:
+ *     summary: İrsaliye Başlığı + Bağlı Dolum Satırları (INV-1502)
+ *     description: AC — "İrsaliye kaydı bir veya birden çok dolumla ilişkilendirilebilmelidir."
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fuel-waybills/:id',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getFuelPurchaseWaybill(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /tanks/{id}/intakes:
+ *   post:
+ *     summary: Tank Dolum Kaydı (FUEL-408)
+ *     description: >
+ *       Tankere ait alım irsaliyesini kaydeder ve tank stoğunu ARTIRIR (tank
+ *       satırı FOR UPDATE ile kilitli). `levelAfterLiters` (+ `levelBeforeLiters`)
+ *       verilirse beyan ile fiziksel ölçüm 15 °C'ye düzeltilip karşılaştırılır;
+ *       fark `tolerancePct` (varsayılan %0.5) eşiğini aşarsa
+ *       EKSİK_TESLİMAT_UYARISI üretilir ve şantiyeye WebSocket uyarısı düşer.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Tank Dolum Geçmişi (FUEL-408)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/tanks/:id/intakes',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  validateRequest({ body: createFuelIntakeSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await recordFuelIntake(req.params.id, req.body, req.user!.userId);
+      const tenantId = req.user?.tenantId;
+      if (tenantId) {
+        try {
+          broadcastToTenant(tenantId, 'tank:intake', {
+            tankId: result.receipt.tank_id,
+            tankName: result.receipt.tank_name,
+            siteName: result.receipt.site_name,
+            addedLiters: Number(result.receipt.added_liters),
+            levelAfter: result.tankLevelAfter,
+            status: result.receipt.status
+          });
+          if (result.shortDeliveryAlert) {
+            broadcastToTenant(tenantId, 'tank:intake-alert', {
+              tankName: result.receipt.tank_name,
+              siteName: result.receipt.site_name,
+              waybillNo: result.receipt.waybill_no,
+              declaredLiters15c: Number(result.receipt.declared_liters_15c),
+              measuredLiters15c: result.receipt.measured_liters_15c === null ? null : Number(result.receipt.measured_liters_15c),
+              discrepancyLiters: result.receipt.discrepancy_liters === null ? null : Number(result.receipt.discrepancy_liters),
+              discrepancyPct: result.receipt.discrepancy_pct === null ? null : Number(result.receipt.discrepancy_pct)
+            });
+          }
+        } catch (broadcastErr) {
+          logger.warn({ err: broadcastErr }, '[FUEL-408] tank:intake yayını başarısız (kayıt yine de oluşturuldu).');
+        }
+      }
+      res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/tanks/:id/intakes',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const intakes = await getFuelIntakes({ tankId: req.params.id });
+      res.json({ success: true, totalCount: intakes.length, data: intakes });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fuel-intakes:
+ *   get:
+ *     summary: Dolum Kayıtları (filtreli) (FUEL-408)
+ *     description: '?tankId, ?status (KAYITLI|EKSİK_TESLİMAT_UYARISI), ?from, ?to (YYYY-AA-GG)'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fuel-intakes',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  validateRequest({ query: listFuelIntakeQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { tankId?: string; status?: string; from?: string; to?: string };
+      const intakes = await getFuelIntakes(q);
+      res.json({ success: true, totalCount: intakes.length, data: intakes });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/fuel-intakes/:id',
+  authenticateJWT,
+  authorizeRoles(...INTAKE_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getFuelIntake(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── FUEL-409: teorik vs fiziksel stok mutabakatı + fire hesabı ──────────
+const RECONCILIATION_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /tanks/{id}/reconciliations:
+ *   post:
+ *     summary: Stok Mutabakatı Hesapla & Kaydet (FUEL-409)
+ *     description: >
+ *       teorik = açılış bakiyesi + dolumlar (FUEL-408) − ikmaller − kalibrasyon
+ *       test alımları; fiziksel = `physicalLiters` (gerçek kurulumda sensör
+ *       anlık görüntüsü). Fark `tolerancePct` (varsayılan ±%1) eşiğini aşarsa
+ *       MUTABAKAT_ALARMI + WebSocket uyarısı. Fark, dönem uzunluğuna ölçeklenen
+ *       doğal buharlaşma payıyla kıyaslanıp sınıflandırılır (TOLERANS_İÇİ /
+ *       BUHARLAŞMA / ÖLÇÜM_HATASI / AÇIKLANAMAYAN). Açılış bakiyesi verilmezse
+ *       bu tankın bir önceki mutabakatının fiziksel değeri kullanılır; hiç
+ *       yoksa openingBookLiters zorunludur.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Tank Mutabakat Geçmişi (FUEL-409 / REP-714)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/tanks/:id/reconciliations',
+  authenticateJWT,
+  authorizeRoles(...RECONCILIATION_ROLES),
+  validateRequest({ body: createReconciliationSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await computeStockReconciliation(req.params.id, req.body, req.user!.userId);
+      const tenantId = req.user?.tenantId;
+      if (tenantId && result.alarm) {
+        try {
+          const r = result.reconciliation;
+          broadcastToTenant(tenantId, 'stock:reconciliation-alert', {
+            tankId: r.tank_id,
+            tankName: r.tank_name,
+            siteName: r.site_name,
+            periodType: r.period_type,
+            closingBookLiters: Number(r.closing_book_liters),
+            physicalLiters: Number(r.physical_liters),
+            varianceLiters: Number(r.variance_liters),
+            variancePct: Number(r.variance_pct),
+            classification: r.classification
+          });
+        } catch (broadcastErr) {
+          logger.warn({ err: broadcastErr }, '[FUEL-409] stock:reconciliation-alert yayını başarısız (kayıt yine de oluşturuldu).');
+        }
+      }
+      res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/tanks/:id/reconciliations',
+  authenticateJWT,
+  authorizeRoles(...RECONCILIATION_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const recs = await getStockReconciliations({ tankId: req.params.id });
+      res.json({ success: true, totalCount: recs.length, data: recs });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /stock-reconciliations:
+ *   get:
+ *     summary: Stok Mutabakat Kayıtları (filtreli) (FUEL-409 / REP-714)
+ *     description: '?tankId, ?status (NORMAL|MUTABAKAT_ALARMI), ?from, ?to (YYYY-AA-GG)'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/stock-reconciliations',
+  authenticateJWT,
+  authorizeRoles(...RECONCILIATION_ROLES),
+  validateRequest({ query: listReconciliationQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { tankId?: string; status?: string; from?: string; to?: string };
+      const recs = await getStockReconciliations(q);
+      res.json({ success: true, totalCount: recs.length, data: recs });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/stock-reconciliations/:id',
+  authenticateJWT,
+  authorizeRoles(...RECONCILIATION_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getStockReconciliation(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── INV-1505: fire/kayıp kaydı ve sınıflandırması ────────────────────────
+const FIRE_RECORD_APPROVER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const FIRE_RECORD_CREATE_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /fire-records:
+ *   post:
+ *     summary: Fire/Kayıp Kaydı Oluştur — Manuel (INV-1505)
+ *     description: >
+ *       Mutabakat farklarından OTOMATİK üretilen adaylara ek olarak manuel
+ *       kayıt. Yüksek değerli kayıtlar (tank kapasitesinin %5'i ve üzeri)
+ *       çift onay gerektirir (bir SITE_MANAGER + bir COMPANY_OWNER/SUPER_ADMIN).
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Fire/Kayıp Kayıtları Listesi (INV-1505)
+ *     description: '?tankId, ?status, ?siteName'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/fire-records',
+  authenticateJWT,
+  authorizeRoles(...FIRE_RECORD_CREATE_ROLES),
+  validateRequest({ body: createFireRecordSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rec = await createFireRecord(req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: rec });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/fire-records',
+  authenticateJWT,
+  authorizeRoles(...FIRE_RECORD_APPROVER_ROLES),
+  validateRequest({ query: listFireRecordQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { tankId?: string; status?: string; siteName?: string };
+      const recs = await getFireRecords(q);
+      res.json({ success: true, totalCount: recs.length, data: recs });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fire-records/site-comparison:
+ *   get:
+ *     summary: Fire Oranı Trendi ve Şantiye Karşılaştırması (INV-1505)
+ *     description: '?periodDays (varsayılan 90) — sadece KAYIP yönü, şantiye bazında toplam.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/fire-records/site-comparison',
+  authenticateJWT,
+  authorizeRoles(...FIRE_RECORD_APPROVER_ROLES),
+  validateRequest({ query: fireRecordSiteComparisonQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { periodDays: number };
+      res.json({ success: true, data: await getFireRecordSiteComparison(q.periodDays) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /fire-records/{id}/approve:
+ *   post:
+ *     summary: Fire Kaydı Onayı (INV-1505)
+ *     description: >
+ *       Çift onay GEREKMİYORSA tek çağrı kesinleştirir. Gerekiyorsa: ilk onay
+ *       kaydı BEKLIYOR bırakır; ikinci (farklı kullanıcı, farklı rol) onay
+ *       kesinleştirir — stoğu (tanks.current_level_liters) GÖRELİ olarak
+ *       düzeltir. `reclassify` ile (örn. AÇIKLANAMAYAN → KAÇAK/HIRSIZLIK)
+ *       yeniden sınıflandırma onay anında yapılabilir.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/fire-records/:id/approve',
+  authenticateJWT,
+  authorizeRoles(...FIRE_RECORD_APPROVER_ROLES),
+  validateRequest({ body: approveFireRecordSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await approveFireRecord(req.params.id, req.user!.userId, req.user!.role, req.body);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/fire-records/:id/reject',
+  authenticateJWT,
+  authorizeRoles(...FIRE_RECORD_APPROVER_ROLES),
+  validateRequest({ body: rejectFireRecordSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rec = await rejectFireRecord(req.params.id, req.user!.userId, req.body.reason);
+      res.json({ success: true, data: rec });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── FUEL-405: manuel ikmal girişi (cihaz arızası) + çift onay ───────────
+const MANUAL_DISPENSE_APPROVER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+const MANUAL_DISPENSE_CREATE_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER', 'PUMP_OPERATOR'] as const;
+
+/**
+ * @swagger
+ * /manual-dispense-requests:
+ *   post:
+ *     summary: Manuel İkmal Girişi Oluştur (FUEL-405)
+ *     description: >
+ *       Cihaz arızası/elle pompa kullanımı durumunda ikmali kayıt altına alır.
+ *       Kayıt ONAY_BEKLIYOR durumunda açılır; İKİ FARKLI yetkilinin (bir
+ *       SITE_MANAGER + bir COMPANY_OWNER/SUPER_ADMIN) onayı olmadan
+ *       kesinleşmez. Geriye dönük tarih en fazla 7 gün.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Manuel İkmal Kayıtları (FUEL-405)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/manual-dispense-requests',
+  authenticateJWT,
+  authorizeRoles(...MANUAL_DISPENSE_CREATE_ROLES),
+  validateRequest({ body: createManualDispenseSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rec = await createManualDispenseRequest(req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: rec });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/manual-dispense-requests',
+  authenticateJWT,
+  authorizeRoles(...MANUAL_DISPENSE_APPROVER_ROLES),
+  validateRequest({ query: listManualDispenseQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { status?: string; siteName?: string };
+      const recs = await getManualDispenseRequests(q);
+      res.json({ success: true, totalCount: recs.length, data: recs });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /manual-dispense-requests/ratio:
+ *   get:
+ *     summary: Şantiye Bazlı Manuel İkmal Oranı + Eşik Uyarısı (FUEL-405)
+ *     description: '?siteName, ?days (varsayılan 30), ?thresholdPct (varsayılan 10)'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/manual-dispense-requests/ratio',
+  authenticateJWT,
+  authorizeRoles(...MANUAL_DISPENSE_APPROVER_ROLES),
+  validateRequest({ query: manualDispenseRatioQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as { siteName?: string; days: number; thresholdPct: number };
+      const result = await getManualDispenseRatio(q);
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/manual-dispense-requests/:id',
+  authenticateJWT,
+  authorizeRoles(...MANUAL_DISPENSE_APPROVER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getManualDispenseRequest(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /manual-dispense-requests/{id}/approve:
+ *   post:
+ *     summary: Manuel İkmal Onayı (FUEL-405)
+ *     description: >
+ *       İlk onay kaydı ONAY_BEKLIYOR bırakır; ikinci (farklı kullanıcı) onay,
+ *       roller birlikte SITE_MANAGER + COMPANY_OWNER/SUPER_ADMIN kuralını
+ *       karşılıyorsa kaydı ONAYLANDI yapar, stoğu düşer ve gerçek bir
+ *       transactions kaydı üretir (data.transactionId).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/manual-dispense-requests/:id/approve',
+  authenticateJWT,
+  authorizeRoles(...MANUAL_DISPENSE_APPROVER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await approveManualDispenseRequest(req.params.id, req.user!.userId, req.user!.role);
+      const tenantId = req.user?.tenantId;
+      if (tenantId && result.finalized) {
+        try {
+          broadcastToTenant(tenantId, 'manual-dispense:finalized', {
+            id: result.request.id,
+            transactionId: result.transactionId,
+            vehiclePlate: result.request.vehicle_plate,
+            tankName: result.request.tank_name,
+            liters: Number(result.request.liters)
+          });
+        } catch (broadcastErr) {
+          logger.warn({ err: broadcastErr }, '[FUEL-405] manual-dispense:finalized yayını başarısız.');
+        }
+      }
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/manual-dispense-requests/:id/reject',
+  authenticateJWT,
+  authorizeRoles(...MANUAL_DISPENSE_APPROVER_ROLES),
+  validateRequest({ body: rejectManualDispenseSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const rec = await rejectManualDispenseRequest(req.params.id, req.user!.userId, req.body.reason);
+      res.json({ success: true, data: rec });
+    } catch (error: any) {
+      next(error);
     }
   }
 );
@@ -2057,359 +6452,1536 @@ router.delete(
  * @swagger
  * /dispense:
  *   post:
- *     tags: [Dispense]
- *     summary: Yakıt İkmal İsteği Doğrulama (yalnızca doğrulama — kayıt YAPILMAZ)
- *     description: |
- *       Yakıt ikmal (dispense) isteğini JWT + rol + Zod katmanlarından geçirir ve
- *       temizlenmiş gövdeyi çağırana geri yansıtır.
- *
- *       **GERÇEK DAVRANIŞ — YANILTICI OLMAMASI İÇİN AÇIKÇA BELİRTİLİR:**
- *       Bu uç nokta bir ikmal işlemi GERÇEKLEŞTİRMEZ.
- *       - Veritabanına hiçbir kayıt yazılmaz; şemada bir `transactions` tablosu
- *         dahi tanımlı değildir (backend/src/db/schema.sql).
- *       - Tank seviyesi (`tanks.current_level_liters`) DÜŞÜRÜLMEZ.
- *       - `vehiclePlate` ve `rfidTag` veritabanındaki araç/şoför kayıtlarıyla
- *         KARŞILAŞTIRILMAZ; var olmayan bir plaka veya RFID de 200 döner.
- *       - Tank kapasitesi / mevcut seviye kontrolü yapılmaz; `amountLiters`
- *         tanktaki miktardan büyük olsa da istek başarılı sayılır.
- *       - `pumpCode` hiçbir donanımla eşleştirilmez.
- *       - SITE_MANAGER için şantiye (site) kısıtı uygulanmaz; rol kontrolü dışında
- *         kiracı/şantiye bazlı ek yetki denetimi yoktur.
- *
- *       Kısacası yanıt "istek biçimsel olarak geçerli" demektir; "yakıt verildi" demek değildir.
- *       Yanıt zarfı diğer uçlardan farklıdır: veri `data` altında değil `dispenseDetails`
- *       altında döner ve zarfa `tenantId` ile `operator` alanları eklenir.
- *
- *       Yetki: JWT zorunlu. İzinli roller — SUPER_ADMIN, COMPANY_OWNER, SITE_MANAGER, PUMP_OPERATOR.
+ *     summary: İkmal Kaydı Oluştur
+ *     description: >
+ *       Bir yakıt ikmalini kalıcı olarak kaydeder ve ilgili tankın seviyesini
+ *       atomik olarak düşürür. Önceden bu endpoint DB'ye hiçbir şey yazmayan
+ *       bir stub'dı (yalnızca success:true dönerdi).
  *     security:
  *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       description: |
- *         Zod `dispenseRequestSchema` ile doğrulanır (backend/src/schemas/transactionSchema.ts).
- *         Bilinmeyen alanlar sessizce SİLİNİR (strip), yanıtta geri dönmez.
- *         `amountLiters` alanı `z.coerce.number()` kullandığı için sayısal STRING de
- *         kabul edilir ("120.5" → 120.5); boolean `true` ise 1 litreye dönüşür.
- *         `vehiclePlate` regex'i büyük/küçük harf duyarsızdır ("34 ctp 82" geçerlidir)
- *         ve boşluklar isteğe bağlıdır ("34CTP82" da geçerlidir).
- *       content:
- *         application/json:
- *           schema:
- *             $ref: '#/components/schemas/DispenseRequest'
- *           example:
- *             vehiclePlate: "34 CTP 82"
- *             rfidTag: "TAG-882910"
- *             amountLiters: 120.5
- *             pumpCode: "PMP-1"
  *     responses:
  *       200:
- *         description: >-
- *           İstek doğrulandı ve temizlenmiş gövde yankılandı. Bu yanıt bir ikmal
- *           işleminin gerçekleştiğini GÖSTERMEZ; veritabanına hiçbir şey yazılmaz.
- *           HTTP 201 kullanılmaz çünkü oluşturulan bir kaynak yoktur.
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               required:
- *                 - success
- *                 - message
- *                 - tenantId
- *                 - operator
- *                 - dispenseDetails
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   description: Sabit metin. İşlemin yapıldığını değil, isteğin doğrulandığını bildirir.
- *                   example: "İkmal yetkilendirme isteği doğrulandı."
- *                 tenantId:
- *                   type: string
- *                   description: >-
- *                     AsyncLocalStorage tenant bağlamından okunur (authenticateJWT tarafından
- *                     doldurulur); yedek olarak JWT payload'ındaki tenantId kullanılır.
- *                     JwtUserPayload'da zorunlu olduğu için pratikte daima doludur.
- *                   example: comp-camsa
- *                 operator:
- *                   type: string
- *                   description: İsteği yapan kullanıcının JWT içindeki username değeri.
- *                   example: camsa
- *                 dispenseDetails:
- *                   type: object
- *                   description: >-
- *                     Zod tarafından temizlenmiş istek gövdesinin birebir yankısı.
- *                     Bilinmeyen alanlar silinmiştir; amountLiters daima number'a
- *                     dönüştürülmüş olarak döner. pumpCode gönderilmediyse alan yanıtta hiç bulunmaz.
- *                   required:
- *                     - vehiclePlate
- *                     - rfidTag
- *                     - amountLiters
- *                   properties:
- *                     vehiclePlate:
- *                       type: string
- *                       example: "34 CTP 82"
- *                     rfidTag:
- *                       type: string
- *                       example: "TAG-882910"
- *                     amountLiters:
- *                       type: number
- *                       format: double
- *                       example: 120.5
- *                     pumpCode:
- *                       type: string
- *                       example: "PMP-1"
- *             example:
- *               success: true
- *               message: "İkmal yetkilendirme isteği doğrulandı."
- *               tenantId: "comp-camsa"
- *               operator: "camsa"
- *               dispenseDetails:
- *                 vehiclePlate: "34 CTP 82"
- *                 rfidTag: "TAG-882910"
- *                 amountLiters: 120.5
- *                 pumpCode: "PMP-1"
- *       400:
- *         description: >-
- *           Zod doğrulaması başarısız (error = VALIDATION_ERROR); errors dizisi alan
- *           bazlı Türkçe mesajları taşır. Bu yanıt traceId İÇERMEZ, çünkü
- *           validateRequest hatayı kendi içinde yakalar ve globalErrorHandler'a düşmez.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ValidationErrorResponse'
- *             example:
- *               success: false
- *               error: VALIDATION_ERROR
- *               message: "Gelen istek verileri doğrulanamadı."
- *               errors:
- *                 - field: vehiclePlate
- *                   message: "Geçersiz Türkiye plaka formatı."
- *                 - field: rfidTag
- *                   message: "RFID etiketi en az 3 karakter olmalıdır."
- *                 - field: amountLiters
- *                   message: "Yakıt miktarı 0'dan büyük pozitif bir sayı olmalıdır."
- *       401:
- *         description: >-
- *           Authorization başlığı yok ya da "Bearer " ile başlamıyor (error = UNAUTHORIZED),
- *           veya token geçersiz / süresi dolmuş (error = INVALID_TOKEN).
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: INVALID_TOKEN
- *               message: "Oturum süreniz doldu veya geçersiz token. Lütfen tekrar giriş yapınız."
- *       403:
- *         description: >-
- *           Rol yetersiz (error = FORBIDDEN). İzinli roller SUPER_ADMIN, COMPANY_OWNER,
- *           SITE_MANAGER ve PUMP_OPERATOR olduğundan, tanımlı roller arasında bu hatayı
- *           yalnızca DRIVER alır. Mesaj izinli rol listesini dinamik olarak içerir.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: FORBIDDEN
- *               message: "Yetkisiz erişim. Bu işlemi gerçekleştirme yetkiniz bulunmamaktadır. (Gerekli Rol: SUPER_ADMIN, COMPANY_OWNER, SITE_MANAGER, PUMP_OPERATOR)"
- *       500:
- *         description: >-
- *           Rota mantığından KAYNAKLANMAZ (handler'da try/catch yoktur ve veritabanına
- *           erişilmez). Pratikte yalnızca istek gövdesi geçerli JSON değilse oluşur:
- *           express.json() SyntaxError'ı globalErrorHandler'a düşer ve traceId taşıyan
- *           INTERNAL_SERVER_ERROR döner. Bilinen hata: bu durum aslında 400 dönmelidir.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               traceId: "58f00403-b7ab-4aa2-9810-35fc340ce50c"
- *               error: INTERNAL_SERVER_ERROR
- *               message: "Sunucu tarafında beklenmeyen bir hata oluştu. Lütfen traceId ile sistem yöneticisine başvurun."
+ *         description: İkmal kaydedildi.
  */
 router.post(
   '/dispense',
   authenticateJWT,
   authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER', 'PUMP_OPERATOR'),
   validateRequest({ body: dispenseRequestSchema }),
-  async (req: AuthenticatedRequest, res: Response) => {
-    const sanitizedBody = req.body;
-    const store = getTenantStore();
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const b = req.body;
+      const newTransaction = await createTransaction({
+        site_name: b.siteName,
+        vehicle_plate: b.vehiclePlate,
+        driver_name: b.driverName ?? null,
+        tank_name: b.tankName ?? null,
+        amount_liters: b.amountLiters,
+        flow_rate_lpm: b.flowRateLpm ?? null,
+        pump_status: b.pumpStatus || 'TAMAMLANTI',
+        type: b.type || 'Manuel',
+        rfid_auth: b.rfidAuth ?? true
+      });
 
-    res.json({
-      success: true,
-      message: 'İkmal yetkilendirme isteği doğrulandı.',
-      tenantId: store?.tenantId || req.user?.tenantId,
-      operator: req.user?.username,
-      dispenseDetails: sanitizedBody
-    });
+      recordDispenseCompleted('api'); // OPS-1107
+      // FE-801: ikmal tamamlanır tamamlanmaz aynı kiracının diğer açık
+      // panellerine (örn. Tank Durumu ekranı, başka bir kullanıcının
+      // tarayıcısında) sayfa yenilenmeden anında yansısın diye canlı yayın.
+      const tenantId = req.user?.tenantId;
+      if (tenantId) {
+        try {
+          const freshTanks = await getTenantTanks();
+          broadcastToTenant(tenantId, 'dispense:completed', { transaction: newTransaction, tanks: freshTanks });
+        } catch (broadcastErr) {
+          // Canlı yayın başarısız olsa bile ikmal kaydı zaten kalıcıdır —
+          // bu bir best-effort bildirimdir, isteği başarısız kılmamalı.
+          logger.warn({ err: broadcastErr }, '⚠️ [Socket.io] dispense:completed yayını başarısız oldu.');
+        }
+      }
+
+      res.json({
+        success: true,
+        message: 'İkmal başarıyla kaydedildi.',
+        data: newTransaction
+      });
+    } catch (error: any) {
+      next(error);
+    }
   }
 );
 
 /**
  * @swagger
- * /telemetry/hardware-data:
- *   post:
- *     tags: [Telemetry]
- *     summary: IoT Donanım Telemetri Girişi (HMAC-SHA256)
- *     description: >
- *       ESP32 / IoT sensörlerinden gelen telemetri paketlerini kabul eder. Bu uç JWT
- *       kullanmaz; AUTH-202 HMAC-SHA256 donanım kimlik doğrulamasıyla korunur
- *       (hardwareAuthMiddleware). Üç başlık da zorunludur ve birlikte (AND) doğrulanır.
- *       İmza HMAC_SHA256(cihazGizliAnahtari, "<X-Timestamp>.<ham HTTP gövdesi>") biçiminde
- *       hesaplanır ve hex olarak gönderilir. Normal akışta gövde yeniden serileştirilmez;
- *       express.json({ verify }) ile saklanan ham bayt dizisi (req.rawBody) imzalanır ve
- *       karşılaştırma crypto.timingSafeEqual ile yapılır. Content-Type application/json
- *       gönderilmezse req.rawBody oluşmaz ve sunucu imzayı JSON.stringify(req.body) yedeğine,
- *       yani literal "{}" metnine göre hesaplar - cihazlar bu başlığı daima göndermelidir.
- *       DAVRANIŞ UYARISI - yanıt metni "Telemetri kaydedildi." dese de handler
- *       (routes.ts:814-827) hiçbir kalıcılık işlemi yapmaz; veritabanına yazmaz, MQTT/Redis'e
- *       aktarmaz. Yalnızca doğrulanmış cihaz bilgisini ve gelen gövdeyi aynen geri yansıtır
- *       (echo). Gövde için şema doğrulaması (Zod) da yoktur.
- *     security: []
+ * /transactions:
+ *   get:
+ *     summary: İkmal Geçmişi (FE-802 — sunucu taraflı sayfalama)
+ *     description: RLS kurallarına göre oturum açmış firmanın ikmal geçmişini sayfalı ve filtreli olarak getirir.
+ *     security:
+ *       - bearerAuth: []
  *     parameters:
- *       - in: header
- *         name: X-Device-ID
- *         required: true
- *         description: Kayıtlı donanım kimliği (ESP32-PUMP-01, ESP32-TANK-01, ESP32-FLOW-ISR).
- *         schema:
- *           type: string
- *           example: ESP32-TANK-01
- *       - in: header
- *         name: X-Timestamp
- *         required: true
- *         description: >
- *           Milisaniye epoch veya Date ile ayrıştırılabilir ISO tarih. Sunucu saatinden
- *           30 saniyeden fazla sapması replay saldırısı sayılır. İmza girdisinin ilk
- *           bileşenidir; gönderilen metnin birebir kendisi imzalanır.
- *         schema:
- *           type: string
- *           example: '1757268144351'
- *       - in: header
- *         name: X-Hardware-Signature
- *         required: true
- *         description: HMAC-SHA256 imzası, küçük harfli hex (64 karakter).
- *         schema:
- *           type: string
- *           example: 9f1c2b7d4e5a6083bd11a2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f607
- *     requestBody:
- *       required: false
- *       description: >
- *         Serbest biçimli sensör yükü. Sunucu bu gövdeyi doğrulamaz, dönüştürmez ve saklamaz;
- *         yalnızca HMAC imzasının girdisi olarak kullanıp receivedData alanında geri döndürür.
- *         Gövde boş bırakılabilir (imza yine "<X-Timestamp>." üzerinden hesaplanır).
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             additionalProperties: true
- *           example:
- *             tankId: tank-1
- *             levelLiters: 14830.5
- *             flowLitersPerMin: 42.7
- *             readAt: '2026-09-07T18:22:24.351Z'
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer, default: 10, maximum: 100 }
+ *       - in: query
+ *         name: startDate
+ *         schema: { type: string, format: date }
+ *       - in: query
+ *         name: endDate
+ *         schema: { type: string, format: date }
+ *       - in: query
+ *         name: siteName
+ *         schema: { type: string }
+ *       - in: query
+ *         name: driverName
+ *         schema: { type: string }
+ *       - in: query
+ *         name: pumpStatus
+ *         schema: { type: string, enum: [TAMAMLANTI, DURDURULDU, ANOMALİ] }
+ *       - in: query
+ *         name: type
+ *         schema: { type: string, enum: [Otomatik, Manuel, Çapraz Şantiye] }
+ *       - in: query
+ *         name: search
+ *         schema: { type: string }
  *     responses:
  *       200:
- *         description: >
- *           İmza doğrulandı ve istek kabul edildi. DİKKAT - veri kalıcı olarak KAYDEDİLMEZ;
- *           receivedData gönderilen gövdenin birebir kopyasıdır.
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                 hardware:
- *                   type: object
- *                   description: hardwareAuthMiddleware tarafından doğrulanan cihaz bağlamı.
- *                   properties:
- *                     deviceId:
- *                       type: string
- *                     name:
- *                       type: string
- *                     siteName:
- *                       type: string
- *                     timestampMs:
- *                       type: integer
- *                       format: int64
- *                       description: X-Timestamp başlığının milisaniye epoch karşılığı.
- *                 receivedData:
- *                   type: object
- *                   additionalProperties: true
- *                   description: Gelen gövdenin işlenmemiş kopyası (kaydedilmez).
- *                 timestamp:
- *                   type: string
- *                   format: date-time
- *                   description: Yanıtın üretildiği sunucu zamanı (ISO 8601).
- *             example:
- *               success: true
- *               message: 'Donanım HMAC-SHA256 doğrulaması başarılı. Telemetri kaydedildi.'
- *               hardware:
- *                 deviceId: ESP32-TANK-01
- *                 name: 'Gebze Ultrasonik Tank Probu #1'
- *                 siteName: 'Gebze Ana Şantiye'
- *                 timestampMs: 1757268144351
- *               receivedData:
- *                 tankId: tank-1
- *                 levelLiters: 14830.5
- *               timestamp: '2026-09-07T18:22:24.351Z'
+ *         description: İkmal geçmişi sayfası başarıyla getirildi.
+ */
+router.get(
+  '/transactions',
+  authenticateJWT,
+  validateRequest({ query: transactionQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as {
+        page: number;
+        pageSize: number;
+        startDate?: string;
+        endDate?: string;
+        siteName?: string;
+        vehiclePlate?: string;
+        driverName?: string;
+        tankName?: string;
+        pumpStatus?: string;
+        type?: string;
+        search?: string;
+        sortBy?: string;
+        sortDir?: 'asc' | 'desc';
+      };
+
+      const result = await getTenantTransactionsPaginated(q, siteScopeFor(req.user!));
+
+      res.json({
+        success: true,
+        data: result.data,
+        pagination: {
+          page: result.page,
+          pageSize: result.pageSize,
+          totalCount: result.totalCount,
+          totalPages: result.totalPages,
+          totalLiters: result.totalLiters
+        }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /transactions/export:
+ *   get:
+ *     summary: İkmal Geçmişi Excel Dışa Aktarımı (REP-701)
+ *     description: >
+ *       RLS kurallarına göre oturum açmış firmanın (ve varsa şantiye
+ *       kısıtlamasının) ikmal geçmişini, aynı filtrelerle, bellek dostu
+ *       stream ile .xlsx olarak indirir. Sayfalama yoktur — filtreye uyan
+ *       TÜM kayıtlar tek dosyada, sonunda dinamik bir GENEL TOPLAM
+ *       satırıyla birlikte döner.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: startDate
+ *         schema: { type: string, format: date }
+ *       - in: query
+ *         name: endDate
+ *         schema: { type: string, format: date }
+ *       - in: query
+ *         name: siteName
+ *         schema: { type: string }
+ *       - in: query
+ *         name: vehiclePlate
+ *         schema: { type: string }
+ *       - in: query
+ *         name: driverName
+ *         schema: { type: string }
+ *       - in: query
+ *         name: tankName
+ *         schema: { type: string }
+ *       - in: query
+ *         name: pumpStatus
+ *         schema: { type: string, enum: [TAMAMLANTI, DURDURULDU, ANOMALİ] }
+ *       - in: query
+ *         name: type
+ *         schema: { type: string, enum: [Otomatik, Manuel, Çapraz Şantiye, Çevrimdışı Senkron] }
+ *       - in: query
+ *         name: search
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: .xlsx dosyası stream olarak döner.
+ */
+router.get(
+  '/transactions/export',
+  authenticateJWT,
+  validateRequest({ query: transactionExportQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = req.query as unknown as {
+        startDate?: string;
+        endDate?: string;
+        siteName?: string;
+        vehiclePlate?: string;
+        driverName?: string;
+        tankName?: string;
+        pumpStatus?: string;
+        type?: string;
+        search?: string;
+      };
+
+      await streamTransactionsToExcel(res, q, siteScopeFor(req.user!));
+    } catch (error: any) {
+      // Header'lar zaten gönderilmişse (stream başlamışsa) Express'in
+      // varsayılan hata middleware'i devreye giremez — bağlantıyı olduğu
+      // gibi keserek yarım/bozuk bir .xlsx indirmeyi önlüyoruz.
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+      next(error);
+    }
+  }
+);
+
+// ── REP-703: Ortak rapor çatısı ──────────────────────────────────────────
+// Katalog + jenerik çalıştırma/export uçları. Her yeni rapor
+// `reports/definitions/`e bir tanım eklenerek üretilir — buradaki üç rota
+// TÜM raporlar için ortak ve DEĞİŞMEZ; bkz. reports/reportEngine.ts.
+
+/**
+ * @swagger
+ * /reports:
+ *   get:
+ *     summary: Rapor Kataloğu (REP-703)
+ *     description: Oturum açan kullanıcının ROLÜNE göre görebileceği raporların listesi.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Kullanıcının erişebileceği rapor tanımları.
+ */
+router.get('/reports', authenticateJWT, (req: AuthenticatedRequest, res: Response) => {
+  res.json({ success: true, data: listReportsForRole(req.user!.role) });
+});
+
+/**
+ * @swagger
+ * /reports/{reportId}:
+ *   get:
+ *     summary: Bir Raporu Filtre + Sayfalamayla Çalıştır (REP-703)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: reportId
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: pageSize
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: sortBy
+ *         description: Raporun kolonlarından biri (geçersizse/eksikse raporun varsayılan sıralamasına düşer).
+ *         schema: { type: string }
+ *       - in: query
+ *         name: sortDir
+ *         schema: { type: string, enum: [asc, desc] }
+ *     responses:
+ *       200:
+ *         description: Sayfalanmış rapor sonucu + toplamlar.
+ *       403:
+ *         description: Kullanıcının rolü bu raporu görüntüleyemez.
+ *       404:
+ *         description: Bilinmeyen rapor id'si.
+ */
+router.get(
+  '/reports/:reportId',
+  authenticateJWT,
+  validateRequest({ params: reportIdParamsSchema, query: reportRunQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const def = getReportDefinition(req.params.reportId);
+      if (!def) throw new NotFoundError('Rapor bulunamadı.', { error: 'REPORT_NOT_FOUND' });
+      if (!def.allowedRoles.includes(req.user!.role)) {
+        throw new ForbiddenError('Bu raporu görüntüleme yetkiniz yok.', { error: 'REPORT_FORBIDDEN' });
+      }
+
+      const viewer = { role: req.user!.role };
+      // REP-722: erişimin kendisi hassas raporlarda görüntüleme de audit'lenir (veri çıkmadan önce).
+      if (def.auditAccess) {
+        assertPiiFilterAccess(def, req.query as ReportQueryParams, viewer);
+        await auditReportExport(def, viewer, 'view', req.query as ReportQueryParams);
+      }
+      const result = await runReport(def, req.query as ReportQueryParams, siteScopeFor(req.user!), viewer);
+      res.json({
+        success: true,
+        data: result.data,
+        pagination: { page: result.page, pageSize: result.pageSize, totalCount: result.totalCount, totalPages: result.totalPages },
+        aggregates: result.aggregates,
+        sort: result.sort
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /reports/{reportId}/export:
+ *   get:
+ *     summary: 'Bir Raporu CSV/PDF/XLSX Olarak Dışa Aktar (REP-703, XLSX: REP-724)'
+ *     description: >
+ *       Sayfalama YOKTUR — filtreye uyan TÜM kayıtlar akışla indirilir.
+ *       PDF, kuyruksuz bir süreçte CPU'yu bloklamamak için satır sayısı
+ *       sınırlıdır (varsayılan 2000); üzerindeki raporlar 400 ile reddedilir
+ *       ve CSV'ye yönlendirilir.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: reportId
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: format
+ *         required: true
+ *         schema: { type: string, enum: [csv, pdf, xlsx] }
+ *     responses:
+ *       200:
+ *         description: CSV, PDF ya da XLSX dosyası stream olarak döner.
  *       400:
- *         description: >
- *           INVALID_TIMESTAMP_FORMAT - X-Timestamp ne sayısal (ms epoch) ne de ayrıştırılabilir
- *           bir tarih. Bu uçtaki tek 400 durumudur (gövde Zod ile doğrulanmadığı için
- *           VALIDATION_ERROR üretilmez).
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: INVALID_TIMESTAMP_FORMAT
- *               message: 'X-Timestamp geçerli bir milisaniye zaman damgası veya ISO tarihi olmalıdır.'
- *       401:
- *         description: >
- *           Donanım kimlik doğrulaması başarısız. Olası error kodları -
- *           MISSING_HARDWARE_HEADERS (üç başlıktan biri eksik),
- *           REPLAY_ATTACK_DETECTED (X-Timestamp sunucu saatinden 30 sn'den fazla sapıyor),
- *           UNAUTHORIZED_DEVICE (X-Device-ID kayıtlı cihaz listesinde yok),
- *           INVALID_HARDWARE_SIGNATURE (HMAC eşleşmedi veya imza hex değil).
- *           NOT - kodda tanımlı INVALID_SIGNATURE_FORMAT dalı erişilemezdir; Buffer.from(x, 'hex')
- *           Node.js'te istisna fırlatmaz, geçersiz karakterlerden itibaren sessizce keser, bu
- *           yüzden hex olmayan imzalar uzunluk uyuşmazlığına düşüp INVALID_HARDWARE_SIGNATURE döner.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               error: INVALID_HARDWARE_SIGNATURE
- *               message: 'Kriptografik imza doğrulaması başarısız. Veri manipüle edilmiş veya anahtar hatalı.'
- *       500:
- *         description: >
- *           INTERNAL_SERVER_ERROR - gövde ayrıştırılamadı (bozuk JSON ya da express.json
- *           varsayılan 100kb sınırının aşılması). Bu hata HMAC ara katmanından ÖNCE, gövde
- *           ayrıştırıcısında oluşur; globalErrorHandler bunları AppError/ZodError dışı kabul
- *           edip 413/400 yerine traceId ile 500 olarak döndürür. Handler'ın kendisi istisna üretmez.
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *             example:
- *               success: false
- *               traceId: 58f00403-b7ab-4aa2-9810-35fc340ce50c
- *               error: INTERNAL_SERVER_ERROR
- *               message: 'Sunucu tarafında beklenmeyen bir hata oluştu. Lütfen traceId ile sistem yöneticisine başvurun.'
+ *         description: PDF için satır sayısı sınırı aşıldı.
+ *       403:
+ *         description: Kullanıcının rolü bu raporu görüntüleyemez.
+ *       404:
+ *         description: Bilinmeyen rapor id'si.
+ */
+router.get(
+  '/reports/:reportId/export',
+  authenticateJWT,
+  validateRequest({ params: reportIdParamsSchema, query: reportExportQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const def = getReportDefinition(req.params.reportId);
+      if (!def) throw new NotFoundError('Rapor bulunamadı.', { error: 'REPORT_NOT_FOUND' });
+      if (!def.allowedRoles.includes(req.user!.role)) {
+        throw new ForbiddenError('Bu raporu görüntüleme yetkiniz yok.', { error: 'REPORT_FORBIDDEN' });
+      }
+
+      const { format, ...query } = req.query as unknown as ReportQueryParams & { format: 'csv' | 'pdf' | 'xlsx' };
+      const viewer = { role: req.user!.role };
+      // REP-720: denetimli raporlarda kayıt akıştan ÖNCE yazılır; yazılamazsa veri gönderilmez.
+      assertPiiFilterAccess(def, query, viewer); // reddedilecek istek 'indirme' olarak audit'e girmesin
+      assertReportQueryValid(def, query); // akış başlamadan (başlıklar gönderilmeden) → istemci 400 alır, kopmuş bağlantı değil
+      if (def.auditExport) await auditReportExport(def, viewer, format, query);
+      if (format === 'csv') {
+        await streamReportToCsv(res, def, query, siteScopeFor(req.user!), viewer);
+      } else if (format === 'xlsx') {
+        await streamReportToXlsx(res, def, query, siteScopeFor(req.user!), viewer);
+      } else {
+        await streamReportToPdf(res, def, query, siteScopeFor(req.user!), viewer);
+      }
+    } catch (error: any) {
+      // /transactions/export ile AYNI gerekçe: stream başladıktan sonra
+      // (başlıklar gönderildikten sonra) bir hata olursa Express'in
+      // varsayılan hata middleware'i devreye giremez.
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /dashboard/executive:
+ *   get:
+ *     summary: Yönetici Özet Dashboard'u — KPI, trend, ilk 10, tank özeti (REP-723)
+ *     description: >
+ *       KPI kartları (bugün/ay tüketimi, aylık maliyet, açık alarm, kritik stok, çevrimdışı cihaz), günlük tüketim/maliyet/stok
+ *       trendi, ilk 10 araç ve şantiye, tank doluluk özeti. Her KPI `drilldown` ile ilgili detay raporuna bağlanır. Değerler
+ *       rep-723/rep-723-tank REP-703 raporlarından üretilir (CSV/PDF export'uyla aynı veri). SITE_MANAGER yalnızca kendi şantiyesini görür.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: days
+ *         description: Trend/ilk-10 penceresi (1-90, varsayılan 30).
+ *         schema: { type: integer }
+ */
+router.get(
+  '/dashboard/executive',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ query: executiveDashboardQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { days } = req.query as unknown as { days: number };
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: await getExecutiveDashboard(siteScopeFor(req.user!), { role: req.user!.role }, days) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── REP-724: AI destekli aylık yönetim raporu ──
+const MANAGEMENT_REPORT_GENERATE_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/** SITE_MANAGER için kapsam ZORUNLU: şantiyesi tanımsız bir site yöneticisine firma geneli veri (=başka şantiyeler) sızdırılmaz. */
+function managementReportScopeFor(user: JwtUserPayload): string | undefined {
+  if (user.role === 'SITE_MANAGER') {
+    if (!user.siteName) throw new ForbiddenError('Şantiye kapsamı tanımsız kullanıcı yönetim raporunu görüntüleyemez.', { error: 'SITE_SCOPE_REQUIRED' });
+    return user.siteName;
+  }
+  return undefined;
+}
+
+/**
+ * @swagger
+ * /management-reports:
+ *   get:
+ *     summary: Üretilmiş aylık yönetim raporlarını listele (REP-724)
+ *     description: Yalnızca SUPER_ADMIN/COMPANY_OWNER (firma geneli). Ay, yapay zekâ durumu ve e-posta durumu döner.
+ *     security:
+ *       - bearerAuth: []
+ *   post:
+ *     summary: Aylık yönetim raporunu şimdi üret (REP-724)
+ *     description: >
+ *       Ölçülen veri (rep-724) + Gemini yorumu (sistem verisiyle çapraz doğrulanmış) üretir ve kaydeder. Model erişilemezse rapor yine
+ *       ölçülen veri bölümüyle üretilir (`aiStatus: MODEL_ERISILEMEDI`). Aynı ay için tekrar çağrı `regenerate:true` olmadıkça mevcut raporu döner.
+ *       `sendEmail:true` raporu e-postayla da gönderir. Süpürücü her ayın 1'inde önceki ayı otomatik üretip gönderir.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/management-reports',
+  authenticateJWT,
+  authorizeRoles(...MANAGEMENT_REPORT_GENERATE_ROLES),
+  async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await listMonthlyReportRecords() });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/management-reports',
+  authenticateJWT,
+  authorizeRoles(...MANAGEMENT_REPORT_GENERATE_ROLES),
+  validateRequest({ body: generateMonthlyReportBodySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const { month, regenerate, sendEmail } = req.body as GenerateMonthlyReportDTO;
+      const target = month ?? previousMonthOf(new Date());
+      const { record, created } = await generateMonthlyManagementReport(target, { generatedBy: req.user!.userId, regenerate });
+      const delivery = sendEmail ? await deliverMonthlyManagementReport(target) : null;
+      res.status(created ? 201 : 200).json({
+        success: true,
+        data: { id: record.id, month: record.period_month, created, aiStatus: record.ai_status, rejectedStatements: record.ai_rejected.length, emailStatus: record.email_status },
+        delivery
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /management-reports/{month}:
+ *   get:
+ *     summary: Aylık yönetim raporu — ölçülen veri ve model yorumu AYRI alanlarda (REP-724)
+ *     description: >
+ *       `measured` sistem kayıtlarından hesaplanan veridir; `aiCommentary` modelin yorumudur (yalnızca sistem verisiyle doğrulanan
+ *       ifadeler; doğrulanamayanlar `rejectedCount`). SITE_MANAGER yalnızca kendi şantiyesinin ölçülen verisini görür; `aiCommentary`
+ *       ona `SITE_SCOPE_RESTRICTED` döner (yorum firma geneli veriyle yazılmıştır).
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: month
+ *         required: true
+ *         schema: { type: string, example: "2026-02" }
+ */
+router.get(
+  '/management-reports/:month',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ params: monthParamsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const scope = managementReportScopeFor(req.user!);
+      const record = await getMonthlyReportRecord(req.params.month);
+      if (!record) throw new NotFoundError('Bu ay için yönetim raporu henüz üretilmedi.', { error: 'REPORT_NOT_GENERATED', month: req.params.month });
+      const measured = scope === undefined ? record.facts : await compileMonthlyFacts(req.params.month, scope);
+      const aiCommentary = scope === undefined
+        ? { status: record.ai_status, origin: 'MODEL', narrative: record.ai_narrative, rejectedCount: record.ai_rejected.length, modelName: record.model_name }
+        : { status: 'SITE_SCOPE_RESTRICTED', origin: 'MODEL', narrative: null, rejectedCount: 0, modelName: null };
+      res.set('Cache-Control', 'no-store');
+      res.json({ success: true, data: { month: record.period_month, measured: { origin: 'MEASURED', ...measured }, aiCommentary, emailStatus: scope === undefined ? record.email_status : undefined } });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /management-reports/{month}/pdf:
+ *   get:
+ *     summary: 'Aylık yönetim raporu PDF''i (A: ölçülen veri, B: yapay zekâ yorumu — görsel olarak ayrı) (REP-724)'
+ *     description: Firma yöneticisi tam raporu, SITE_MANAGER yalnızca kendi şantiyesinin ölçülen verisini alır. Veri bölümünün CSV/XLSX/PDF tablosu için /reports/rep-724/export?month=YYYY-MM&format=csv|xlsx|pdf.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/management-reports/:month/pdf',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ params: monthParamsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const pdf = await buildMonthlyReportPdfForViewer(req.params.month, managementReportScopeFor(req.user!));
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="yonetim-raporu-${req.params.month}.pdf"`);
+      res.send(pdf);
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── REP-719: şantiye × ay yakıt bütçesi (yalnızca raporlama — ikmali engellemez) ──
+const FUEL_BUDGET_ADMIN_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+
+/**
+ * @swagger
+ * /fuel-budgets:
+ *   put:
+ *     summary: Şantiye × Ay Yakıt Bütçesi Tanımla / Güncelle (REP-719)
+ *     description: (site, ay) için bütçe (TL) yoksa yaratır, varsa günceller. Bütçe yalnızca raporlamadır; aşım rep-719'da vurgulanır.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Yakıt Bütçeleri (REP-719)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.put(
+  '/fuel-budgets',
+  authenticateJWT,
+  authorizeRoles(...FUEL_BUDGET_ADMIN_ROLES),
+  validateRequest({ body: setFuelBudgetSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await setFuelBudget(req.body, req.user!.userId) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/fuel-budgets',
+  authenticateJWT,
+  authorizeRoles(...FUEL_BUDGET_ADMIN_ROLES),
+  validateRequest({ query: listFuelBudgetsQuerySchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await listFuelBudgets(req.query as { month?: string; siteName?: string }) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.delete(
+  '/fuel-budgets/:budgetId',
+  authenticateJWT,
+  authorizeRoles(...FUEL_BUDGET_ADMIN_ROLES),
+  validateRequest({ params: fuelBudgetIdParamsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await deleteFuelBudget(req.params.budgetId, req.user!.userId);
+      res.json({ success: true });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── REP-705: Zamanlanmış rapor gönderimi (cron → e-posta) ────────────────
+// AC eşlemesi ve mimari kararlar için bkz. services/reportScheduleService.ts.
+const REPORT_SCHEDULE_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /report-schedules:
+ *   post:
+ *     summary: Zamanlanmış Rapor Oluştur (REP-705)
+ *     description: >
+ *       Alıcılar kullanıcı ID'si olarak saklanır — e-posta adresi GÖNDERİM
+ *       ANINDA çözülür (silinen bir kullanıcı otomatik düşer, bkz. servis
+ *       yorumu). SITE_MANAGER oluşturursa zamanlama KENDİ şantiyesine
+ *       sabitlenir.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Zamanlanmış Raporları Listele (REP-705)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/report-schedules',
+  authenticateJWT,
+  authorizeRoles(...REPORT_SCHEDULE_MANAGER_ROLES),
+  validateRequest({ body: createReportScheduleSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const schedule = await createReportSchedule(req.body, req.user!.userId, req.user!.role, siteScopeFor(req.user!));
+      res.status(201).json({ success: true, data: schedule });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get('/report-schedules', authenticateJWT, authorizeRoles(...REPORT_SCHEDULE_MANAGER_ROLES), async (_req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await listReportSchedulesForCurrentTenant() });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /report-schedules/{scheduleId}:
+ *   get:
+ *     summary: Zamanlama Detayı (REP-705)
+ *     security:
+ *       - bearerAuth: []
+ *   patch:
+ *     summary: Zamanlamayı Güncelle / Etkinleştir-Devre Dışı Bırak (REP-705)
+ *     security:
+ *       - bearerAuth: []
+ *   delete:
+ *     summary: Zamanlamayı Sil (REP-705)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/report-schedules/:scheduleId',
+  authenticateJWT,
+  authorizeRoles(...REPORT_SCHEDULE_MANAGER_ROLES),
+  validateRequest({ params: reportScheduleIdParamsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getReportSchedule(req.params.scheduleId) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.patch(
+  '/report-schedules/:scheduleId',
+  authenticateJWT,
+  authorizeRoles(...REPORT_SCHEDULE_MANAGER_ROLES),
+  validateRequest({ params: reportScheduleIdParamsSchema, body: updateReportScheduleSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await updateReportSchedule(req.params.scheduleId, req.body) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.delete(
+  '/report-schedules/:scheduleId',
+  authenticateJWT,
+  authorizeRoles(...REPORT_SCHEDULE_MANAGER_ROLES),
+  validateRequest({ params: reportScheduleIdParamsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      await deleteReportSchedule(req.params.scheduleId);
+      res.json({ success: true });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /report-schedules/{scheduleId}/deliveries:
+ *   get:
+ *     summary: Gönderim Geçmişi (REP-705 AC — hata durumunda yeniden deneme kaydı)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/report-schedules/:scheduleId/deliveries',
+  authenticateJWT,
+  authorizeRoles(...REPORT_SCHEDULE_MANAGER_ROLES),
+  validateRequest({ params: reportScheduleIdParamsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await listReportDeliveriesForSchedule(req.params.scheduleId) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /report-deliveries/{deliveryId}/download/{token}:
+ *   get:
+ *     summary: Presigned Rapor İndirme Bağlantısı (REP-705 AC — 10MB üzeri raporlar)
+ *     description: >
+ *       JWT GEREKTİRMEZ — /archives/{archiveId}/download/{token} (REP-702) ile
+ *       AYNI pre-auth istisnası.
+ *     security: []
+ */
+router.get(
+  '/report-deliveries/:deliveryId/download/:token',
+  validateRequest({ params: reportDeliveryDownloadParamsSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const lookup = await pool.query('SELECT tenant_id FROM report_deliveries WHERE id = $1', [req.params.deliveryId]);
+      if (lookup.rows.length === 0) {
+        throw new NotFoundError('Geçersiz veya süresi dolmuş indirme bağlantısı.');
+      }
+      const tenantId = lookup.rows[0].tenant_id;
+
+      const payload = await runWithTenant({ tenantId }, () => verifyAndConsumeReportDeliveryDownload(req.params.deliveryId, req.params.token));
+
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${payload.fileName}"`);
+      res.send(payload.fileData);
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /companies/me/archive-settings:
+ *   get:
+ *     summary: Periyodik Arşiv Ayarını Getir (REP-702)
+ *     security:
+ *       - bearerAuth: []
+ *   patch:
+ *     summary: Periyodik Arşiv Ayarını Belirle (REP-702)
+ *     description: >
+ *       AC: "Periyot seçimi (7/15/30/90 gün)." `periodDays: null` gönderilirse
+ *       periyodik üretim KAPATILIR — index.ts'teki süpürücü bu firmayı bir
+ *       dahaki turda atlar. Manuel "Şimdi Arşiv Oluştur" (POST /archives)
+ *       bu ayardan BAĞIMSIZ, her zaman çalışır.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/companies/me/archive-settings', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const settings = await getArchiveSettings(req.user!.tenantId);
+    if (!settings) throw new NotFoundError('Firma bulunamadı.');
+    res.json({ success: true, data: settings });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.patch(
+  '/companies/me/archive-settings',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  validateRequest({ body: archiveSettingsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const updated = await updateArchiveSettings(req.user!.tenantId, req.body.periodDays, req.user!.userId);
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /retention/policies:
+ *   get:
+ *     summary: Veri Saklama (Retention) Politikaları (ARCH-107)
+ *     description: >
+ *       Her PURGEABLE veri sınıfı için varsayılan/taban/etkin saklama süresi; mali kayıt (asla silinmez) ve harici
+ *       (tablosu olmayan) sınıflar bilgi amaçlı listelenir.
+ *     security:
+ *       - bearerAuth: []
+ * /retention/policies/{dataClass}:
+ *   patch:
+ *     summary: Tenant Saklama Süresini Ayarla (ARCH-107)
+ *     description: >
+ *       `retentionDays` sınıfın tabanı (minDays) ile 3650 gün arasında olmalıdır; `null` özelleştirmeyi kaldırır.
+ *       Mali kayıt tabloları için ayar YOKTUR (400). Değişiklik audit log'a yazılır.
+ *     security:
+ *       - bearerAuth: []
+ * /retention/archives:
+ *   get:
+ *     summary: Purge Öncesi Alınan Soğuk Arşivlerin Listesi (ARCH-107)
+ *     description: Yalnızca üst veri (dosya içeriği DÖNMEZ). Arşivler AES-256-GCM ile şifrelidir.
+ *     security:
+ *       - bearerAuth: []
+ * /admin/retention/run:
+ *   post:
+ *     summary: Retention Purge Turunu Elle Çalıştır (SUPER_ADMIN, ARCH-107)
+ *     description: '`dryRun: true` yalnızca silinecek satır sayılarını döner. Günlük zamanlanmış tur ile aynı kodu kullanır.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/retention/policies', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await getRetentionPolicies(req.user!.tenantId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.patch(
+  '/retention/policies/:dataClass',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  validateRequest({ params: retentionClassParamsSchema, body: retentionPolicyUpdateSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const updated = await setRetentionDays(req.user!.tenantId, String(req.params.dataClass), req.body.retentionDays, req.user!.userId);
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get('/retention/archives', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await listRetentionArchives(req.user!.tenantId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.post(
+  '/admin/retention/run',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN'),
+  validateRequest({ body: retentionRunSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await runRetentionPurge({ dryRun: req.body.dryRun ?? false, tenantId: req.body.tenantId, batchSize: req.body.batchSize });
+      res.json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /privacy/inventory:
+ *   get:
+ *     summary: Kişisel Veri Envanteri (COMP-606)
+ *     description: Hangi tabloda hangi kişisel veri, hangi amaçla, ne kadar süre, hangi rol erişimiyle ve hangi korumayla tutulur.
+ *     security:
+ *       - bearerAuth: []
+ * /privacy/requests:
+ *   post:
+ *     summary: Veri Sahibi Başvurusu Oluştur (COMP-606, KVKK m.11)
+ *     description: >
+ *       `requestType`: ACCESS (erişim/döküm) veya ERASURE (silme = anonimleştirme). Yanıt süresi 30 gün (`dueAt`).
+ *       Aynı kişi ve tür için açık başvuru varken 409.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: 'Veri Sahibi Başvuruları (gecikenler `overdue: true`)'
+ *     security:
+ *       - bearerAuth: []
+ * /privacy/requests/{id}/access-export:
+ *   post:
+ *     summary: Erişim Başvurusunu Sonuçlandır ve Dökümü Üret
+ *     description: Kişinin verisinin dökümü YALNIZCA bu yanıtta döner (saklanmaz); başvuru COMPLETED olur. Ad çakışması varsa ad-tabanlı bölümler başkasının verisi ifşa olmasın diye withheld.
+ *     security:
+ *       - bearerAuth: []
+ * /privacy/requests/{id}/erase:
+ *   post:
+ *     summary: Silme Başvurusunu Uygula (anonimleştirme)
+ *     description: Kişisel alanlar anonimleştirilir; ikmal kayıtları (mali) takma adla korunur. Geri alınamaz.
+ *     security:
+ *       - bearerAuth: []
+ * /privacy/requests/{id}/reject:
+ *   post:
+ *     summary: Başvuruyu Reddet (gerekçeli)
+ *     security:
+ *       - bearerAuth: []
+ * /admin/privacy/anonymize-expired:
+ *   post:
+ *     summary: Süresi Dolan Kişisel Verileri Anonimleştir (SUPER_ADMIN)
+ *     description: Günlük zamanlanmış turla aynı kod; `dryRun` yalnızca adayları sayar.
+ *     security:
+ *       - bearerAuth: []
+ */
+const DSR_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER'] as const;
+router.get('/privacy/inventory', authenticateJWT, authorizeRoles(...DSR_ROLES), (_req: AuthenticatedRequest, res: Response) => {
+  res.json({ success: true, data: PII_INVENTORY });
+});
+router.post('/privacy/requests', authenticateJWT, authorizeRoles(...DSR_ROLES), validateRequest({ body: createDsrSchema }), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.status(201).json({ success: true, data: await createDataSubjectRequest(req.user!.tenantId, req.user!.userId, req.body) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.get('/privacy/requests', authenticateJWT, authorizeRoles(...DSR_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await listDataSubjectRequests(req.user!.tenantId) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.post('/privacy/requests/:id/access-export', authenticateJWT, authorizeRoles(...DSR_ROLES), validateRequest({ params: dsrIdParamsSchema }), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ success: true, data: await fulfillAccessRequest(req.user!.tenantId, req.user!.userId, String(req.params.id)) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.post('/privacy/requests/:id/erase', authenticateJWT, authorizeRoles(...DSR_ROLES), validateRequest({ params: dsrIdParamsSchema }), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await fulfillErasureRequest(req.user!.tenantId, req.user!.userId, String(req.params.id)) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.post('/privacy/requests/:id/reject', authenticateJWT, authorizeRoles(...DSR_ROLES), validateRequest({ params: dsrIdParamsSchema, body: dsrRejectSchema }), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await rejectDataSubjectRequest(req.user!.tenantId, req.user!.userId, String(req.params.id), req.body.reason) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+router.post('/admin/privacy/anonymize-expired', authenticateJWT, authorizeRoles('SUPER_ADMIN'), validateRequest({ body: anonymizeExpiredSchema }), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await anonymizeExpiredSubjects({ dryRun: req.body.dryRun ?? false, tenantId: req.body.tenantId }) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /companies/me/fuel-cost-settings:
+ *   get:
+ *     summary: Yakıt Maliyet Yöntemi Ayarını Getir (INV-1503)
+ *     security:
+ *       - bearerAuth: []
+ *   patch:
+ *     summary: Yakıt Maliyet Yöntemini Değiştir (INV-1503)
+ *     description: >
+ *       AC: "Maliyet yöntemi tenant bazında seçilebilmelidir." Değişiklik
+ *       GEÇMİŞ ikmallerin donmuş unit_cost_liters/total_cost'unu ASLA
+ *       değiştirmez — yalnızca bundan SONRAKİ ikmalleri etkiler.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/companies/me/fuel-cost-settings', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const settings = await getFuelCostSettings(req.user!.tenantId);
+    if (!settings) throw new NotFoundError('Firma bulunamadı.');
+    res.json({ success: true, data: settings });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.patch(
+  '/companies/me/fuel-cost-settings',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  validateRequest({ body: fuelCostSettingsSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const updated = await updateFuelCostMethod(req.user!.tenantId, req.body.method, req.user!.userId);
+      res.json({ success: true, data: updated });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /archives:
+ *   post:
+ *     summary: '"Şimdi Arşiv Oluştur" — Manuel Tetikleyici (REP-702)'
+ *     description: >
+ *       AC: "AES-256 şifreli ZIP üretimi ve parola teslimi." Parola YALNIZCA
+ *       bu yanıtta bir kez döner (ticket: "parola panelde tek seferlik
+ *       gösterilmeli") — sunucu tarafında hiçbir yerde ham saklanmaz, bir
+ *       daha asla okunup gösterilemez.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Firmanın Arşiv Geçmişi (REP-702)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/archives',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  validateRequest({ body: createArchiveSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await generateArchiveForTenant(req.user!.tenantId, req.body.periodDays, req.user!.userId, 'MANUEL');
+      res.status(201).json({
+        success: true,
+        message: 'Arşiv üretildi. Parolayı şimdi kaydedin — bir daha gösterilmeyecektir.',
+        data: {
+          archiveId: result.archiveId,
+          password: result.password,
+          downloadUrl: `/api/v1/archives/${result.archiveId}/download/${result.token}`,
+          expiresAt: result.expiresAt
+        }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get('/archives', authenticateJWT, authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await listTenantArchives() });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /archives/{archiveId}/download/{token}:
+ *   get:
+ *     summary: Presigned Arşiv İndirme Bağlantısı (REP-702)
+ *     description: >
+ *       AC: "İndirme bağlantısı süreli olmalı ve indirmeler audit'lenmelidir."
+ *       JWT GEREKTİRMEZ (gerçek "presigned link" semantiği) — auth/login ve
+ *       auth/refresh ile AYNI pre-auth istisnası (bkz.
+ *       check-no-raw-pool-query.mjs ALLOWLIST yorumu: routes.ts, henüz bir
+ *       tenant context'i yokken tenant'ı bulmak için). Tenant bulunduktan
+ *       SONRA `runWithTenant` ile açılan context İÇİNDE (savunma derinliği
+ *       için RLS de devrede) token hash'i + süre kontrol edilir.
+ *     security: []
+ */
+router.get(
+  '/archives/:archiveId/download/:token',
+  validateRequest({ params: archiveDownloadParamsSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const lookup = await pool.query('SELECT tenant_id FROM tenant_archives WHERE id = $1', [req.params.archiveId]);
+      if (lookup.rows.length === 0) {
+        throw new NotFoundError('Geçersiz veya süresi dolmuş indirme bağlantısı.');
+      }
+      const tenantId = lookup.rows[0].tenant_id;
+
+      const payload = await runWithTenant({ tenantId }, () => verifyAndConsumeArchiveDownload(req.params.archiveId, tenantId, req.params.token));
+
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', `attachment; filename="${payload.fileName}"`);
+      res.send(payload.fileData);
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /transactions/{id}/e-irsaliye:
+ *   get:
+ *     summary: İkmal İçin UBL 2.1 DespatchAdvice (e-İrsaliye Taslağı) XML'i (COMP-601)
+ *     description: >
+ *       Belge no (boşluksuz sıralı) + ETTN (kalıcı UUID) tahsis eder; VKN,
+ *       firma adı/adres, Plaka, Şoför TC, Sevk Tarihi ve yakıt tipine göre
+ *       çözülen GTIP kodunu gerçek OASIS UBL 2.1 DespatchAdvice şemasına göre
+ *       üretip o şemaya karşı doğrular. Aynı ikmal için tekrar çağrılırsa AYNI
+ *       belge no + ETTN döner. GİB'in tam UBL-TR profili/Schematron/XAdES
+ *       imzası bu kapsamda DEĞİLDİR (COMP-602).
+ *     headers:
+ *       X-Despatch-Advice-Number: { schema: { type: string } }
+ *       X-Despatch-Advice-ETTN: { schema: { type: string } }
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: XML dosyası döner.
+ *       400:
+ *         description: Firma VKN'si veya sürücü TC'si tanımsız — üretilemez.
+ *       404:
+ *         description: İkmal kaydı bulunamadı.
+ */
+router.get(
+  '/transactions/:id/e-irsaliye',
+  authenticateJWT,
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const recipientTaxId = typeof req.query.recipientTaxId === 'string' ? req.query.recipientTaxId : undefined;
+      const prep = await prepareDespatchAdvice(req.params.id, siteScopeFor(req.user!), recipientTaxId);
+      // COMP-605: alıcı e-İrsaliye mükellefi değilse (deliveryMode KAGIT)
+      // elektronik XML üretme — kağıt süreç uyarısını JSON döndür.
+      if (req.query.format === 'json' || prep.deliveryMode === 'KAGIT') {
+        res.set('Cache-Control', 'no-store');
+        res.status(prep.deliveryMode === 'KAGIT' ? 409 : 200).json({
+          success: prep.deliveryMode !== 'KAGIT',
+          error: prep.deliveryMode === 'KAGIT' ? 'RECIPIENT_NOT_EINVOICE_OBLIGATED' : undefined,
+          data: {
+            documentNumber: prep.documentNumber,
+            ettn: prep.ettn,
+            reusedExisting: prep.reusedExisting,
+            deliveryMode: prep.deliveryMode,
+            recipientTaxId: prep.recipientTaxId,
+            recipientTitle: prep.recipientTitle,
+            recipientObligated: prep.recipientObligated,
+            warnings: prep.recipientWarnings
+          }
+        });
+        return;
+      }
+      const xml = generateDespatchAdviceXml(prep);
+      res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="e-irsaliye-${prep.documentNumber}.xml"`);
+      res.setHeader('X-Despatch-Advice-Number', prep.documentNumber);
+      res.setHeader('X-Despatch-Advice-ETTN', prep.ettn);
+      res.setHeader('X-Delivery-Mode', prep.deliveryMode);
+      res.send(xml);
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /despatch-advice-documents/{documentId}/download:
+ *   get:
+ *     summary: e-İrsaliye Belge İndirme — XML Arşivi / PDF Özeti (REP-721)
+ *     description: >
+ *       `?format=xml` iletim kuyruğuna alınırken arşivlenen XSD-doğrulanmış XML'i (yoksa 404 XML_NOT_ARCHIVED),
+ *       `?format=pdf` belge özetini döner. SITE_MANAGER yalnızca kendi şantiyesinin belgesini indirir;
+ *       her indirme audit_logs'a yazılır (yazılamazsa dosya verilmez).
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get(
+  '/despatch-advice-documents/:documentId/download',
+  authenticateJWT,
+  authorizeRoles(...DESPATCH_TRANSMISSION_VIEW_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const file = await downloadDespatchAdviceDocument(req.params.documentId, req.query.format as any, siteScopeFor(req.user!));
+      res.setHeader('Content-Type', file.contentType);
+      res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+      res.set('Cache-Control', 'no-store');
+      res.send(file.body);
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+// ── COMP-605: mükellef (VKN/TCKN) doğrulama + alıcı bilgisi ─────────────
+const RECIPIENT_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /taxpayers/validate:
+ *   post:
+ *     summary: VKN/TCKN Algoritmik Doğrulama + Mükellefiyet Sorgusu (COMP-605)
+ *     description: '`{ taxId }` → { valid, kind (VKN|TCKN), obligation }. Mükellefiyet 24 sa önbelleklidir.'
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/taxpayers/validate',
+  authenticateJWT,
+  validateRequest({ body: validateTaxIdSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const v = validateTaxId(req.body.taxId);
+      let obligation = null;
+      if (v.ok) {
+        const o = await getEInvoiceObligation(v.normalized);
+        obligation = { obligated: o.obligated, source: o.source, checkedAt: o.checkedAt };
+      }
+      res.json({ success: true, data: { valid: v.ok, kind: v.kind, normalized: v.normalized, reason: v.reason, obligation } });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /recipients:
+ *   post:
+ *     summary: Alıcı Mükellef Kaydı (COMP-605)
+ *     description: >
+ *       `{ taxId, title?, address?, taxOffice?, status? }`. VKN/TCKN geçersizse
+ *       400. Kayıt oluşur ama zorunlu alan(lar) eksikse `warnings` ile döner.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Alıcı Mükellef Listesi (COMP-605)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/recipients',
+  authenticateJWT,
+  authorizeRoles(...RECIPIENT_MANAGER_ROLES),
+  validateRequest({ body: createRecipientSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const result = await upsertRecipientTaxpayer(req.body, req.user!.userId);
+      res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/recipients',
+  authenticateJWT,
+  authorizeRoles(...RECIPIENT_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const recs = await getRecipientTaxpayers();
+      res.json({ success: true, totalCount: recs.length, data: recs });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get(
+  '/recipients/:id',
+  authenticateJWT,
+  authorizeRoles(...RECIPIENT_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await getRecipientTaxpayer(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.post(
+  '/recipients/:id/refresh-obligation',
+  authenticateJWT,
+  authorizeRoles(...RECIPIENT_MANAGER_ROLES),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      res.json({ success: true, data: await refreshRecipientObligation(req.params.id) });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /cross-site-permissions:
+ *   get:
+ *     summary: Çapraz Şantiye İkmal Yetkileri (FUEL-402)
+ *     description: Firmaya ait tüm çapraz şantiye ikmal yetkilerini listeler.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Yetki listesi başarıyla getirildi.
+ */
+router.get('/cross-site-permissions', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const permissions = await getTenantCrossSitePermissions();
+    res.json({ success: true, totalCount: permissions.length, data: permissions });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+// ── FUEL-402.1: araç/şantiye/dönem bazlı yakıt kotası ────────────────────
+const QUOTA_MANAGER_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'] as const;
+
+/**
+ * @swagger
+ * /quotas:
+ *   post:
+ *     summary: Yakıt Kotası Tanımla (FUEL-402.1)
+ *     description: >
+ *       `{ vehiclePlate?, siteName?, periodType, limitLiters, carryoverPolicy?,
+ *       validFrom?, validUntil? }`. Kapsam alanları boşsa kota tenant
+ *       genelidir. Dönem penceresi periodType'a göre Europe/Istanbul
+ *       sınırlarıyla hesaplanır.
+ *     security:
+ *       - bearerAuth: []
+ *   get:
+ *     summary: Kotaları Listele (FUEL-402.1)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post(
+  '/quotas',
+  authenticateJWT,
+  authorizeRoles(...QUOTA_MANAGER_ROLES),
+  validateRequest({ body: createQuotaSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const b = req.body as any;
+      const q = await createFuelQuota(b, req.user!.userId);
+      res.status(201).json({ success: true, data: q });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+router.get('/quotas', authenticateJWT, authorizeRoles(...QUOTA_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const quotas = await getFuelQuotas();
+    res.json({ success: true, totalCount: quotas.length, data: quotas });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.get('/quotas/:id', authenticateJWT, authorizeRoles(...QUOTA_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.json({ success: true, data: await getFuelQuota(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /quotas/{id}/balance:
+ *   get:
+ *     summary: Kalan Kota (FUEL-402.1)
+ *     description: >
+ *       kalan = efektif limit (limit + devir) − tamamlanan (mevcut dönem
+ *       transactions'ı) − rezerve (AKTİF dispense oturumları). Sonuç 5 sn
+ *       cache'lenir.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/quotas/:id/balance', authenticateJWT, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: await getQuotaBalance(req.params.id) });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.get('/quotas/:id/history', authenticateJWT, authorizeRoles(...QUOTA_MANAGER_ROLES), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const history = await getQuotaHistory(req.params.id);
+    res.json({ success: true, totalCount: history.length, data: history });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+router.patch(
+  '/quotas/:id',
+  authenticateJWT,
+  authorizeRoles(...QUOTA_MANAGER_ROLES),
+  validateRequest({ body: updateQuotaSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const q = await updateFuelQuota(req.params.id, req.body, req.user!.userId);
+      res.json({ success: true, data: q });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /quotas/reset-due:
+ *   post:
+ *     summary: Süresi Dolan Kotaları Şimdi Sıfırla (FUEL-402.1)
+ *     description: >
+ *       index.ts'teki saatlik otomatik süpürücünün yaptığı işi bu tenant için
+ *       MANUEL tetikler — dönemi bitmiş AKTİF kotaları fuel_quota_history'ye
+ *       arşivler, devir (carryover) politikasını uygular ve pencereyi bir
+ *       sonraki döneme kaydırır. Ops ekibinin uzlaşma öncesi elle çalıştırması
+ *       ve entegrasyon testleri için. Yalnızca SUPER_ADMIN.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/quotas/reset-due', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const result = await resetDueQuotasForCurrentTenant();
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/license-expiry-sweep:
+ *   post:
+ *     summary: Lisans Süresi Uyarı Turunu Şimdi Tetikle (BILL-1702)
+ *     description: >
+ *       index.ts'teki günlük otomatik süpürücünün yaptığı işi (lisansı
+ *       30/15/7 gün içinde dolacak TÜM firmalar için alarm + Socket.io
+ *       uyarısı) MANUEL tetikler — `resetDueQuotasForCurrentTenant`'ın
+ *       aksine tek bir tenant'a değil TÜM platforma bakar (SUPER_ADMIN'e
+ *       özel). Ops ekibi ve testler için — 24 saati beklemeden.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.post('/admin/license-expiry-sweep', authenticateJWT, authorizeRoles('SUPER_ADMIN'), async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+  try {
+    const result = await runLicenseExpiryWarningSweep();
+    res.json({ success: true, data: result });
+  } catch (error: any) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /cross-site-permissions:
+ *   post:
+ *     summary: Çapraz Şantiye İkmal Yetkisi Oluştur (FUEL-402)
+ *     description: >
+ *       Bir aracın kendi şantiyesi dışında geçici olarak yakıt alabilmesi
+ *       için kota tanımlar. POST /dispense bu kaydı kontrol edip
+ *       kullanılan miktarı atomik olarak günceller.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Yetki oluşturuldu.
+ */
+router.post(
+  '/cross-site-permissions',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ body: createCrossSitePermissionSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const b = req.body;
+      const newPermission = await createCrossSitePermission({
+        vehicle_plate: b.vehiclePlate,
+        driver_name: b.driverName ?? null,
+        home_site: b.homeSite,
+        target_site: b.targetSite,
+        allowed_liters: b.allowedLiters,
+        expiry_date: b.expiryDate
+      });
+      res.json({ success: true, message: 'Çapraz şantiye yetkisi oluşturuldu.', data: newPermission });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /cross-site-permissions/{id}:
+ *   patch:
+ *     summary: Çapraz Şantiye Yetki Durumunu Güncelle
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Durum güncellendi.
+ */
+router.patch(
+  '/cross-site-permissions/:id',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'),
+  validateRequest({ body: updateCrossSitePermissionStatusSchema }),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const updated = await updateCrossSitePermissionStatus(req.params.id, req.body.status);
+      res.json({ success: true, message: 'Yetki durumu güncellendi.', data: updated });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/v1/telemetry/hardware-data
+ * Protected by AUTH-202 HMAC-SHA256 Hardware Authentication Middleware
+ * Receives verified telemetries from ESP32 & IoT sensors
  */
 router.post(
   '/telemetry/hardware-data',
+  hardwareRateLimiter,
   hardwareAuthMiddleware,
   (req: Request, res: Response) => {
     const hardwareInfo = (req as any).authenticatedHardware;
@@ -2420,6 +7992,348 @@ router.post(
       receivedData: req.body,
       timestamp: new Date().toISOString()
     });
+  }
+);
+
+/**
+ * @swagger
+ * /lorawan/uplink:
+ *   post:
+ *     summary: ChirpStack/TTN LoRaWAN Uplink Webhook'u (IOT-302.1)
+ *     description: >
+ *       LoRaWAN ağ sunucusunun (ChirpStack v4 / TTN v3 / düz normalize gövde)
+ *       HTTP integration'ından gelen tek bir uplink'i alır, sensör modeline
+ *       göre çözer ve mevcut telemetri hattına aktarır (MQTT `data` yoluyla
+ *       aynı). İnternete açık — `Authorization: Bearer <LORAWAN_WEBHOOK_TOKEN>`
+ *       zorunludur (yoksa/yanlışsa 401; token hiç yapılandırılmamışsa 503,
+ *       fail-closed). Bozuk/eksik paketler 202 içinde `accepted:false` ile
+ *       izole edilir — ağ sunucusu retry'a girmesin ve hat durmasın diye
+ *       gövde hatası yine 2xx döner (yalnızca auth/limit hataları 4xx).
+ *     security:
+ *       - lorawanWebhookToken: []
+ *     responses:
+ *       202:
+ *         description: Uplink alındı (accepted true/false, decoded değerler payload'da).
+ *       401:
+ *         description: Eksik/geçersiz webhook token'ı.
+ *       503:
+ *         description: LORAWAN_WEBHOOK_TOKEN yapılandırılmamış (fail-closed).
+ */
+router.post(
+  '/lorawan/uplink',
+  lorawanWebhookRateLimiter,
+  lorawanWebhookAuth,
+  validateRequest({ body: lorawanUplinkSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await ingestLoRaWANUplink(req.body);
+      // 202: alındı ve işlendi/izole edildi. accepted alanı sonucu taşır.
+      res.status(202).json({ success: true, ...result });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /telemetry/sync-batch:
+ *   post:
+ *     summary: Çevrimdışı Biriken İkmallerin Toplu Senkronizasyonu (IOT-303.1)
+ *     description: >
+ *       Bağlantısı kesilen bir cihazın biriktirdiği ikmal kayıtlarını tek
+ *       istekte (en fazla 5000 kayıt) kabul eder. (device_id, localSequenceId)
+ *       ikilisi veritabanı seviyesinde benzersizdir — aynı batch'in tekrar
+ *       gönderimi ikinci bir mali kayıt YARATMAZ. Yanıt kayıt bazlıdır:
+ *       her kayıt ACCEPTED / DUPLICATE_SKIPPED / ERROR durumlarından biriyle
+ *       döner, cihaz yalnızca ACCEPTED+DUPLICATE_SKIPPED olanları kendi
+ *       kuyruğundan silmelidir.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Batch işlendi (kısmi başarı da 200 döner — hata payload içindedir).
+ */
+router.post(
+  '/telemetry/sync-batch',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  validateRequest({ body: syncBatchSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; tenantId: string };
+    try {
+      const results = await runWithTenant({ tenantId: hw.tenantId }, () =>
+        syncOfflineDispenseBatch(hw.deviceId, req.body.records)
+      );
+
+      const summary = {
+        totalReceived: results.length,
+        accepted: results.filter((r) => r.status === 'ACCEPTED').length,
+        duplicateSkipped: results.filter((r) => r.status === 'DUPLICATE_SKIPPED').length,
+        failed: results.filter((r) => r.status === 'ERROR').length
+      };
+
+      recordDispenseCompleted('offline_sync', summary.accepted); // OPS-1107
+
+      try {
+        const freshTanks = await runWithTenant({ tenantId: hw.tenantId }, () => getTenantTanks());
+        broadcastToTenant(hw.tenantId, 'dispense:completed', { batchSummary: summary, tanks: freshTanks });
+      } catch (broadcastErr) {
+        logger.warn({ err: broadcastErr }, '⚠️ [Socket.io] sync-batch sonrası dispense:completed yayını başarısız oldu.');
+      }
+
+      // IOT-303.2 AC: "Negatif stok... mutabakat uyarısı üretilmesi." Veri
+      // katmanı (tenantDb.ts) zaten reddedip audit_logs'a kalıcı bir alarm
+      // yazdı — burada ayrıca canlı panele (varsa) anlık bir uyarı düşer.
+      const negativeStockAlarms = results.filter((r) => r.status === 'ERROR' && r.error === 'NEGATIVE_STOCK_DETECTED');
+      if (negativeStockAlarms.length > 0) {
+        broadcastToTenant(hw.tenantId, 'tank:negative-stock-alarm', {
+          deviceId: hw.deviceId,
+          count: negativeStockAlarms.length,
+          localSequenceIds: negativeStockAlarms.map((r) => r.localSequenceId)
+        });
+      }
+
+      res.json({ success: true, message: 'Batch işlendi.', summary, results });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * FUEL-401 — RFID-Tetiklemeli Otomatik İkmal Oturumu (Dispense Session
+ * State Machine). Ticket'ın "Teknik Yığın" alanı NestJS + Drizzle + BullMQ
+ * + ARCH-102 outbox öneriyor — bu kod tabanında hiçbiri kurulu değil.
+ * Bunun yerine: Express route + raw-pg (tenantDb.ts) + Redis (TTL'li oturum,
+ * bkz. services/dispenseSessionService.ts) + mevcut manuel setInterval
+ * süpürücü (bkz. index.ts) deseni kullanıldı — kod tabanının geri kalanıyla
+ * tutarlı, yeni bir bağımlılık eklemeden.
+ *
+ * Üçü de hardwareAuthMiddleware'den (HMAC-SHA256, AUTH-202) geçer — bu
+ * yüzden JWT değil, cihazın kendi kimliği kullanılır. tenantDb.ts
+ * fonksiyonları AsyncLocalStorage tenant context'i beklediğinden
+ * (withTenant), her route kendi context'ini authenticatedHardware.tenantId
+ * ile (bkz. hardwareAuthMiddleware.ts'teki REGISTERED_HARDWARE_DEVICES notu)
+ * runWithTenant() ile açıkça kurar — mqttClient.ts'in MQTT topic'inden
+ * tenantId çıkarıp aynısını yapmasının HTTP kanalındaki karşılığı.
+ */
+
+/**
+ * @swagger
+ * /dispense/request-auth:
+ *   post:
+ *     summary: FUEL-401.1 — RFID kartı okutulduğunda yetkilendirme zinciri
+ *     description: >
+ *       Kart aktif mi → sürücüye atanmış araç aktif mi → şantiye yetkisi/kota
+ *       → tank seviyesi zincirini kontrol eder; başarılıysa AUTHORIZED
+ *       durumunda yeni bir ikmal oturumu (Redis, TTL'li) açar. Reddedilirse
+ *       details.error alanında makine-okunur bir kod döner (CARD_UNKNOWN,
+ *       DRIVER_INACTIVE, NO_VEHICLE_ASSIGNED, VEHICLE_BLOCKED,
+ *       NO_SITE_PERMISSION, QUOTA_EXHAUSTED, TANK_NOT_FOUND, TANK_LOW).
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Oturum yetkilendirildi (AUTHORIZED).
+ */
+router.post(
+  '/dispense/request-auth',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  validateRequest({ body: dispenseRequestAuthSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; siteName: string; tenantId: string };
+    try {
+      // FUEL-402.2: oturum (=kota rezervasyonu) artık authorizeDispenseRequest'in
+      // İÇİNDE, çapraz şantiye durumunda kota kilidi TUTULURKEN oluşturuluyor
+      // — burada AYRICA dispenseSessionService.createSession() çağırmak, bakiye
+      // kontrolüyle rezervasyon arasında (kilit dışında) bir boşluk açardı.
+      const auth = await runWithTenant({ tenantId: hw.tenantId }, () =>
+        authorizeDispenseRequest({
+          rfidCardId: req.body.rfidCardId,
+          tankName: req.body.tankName,
+          deviceSiteName: hw.siteName,
+          deviceId: hw.deviceId
+        })
+      );
+      const session = auth.session;
+
+      broadcastToTenant(hw.tenantId, 'dispense:session', session);
+
+      res.json({
+        success: true,
+        message: 'İkmal oturumu yetkilendirildi.',
+        data: {
+          sessionId: session.sessionId,
+          state: session.state,
+          vehiclePlate: session.vehiclePlate,
+          driverName: session.driverName,
+          maxAllowedLiters: session.maxAllowedLiters
+        }
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /dispense/heartbeat:
+ *   post:
+ *     summary: FUEL-401.2/401.3 — Pompalama sırasında periyodik (5sn) durum bildirimi
+ *     description: >
+ *       İlk çağrıda oturumu AUTHORIZED'dan PUMPING'e geçirir. Sunucu, maksimum
+ *       litre/süre aşımını burada da kontrol eder (cihazın kendi limitine
+ *       KÖRÜ KÖRÜNE güvenmeyen ikinci savunma hattı) — aşım varsa cihaza
+ *       FORCE_CUTOFF komutu döner VE aynı komutu MQTT üzerinden de yayınlar.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Heartbeat işlendi; command alanı CONTINUE veya FORCE_CUTOFF olabilir.
+ */
+router.post(
+  '/dispense/heartbeat',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  validateRequest({ body: dispenseHeartbeatSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; tenantId: string };
+    try {
+      const session = await dispenseSessionService.recordHeartbeat(
+        hw.deviceId, req.body.sessionId, req.body.totalizerLiters, req.body.flowRateLpm
+      );
+
+      // IOT-307 AC: "Sunucu zamanının HER heartbeat yanıtında cihaza bildirilmesi" —
+      // heartbeat en yüksek frekanslı (aktif pompalarken ~5sn) uç olduğundan, cihazın
+      // kendi saatini pasif biçimde (ek bir komut beklemeden) sürekli karşılaştırıp
+      // düzeltebileceği en ucuz kanal budur. Sapma eşiği aşılırsa AYRICA (MQTT
+      // command/v1/{deviceId} üzerinden) aktif bir TIME_SYNC komutu da üretilir —
+      // bkz. hardwareAuthMiddleware.ts handleAcceptedClockDrift().
+      const serverTime = new Date().toISOString();
+
+      const limitCheck = await dispenseSessionService.checkLimits(session);
+      if (limitCheck.exceeded) {
+        await dispenseSessionService.forceAbort(hw.deviceId, 'TIMED_OUT');
+        mqttService.publishCommand(hw.deviceId, 'FORCE_CUTOFF', { reason: limitCheck.reason, sessionId: session.sessionId });
+        broadcastToTenant(hw.tenantId, 'dispense:session', { ...session, state: 'TIMED_OUT' });
+        res.json({ success: true, command: 'FORCE_CUTOFF', reason: limitCheck.reason, serverTime });
+        return;
+      }
+
+      broadcastToTenant(hw.tenantId, 'dispense:session', session);
+      res.json({ success: true, command: 'CONTINUE', state: session.state, serverTime });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /dispense/finalize:
+ *   post:
+ *     summary: FUEL-401.4 — Oturumu sonlandırıp kalıcı ikmal kaydı oluşturur
+ *     description: >
+ *       Start/end totalizatör farkı asıl doğruluk kaynağıdır — cihazın kendi
+ *       bildirdiği reportedLiters yalnızca %1'lik bir sapma toleransı için
+ *       karşılaştırılır, doğrudan güvenilmez. idempotencyKey ile aynı
+ *       isteğin tekrarı yeni bir kayıt YARATMAZ. TIMED_OUT bir oturumdan
+ *       gelen finalize (kurtarma yolu) her zaman verification_status'u
+ *       DOĞRULAMA_BEKLIYOR olarak işaretler.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: İkmal kaydı oluşturuldu (veya idempotency nedeniyle var olan döndürüldü).
+ */
+router.post(
+  '/dispense/finalize',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  validateRequest({ body: dispenseFinalizeSchema }),
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; tenantId: string; timestampMs: number };
+    try {
+      // Oturum state machine'ine dokunmadan ÖNCE idempotency kontrolü —
+      // aksi halde bu isteğin ÖNCEKİ bir denemesi zaten başarıyla
+      // tamamlanmışsa (oturum artık COMPLETED, cihaz yalnızca yanıtı
+      // alamadığı için tekrar gönderiyor) beginFinalize COMPLETED→FINALIZING
+      // geçişini reddedip idempotent yanıt yerine 409 dönerdi (bkz.
+      // test_fuel401_dispense_session.ts Test 10).
+      const alreadyFinalized = await runWithTenant({ tenantId: hw.tenantId }, () =>
+        findTransactionByIdempotencyKey(req.body.idempotencyKey)
+      );
+      if (alreadyFinalized) {
+        res.json({
+          success: true,
+          message: 'Bu idempotencyKey için ikmal kaydı zaten mevcuttu, tekrar oluşturulmadı.',
+          data: { ...alreadyFinalized, alreadyExisted: true }
+        });
+        return;
+      }
+
+      const { session, wasTimedOut } = await dispenseSessionService.beginFinalize(hw.deviceId, req.body.sessionId);
+
+      const transaction = await runWithTenant({ tenantId: hw.tenantId }, () =>
+        finalizeDispenseSession({
+          siteName: session.siteName,
+          vehiclePlate: session.vehiclePlate,
+          driverName: session.driverName,
+          tankName: session.tankName,
+          startTotalizerLiters: session.startTotalizerLiters ?? 0,
+          endTotalizerLiters: req.body.endTotalizerLiters,
+          reportedLiters: req.body.reportedLiters,
+          flowRateLpm: session.currentFlowRateLpm,
+          idempotencyKey: req.body.idempotencyKey,
+          forceManualVerification: wasTimedOut,
+          // IOT-307: finalize isteğinin HMAC X-Timestamp'i — cihazın "bu ikmal ne zaman
+          // bitti" dediği an; server_received_at (DB DEFAULT) ayrıca sunucunun kaydı
+          // GERÇEKTEN yazdığı anı tutar.
+          deviceReportedAtMs: hw.timestampMs
+        })
+      );
+
+      await dispenseSessionService.completeSession(hw.deviceId, req.body.sessionId);
+
+      recordDispenseCompleted('device'); // OPS-1107
+
+      try {
+        const freshTanks = await runWithTenant({ tenantId: hw.tenantId }, () => getTenantTanks());
+        broadcastToTenant(hw.tenantId, 'dispense:completed', { transaction, tanks: freshTanks });
+      } catch (broadcastErr) {
+        logger.warn({ err: broadcastErr }, '⚠️ [Socket.io] dispense:completed yayını başarısız oldu (FUEL-401).');
+      }
+
+      res.json({
+        success: true,
+        message: transaction.alreadyExisted
+          ? 'Bu idempotencyKey için ikmal kaydı zaten mevcuttu, tekrar oluşturulmadı.'
+          : 'İkmal oturumu sonlandırıldı ve kayda geçirildi.',
+        data: transaction
+      });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /api/v1/audit-logs
+ * AUTH-203 — append-only denetim izi. Yalnızca SUPER_ADMIN/COMPANY_OWNER
+ * görebilir; kayıtlar yalnızca INSERT edilir (bkz. schema.sql'deki
+ * REVOKE UPDATE, DELETE ON audit_logs FROM app_user).
+ */
+router.get(
+  '/audit-logs',
+  authenticateJWT,
+  authorizeRoles('SUPER_ADMIN', 'COMPANY_OWNER'),
+  async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+      const limit = req.query.limit ? Number(req.query.limit) : 100;
+      const logs = await getAuditLogs(limit);
+      res.json({ success: true, data: logs });
+    } catch (error: any) {
+      next(error);
+    }
   }
 );
 

@@ -1,46 +1,131 @@
+import { recordMqttMessage, recordMqttRejected, recordMqttError } from '../observability/metrics';
 import mqtt, { MqttClient } from 'mqtt';
+import { config } from '../config/env';
 import { logger } from '../utils/logger';
 import { redisPool } from '../db/redisPool';
+import { getHardwareDeviceByDeviceId } from '../db/adminDb';
 import { EventEmitter } from 'events';
+import { runWithTenant } from '../context/tenantContext';
+import { startTheftDetectionEngine } from '../services/theftDetectionService';
+import { startUnauthorizedFlowDetectionEngine } from './unauthorizedFlowDetector';
+import { startCommandQueueEngine } from './commandQueueService';
+import { incrementTelemetryPacketCounter } from '../services/usageMeteringService';
+import { payloadValidationPool } from './payloadValidationPool';
+import { recordDevicePresenceEvent, updateDeviceTelemetrySnapshot } from '../db/tenantDb';
 
 // Local Event Bus for decoupling (Prep for ARCH-102: BullMQ)
 export const ioTEventBus = new EventEmitter();
 
+// IOT-301.1: "İki backend örneği çalışırken her mesaj yalnızca bir kez
+// işlenmelidir." Bu ÖZELLİKLE OPS-1102'nin zero-downtime deploy script'i
+// için gerçek bir senaryo: dağıtım sırasında birkaç saniyeliğine eski VE
+// yeni backend replikası AYNI ANDA ayakta ve MQTT'ye bağlı olur. Paylaşımlı
+// abonelik olmadan EMQX aynı mesajı HER İKİ replikaya da teslim eder — bu da
+// telemetri olaylarının (ve onlara bağlı Socket.io yayınlarının) o pencerede
+// iki kez işlenmesine yol açar. `$share/<group>/<topic>` ile broker mesajı
+// gruptaki yalnızca BİR üyeye dağıtır.
+const MQTT_SHARE_GROUP = 'yakittakip-backend';
+
+// IOT-301.1: mqtt.js'in yerleşik reconnectPeriod'u SABİT bir gecikmedir,
+// üstel değil. reconnectPeriod: 0 ile yerleşik yeniden bağlanma kapatılıp
+// burada üstel backoff (1sn, 2sn, 4sn... 30sn tavan) elle yönetiliyor;
+// başarılı bir 'connect' sayaç sıfırlar.
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
+
 class MQTTService {
   private client: MqttClient | null = null;
-  private readonly brokerUrl = process.env.MQTT_URL || 'mqtt://localhost:1883';
+  private readonly brokerUrl = config.MQTT_URL;
+  private reconnectAttempts = 0;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private manuallyDisconnected = false;
 
   public connect(): void {
+    this.manuallyDisconnected = false;
+
+    // AI-501: telemetri olay veri yoluna (ioTEventBus) bağlı hırsızlık tespit
+    // motorunu ayağa kaldır. Idempotent — reconnect'te tekrar çağrılması
+    // sorun değil (bkz. theftDetectionService.ts `started` bayrağı).
+    startTheftDetectionEngine();
+
+    // FUEL-406: aktif RFID oturumu olmadan akış bildiren pompaları tespit
+    // edip acil FORCE_CUTOFF gönderen motoru ayağa kaldır. Idempotent.
+    startUnauthorizedFlowDetectionEngine();
+
+    // IOT-305: uzaktan komut kuyruğu (ack/timeout/retry) sweep döngüsünü ayağa kaldır. Idempotent.
+    startCommandQueueEngine();
+
     logger.info(`🔌 [MQTT] Broker'a bağlanılıyor: ${this.brokerUrl}`);
 
     this.client = mqtt.connect(this.brokerUrl, {
       clientId: `backend_service_${Math.random().toString(16).slice(3)}`,
       clean: false, // Kalıcı oturum (QoS 1 mesajlarını kaybetmemek için)
-      reconnectPeriod: 5000,
+      reconnectPeriod: 0, // bkz. yukarıdaki not — üstel backoff elle yönetiliyor
       protocolVersion: 5,
+      // EMQX artık anonim bağlantı kabul etmiyor (bkz. docker-compose.yml /
+      // docker/emqx/entrypoint.sh) — kimlik doğrulaması olmadan herkes sahte
+      // pompa/tank telemetrisi yayınlayabilir ya da tüm kiracıların canlı
+      // verisine abone olabilirdi.
+      username: config.MQTT_USERNAME,
+      password: config.MQTT_PASSWORD,
     });
 
     this.client.on('connect', () => {
       logger.info('✅ [MQTT] Broker bağlantısı başarılı.');
-      
+      this.reconnectAttempts = 0; // başarılı bağlantı — backoff sayacı sıfırlanır
+
       // ESP32'lerden gelen standart telemetri verileri
       // Format: telemetry/v1/{tenantId}/{siteId}/{deviceType}/{deviceId}/data
-      this.client?.subscribe('telemetry/v1/+/+/+/+/data', { qos: 1 }, (err) => {
+      this.client?.subscribe(`$share/${MQTT_SHARE_GROUP}/telemetry/v1/+/+/+/+/data`, { qos: 1 }, (err) => {
         if (err) logger.error({ err }, '🚨 [MQTT] /data topic abone olunamadı!');
-        else logger.info('📡 [MQTT] Telemetri veri akışı (data) dinleniyor...');
+        else logger.info('📡 [MQTT] Telemetri veri akışı (data) dinleniyor... (paylaşımlı abonelik)');
       });
 
       // ESP32'lerden gelen LWT (Last Will and Testament) veya durum mesajları
       // Format: telemetry/v1/{tenantId}/{siteId}/{deviceType}/{deviceId}/status
-      this.client?.subscribe('telemetry/v1/+/+/+/+/status', { qos: 1 }, (err) => {
+      this.client?.subscribe(`$share/${MQTT_SHARE_GROUP}/telemetry/v1/+/+/+/+/status`, { qos: 1 }, (err) => {
         if (err) logger.error({ err }, '🚨 [MQTT] /status topic abone olunamadı!');
-        else logger.info('📡 [MQTT] Cihaz durum akışı (status/LWT) dinleniyor...');
+        else logger.info('📡 [MQTT] Cihaz durum akışı (status/LWT) dinleniyor... (paylaşımlı abonelik)');
+      });
+
+      // IOT-305: cihazların publishCommand() ile gönderilen komutları ack'lediği kanal.
+      this.client?.subscribe(`$share/${MQTT_SHARE_GROUP}/command/v1/+/ack`, { qos: 1 }, (err) => {
+        if (err) logger.error({ err }, '🚨 [MQTT] /ack topic abone olunamadı!');
+        else logger.info('📡 [MQTT] Komut ack akışı dinleniyor... (paylaşımlı abonelik)');
       });
     });
 
     this.client.on('message', async (topic, payload) => {
       try {
+        // $share/<group>/ öneki yalnızca ABONELİK filtresinde kullanılır —
+        // broker teslim ederken mesajın topic'ini asıl (paylaşımsız) haline
+        // döndürür, bu yüzden parse mantığı DEĞİŞMİYOR.
         const parts = topic.split('/');
+        // OPS-1107: kind SABİT küme (kardinalite) — topic/cihaz kimliği etiket OLMAZ.
+        recordMqttMessage(parts[0] === 'command' ? 'command_ack' : parts[6] === 'data' ? 'telemetry_data' : parts[6] === 'status' ? 'telemetry_status' : 'other');
+
+        // IOT-305: command/v1/{deviceId}/ack — cihazın publishCommand() ile
+        // gönderilen bir komutu aldığını doğrulaması. Telemetri topic'inden
+        // (7 parça) farklı şekli (4 parça) olduğu için ayrı, erken dallanır;
+        // tenantId topic'te YOK (command/v1/{deviceId} zaten tenant'sız —
+        // bkz. publishCommand), bu yüzden tenant doğrulaması gerekmiyor.
+        if (parts[0] === 'command' && parts[1] === 'v1' && parts[3] === 'ack') {
+          const ackDeviceId = parts[2];
+          try {
+            const ack = JSON.parse(payload.toString()) as { commandId?: string; status?: string };
+            ioTEventBus.emit('commandAck', {
+              deviceId: ackDeviceId,
+              commandId: ack.commandId,
+              status: ack.status,
+              payload: ack,
+              timestamp: new Date().toISOString()
+            });
+          } catch (err) {
+            logger.warn({ err, topic }, '⚠️ [IOT-305] Komut ack mesajı ayrıştırılamadı.');
+          }
+          return;
+        }
+
         // Örnek: ["telemetry", "v1", "tenant1", "site1", "pump", "device123", "data"]
         if (parts.length < 7) return;
 
@@ -52,30 +137,157 @@ class MQTTService {
 
         const messageStr = payload.toString();
 
-        if (messageType === 'status') {
-          // LWT veya manuel statüs bildirimi
-          const status = messageStr.toUpperCase() === 'OFFLINE' ? 'OFFLINE' : 'ONLINE';
-          await redisPool.setDeviceState(deviceId, status);
-        } else if (messageType === 'data') {
-          const parsedData = JSON.parse(messageStr);
-          
-          // Gelen veriyi logla
-          logger.debug({ deviceId, parsedData }, '📩 [MQTT] Telemetri verisi alındı.');
-
-          // Event fırlat (İleride BullMQ'ya aktarmak üzere ARCH-102)
-          ioTEventBus.emit('telemetryData', {
-            tenantId,
-            siteId,
-            deviceType,
-            deviceId,
-            data: parsedData,
-            timestamp: new Date().toISOString()
-          });
-
-          // Cihaz veri gönderiyorsa kesinlikle ONLINE'dır.
-          await redisPool.setDeviceState(deviceId, 'ONLINE');
+        // IOT-304 AC: "Eşleştirilmemiş cihaz hiçbir veri gönderememeli."
+        // MQTT broker'ı (EMQX) şu an TÜM istemciler için TEK bir paylaşılan
+        // kimlik bilgisi kullandığından (bkz. docker/emqx/entrypoint.sh —
+        // cihaz başına dinamik MQTT kimlik bilgisi/ACL EMQX yönetim API
+        // entegrasyonu gerektirir, IOT-304'ün kapsamı dışında bırakıldı,
+        // bkz. routes.ts'teki not) TRANSPORT seviyesinde bunu engelleyemeyiz
+        // — ama UYGULAMA seviyesinde, claim edilmemiş/bloke edilmiş bir
+        // device_id'nin verisini İŞLEMEYİ reddedebiliriz: sessizce atılır,
+        // ne presence'a yansır ne de bir transactions/telemetry olayı üretir.
+        const registeredDevice = await getHardwareDeviceByDeviceId(deviceId);
+        if (!registeredDevice) {
+          recordMqttRejected('unregistered_device');
+          logger.warn({ deviceId, topic }, `🚫 [IOT-304] Kayıtlı olmayan cihazdan MQTT paketi reddedildi: '${deviceId}'.`);
+          return;
         }
+        if (registeredDevice.status === 'BLOKE') {
+          recordMqttRejected('blocked_device');
+          logger.warn({ deviceId, topic }, `🚫 [IOT-304] Bloke edilmiş cihazdan MQTT paketi reddedildi: '${deviceId}'.`);
+          return;
+        }
+        // Topic'teki tenantId, cihazın GERÇEKTEN kayıtlı olduğu tenant'la
+        // eşleşmeli — paylaşılan MQTT kimlik bilgisiyle bir istemcinin başka
+        // bir tenant'ın topic'ine (tenantId'yi elle değiştirerek) veri
+        // enjekte etmeye çalışmasına karşı ikinci bir savunma hattı.
+        if (registeredDevice.tenant_id !== tenantId) {
+          recordMqttRejected('tenant_mismatch');
+          logger.error(
+            { deviceId, topic, claimedTenantId: tenantId, actualTenantId: registeredDevice.tenant_id },
+            `🚨 [IOT-304] Tenant sahtekarlığı şüphesi: '${deviceId}' cihazı '${registeredDevice.tenant_id}'e kayıtlı ama topic '${tenantId}' iddia ediyor.`
+          );
+          return;
+        }
+
+        // ARCH-101.4: MQTT bir HTTP isteği değil, authenticateJWT middleware'i
+        // hiç çalışmaz — bu yüzden AsyncLocalStorage tenant context'i burada,
+        // topic'ten ayrıştırılan tenantId ile açıkça kuruluyor. Bu sayede bu
+        // handler içinden (veya senkron olarak emit edilen 'telemetryData'
+        // event'ini dinleyen socketServer.ts gibi abonelerden) çağrılabilecek
+        // withTenant()/getTenantId() tabanlı repository fonksiyonları doğru
+        // kiracıyı görür — context olmadan çağrılırlarsa sessizce yanlış
+        // veri döndürmek yerine MissingTenantContextException fırlatırlar.
+        await runWithTenant({ tenantId }, async () => {
+          if (messageType === 'status') {
+            // LWT veya manuel statüs bildirimi
+            const status = messageStr.toUpperCase() === 'OFFLINE' ? 'OFFLINE' : 'ONLINE';
+            const changed = await redisPool.setDeviceState(deviceId, status);
+            if (changed) {
+              // IOT-301.2 AC: "Cihaz durumu değişimi canlı olarak arayüze
+              // yansımalıdır" — yalnızca GERÇEK bir geçişte yayınlanır.
+              ioTEventBus.emit('deviceStatusChanged', { tenantId, siteId, deviceType, deviceId, status });
+              // IOT-308: online SLA/sağlık skorunun TEK gerçek veri kaynağı —
+              // Redis'teki TTL anahtarı geçmiş tutmaz, bu yüzden GERÇEK
+              // geçişler burada kalıcı olarak kaydedilir. Hata yutulur —
+              // telemetri hattını ASLA bloklamaz (BILL-1704 sayacıyla AYNI disiplin).
+              recordDevicePresenceEvent(deviceId, registeredDevice.site_name ?? null, status).catch((err) =>
+                logger.warn({ err, deviceId }, '⚠️ [IOT-308] Presence olayı kaydedilemedi.')
+              );
+            }
+            if (status === 'ONLINE') {
+              updateDeviceTelemetrySnapshot(deviceId, {}).catch((err) =>
+                logger.warn({ err, deviceId }, '⚠️ [IOT-308] last_seen_at güncellenemedi.')
+              );
+            }
+          } else if (messageType === 'data') {
+            // IOT-301.3: JSON.parse (standart telemetri) ve LoRaWAN binary
+            // decode artık AYRI bir worker thread'de çalışır (bkz.
+            // payloadValidationPool.ts'teki AC/gerekçe yorumu) — ana thread
+            // yalnızca sonucu bekler, ayrıştırma mantığının KENDİSİ
+            // payloadValidationWorker.ts'e taşındı (davranış birebir aynı).
+            const validation = await payloadValidationPool.validatePayload(deviceType, messageStr);
+            // IOT-308: "hata sayısı" girdisi — her denemede (başarılı VEYA
+            // reddedilmiş) total artar, yalnızca reddedilende error de artar.
+            // computeDeviceHealthScores bu ikisini OKUYUP SIFIRLAR.
+            void redisPool.incrDeviceTelemetryCounter(deviceId, 'total');
+            if (!validation.ok) {
+              void redisPool.incrDeviceTelemetryCounter(deviceId, 'error');
+              if (validation.reason === 'CORRUPTED_LORAWAN') {
+                // IOT-302 AC: bozuk paket İZOLE edilir — yalnızca bu paket
+                // düşürülür; aynı akıştaki diğer cihazlar etkilenmez, ne
+                // presence'a yansır ne de bir telemetryData olayı üretilir.
+                logger.warn(
+                  { deviceId, topic, reason: validation.detail, rawHex: validation.rawHex, byteLength: validation.byteLength },
+                  `🛰️ [IOT-302] Bozuk LoRaWAN paketi izole edildi ve atlandı: ${validation.detail}`
+                );
+              } else {
+                // IOT-301.3 AC ("payload validation"): geçersiz JSON YA DA
+                // ayrıştırılan değer düz bir nesne DEĞİL (dizi/sayı/string/
+                // null) — önceden bu ayrım hiç yapılmıyor, JSON.parse'ın
+                // döndürdüğü HERHANGİ bir değer doğrudan olay veri yoluna
+                // gidiyordu. Şimdi izole edilir: ne presence'a yansır ne de
+                // bir telemetryData olayı üretilir.
+                logger.warn(
+                  { deviceId, topic, reason: validation.reason, detail: validation.detail },
+                  `⚠️ [IOT-301.3] Geçersiz telemetri payload'ı reddedildi: ${validation.reason}`
+                );
+              }
+              return;
+            }
+            const parsedData = validation.data;
+
+            // Gelen veriyi logla
+            logger.debug({ deviceId, parsedData }, '📩 [MQTT] Telemetri verisi alındı.');
+
+            // Event fırlat (İleride BullMQ'ya aktarmak üzere ARCH-102)
+            ioTEventBus.emit('telemetryData', {
+              tenantId,
+              siteId,
+              deviceType,
+              deviceId,
+              data: parsedData,
+              timestamp: new Date().toISOString()
+            });
+
+            // BILL-1704: faturalama ölçümü için telemetri paket sayacı —
+            // burada hatayı yutup devam eder, ölçüm hattını asla bloklamaz.
+            void incrementTelemetryPacketCounter(tenantId);
+
+            // Cihaz veri gönderiyorsa kesinlikle ONLINE'dır.
+            const changed = await redisPool.setDeviceState(deviceId, 'ONLINE');
+            if (changed) {
+              ioTEventBus.emit('deviceStatusChanged', { tenantId, siteId, deviceType, deviceId, status: 'ONLINE' });
+              recordDevicePresenceEvent(deviceId, registeredDevice.site_name ?? null, 'ONLINE').catch((err) =>
+                logger.warn({ err, deviceId }, '⚠️ [IOT-308] Presence olayı kaydedilemedi.')
+              );
+            }
+
+            // IOT-308: cihazın KENDİ bildirdiği (opsiyonel) sağlık alanları —
+            // LoRaWAN için decoder'ın zaten çözdüğü rssi/lowBattery, standart
+            // JSON telemetri için `firmwareVersion`/`rssi`/`batteryPct`/
+            // `deviceTimeMs` (cihaz saati — sunucu saatiyle farkı sapma
+            // olarak kaydedilir). Hiçbiri ZORUNLU değil — firmware henüz
+            // göndermiyorsa sessizce atlanır (bkz. tenantDb.ts'teki
+            // updateDeviceTelemetrySnapshot yorumu: veri yoksa ceza yok).
+            const vitals = parsedData as Record<string, unknown>;
+            const snapshotFields: Parameters<typeof updateDeviceTelemetrySnapshot>[1] = {};
+            if (deviceType === 'lorawan') {
+              if (typeof vitals.rssi === 'number') snapshotFields.rssi = vitals.rssi;
+              if (typeof vitals.lowBattery === 'boolean') snapshotFields.lowBattery = vitals.lowBattery;
+            } else {
+              if (typeof vitals.firmwareVersion === 'string') snapshotFields.firmwareVersion = vitals.firmwareVersion;
+              if (typeof vitals.rssi === 'number') snapshotFields.rssi = vitals.rssi;
+              if (typeof vitals.batteryPct === 'number') snapshotFields.batteryPct = vitals.batteryPct;
+              if (typeof vitals.deviceTimeMs === 'number') snapshotFields.clockDriftMs = Date.now() - vitals.deviceTimeMs;
+            }
+            updateDeviceTelemetrySnapshot(deviceId, snapshotFields).catch((err) =>
+              logger.warn({ err, deviceId }, '⚠️ [IOT-308] Telemetri anlık görüntüsü güncellenemedi.')
+            );
+          }
+        });
       } catch (err) {
+        recordMqttError();
         logger.error({ err, topic, payload: payload.toString() }, '🚨 [MQTT] Mesaj işleme hatası!');
       }
     });
@@ -84,12 +296,71 @@ class MQTTService {
       logger.error({ err }, '🚨 [MQTT] Bağlantı hatası!');
     });
 
-    this.client.on('offline', () => {
-      logger.warn('⚠️ [MQTT] Broker ile bağlantı koptu, yeniden bağlanılmaya çalışılıyor...');
+    this.client.on('close', () => {
+      if (this.manuallyDisconnected) return;
+      this.scheduleReconnect();
     });
   }
 
+  /**
+   * IOT-301.1 AC: "Broker koptuğunda istemci exponential backoff ile
+   * yeniden bağlanmalıdır." 1sn'den başlayıp her denemede ikiye katlanır,
+   * 30sn'de tavanlanır — broker kısa süreliğine yeniden başlatıldığında
+   * hızlı, uzun süreli bir kesintide ise brokera/ağa saldırı gibi görünecek
+   * bir istek fırtınası yaratmadan yeniden dener.
+   */
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return; // zaten planlanmış bir yeniden deneme var
+    const delayMs = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
+    this.reconnectAttempts++;
+    logger.warn(
+      { delayMs, attempt: this.reconnectAttempts },
+      `⚠️ [MQTT] Broker ile bağlantı koptu — ${delayMs}ms sonra yeniden denenecek (deneme #${this.reconnectAttempts}).`
+    );
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.client?.end(true, {}, () => this.connect());
+    }, delayMs);
+  }
+
+  /**
+   * FUEL-401.3: sunucudan cihaza komut yayını (örn. FORCE_CUTOFF). Bu servis
+   * şimdiye kadar yalnızca ABONE oluyordu (telemetri/status akışı) — bu ilk
+   * gerçek YAYIN çağrısı. `command/v1/{deviceId}` topic'i, telemetri
+   * topic'inin (`telemetry/v1/...`) tam tersi yönü temsil eder; ESP32
+   * firmware'i bu topic'i dinleyip pompayı fiziksel olarak keser (donanım
+   * tarafı bu ticket'ın kapsamı dışında, yalnızca sunucu tarafı komut
+   * gönderimi burada).
+   */
+  public publishCommand(deviceId: string, command: string, payload: Record<string, unknown> = {}): void {
+    if (!this.client || !this.client.connected) {
+      logger.error({ deviceId, command }, '🚨 [MQTT] Broker bağlı değilken komut yayınlanamadı!');
+      return;
+    }
+    const topic = `command/v1/${deviceId}`;
+    const message = JSON.stringify({ command, ...payload, issuedAt: new Date().toISOString() });
+    this.client.publish(topic, message, { qos: 1 }, (err) => {
+      if (err) logger.error({ err, deviceId, command }, '🚨 [MQTT] Komut yayınlanamadı!');
+      else logger.warn({ deviceId, command }, `📤 [MQTT] Komut yayınlandı: ${command} → ${deviceId}`);
+    });
+  }
+
+  /** RES-906: MQTT bu ortamda hiç yapılandırılmış mı (CI'da __CI_SKIP__). */
+  public isEnabled(): boolean {
+    return this.brokerUrl !== '__CI_SKIP__';
+  }
+
+  /** RES-906: broker bağlantısı şu an canlı mı (readiness kontrolü). */
+  public isConnected(): boolean {
+    return !!this.client && this.client.connected === true;
+  }
+
   public async disconnect(): Promise<void> {
+    this.manuallyDisconnected = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.client) {
       await new Promise<void>((resolve) => {
         this.client!.end(false, {}, () => {

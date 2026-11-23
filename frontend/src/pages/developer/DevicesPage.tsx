@@ -1,8 +1,21 @@
 import React from 'react';
 import { useApp } from '../../context/AppContext';
 
+// FE-806 AC: "Cihaz sağlık tablosu canlı güncellenmelidir." — göreli/okunur
+// Türkçe biçim (TenantsPage.tsx'teki formatLastActivity İLE AYNI ilke, farklı
+// dosya — iki çağrı yeri için ayrı bir paylaşılan yardımcı modül eklemeye değmez).
+function formatRelativeTime(iso: string | null): string {
+  if (!iso) return 'Hiç görülmedi';
+  const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (diffMin < 1) return 'Az önce';
+  if (diffMin < 60) return `${diffMin} dk önce`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour} sa önce`;
+  return `${Math.floor(diffHour / 24)} gün önce`;
+}
+
 export const DevicesPage: React.FC = () => {
-  const { hardwareDevices, addHardwareLog, showToast } = useApp();
+  const { hardwareDevices, deviceOnlineStatus, addHardwareLog, showToast } = useApp();
 
   const handlePingDevice = (deviceCode: string) => {
     addHardwareLog({
@@ -38,46 +51,69 @@ export const DevicesPage: React.FC = () => {
 
       {/* Devices Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {hardwareDevices.map(dev => (
-          <div key={dev.id} className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-6 space-y-4 flex flex-col justify-between">
+        {hardwareDevices.map(dev => {
+          // FE-806 AC: "Cihaz sağlık tablosu canlı güncellenmelidir." —
+          // sayfa açılışında REST'ten gelen `dev.status` bir SNAPSHOT'tır;
+          // FE-801'in zaten dinlediği GERÇEK `device:status` soket olayı
+          // (deviceOnlineStatus) varsa o ÖNCELİKLİDİR (sayfa yeniden
+          // yüklenmeden anlık yansır).
+          const liveOnline = deviceOnlineStatus[dev.deviceCode];
+          const liveStatus: string = liveOnline === undefined ? dev.status : (liveOnline ? 'ONLINE' : 'OFFLINE');
+          return (
+          <div key={dev.id} data-testid="device-card" data-device-code={dev.deviceCode} data-device-status={liveStatus} className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-6 space-y-4 flex flex-col justify-between">
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-mono text-[#ffb77f] font-bold uppercase">
                   {dev.deviceCode}
                 </span>
                 <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
-                  dev.status === 'ONLINE' ? 'bg-[#a1e8a2]/10 text-[#a1e8a2]' : 'bg-[#ffb4ab]/10 text-[#ffb4ab]'
+                  liveStatus === 'ONLINE' ? 'bg-[#a1e8a2]/10 text-[#a1e8a2]' : 'bg-[#ffb4ab]/10 text-[#ffb4ab]'
                 }`}>
-                  {dev.status}
+                  {liveStatus}
                 </span>
               </div>
 
               <div>
                 <h3 className="text-base font-extrabold text-[#e5e2e1]">{dev.name}</h3>
-                <p className="text-xs text-[#d5c4ab]">{dev.companyName} — ({dev.siteName})</p>
+                <p className="text-xs text-[#d5c4ab]">{dev.companyName ? `${dev.companyName} — ` : ''}({dev.siteName})</p>
               </div>
 
               <div className="bg-[#20201f] border border-[#353535] p-3 rounded-xl font-mono text-xs space-y-1">
                 <div className="flex justify-between">
                   <span className="text-[#d5c4ab]">IP Adresi:</span>
-                  <span className="text-[#e5e2e1] font-bold">{dev.ipAddress}</span>
+                  <span className="text-[#e5e2e1] font-bold">{dev.ipAddress || 'Bilinmiyor'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-[#d5c4ab]">Sinyal (RSSI):</span>
-                  <span className="text-[#a1e8a2] font-bold">{dev.signalRssi} dBm</span>
+                  <span className="text-[#a1e8a2] font-bold">{dev.signalRssi != null ? `${dev.signalRssi} dBm` : 'Veri yok'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-[#d5c4ab]">Firmware:</span>
-                  <span className="text-[#ffdca1] font-bold">v{dev.firmwareVersion}</span>
+                  <span className="text-[#ffdca1] font-bold">{dev.firmwareVersion ? `v${dev.firmwareVersion}` : 'Bilinmiyor'}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-[#d5c4ab]">Son Sinyal:</span>
-                  <span className="text-[#d5c4ab]">{dev.lastPing}</span>
+                  <span className="text-[#d5c4ab]">Son Heartbeat:</span>
+                  <span className="text-[#d5c4ab]" data-testid="device-last-heartbeat">{formatRelativeTime(dev.lastHeartbeatAt)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#d5c4ab]">Sağlık Skoru:</span>
+                  <span
+                    data-testid="device-health-score"
+                    className={`font-bold ${
+                      dev.healthScore == null ? 'text-[#d5c4ab]'
+                        : dev.healthScore >= 80 ? 'text-[#a1e8a2]'
+                        : dev.healthScore >= 50 ? 'text-[#ffdca1]'
+                        : 'text-[#ffb4ab]'
+                    }`}
+                  >
+                    {dev.healthScore != null ? `${dev.healthScore} / 100` : 'Henüz hesaplanmadı'}
+                  </span>
                 </div>
               </div>
             </div>
 
             <button
+              data-testid="device-ping"
               onClick={() => handlePingDevice(dev.deviceCode)}
               className="w-full bg-[#20201f] hover:bg-[#282726] border border-[#353535] text-[#ffb77f] py-2.5 rounded-xl text-xs font-bold font-mono transition-colors cursor-pointer flex items-center justify-center space-x-2"
             >
@@ -85,7 +121,8 @@ export const DevicesPage: React.FC = () => {
               <span>Test Sinyali Gönder (Ping)</span>
             </button>
           </div>
-        ))}
+          );
+        })}
       </div>
 
     </div>

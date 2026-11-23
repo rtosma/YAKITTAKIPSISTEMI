@@ -1,16 +1,30 @@
 import { Request, Response, NextFunction } from 'express';
-import { verifyAccessToken, JwtUserPayload, UserRole } from '../services/tokenService';
+import { verifyAccessToken, isSessionDenied, JwtUserPayload, UserRole } from '../services/tokenService';
 import { tenantStorage, TenantStore } from '../context/tenantContext';
+import { getCompanyLicenseSnapshot } from '../db/adminDb';
 
 export interface AuthenticatedRequest extends Request {
   user?: JwtUserPayload;
 }
 
+// AUTH-204 AC: "İlk girişte parola değiştirmeden başka hiçbir işlem
+// yapılamamalıdır." mustChangePassword=true iken bu iki uç dışında HER ŞEY
+// 403 alır — değiştirme ucunun kendisi (aksi halde kullanıcı asla
+// değiştiremez) ve logout (kullanıcının oturumdan çıkabilmesi her zaman
+// bir çıkış kapısı olmalı).
+const PASSWORD_CHANGE_GATE_ALLOWLIST = new Set(['/auth/change-password', '/auth/logout']);
+
+// BILL-1701: firmanın lisansı askıya alınmış (ASKIDA) ya da süresi geçmişse
+// (license_expiry < bugün) kilitli tenant'ın kullanıcıları HALA kendi
+// durumunu görüp çıkış yapabilmeli — PASSWORD_CHANGE_GATE_ALLOWLIST ile
+// AYNI gerekçe, üstüne `/companies/me` (durumu görmek) ve `/auth/me` eklendi.
+const LICENSE_GATE_ALLOWLIST = new Set(['/auth/logout', '/auth/me', '/companies/me']);
+
 /**
  * Express Middleware to authenticate JWT Access Token
  * Also initializes the request-scoped AsyncLocalStorage tenant context
  */
-export function authenticateJWT(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+export async function authenticateJWT(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -23,23 +37,132 @@ export function authenticateJWT(req: AuthenticatedRequest, res: Response, next: 
 
   const token = authHeader.substring(7);
 
+  // RES-905: token doğrulaması KENDİ try/catch'inde — yalnızca BURADA
+  // (imza/format/süre) başarısız olursa gerçekten "geçersiz token" denebilir.
+  // Öncesinde tüm akış tek bir try/catch altındaydı; bu da aşağıdaki
+  // isSessionDenied/getCompanyLicenseSnapshot çağrılarından biri geçici bir
+  // Redis/Postgres kesintisiyle hata fırlattığında GEÇERLİ bir token'ın bile
+  // "Oturum süreniz doldu" diye yanlışlıkla reddedilmesine yol açıyordu —
+  // kullanıcı aslında dışarı atılmamıştı, sunucu tarafında geçici bir
+  // altyapı sorunu vardı, ama yanıt bunu "tekrar giriş yap" gibi gösteriyordu.
+  let userPayload: JwtUserPayload;
   try {
-    const userPayload = verifyAccessToken(token);
-    req.user = userPayload;
-
-    const store: TenantStore = {
-      tenantId: userPayload.tenantId,
-      userId: userPayload.userId
-    };
-
-    // Run within request-scoped tenant context for RLS isolation
-    tenantStorage.run(store, () => next());
-  } catch (err: any) {
+    userPayload = verifyAccessToken(token);
+  } catch {
     return res.status(401).json({
       success: false,
       error: 'INVALID_TOKEN',
       message: 'Oturum süreniz doldu veya geçersiz token. Lütfen tekrar giriş yapınız.'
     });
+  }
+
+  req.user = userPayload;
+
+  try {
+    // AUTH-208: uzaktan kapatılan bir oturumun access token'ı 15 dk daha
+    // geçerli kalmasın — deny-list'te ise hemen reddet.
+    if (userPayload.sid && (await isSessionDenied(userPayload.sid))) {
+      return res.status(401).json({
+        success: false,
+        error: 'SESSION_REVOKED',
+        message: 'Bu oturum uzaktan sonlandırıldı. Lütfen tekrar giriş yapınız.'
+      });
+    }
+
+    if (userPayload.mustChangePassword && !PASSWORD_CHANGE_GATE_ALLOWLIST.has(req.path)) {
+      return res.status(403).json({
+        success: false,
+        error: 'PASSWORD_CHANGE_REQUIRED',
+        message: 'İlk girişte parolanızı değiştirmeniz zorunludur. Devam etmeden önce parolanızı güncelleyin.'
+      });
+    }
+
+    // BILL-1701/1702: SUPER_ADMIN platform operatörüdür, herhangi bir tek
+    // tenant'ın lisansına bağlı DEĞİLDİR (billing'i YÖNETEN taraf
+    // kilitlenmemeli) — bkz. adminDb.ts başındaki not: `companies` RLS'siz,
+    // bu kontrol app_user transaction'ı AÇILMADAN (tenantStorage.run'dan
+    // ÖNCE) çalışır.
+    //
+    // BILL-1702 AC: "süre dolunca kademeli kısıtlama (önce uyarı, sonra
+    // salt-okunur — ani kesinti YOK)." İki durum KASITLI farklı davranır:
+    //  - ASKIDA (admin tarafından elle askıya alınmış): sert kapı, HER şey
+    //    402 — bu bir ödeme/uyum ihlali, "kademeli" olmasının anlamı yok.
+    //  - Süresi geçmiş (license_expiry < bugün, ama hâlâ AKTİF): SALT-OKUNUR
+    //    — GET/HEAD geçer (kullanıcı verisini görmeye devam eder, "ani
+    //    kesinti" yaşamaz), yalnızca yazma metodları (POST/PUT/PATCH/DELETE)
+    //    402 alır. 30/15/7 günlük ÖNCEDEN uyarı (licenseWarningService.ts)
+    //    zaten bu noktaya gelmeden kullanıcıyı bilgilendirmiş olur — "önce
+    //    uyarı" kısmı budur.
+    if (userPayload.role !== 'SUPER_ADMIN' && req.path !== '/auth/logout') {
+      const license = await getCompanyLicenseSnapshot(userPayload.tenantId);
+
+      // Firma satırı YOK = tenant kalıcı olarak silinmiş (approveTenantDeletion
+      // CASCADE ile kullanıcıları da sildi). Öncesinde `if (license)` bu durumu
+      // sessizce atlıyordu: silinen tenant'ın kullanıcısı süresi dolmamış access
+      // token'ıyla (15 dk) API'ye erişmeye, /auth/me'den "doğrulandı" almaya
+      // devam ediyordu. LICENSE_GATE_ALLOWLIST'ten ÖNCE — var olmayan bir
+      // tenant'ın "durumunu görme" gerekçesi yok; yalnızca logout serbest.
+      if (!license) {
+        return res.status(401).json({
+          success: false,
+          error: 'TENANT_DELETED',
+          message: 'Firmanızın hesabı kalıcı olarak silinmiştir. Oturumunuz sonlandırıldı.'
+        });
+      }
+
+      if (!LICENSE_GATE_ALLOWLIST.has(req.path)) {
+        const isSuspended = license.licenseStatus === 'ASKIDA';
+        const isExpired = !isSuspended && !!license.licenseExpiry && license.licenseExpiry < new Date().toISOString().slice(0, 10);
+        const isReadOnlyMethod = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
+
+        if (isSuspended) {
+          return res.status(402).json({
+            success: false,
+            error: 'LICENSE_SUSPENDED',
+            message: 'Firmanızın lisansı askıya alınmıştır. Lütfen yöneticinizle iletişime geçin.'
+          });
+        }
+        if (isExpired && !isReadOnlyMethod) {
+          return res.status(402).json({
+            success: false,
+            error: 'LICENSE_EXPIRED_READONLY',
+            message: `Firmanızın lisans süresi ${license.licenseExpiry} tarihinde dolmuştur. Hesabınız salt-okunur moddadır — yeni kayıt/değişiklik yapmak için aboneliğinizi yenileyin.`
+          });
+        }
+
+        // ARCH-108: BILL-1701/1702'nin lisans (ödeme) kapısından KASITLI
+        // olarak AYRI — SUPER_ADMIN'in bilerek tetiklediği hesap yaşam
+        // döngüsü kararı (müşteri ayrılışı/fesih). AC: "girişi engeller,
+        // veri KORUNUR" — bu yüzden salt-okunur bir ara hâl YOK, hem
+        // DONDURULDU hem SILME_BEKLIYOR TÜM istekleri (zaten geçerli bir
+        // access token'la gelmiş olsalar bile) sert kapıyla reddeder; login
+        // ucundaki AYNI kontrol (routes.ts) fresh token alınmasını da engeller.
+        if (license.accountStatus === 'DONDURULDU' || license.accountStatus === 'SILME_BEKLIYOR') {
+          return res.status(403).json({
+            success: false,
+            error: license.accountStatus === 'DONDURULDU' ? 'TENANT_FROZEN' : 'TENANT_PENDING_DELETION',
+            message: 'Firmanızın hesabı dondurulmuştur. Erişim için platform yöneticinizle iletişime geçin.'
+          });
+        }
+      }
+    }
+
+    const store: TenantStore = {
+      tenantId: userPayload.tenantId,
+      userId: userPayload.userId,
+      traceId: req.traceId,
+      ipAddress: req.ip
+    };
+
+    // Run within request-scoped tenant context for RLS isolation
+    tenantStorage.run(store, () => next());
+  } catch (err: any) {
+    // RES-905: bu blok artık YALNIZCA token doğrulaması SONRASI adımlarda
+    // (deny-list/lisans kontrolü) oluşan beklenmeyen hataları yakalıyor —
+    // bunlar bir "geçersiz token" değil, muhtemelen geçici bir Redis/Postgres
+    // sorunu. next(err) ile globalErrorHandler'a devredilir: temiz, doğru
+    // durum koduna sahip bir yanıt döner ("oturumunuz sona erdi" yalanı yok).
+    next(err);
   }
 }
 

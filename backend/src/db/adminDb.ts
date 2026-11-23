@@ -1,0 +1,1546 @@
+import type { Pool, PoolClient } from 'pg';
+import { pool } from './postgresPool';
+import { hashPassword } from '../utils/password';
+import { generateId } from '../utils/id';
+import { encryptDeviceSecret, generateDeviceSecret } from '../utils/hardwareSecretCrypto';
+import { ForbiddenError, ConflictError, NotFoundError } from '../utils/errors';
+import { encryptTenantExport } from '../utils/tenantExportCrypto';
+import { generateTempPassword } from '../utils/tempCredentials';
+import type { FuelCostMethod } from '../fuel/fuelCostService';
+import { logger } from '../utils/logger';
+
+/**
+ * SUPER_ADMIN'e özel, tek bir tenant'a kısıtlı OLMAYAN sorgular. Diğer
+ * tenantDb.ts fonksiyonlarının aksine burada `SET LOCAL ROLE app_user` /
+ * RLS akışı YOKTUR — `companies` tablosunun kendisi zaten RLS'siz (tenant
+ * kaydının kendisidir), diğer tablolarda ise `pool` doğrudan superuser
+ * (postgres) olarak bağlandığından RLS'i bypass eder; bu dosyadaki her route
+ * routes.ts içinde authorizeRoles('SUPER_ADMIN') ile kilitlenmelidir.
+ */
+
+export interface AdminCompanySite {
+  id: string;
+  name: string;
+  location: string;
+  activeVehiclesCount: number;
+  activeTanksCount: number;
+}
+
+export interface AdminCompanyProfile {
+  id: string;
+  name: string;
+  code: string | null;
+  taxNumber: string;
+  city: string | null;
+  licenseStatus: string;
+  licenseExpiry: string | null;
+  modules: Record<string, boolean>;
+  package: PackageTier;
+  sites: AdminCompanySite[];
+  activeVehiclesCount: number;
+  totalFuelThisMonth: number;
+  /** FE-805: geliştirici panelindeki firma listesinde "son aktivite" sütunu — bu tenant'ın en son ikmal işleminin zamanı (hiç ikmal yoksa null). */
+  lastActivityAt: string | null;
+}
+
+const DEFAULT_MODULES = {
+  aiAnomaly: true,
+  eInvoice: true,
+  smartWarehouse: true,
+  maintenanceTrack: true,
+  driverScore: true,
+  crossSiteAuth: true
+};
+
+// ============================================================================
+// BILL-1701 — Firma Paketleri ve Lisans Modeli
+// ============================================================================
+//
+// `companies.modules` (yukarıdaki DEFAULT_MODULES) TEK doğruluk kaynağıdır —
+// hangi özelliğin gerçekten etkin olduğunu belirleyen odur (bkz.
+// tenantDb.ts isTenantModuleEnabled). `package` yalnızca adlandırılmış bir
+// ETİKET + admin bir firmanın paketini DEĞİŞTİRDİĞİNDE `modules`'a
+// uygulanacak VARSAYILAN demet — paket seçmek modülleri sıfırlar, ama admin
+// aynı istekte açık `modules` de gönderirse o üzerine biner (bkz.
+// updateCompanyAdmin).
+export type PackageTier = 'TEMEL' | 'PROFESYONEL' | 'KURUMSAL';
+
+export const PACKAGE_TIERS: PackageTier[] = ['TEMEL', 'PROFESYONEL', 'KURUMSAL'];
+
+export const PACKAGE_MODULE_DEFAULTS: Record<PackageTier, Record<string, boolean>> = {
+  TEMEL: {
+    aiAnomaly: false,
+    eInvoice: false,
+    smartWarehouse: false,
+    maintenanceTrack: false,
+    driverScore: true,
+    crossSiteAuth: false
+  },
+  PROFESYONEL: {
+    aiAnomaly: true,
+    eInvoice: true,
+    smartWarehouse: false,
+    maintenanceTrack: true,
+    driverScore: true,
+    crossSiteAuth: true
+  },
+  KURUMSAL: DEFAULT_MODULES
+};
+
+function isPackageTier(value: unknown): value is PackageTier {
+  return typeof value === 'string' && (PACKAGE_TIERS as string[]).includes(value);
+}
+
+export const MODULE_NAMES = Object.keys(DEFAULT_MODULES) as Array<keyof typeof DEFAULT_MODULES>;
+
+function isModuleName(value: unknown): value is string {
+  return typeof value === 'string' && (MODULE_NAMES as string[]).includes(value);
+}
+
+/**
+ * BILL-1703 Kapsam: "Modül bazlı fiyatlandırma bilgisi (bilgi amaçlı,
+ * tahsilat kapsam dışı)." Ticket'ın kendi Teknik Notu'nun ikinci satırıyla
+ * BİREBİR tutarlı: "Tahsilat/ödeme entegrasyonu bu kapsamda değildir;
+ * yalnızca lisans modeli tutulur." — bu yüzden burada gerçek bir ödeme
+ * altyapısı YOK, yalnızca satış/destek ekibinin danışabileceği SABİT bir
+ * fiyat kataloğu (aylık, TL, KDV hariç). Tek doğruluk kaynağı burasıdır;
+ * `getModuleCatalog()` bunu PACKAGE_MODULE_DEFAULTS ile birleştirip "hangi
+ * modül hangi pakette zaten dahil, hangisi ek satın alma gerektirir" bilgisini
+ * de türetir — AC: "Paket seçimi ilgili modülleri otomatik açmalıdır" ile
+ * AYNI tek kaynağa (PACKAGE_MODULE_DEFAULTS) dayanır, ayrı bir liste
+ * TUTULMAZ (iki listenin birbirinden sapması riskini ortadan kaldırır).
+ */
+const MODULE_PRICING: Record<string, { label: string; monthlyPriceTRY: number }> = {
+  aiAnomaly: { label: 'Yapay Zekâ Anomali Tespiti', monthlyPriceTRY: 1500 },
+  eInvoice: { label: 'e-Fatura / e-İrsaliye Entegrasyonu', monthlyPriceTRY: 2000 },
+  smartWarehouse: { label: 'Akıllı Depo/Envanter Yönetimi', monthlyPriceTRY: 1000 },
+  maintenanceTrack: { label: 'Bakım/Muayene Takibi', monthlyPriceTRY: 750 },
+  driverScore: { label: 'Şoför Performans Skorlama', monthlyPriceTRY: 500 },
+  crossSiteAuth: { label: 'Çapraz Şantiye Yetkilendirme', monthlyPriceTRY: 500 }
+};
+
+export interface ModuleCatalogEntry {
+  moduleName: string;
+  label: string;
+  monthlyPriceTRY: number;
+  includedInPackages: PackageTier[];
+}
+
+/** Saf/I-O'suz — MODULE_PRICING + PACKAGE_MODULE_DEFAULTS'tan türetilir, ayrı bir DB sorgusu gerekmez. */
+export function getModuleCatalog(): ModuleCatalogEntry[] {
+  return MODULE_NAMES.map((moduleName) => ({
+    moduleName,
+    label: MODULE_PRICING[moduleName]?.label ?? moduleName,
+    monthlyPriceTRY: MODULE_PRICING[moduleName]?.monthlyPriceTRY ?? 0,
+    includedInPackages: PACKAGE_TIERS.filter((tier) => PACKAGE_MODULE_DEFAULTS[tier][moduleName] === true)
+  }));
+}
+
+function slugifyCompanyName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/ç/g, 'c').replace(/ğ/g, 'g').replace(/ı/g, 'i').replace(/ö/g, 'o').replace(/ş/g, 's').replace(/ü/g, 'u')
+    .replace(/[^a-z0-9]+/g, '')
+    .slice(0, 32) || 'firma';
+}
+
+async function buildAdminCompanyProfile(c: any): Promise<AdminCompanyProfile> {
+  // Bu 3 sorgu birbirinden bağımsız (hepsi yalnızca c.id ile filtreleniyor) —
+  // sırayla await etmek yerine birlikte çalıştırılır. pool.query() her
+  // çağrıda kendi bağlantısını aldığından (tek bir client üzerinde değil) bu
+  // gerçekten paralel çalışır.
+  const [sitesRes, vehRes, fuelRes, activityRes] = await Promise.all([
+    pool.query(
+      `SELECT s.id, s.name, s.location,
+         (SELECT COUNT(*)::int FROM tanks t    WHERE t.tenant_id = $1 AND t.site_name = s.name) AS active_tanks_count,
+         (SELECT COUNT(*)::int FROM vehicles v WHERE v.tenant_id = $1 AND v.site_name = s.name) AS active_vehicles_count
+       FROM sites s WHERE s.tenant_id = $1 ORDER BY s.name ASC`,
+      [c.id]
+    ),
+    pool.query('SELECT COUNT(*)::int AS cnt FROM vehicles WHERE tenant_id = $1', [c.id]),
+    pool.query(
+      `SELECT COALESCE(SUM(amount_liters), 0)::numeric AS total FROM transactions
+       WHERE tenant_id = $1 AND created_at >= date_trunc('month', CURRENT_TIMESTAMP)`,
+      [c.id]
+    ),
+    // FE-805: "son aktivite" — ayrı bir tracking mekanizması (ör. son giriş
+    // zamanı) eklemek yerine, zaten var olan transactions.created_at'ten en
+    // sonuncusu kullanılıyor (bu tenant'ın gerçekten kullanıldığının en
+    // güvenilir göstergesi — bir giriş yapıp hiçbir şey yapmamaktan farklı olarak).
+    pool.query('SELECT MAX(created_at) AS last FROM transactions WHERE tenant_id = $1', [c.id])
+  ]);
+
+  return {
+    id: c.id,
+    name: c.name,
+    code: c.code,
+    taxNumber: c.tax_number,
+    city: c.city,
+    licenseStatus: c.license_status || 'AKTİF',
+    licenseExpiry: c.license_expiry ? new Date(c.license_expiry).toISOString().slice(0, 10) : null,
+    modules: c.modules || {},
+    package: isPackageTier(c.package) ? c.package : 'TEMEL',
+    sites: sitesRes.rows.map((s) => ({
+      id: s.id,
+      name: s.name,
+      location: s.location,
+      activeTanksCount: s.active_tanks_count,
+      activeVehiclesCount: s.active_vehicles_count
+    })),
+    activeVehiclesCount: vehRes.rows[0].cnt,
+    totalFuelThisMonth: Number(fuelRes.rows[0].total),
+    lastActivityAt: activityRes.rows[0].last ? new Date(activityRes.rows[0].last).toISOString() : null
+  };
+}
+
+export async function getAllCompanies(): Promise<AdminCompanyProfile[]> {
+  const companiesRes = await pool.query(
+    `SELECT id, name, tax_number, code, city, license_status, license_expiry, modules, package FROM companies ORDER BY name ASC`
+  );
+
+  // Şirketler arası da bağımsız — hepsini birlikte kur (sırayla N tur yerine).
+  return Promise.all(companiesRes.rows.map(buildAdminCompanyProfile));
+}
+
+// tenantDb.ts'deki createSiteWithManager (AUTH-204) İLE AYNI değer — o
+// sabit dışa aktarılmadığından (private const) burada YİNELENDİ, tek bir
+// paylaşılan "geçici parola" politikası kavramsal olarak İKİ farklı akışta.
+const TEMP_PASSWORD_TTL_HOURS = 72;
+
+export interface ProvisionedCompany extends AdminCompanyProfile {
+  ownerUsername: string;
+  /** ARCH-105 AC: "Üretilen parola yanıtta yalnızca BİR KEZ dönmeli." Bu satır bir daha üretilemez — kaybedilirse parola sıfırlama akışı kullanılır. */
+  temporaryPassword: string;
+  passwordExpiresAt: string;
+}
+
+/**
+ * ARCH-105 (#24) — yeni bir kiracı (tenant) firma oluşturur: şirket kaydı +
+ * ilk şantiye + COMPANY_OWNER giriş hesabı, TEK transaction'da (hata halinde
+ * TAM geri alınır — kısmi/"yarım tenant" kalmaz).
+ *
+ * İlk parola: `createSiteWithManager`nin (AUTH-204, tenantDb.ts) AYNI
+ * deseni — kriptografik rastgele geçici parola (generateTempPassword),
+ * müşteri hesabı zorunlu parola değişikliğiyle (must_change_password) açılır,
+ * düz metin yalnızca BU dönüş değerinde bir kez görünür, veritabanına yalnızca
+ * hash yazılır. Önceki davranış (SABİT '123456') AUTH-204'ün kendi kod
+ * yorumunda "aynı desen" olarak zaten işaret ediyordu ama hiç uygulanmamıştı.
+ */
+export async function createCompanyWithOwner(
+  data: {
+    name: string;
+    city?: string;
+    taxNumber?: string;
+    package?: PackageTier;
+  },
+  actorUserId: string
+): Promise<ProvisionedCompany> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const countRes = await client.query('SELECT COUNT(*)::int AS cnt FROM companies');
+    const code = 'COMP-' + (countRes.rows[0].cnt + 1).toString().padStart(2, '0');
+    const companyId = generateId('comp');
+    const taxNumber = data.taxNumber?.trim() || '0000000000';
+    const city = data.city?.trim() || 'İstanbul';
+    const packageTier: PackageTier = isPackageTier(data.package) ? data.package : 'TEMEL';
+    const initialModules = PACKAGE_MODULE_DEFAULTS[packageTier];
+
+    try {
+      await client.query(
+        `INSERT INTO companies (id, name, tax_number, code, city, license_status, license_expiry, modules, package)
+         VALUES ($1, $2, $3, $4, $5, 'AKTİF', $6, $7::jsonb, $8)`,
+        [companyId, data.name.trim(), taxNumber, code, city, '2027-12-31', JSON.stringify(initialModules), packageTier]
+      );
+    } catch (err: any) {
+      // AC: "VKN benzersiz olmalı; aynı VKN ile ikinci tenant açılmaya
+      // çalışılırsa 409 dönmelidir." (uq_companies_tax_number — '0000000000'
+      // yer tutucusu HARİÇ, bkz. schema.sql).
+      if (err?.code === '23505' && String(err?.constraint).includes('tax_number')) {
+        throw new ConflictError(`'${taxNumber}' VKN'si ile kayıtlı bir firma zaten var.`, { error: 'TAX_NUMBER_TAKEN' });
+      }
+      throw err;
+    }
+
+    const siteId = generateId('site');
+    const siteName = `${data.name.trim()} Ana Şantiye`;
+    await client.query(
+      `INSERT INTO sites (id, tenant_id, name, location) VALUES ($1, $2, $3, $4)`,
+      [siteId, companyId, siteName, city]
+    );
+
+    const usernameBase = slugifyCompanyName(data.name);
+    let username = usernameBase;
+    let suffix = 1;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const existing = await client.query('SELECT 1 FROM users WHERE username = $1', [username]);
+      if (existing.rows.length === 0) break;
+      username = `${usernameBase}${suffix++}`;
+    }
+
+    const temporaryPassword = generateTempPassword();
+    const passwordHash = await hashPassword(temporaryPassword);
+    const passwordExpiresAt = new Date(Date.now() + TEMP_PASSWORD_TTL_HOURS * 60 * 60 * 1000);
+    const ownerId = generateId('usr');
+    await client.query(
+      `INSERT INTO users (id, tenant_id, username, password_hash, role, site_name, must_change_password, temp_password_expires_at)
+       VALUES ($1, $2, $3, $4, 'COMPANY_OWNER', NULL, TRUE, $5)`,
+      [ownerId, companyId, username, passwordHash, passwordExpiresAt.toISOString()]
+    );
+
+    // AC: "Oluşturma işlemi audit log'a TENANT_PROVISIONED olarak yazılmalıdır."
+    // writeAuditLog() (utils/auditLog.ts) KULLANILAMAZ — çağıranın (SUPER_ADMIN)
+    // AsyncLocalStorage tenant context'i YENİ oluşturulan tenant'a ait DEĞİLDİR
+    // (SUPER_ADMIN hiçbir tenant'a bağlı değildir). Bunun yerine RLS bağlamı bu
+    // transaction'a ÖZEL (SET LOCAL ile aynı etki) YENİ tenant'a ayarlanır —
+    // withTenant() ile TAM AYNI mekanizma (bkz. db/withTenant.ts).
+    await client.query("SELECT set_config('app.current_tenant_id', $1, true)", [companyId]);
+    await client.query(
+      `INSERT INTO audit_logs (id, tenant_id, user_id, action, target_type, target_id, after_value)
+       VALUES ($1, $2, $3, 'TENANT_PROVISIONED', 'company', $2, $4::jsonb)`,
+      [
+        generateId('audit'), companyId, actorUserId,
+        JSON.stringify({ name: data.name.trim(), code, package: packageTier, city, ownerUsername: username })
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    return {
+      id: companyId,
+      name: data.name.trim(),
+      code,
+      taxNumber,
+      city,
+      licenseStatus: 'AKTİF',
+      licenseExpiry: '2027-12-31',
+      modules: initialModules,
+      package: packageTier,
+      sites: [{ id: siteId, name: siteName, location: city, activeTanksCount: 0, activeVehiclesCount: 0 }],
+      activeVehiclesCount: 0,
+      totalFuelThisMonth: 0,
+      lastActivityAt: null,
+      ownerUsername: username,
+      temporaryPassword,
+      passwordExpiresAt: passwordExpiresAt.toISOString()
+    };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * BILL-1703: `getTenantStore()`'a bağımlı `writeAuditLog` (utils/auditLog.ts)
+ * burada kullanılamaz — bu dosyadaki fonksiyonlar tenant context AÇMADAN
+ * (SUPER_ADMIN'in KENDİ tenant'ıyla değil, HEDEF firmayla) çalışır. Aynı
+ * gerekçeyle zaten var olan `insertAuthAuditLog` (AUTH-207) ile AYNI desen,
+ * ama target_type sabit kodlu olmadığından genel amaçlı.
+ */
+async function insertCompanyAuditLog(
+  tenantId: string,
+  actorUserId: string,
+  action: string,
+  targetType: string,
+  targetId: string,
+  beforeValue: Record<string, unknown> | null,
+  afterValue: Record<string, unknown> | null,
+  // Çağıran bir transaction içindeyse denetim kaydı da AYNI transaction'a
+  // girmeli — işlem geri alınırsa "yapıldı" diyen bir kayıt kalmasın.
+  db: Pool | PoolClient = pool
+): Promise<void> {
+  await db.query(
+    `INSERT INTO audit_logs (id, tenant_id, user_id, action, target_type, target_id, before_value, after_value)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
+    [generateId('audit'), tenantId, actorUserId, action, targetType, targetId, JSON.stringify(beforeValue), JSON.stringify(afterValue)]
+  );
+}
+
+async function getCompanyModuleAddonNames(tenantId: string): Promise<string[]> {
+  const res = await pool.query('SELECT module_name FROM company_module_addons WHERE tenant_id = $1', [tenantId]);
+  return res.rows.map((r) => r.module_name);
+}
+
+export async function updateCompanyAdmin(
+  id: string,
+  data: {
+    licenseStatus?: string;
+    licenseExpiry?: string | null;
+    package?: PackageTier;
+    modules?: Partial<Record<string, boolean>>;
+  },
+  actorUserId: string
+): Promise<AdminCompanyProfile> {
+  const current = await pool.query('SELECT license_status, license_expiry, package, modules FROM companies WHERE id = $1', [id]);
+  if (current.rows.length === 0) throw new Error('Firma bulunamadı.');
+  const before = current.rows[0];
+
+  // BILL-1701: paket değişimi `modules`'u o paketin VARSAYILAN demedine
+  // sıfırlar — admin aynı istekte açık `modules` de göndermişse (ör. paketi
+  // değiştirirken tek bir özelliği manuel açık bırakmak), o üzerine biner.
+  // BILL-1703: ek modül satın alımları (company_module_addons) paket
+  // değişiminden ETKİLENMEMELİ — paket varsayılanlarının HEMEN üstüne,
+  // admin'in açık `modules`'undan ÖNCE uygulanır (admin yine de bilerek
+  // bir addon'u bu istekte kapatmak isterse en son o kazanır).
+  let baseModules = isPackageTier(data.package) ? PACKAGE_MODULE_DEFAULTS[data.package] : before.modules || {};
+  if (isPackageTier(data.package)) {
+    const addonNames = await getCompanyModuleAddonNames(id);
+    if (addonNames.length > 0) {
+      baseModules = { ...baseModules, ...Object.fromEntries(addonNames.map((m) => [m, true])) };
+    }
+  }
+  const mergedModules = data.package || data.modules ? { ...baseModules, ...(data.modules || {}) } : undefined;
+
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+
+  if (data.licenseStatus) {
+    fields.push(`license_status = $${idx++}`);
+    values.push(data.licenseStatus);
+  }
+  if (data.licenseExpiry !== undefined) {
+    fields.push(`license_expiry = $${idx++}`);
+    values.push(data.licenseExpiry);
+  }
+  if (isPackageTier(data.package)) {
+    fields.push(`package = $${idx++}`);
+    values.push(data.package);
+  }
+  if (mergedModules) {
+    fields.push(`modules = $${idx++}::jsonb`);
+    values.push(JSON.stringify(mergedModules));
+  }
+
+  if (fields.length === 0) throw new Error('Güncellenecek alan bulunamadı.');
+
+  values.push(id);
+  await pool.query(`UPDATE companies SET ${fields.join(', ')} WHERE id = $${idx}`, values);
+
+  // BILL-1703 AC: "manuel modül aktivasyonlarının audit'lenmesi" — bu uç
+  // (PATCH /companies/:id) şimdiye kadar HİÇ audit_logs'a yazmıyordu.
+  await insertCompanyAuditLog(id, actorUserId, 'COMPANY_ADMIN_UPDATE', 'company', id, before, {
+    licenseStatus: data.licenseStatus ?? before.license_status,
+    licenseExpiry: data.licenseExpiry !== undefined ? data.licenseExpiry : before.license_expiry,
+    package: isPackageTier(data.package) ? data.package : before.package,
+    modules: mergedModules ?? before.modules
+  });
+
+  const all = await getAllCompanies();
+  const updated = all.find((c) => c.id === id);
+  if (!updated) throw new Error('Firma bulunamadı.');
+  return updated;
+}
+
+// ============================================================================
+// BILL-1703 — Ek Modül Satın Alımları (Paket Bağımsız, Kalıcı)
+// ============================================================================
+
+export interface CompanyModuleAddon {
+  moduleName: string;
+  addedAt: string;
+  addedBy: string;
+}
+
+export async function getCompanyModuleAddons(tenantId: string): Promise<CompanyModuleAddon[]> {
+  const res = await pool.query(
+    'SELECT module_name, added_at, added_by FROM company_module_addons WHERE tenant_id = $1 ORDER BY added_at ASC',
+    [tenantId]
+  );
+  return res.rows.map((r) => ({ moduleName: r.module_name, addedAt: r.added_at, addedBy: r.added_by }));
+}
+
+/**
+ * Bir modülü firmanın PAKETİNDEN bağımsız olarak kalıcı şekilde açar —
+ * hemen `companies.modules`'a da yazılır (etkisi ANINDA başlar), VE
+ * company_module_addons'a kaydedilir (paket değiştiğinde/yeniden
+ * uygulandığında kaybolmasın diye, bkz. updateCompanyAdmin/reapplyPackageDefaults).
+ */
+export async function addCompanyModuleAddon(tenantId: string, moduleName: string, actorUserId: string): Promise<void> {
+  if (!isModuleName(moduleName)) throw new Error(`Geçersiz modül adı: ${moduleName}`);
+  const companyRes = await pool.query('SELECT modules FROM companies WHERE id = $1', [tenantId]);
+  if (companyRes.rows.length === 0) throw new Error('Firma bulunamadı.');
+
+  await pool.query(
+    `INSERT INTO company_module_addons (tenant_id, module_name, added_by) VALUES ($1, $2, $3)
+     ON CONFLICT (tenant_id, module_name) DO NOTHING`,
+    [tenantId, moduleName, actorUserId]
+  );
+  const beforeModules = companyRes.rows[0].modules || {};
+  const afterModules = { ...beforeModules, [moduleName]: true };
+  await pool.query('UPDATE companies SET modules = $1::jsonb WHERE id = $2', [JSON.stringify(afterModules), tenantId]);
+
+  await insertCompanyAuditLog(tenantId, actorUserId, 'MODULE_ADDON_GRANTED', 'company_module_addon', moduleName, { modules: beforeModules }, { modules: afterModules });
+}
+
+/**
+ * Ek modülü kaldırır — `companies.modules`'daki değeri KÖRÜ KÖRÜNE false
+ * yapmaz, firmanın PAKETİNİN o modül için varsayılanına DÖNDÜRÜR (paket zaten
+ * o modülü içeriyorsa addon'u kaldırmak erişimi KESMEMELİ).
+ */
+export async function removeCompanyModuleAddon(tenantId: string, moduleName: string, actorUserId: string): Promise<void> {
+  const companyRes = await pool.query('SELECT package, modules FROM companies WHERE id = $1', [tenantId]);
+  if (companyRes.rows.length === 0) throw new Error('Firma bulunamadı.');
+  const packageTier: PackageTier = isPackageTier(companyRes.rows[0].package) ? companyRes.rows[0].package : 'TEMEL';
+
+  const deleteRes = await pool.query('DELETE FROM company_module_addons WHERE tenant_id = $1 AND module_name = $2', [tenantId, moduleName]);
+  if (deleteRes.rowCount === 0) return; // zaten addon değildi — no-op
+
+  const beforeModules = companyRes.rows[0].modules || {};
+  const afterModules = { ...beforeModules, [moduleName]: PACKAGE_MODULE_DEFAULTS[packageTier][moduleName] ?? false };
+  await pool.query('UPDATE companies SET modules = $1::jsonb WHERE id = $2', [JSON.stringify(afterModules), tenantId]);
+
+  await insertCompanyAuditLog(tenantId, actorUserId, 'MODULE_ADDON_REVOKED', 'company_module_addon', moduleName, { modules: beforeModules }, { modules: afterModules });
+}
+
+// ============================================================================
+// BILL-1703 — Paket Varsayılanlarının Mevcut Firmalara Kontrollü Yayılması
+// ============================================================================
+
+export interface PackageReapplyResult {
+  companyId: string;
+  companyName: string;
+  changed: boolean;
+  before: Record<string, boolean>;
+  after: Record<string, boolean>;
+}
+
+/**
+ * Bir paket tanımı (PACKAGE_MODULE_DEFAULTS) DEĞİŞTİĞİNDE (kod değişikliği,
+ * deploy), o paketteki firmalar OTOMATİK/sessizce güncellenmez — BILL-1702
+ * AC'sindeki "ani kesinti yok" ilkesiyle aynı ruh: SUPER_ADMIN bu fonksiyonu
+ * BİLEREK/açıkça tetiklemeli (routes.ts'te ayrı bir uç). Her firma için
+ * `modules = { ...PAKET_VARSAYILANI, ...ekModülAddonları }` olarak YENİDEN
+ * kurulur — addon'lar HER ZAMAN hayatta kalır, ama daha önce elle yapılmış
+ * (addon olmayan) ad-hoc `modules` override'ları bu işlemde KASITLI olarak
+ * silinir (paket tanımının otoritesini geri kazanması budur).
+ */
+export async function reapplyPackageDefaults(packageTier: PackageTier, actorUserId: string): Promise<PackageReapplyResult[]> {
+  const companiesRes = await pool.query('SELECT id, name, modules FROM companies WHERE package = $1', [packageTier]);
+  const results: PackageReapplyResult[] = [];
+
+  for (const row of companiesRes.rows) {
+    const addonNames = await getCompanyModuleAddonNames(row.id);
+    const newModules = {
+      ...PACKAGE_MODULE_DEFAULTS[packageTier],
+      ...Object.fromEntries(addonNames.map((m) => [m, true]))
+    };
+    const beforeModules = row.modules || {};
+    const changed = JSON.stringify(beforeModules) !== JSON.stringify(newModules);
+
+    if (changed) {
+      await pool.query('UPDATE companies SET modules = $1::jsonb WHERE id = $2', [JSON.stringify(newModules), row.id]);
+      await insertCompanyAuditLog(row.id, actorUserId, 'PACKAGE_DEFAULTS_REAPPLIED', 'company', row.id, { modules: beforeModules }, { modules: newModules });
+    }
+
+    results.push({ companyId: row.id, companyName: row.name, changed, before: beforeModules, after: newModules });
+  }
+
+  return results;
+}
+
+// ============================================================================
+// BILL-1701 — Lisans Uygulama (authMiddleware.ts'ten her istekte çağrılır)
+// ============================================================================
+
+export interface CompanyLicenseSnapshot {
+  licenseStatus: string;
+  licenseExpiry: string | null;
+  // ARCH-108: BILL-1701/1702'nin lisans kapısıyla AYNI tek sorguya eklendi
+  // (authMiddleware zaten her istekte bunu çekiyor — ayrı bir round-trip
+  // gerekmesin). 'AKTİF' | 'DONDURULDU' | 'SILME_BEKLIYOR'.
+  accountStatus: string;
+}
+
+/**
+ * authMiddleware.ts'in lisans kapısı için hafif, tek-satırlık sorgu —
+ * getAllCompanies()/buildAdminCompanyProfile() gibi şantiye/araç/ciro
+ * join'lerini YAPMAZ (her istekte çalışacağı için önemli). `companies`
+ * tablosunun kendisi RLS'siz olduğundan (bu dosyanın başındaki not) doğrudan
+ * `pool.query` güvenli.
+ */
+export async function getCompanyLicenseSnapshot(companyId: string): Promise<CompanyLicenseSnapshot | null> {
+  const result = await pool.query('SELECT license_status, license_expiry, account_status FROM companies WHERE id = $1', [companyId]);
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  return {
+    licenseStatus: row.license_status || 'AKTİF',
+    licenseExpiry: row.license_expiry ? new Date(row.license_expiry).toISOString().slice(0, 10) : null,
+    accountStatus: row.account_status || 'AKTİF'
+  };
+}
+
+// ============================================================================
+// REP-702 — Arşiv Ayarları (companies.archive_period_days/archive_last_generated_at)
+// ============================================================================
+// `companies` üzerindeki app_user UPDATE yetkisi schema.sql'de bilerek geri
+// alınmış (bkz. dosya başındaki REVOKE) — bu yüzden getCompanyLicenseSnapshot
+// ile AYNI gerekçeyle burada da doğrudan `pool` (superuser). Bu fonksiyonlar
+// SUPER_ADMIN'e ÖZEL DEĞİLDİR (dosya başındaki genel nottan farklı olarak) —
+// getCompanyLicenseSnapshot'ın login akışındaki KULLANIMIYLA AYNI istisna:
+// `companies` tablosunun kendisi RLS'siz olduğundan JWT'den gelen (istemcinin
+// DEĞİŞTİREMEYECEĞİ) tenantId ile `WHERE id = $1` filtrelemesi güvenlidir —
+// routes.ts'teki COMPANY_OWNER-gated route bu tenantId'yi asla istemciden
+// almaz, req.user.tenantId'den (JWT claim) okur.
+
+export interface ArchiveSettings {
+  periodDays: number | null;
+  lastGeneratedAt: string | null;
+}
+
+export async function getArchiveSettings(tenantId: string): Promise<ArchiveSettings | null> {
+  const result = await pool.query('SELECT archive_period_days, archive_last_generated_at FROM companies WHERE id = $1', [tenantId]);
+  if (result.rows.length === 0) return null;
+  const row = result.rows[0];
+  return {
+    periodDays: row.archive_period_days,
+    lastGeneratedAt: row.archive_last_generated_at ? new Date(row.archive_last_generated_at).toISOString() : null
+  };
+}
+
+export async function updateArchiveSettings(tenantId: string, periodDays: number | null, actorUserId: string): Promise<ArchiveSettings> {
+  const before = await getArchiveSettings(tenantId);
+  if (before === null) throw new NotFoundError('Firma bulunamadı.');
+
+  await pool.query('UPDATE companies SET archive_period_days = $1 WHERE id = $2', [periodDays, tenantId]);
+  await insertCompanyAuditLog(tenantId, actorUserId, 'ARCHIVE_SETTINGS_UPDATE', 'company', tenantId, { periodDays: before.periodDays }, { periodDays });
+
+  return { periodDays, lastGeneratedAt: before.lastGeneratedAt };
+}
+
+export async function touchArchiveLastGenerated(tenantId: string): Promise<void> {
+  await pool.query('UPDATE companies SET archive_last_generated_at = CURRENT_TIMESTAMP WHERE id = $1', [tenantId]);
+}
+
+/**
+ * INV-1503 AC: "Maliyet yöntemi tenant bazında seçilebilmelidir." Bu ayar da
+ * `companies` üzerinde — updateArchiveSettings'teki AYNI gerekçeyle (o
+ * tablonun UPDATE'i app_user'dan REVOKE edilmiş, bkz. schema.sql) burada,
+ * ham `pool` ile yazılır; tenantDb.ts'teki withTenant() (app_user bağlantısı)
+ * "permission denied for table companies" ile patlar — canlı yakalandı.
+ */
+export interface FuelCostSettings {
+  method: FuelCostMethod;
+}
+
+export async function getFuelCostSettings(tenantId: string): Promise<FuelCostSettings | null> {
+  const result = await pool.query('SELECT fuel_cost_method FROM companies WHERE id = $1', [tenantId]);
+  if (result.rows.length === 0) return null;
+  return { method: result.rows[0].fuel_cost_method };
+}
+
+export async function updateFuelCostMethod(tenantId: string, method: FuelCostMethod, actorUserId: string): Promise<FuelCostSettings> {
+  const before = await getFuelCostSettings(tenantId);
+  if (before === null) throw new NotFoundError('Firma bulunamadı.');
+
+  await pool.query('UPDATE companies SET fuel_cost_method = $1 WHERE id = $2', [method, tenantId]);
+  await insertCompanyAuditLog(tenantId, actorUserId, 'FUEL_COST_METHOD_CHANGED', 'company', tenantId, { method: before.method }, { method });
+
+  return { method };
+}
+
+/**
+ * index.ts'teki periyodik arşiv süpürücüsü için: `archive_period_days` ayarlı
+ * VE (hiç üretilmemiş YA DA son üretimden bu yana o kadar gün geçmiş) firmalar.
+ * sweepTimedOutCalibrations ile AYNI gerekçeyle TÜM tenant'lara bakan ham
+ * `pool.query` (tek bir tenant'a değil, sistem genelinde periyodik bir tur).
+ */
+export async function listCompaniesDueForPeriodicArchive(): Promise<Array<{ tenantId: string; periodDays: number }>> {
+  const result = await pool.query(
+    `SELECT id, archive_period_days FROM companies
+     WHERE archive_period_days IS NOT NULL
+       AND (archive_last_generated_at IS NULL OR archive_last_generated_at <= NOW() - (archive_period_days || ' days')::interval)`
+  );
+  return result.rows.map((r) => ({ tenantId: r.id, periodDays: r.archive_period_days }));
+}
+
+/**
+ * AC ile dolaylı ilgili — arşivler `expires_at`'in ötesinde süresiz
+ * saklanmamalı (hem BYTEA depolama alanını hem de eski parolaların sonsuza
+ * dek geçerli bir ZIP'e karşı denenebilir olma yüzeyini büyütür). Süresi
+ * dolan arşivlerin `file_data`'sını NULL'a çeker (satırın kendisini SİLMEZ —
+ * `download_count`/denetim geçmişi bir süre daha görünür kalsın), sonraki bir
+ * indirme denemesi `verifyAndConsumeArchiveDownload`'daki `expires_at` kontrolüne
+ * zaten çarpar; burada AYRICA `file_data`'yı temizlemek BYTEA depolamayı
+ * gerçekten boşaltır (aksi halde sadece erişim engellenir, alan boşalmaz).
+ * `status`'a dokunulmuyor (KASITLI) — 'BASARISIZ' bir ÜRETİM hatası anlamına
+ * gelir (yorum: 'HAZIRLANIYOR' | 'HAZIR' | 'BASARISIZ'), süresi dolmuş bir
+ * arşiv onunla karıştırılmamalı; "artık indirilemez" bilgisi zaten
+ * `expires_at`'in geçmişte olmasından + `file_data IS NULL`'dan okunabilir.
+ */
+export async function sweepExpiredArchives(): Promise<number> {
+  const result = await pool.query(`UPDATE tenant_archives SET file_data = NULL WHERE expires_at < NOW() AND file_data IS NOT NULL`);
+  return result.rowCount ?? 0;
+}
+
+// ============================================================================
+// BILL-1702 — Şantiye/Cihaz/Kullanıcı Sayacı, Paket Limitleri, Lisans Süresi Uyarıları
+// ============================================================================
+
+export interface PackageLimits {
+  maxSites: number | null; // null = sınırsız (KURUMSAL)
+  maxDevices: number | null;
+  maxUsers: number | null;
+}
+
+export const PACKAGE_LIMITS: Record<PackageTier, PackageLimits> = {
+  TEMEL: { maxSites: 1, maxDevices: 5, maxUsers: 5 },
+  PROFESYONEL: { maxSites: 5, maxDevices: 30, maxUsers: 25 },
+  KURUMSAL: { maxSites: null, maxDevices: null, maxUsers: null }
+};
+
+export interface PackageUsage {
+  package: PackageTier;
+  limits: PackageLimits;
+  siteCount: number;
+  deviceCount: number;
+  userCount: number;
+}
+
+/**
+ * Bir firmanın şantiye/cihaz/kullanıcı SAYIMI + paketinin limitleri.
+ * `sites`/`hardware_devices`/`users` RLS'li tablolardır ama bu dosyadaki
+ * her fonksiyon gibi doğrudan `pool` (superuser) ile sorgulanır — dosyanın
+ * başındaki nottaki gerekçeyle AYNI (yalnızca SUPER_ADMIN'e özel yollardan
+ * çağrılır, routes.ts'te authorizeRoles('SUPER_ADMIN') ile kilitli).
+ */
+export async function getCompanyPackageUsage(companyId: string): Promise<PackageUsage | null> {
+  const companyRes = await pool.query('SELECT package FROM companies WHERE id = $1', [companyId]);
+  if (companyRes.rows.length === 0) return null;
+  const packageTier: PackageTier = isPackageTier(companyRes.rows[0].package) ? companyRes.rows[0].package : 'TEMEL';
+
+  // BILL-1702 AC: "Cihaz sayımı pasif cihazları içermemelidir." Önceden
+  // BLOKE (pasif) cihazlar da sayılıyordu — BILL-1704'ün usageMeteringService.ts'te
+  // ZATEN doğru uyguladığı AYNI filtre (status != 'BLOKE') burada da uygulandı.
+  const [sitesRes, devicesRes, usersRes] = await Promise.all([
+    pool.query('SELECT COUNT(*)::int AS cnt FROM sites WHERE tenant_id = $1', [companyId]),
+    pool.query(`SELECT COUNT(*)::int AS cnt FROM hardware_devices WHERE tenant_id = $1 AND status != 'BLOKE'`, [companyId]),
+    pool.query('SELECT COUNT(*)::int AS cnt FROM users WHERE tenant_id = $1', [companyId])
+  ]);
+
+  return {
+    package: packageTier,
+    limits: PACKAGE_LIMITS[packageTier],
+    siteCount: sitesRes.rows[0].cnt,
+    deviceCount: devicesRes.rows[0].cnt,
+    userCount: usersRes.rows[0].cnt
+  };
+}
+
+export type PackageLimitResource = 'sites' | 'devices' | 'users';
+
+/**
+ * routes.ts'teki oluşturma uçlarının (POST /sites, POST /devices, ...)
+ * yeni kaydı REDDETMESİ gerekip gerekmediğini söyler — sınırsız (KURUMSAL,
+ * limit=null) paketlerde her zaman `reached:false` döner.
+ */
+export async function isPackageLimitReached(
+  companyId: string,
+  resource: PackageLimitResource
+): Promise<{ reached: boolean; limit: number | null; current: number }> {
+  const usage = await getCompanyPackageUsage(companyId);
+  if (!usage) return { reached: false, limit: null, current: 0 };
+
+  const limit =
+    resource === 'sites' ? usage.limits.maxSites : resource === 'devices' ? usage.limits.maxDevices : usage.limits.maxUsers;
+  const current = resource === 'sites' ? usage.siteCount : resource === 'devices' ? usage.deviceCount : usage.userCount;
+
+  return { reached: limit !== null && current >= limit, limit, current };
+}
+
+export interface ExpiringCompany {
+  id: string;
+  name: string;
+  licenseExpiry: string;
+  daysRemaining: number;
+}
+
+/**
+ * BILL-1702 AC: "süre bitimine 30/15/7 gün kala uyarı." ASKIDA (zaten admin
+ * tarafından askıya alınmış) firmalar hariç tutulur — onlar için zaten
+ * authMiddleware.ts'in sert kapısı devrede, ayrıca bir "yakında dolacak"
+ * uyarısı anlamsız. Süresi ZATEN geçmiş olanlar da hariç (o, bir "uyarı"
+ * değil authMiddleware.ts'in salt-okunur kısıtlamasının konusu).
+ */
+export async function getCompaniesNearingExpiry(warningWindowDays = 30): Promise<ExpiringCompany[]> {
+  const result = await pool.query(
+    `SELECT id, name, license_expiry,
+       (license_expiry - CURRENT_DATE)::int AS days_remaining
+     FROM companies
+     WHERE license_status = 'AKTİF'
+       AND license_expiry IS NOT NULL
+       AND license_expiry >= CURRENT_DATE
+       AND license_expiry <= CURRENT_DATE + $1::int
+     ORDER BY license_expiry ASC`,
+    [warningWindowDays]
+  );
+  return result.rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    licenseExpiry: new Date(r.license_expiry).toISOString().slice(0, 10),
+    daysRemaining: r.days_remaining
+  }));
+}
+
+// ============================================================================
+// AUTH-202.3 — Cihaz Kaydı Arama (Pre-Tenant-Context)
+// ============================================================================
+
+export interface HardwareDeviceRecord {
+  id: string;
+  tenant_id: string;
+  device_id: string;
+  name: string;
+  site_name: string;
+  encrypted_secret: string;
+  encrypted_secret_previous: string | null;
+  previous_secret_expires_at: string | null;
+  secret_rotated_at: string | null;
+  status: string;
+  serial_number: string | null;
+  mac_address: string | null;
+  model: string | null;
+  hardware_revision: string | null;
+}
+
+/**
+ * hardwareAuthMiddleware.ts'in TEK giriş noktası: bir HMAC isteği geldiğinde
+ * hangi tenant'a ait olduğu HENÜZ bilinmiyor (login öncesi kullanıcı aramayla
+ * aynı durum) — bu yüzden burada, withTenant() DIŞINDA, ham pool.query ile
+ * device_id'den tüm kaydı (tenant_id dahil) bulunur. Bundan sonraki HER işlem
+ * (provisioning/rotasyon/bloke etme) tenantDb.ts üzerinden, JWT ile kurulan
+ * gerçek tenant context'iyle RLS'e tabi olarak yapılır.
+ */
+export async function getHardwareDeviceByDeviceId(deviceId: string): Promise<HardwareDeviceRecord | null> {
+  const result = await pool.query('SELECT * FROM hardware_devices WHERE device_id = $1', [deviceId]);
+  return result.rows[0] ?? null;
+}
+
+/**
+ * IOT-307 — getHardwareDeviceByDeviceId ile AYNI gerekçe: hardwareAuthMiddleware bir isteği kabul
+ * ettiği anda tenant context (JWT ile kurulan withTenant() akışı) henüz YOK, bu yüzden ham
+ * pool.query. ÖNCEDEN last_clock_drift_ms yalnızca cihazın OPSİYONEL MQTT vitals alanı
+ * (deviceTimeMs) gönderdiğinde güncelleniyordu (nadiren) — artık HER kabul edilen HMAC isteğinde
+ * (ZORUNLU X-Timestamp'ten) çağrılır, bu yüzden "son bilinen sapma" güvenilir biçimde günceldir.
+ * Fire-and-forget: bu bir yan etkidir (telemetri/health verisi), donanım isteğinin YANITINI
+ * ASLA bloklamamalı/başarısız kılmamalı — hata yutulur, yalnızca loglanır (redisPool.ts'teki
+ * "telemetri hattını bloklamaz" disipliniyle AYNI).
+ */
+export async function recordHardwareClockDrift(deviceId: string, driftMs: number): Promise<void> {
+  try {
+    await pool.query(
+      'UPDATE hardware_devices SET last_clock_drift_ms = $2, last_clock_drift_at = NOW() WHERE device_id = $1',
+      [deviceId, Math.round(driftMs)]
+    );
+  } catch (err) {
+    logger.warn({ err, deviceId }, '⚠️ [IOT-307] Cihaz saat sapması kaydedilemedi (DB hatası).');
+  }
+}
+
+// ── AUTH-206: parola sıfırlama (pre-auth, tenant context YOK) ─────────────
+// getHardwareDeviceByDeviceId / login akışıyla AYNI gerekçe: token/istek
+// henüz hangi tenant'a ait belli değil, bu yüzden withTenant() DIŞINDA ham
+// pool.query. Bu iki fonksiyon yalnızca passwordResetService.ts'ten çağrılır.
+
+export interface AuthUserLite {
+  id: string;
+  tenant_id: string;
+  username: string;
+}
+
+export async function findUserForPasswordReset(username: string): Promise<AuthUserLite | null> {
+  const result = await pool.query(
+    'SELECT id, tenant_id, username FROM users WHERE LOWER(username) = LOWER($1)',
+    [username]
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
+ * Parola sıfırlama tamamlandığında hash'i günceller VE geçici-parola
+ * bayraklarını temizler (bir sıfırlama, kalıcı ve bilinçli bir parola
+ * belirlemedir — must_change_password akışını bitirir).
+ */
+export async function updateUserPasswordHash(userId: string, passwordHash: string): Promise<void> {
+  await pool.query(
+    `UPDATE users
+       SET password_hash = $2, must_change_password = FALSE, temp_password_expires_at = NULL
+     WHERE id = $1`,
+    [userId, passwordHash]
+  );
+}
+
+export interface AdminHardwareDeviceSummary {
+  device_id: string;
+  tenant_id: string;
+  name: string;
+  site_name: string;
+  status: string;
+  /** FE-806: IOT-308'in hardware_devices.last_seen_at'i — cihazın KENDİ bildirdiği en son görülme (her ONLINE/telemetride üzerine yazılır); hiç görülmemişse null. */
+  last_heartbeat_at: string | null;
+  /** FE-806: IOT-308 device_health_scores'taki EN GÜNCEL (computed_at DESC) skor — henüz hesaplanmamışsa null. */
+  health_score: number | null;
+  /** FE-806: IOT-308'in hardware_devices.firmware_version'ı — cihazın KENDİ bildirdiği sürüm (OTA dağıtım durumu DEĞİL); hiç bildirmemişse null. */
+  firmware_version: string | null;
+  /** FE-806: IOT-308'in hardware_devices.last_reported_rssi'si — opsiyonel, cihaz göndermiyorsa null. */
+  last_reported_rssi: number | null;
+}
+
+/**
+ * SUPER_ADMIN'e özel, TÜM tenant'lardaki cihazların (secret hariç) listesi
+ * — GET /devices route'unda kullanılır. index.ts'teki FUEL-401.3 heartbeat
+ * zaman aşımı süpürücüsü de kontrol edilecek cihaz listesini buradan alır
+ * (tenant bazlı filtrelemeye gerek yok, sistem geneli bir bakım işi).
+ */
+export async function getAllHardwareDevices(): Promise<AdminHardwareDeviceSummary[]> {
+  // FE-806 AC: "Cihaz sağlık tablosu ... son heartbeat, sağlık skoru,
+  // firmware sürümü." Yeni bir tracking mekanizması EKLEMEK yerine
+  // (ARCH-105/FE-805'teki lastActivityAt İLE AYNI ilke), IOT-308'in ZATEN
+  // yazdığı verilere bakılıyor: last_seen_at/firmware_version/
+  // last_reported_rssi doğrudan hardware_devices'te ("son bilinen durum"
+  // anlık görüntüsü, her ONLINE/telemetride üzerine yazılır); sağlık skoru
+  // İÇİN doğrudan bir kolon yok (periyodik/tarihsel), device_health_scores'a
+  // korelasyonlu alt sorgu gerekiyor.
+  const result = await pool.query(`
+    SELECT hd.device_id, hd.tenant_id, hd.name, hd.site_name, hd.status,
+      hd.last_seen_at AS last_heartbeat_at, hd.firmware_version, hd.last_reported_rssi,
+      (SELECT dhs.score FROM device_health_scores dhs WHERE dhs.device_id = hd.device_id ORDER BY dhs.computed_at DESC LIMIT 1) AS health_score
+    FROM hardware_devices hd
+    ORDER BY hd.created_at DESC
+  `);
+  return result.rows;
+}
+
+/**
+ * AI-502 — index.ts'teki haftalık tüketim anomali süpürücüsünün, hangi
+ * tenant'lar için analiz üreteceğini bulmak için kullandığı sistem geneli
+ * sorgu (yukarıdaki getAllHardwareDevices ile AYNI gerekçe: bir bakım işi,
+ * tek bir tenant context'ine kısıtlı değil). `modules->>'aiAnomaly'` NULL
+ * (hiç ayarlanmamış) VEYA 'true' ise dahil edilir — yalnızca AÇIKÇA
+ * 'false' yapılmış tenant'lar hariç tutulur (bkz. tenantDb.ts
+ * isTenantModuleEnabled'daki AYNI varsayılan-açık mantığı).
+ */
+export async function getAllTenantIdsWithAiAnomalyEnabled(): Promise<string[]> {
+  const result = await pool.query(
+    `SELECT id FROM companies WHERE (modules->>'aiAnomaly') IS DISTINCT FROM 'false'`
+  );
+  return result.rows.map((r) => r.id);
+}
+
+/**
+ * FUEL-402.1 — kota dönem sıfırlama sweep'i (index.ts) hangi tenant'lar için
+ * çalışacağını buradan alır. getAllHardwareDevices ile AYNI gerekçe: sistem
+ * geneli bir bakım işi, tek tenant context'ine kısıtlı değil.
+ */
+export async function getAllTenantIds(): Promise<string[]> {
+  const result = await pool.query('SELECT id FROM companies');
+  return result.rows.map((r) => r.id);
+}
+
+// AUTH-202.3 öncesi (AUTH-202.1/OPS-1105), 3 demo cihazının sırları
+// hardwareAuthMiddleware.ts'te REGISTERED_HARDWARE_DEVICES adlı statik bir
+// nesnede, HW_SECRET_ESP32_* ortam değişkenlerinden okunuyordu. Bu fonksiyon
+// sunucu ilk açıldığında (bkz. index.ts) o 3 cihazı, AYNI env değişken
+// değerleriyle (geriye dönük uyumluluk — sahadaki cihazlar hâlâ bu sırları
+// kullanıyor) yeni hardware_devices tablosuna BİR KEZ taşır. ON CONFLICT
+// DO NOTHING sayesinde zaten rotasyona uğramış bir cihazın secret'ını
+// asla ÜZERİNE YAZMAZ — yalnızca tablo hiç yoksa (ilk açılış) devreye girer.
+// Değerler değil, ortam değişkeni İSİMLERİ — gitleaks bunları yüksek entropili
+// dizgeler olarak yanlışlıkla işaretliyor (env.ts'teki aynı desenle tutarlı).
+const LEGACY_DEVICES: Array<{ deviceId: string; name: string; siteName: string; secretEnvVar: string }> = [
+  { deviceId: 'ESP32-PUMP-01', name: 'Gebze Pompa Otomasyonu #1', siteName: 'Gebze Ana Şantiye', secretEnvVar: 'HW_SECRET_ESP32_PUMP_01' }, // gitleaks:allow
+  { deviceId: 'ESP32-TANK-01', name: 'Gebze Ultrasonik Tank Probu #1', siteName: 'Gebze Ana Şantiye', secretEnvVar: 'HW_SECRET_ESP32_TANK_01' }, // gitleaks:allow
+  { deviceId: 'ESP32-FLOW-ISR', name: 'Debimetre Kesme Sensörü', siteName: 'Sistem Kalibrasyonu', secretEnvVar: 'HW_SECRET_ESP32_FLOW_ISR' } // gitleaks:allow
+];
+const LEGACY_DEVICE_TENANT_ID = 'comp-camsa';
+
+// ============================================================================
+// IOT-304 — Cihaz Claim (Eşleştirme) Redemption (Pre-Tenant-Context)
+// ============================================================================
+
+/**
+ * Bir claim kodunu tüketip YENİ bir cihaz kaydı oluşturur. Cihazın/teknisyenin
+ * çağırdığı bu uç HENÜZ hiçbir kimlik doğrulaması (JWT/HMAC) taşımaz — cihazın
+ * henüz bir secret'ı YOK, tam olarak bunu üretmek için var. Bu yüzden
+ * getHardwareDeviceByDeviceId ile aynı gerekçeyle burada, withTenant()
+ * DIŞINDA, ham bir Postgres transaction'ı kullanılır.
+ *
+ * `SELECT ... FOR UPDATE` ile kod satırı kilitlenir: aynı kodla eşzamanlı iki
+ * redemption denemesi (örn. bir teknisyenin isteği zaman aşımına uğrayıp
+ * tekrar denemesi) İKİSİNİN DE "hâlâ BEKLIYOR" görüp iki cihaz yaratmasını
+ * önler — biri kazanır, diğeri CLAIM_CODE_ALREADY_USED alır.
+ */
+export async function redeemDeviceClaimCode(input: {
+  code: string;
+  deviceId: string;
+  serialNumber?: string;
+  macAddress?: string;
+  model?: string;
+  hardwareRevision?: string;
+}): Promise<{ device: HardwareDeviceRecord; secret: string }> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const claimRes = await client.query('SELECT * FROM device_claim_codes WHERE code = $1 FOR UPDATE', [input.code]);
+    if (claimRes.rows.length === 0) {
+      throw new ForbiddenError('Geçersiz claim kodu.', { error: 'CLAIM_CODE_INVALID' });
+    }
+    const claim = claimRes.rows[0];
+    if (claim.status !== 'BEKLIYOR') {
+      throw new ConflictError('Bu claim kodu daha önce kullanılmış.', { error: 'CLAIM_CODE_ALREADY_USED' });
+    }
+    if (new Date(claim.expires_at).getTime() < Date.now()) {
+      throw new ForbiddenError('Claim kodunun süresi dolmuş.', { error: 'CLAIM_CODE_EXPIRED' });
+    }
+
+    const existingDevice = await client.query('SELECT 1 FROM hardware_devices WHERE device_id = $1', [input.deviceId]);
+    if (existingDevice.rows.length > 0) {
+      throw new ConflictError(`'${input.deviceId}' kimlikli bir cihaz zaten kayıtlı.`, { error: 'DEVICE_ID_TAKEN' });
+    }
+
+    const id = generateId('hwdev');
+    const secret = generateDeviceSecret();
+    const deviceResult = await client.query(
+      `INSERT INTO hardware_devices (id, tenant_id, device_id, name, site_name, encrypted_secret, serial_number, mac_address, model, hardware_revision)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [
+        id, claim.tenant_id, input.deviceId, claim.device_name, claim.site_name, encryptDeviceSecret(secret),
+        input.serialNumber ?? null, input.macAddress ?? null, input.model ?? null, input.hardwareRevision ?? null
+      ]
+    );
+
+    await client.query(
+      `UPDATE device_claim_codes SET status = 'KULLANILDI', redeemed_device_id = $1, redeemed_at = CURRENT_TIMESTAMP WHERE id = $2`,
+      [input.deviceId, claim.id]
+    );
+
+    await client.query('COMMIT');
+    return { device: deviceResult.rows[0], secret };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function seedLegacyHardwareDevicesIfMissing(secretsByEnvVar: Record<string, string>): Promise<void> {
+  for (const device of LEGACY_DEVICES) {
+    const secret = secretsByEnvVar[device.secretEnvVar];
+    if (!secret) continue;
+    await pool.query(
+      `INSERT INTO hardware_devices (id, tenant_id, device_id, name, site_name, encrypted_secret)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (device_id) DO NOTHING`,
+      [generateId('hwdev'), LEGACY_DEVICE_TENANT_ID, device.deviceId, device.name, device.siteName, encryptDeviceSecret(secret)]
+    );
+  }
+}
+
+// ============================================================================
+// FUEL-404.1 — Kalibrasyon Ack Zaman Aşımı Süpürücüsü (Tüm Tenant'lar)
+// ============================================================================
+// FUEL-401.3'ün heartbeat süpürücüsüyle AYNI gerekçe: bu periyodik bakım
+// işi TEK bir tenant'a değil TÜM sistemedir (index.ts'teki interval'dan
+// çağrılır) — bu yüzden withTenant() (RLS'i tek bir tenant'a kısıtlar)
+// DEĞİL, adminDb.ts'in geri kalanıyla tutarlı ham pool.query kullanılıyor.
+const CALIBRATION_ACK_TIMEOUT_MINUTES = 5;
+
+export async function sweepTimedOutCalibrations(): Promise<Array<{ id: string; deviceId: string; tenantId: string }>> {
+  const result = await pool.query(
+    `UPDATE calibration_commands SET status = 'ZAMAN_ASIMI'
+     WHERE status = 'BEKLIYOR' AND sent_at IS NOT NULL AND sent_at < NOW() - INTERVAL '${CALIBRATION_ACK_TIMEOUT_MINUTES} minutes'
+     RETURNING id, device_id, tenant_id`
+  );
+  return result.rows.map((r) => ({ id: r.id, deviceId: r.device_id, tenantId: r.tenant_id }));
+}
+
+// ============================================================================
+// AUTH-207: TOTP 2FA — user_totp erişimi + auth denetim kaydı
+// ============================================================================
+// Login/2FA akışı henüz bir tenant context'i (RLS) kurmadan çalışır — bu
+// yüzden findUserForPasswordReset ile AYNI gerekçeyle ham pool.query
+// (adminDb.ts zaten check-no-raw-pool-query allowlist'inde).
+
+export interface UserAuthRow {
+  id: string;
+  tenant_id: string;
+  username: string;
+  role: string;
+}
+
+export async function getUserAuthById(userId: string): Promise<UserAuthRow | null> {
+  const r = await pool.query('SELECT id, tenant_id, username, role FROM users WHERE id = $1', [userId]);
+  return r.rows[0] ?? null;
+}
+
+export interface UserTotpRow {
+  user_id: string;
+  tenant_id: string;
+  secret_base32: string;
+  enabled: boolean;
+  enabled_at: string | null;
+  recovery_code_hashes: string[];
+  recovery_codes_total: number;
+  last_used_at: string | null;
+}
+
+export async function getUserTotp(userId: string): Promise<UserTotpRow | null> {
+  const r = await pool.query('SELECT * FROM user_totp WHERE user_id = $1', [userId]);
+  return r.rows[0] ?? null;
+}
+
+/** Kurulum: sırrı + kurtarma kodu hash'lerini yazar (enabled=FALSE). */
+export async function saveUserTotpSecret(
+  userId: string,
+  tenantId: string,
+  secretBase32: string,
+  recoveryCodeHashes: string[]
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO user_totp (user_id, tenant_id, secret_base32, enabled, recovery_code_hashes, recovery_codes_total, updated_at)
+     VALUES ($1, $2, $3, FALSE, $4, $5, CURRENT_TIMESTAMP)
+     ON CONFLICT (user_id) DO UPDATE SET
+       secret_base32 = EXCLUDED.secret_base32,
+       enabled = FALSE,
+       enabled_at = NULL,
+       recovery_code_hashes = EXCLUDED.recovery_code_hashes,
+       recovery_codes_total = EXCLUDED.recovery_codes_total,
+       last_used_at = NULL,
+       updated_at = CURRENT_TIMESTAMP`,
+    [userId, tenantId, secretBase32, recoveryCodeHashes, recoveryCodeHashes.length]
+  );
+}
+
+export async function enableUserTotp(userId: string): Promise<void> {
+  await pool.query(
+    `UPDATE user_totp SET enabled = TRUE, enabled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1`,
+    [userId]
+  );
+}
+
+export async function deleteUserTotp(userId: string): Promise<boolean> {
+  const r = await pool.query('DELETE FROM user_totp WHERE user_id = $1', [userId]);
+  return (r.rowCount ?? 0) > 0;
+}
+
+/** Kalan kurtarma kodu hash listesini değiştirir (bir kod tüketilince). */
+export async function setTotpRecoveryHashes(userId: string, hashes: string[]): Promise<void> {
+  await pool.query(
+    `UPDATE user_totp SET recovery_code_hashes = $2, last_used_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE user_id = $1`,
+    [userId, hashes]
+  );
+}
+
+export async function touchTotpLastUsed(userId: string): Promise<void> {
+  await pool.query('UPDATE user_totp SET last_used_at = CURRENT_TIMESTAMP WHERE user_id = $1', [userId]);
+}
+
+/**
+ * AUTH-207 AC: "2FA etkinleştirme/devre dışı bırakma audit log'a
+ * yazılmalıdır." Login/2FA akışı tenant context'i kurmadığı için writeAuditLog
+ * (getTenantStore'a bağımlı) kullanılamaz — doğrudan, açık tenant_id ile.
+ */
+export async function insertAuthAuditLog(
+  tenantId: string,
+  actorUserId: string | null,
+  action: string,
+  targetId: string,
+  detail: Record<string, unknown>
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO audit_logs (id, tenant_id, user_id, action, target_type, target_id, after_value)
+     VALUES ($1, $2, $3, $4, 'user_totp', $5, $6)`,
+    [generateId('audit'), tenantId, actorUserId, action, targetId, JSON.stringify(detail)]
+  );
+}
+
+// ============================================================================
+// ARCH-108 — TENANT DONDURMA, KALICI SİLME + ŞİFRELİ VERİ DIŞA AKTARIMI
+// ============================================================================
+// BILL-1701/1702'nin `license_status` ('ASKIDA') alanından KASITLI olarak
+// AYRI: o fatura/ödeme ihlali (geri döndürülebilir, çoğu zaman otomatik),
+// bu ise SUPER_ADMIN'in BİLEREK tetikledigi hesap yaşam döngüsü kararı
+// (müşteri ayrılışı/fesih). authMiddleware.ts'te AYRI bir kontrol noktası.
+
+const TENANT_DELETION_WAITING_PERIOD_DAYS = 30;
+const TENANT_DELETION_REQUIRED_APPROVALS = 2;
+
+export interface TenantLifecycleStatus {
+  accountStatus: 'AKTİF' | 'DONDURULDU' | 'SILME_BEKLIYOR';
+  frozenAt: string | null;
+  frozenBy: string | null;
+  frozenReason: string | null;
+  deletionScheduledAt: string | null;
+  deletionRequestedBy: string | null;
+  deletionReason: string | null;
+  deletionEligibleAt: string | null;
+  approvalsCount: number;
+  approvedBy: string[];
+}
+
+const COMPANY_LIFECYCLE_COLUMNS = `id, name, account_status, frozen_at, frozen_by, frozen_reason,
+            deletion_scheduled_at, deletion_requested_by, deletion_reason`;
+
+async function getCompanyLifecycleRow(tenantId: string): Promise<any> {
+  const res = await pool.query(`SELECT ${COMPANY_LIFECYCLE_COLUMNS} FROM companies WHERE id = $1`, [tenantId]);
+  if (res.rows.length === 0) throw new NotFoundError('Firma bulunamadı.', { error: 'COMPANY_NOT_FOUND' });
+  return res.rows[0];
+}
+
+/**
+ * TEST_PLAN.md §2.2 — ARCH-108 yaşam döngüsü işlemlerini firma satırı KİLİTLİ
+ * tek bir transaction içinde çalıştırır.
+ *
+ * NEDEN (eşzamanlı isteklerle, 15'er tur tekrarlanarak kanıtlandı): bu
+ * işlemler önceden kilitsiz check-then-act idi (durum oku → karar ver → ayrı
+ * sorgularla yaz). Sonuçlar:
+ *   - İptal ile onay yarışınca 15 turun 14'ünde iptal isteği 200 ("iptal
+ *     edildi") döndü AMA firma ve tüm verisi KALICI olarak silindi — onay,
+ *     iptal commit'lenmeden önce durumu SILME_BEKLIYOR olarak okumuştu.
+ *   - İki farklı admin aynı anda son onayı verince 15/15 turda
+ *     platform_audit_log'a ÇİFT "kalıcı silindi" kaydı düştü.
+ *   - Bir turda iptal edilmiş (AKTİF) firmada bayat bir onay satırı kaldı;
+ *     silme yeniden planlanırsa eski onay yeni "2 farklı onay" şartına sayılırdı.
+ * `SELECT ... FOR UPDATE` ikinci işlemi birincinin COMMIT'ine kadar bekletir;
+ * bekleyen işlem güncel durumu (ya da silinmiş satırı) görür ve kararını ona
+ * göre verir.
+ */
+async function withLockedCompany<T>(tenantId: string, fn: (client: PoolClient, row: any) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const res = await client.query(`SELECT ${COMPANY_LIFECYCLE_COLUMNS} FROM companies WHERE id = $1 FOR UPDATE`, [tenantId]);
+    if (res.rows.length === 0) {
+      // Silinmiş olabilir (ör. yarışı kaybeden iptal isteği): dürüstçe 404.
+      throw new NotFoundError('Firma bulunamadı.', { error: 'COMPANY_NOT_FOUND' });
+    }
+    const result = await fn(client, res.rows[0]);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getTenantLifecycleStatus(tenantId: string): Promise<TenantLifecycleStatus> {
+  const row = await getCompanyLifecycleRow(tenantId);
+  const approvals = await pool.query(
+    'SELECT approved_by FROM tenant_deletion_approvals WHERE tenant_id = $1 ORDER BY approved_at',
+    [tenantId]
+  );
+  const approvedBy: string[] = approvals.rows.map((r: any) => r.approved_by);
+  const deletionEligibleAt = row.deletion_scheduled_at
+    ? new Date(new Date(row.deletion_scheduled_at).getTime() + TENANT_DELETION_WAITING_PERIOD_DAYS * 24 * 60 * 60 * 1000).toISOString()
+    : null;
+  return {
+    accountStatus: row.account_status,
+    frozenAt: row.frozen_at,
+    frozenBy: row.frozen_by,
+    frozenReason: row.frozen_reason,
+    deletionScheduledAt: row.deletion_scheduled_at,
+    deletionRequestedBy: row.deletion_requested_by,
+    deletionReason: row.deletion_reason,
+    deletionEligibleAt,
+    approvalsCount: approvedBy.length,
+    approvedBy
+  };
+}
+
+/**
+ * AC: "Tenant dondurma: girişi engeller, cihazları salt-okunur yapar, veriyi
+ * korur." Giriş engeli authMiddleware.ts + /auth/login'de (account_status
+ * okunarak) uygulanır; bu fonksiyon yalnızca durumu değiştirir — hiçbir
+ * satır silinmez/değiştirilmez.
+ */
+export async function freezeCompany(tenantId: string, reason: string, actorUserId: string): Promise<void> {
+  return withLockedCompany(tenantId, async (client, row) => {
+    if (row.account_status === 'DONDURULDU') {
+      throw new ConflictError('Firma zaten dondurulmuş.', { error: 'ALREADY_FROZEN' });
+    }
+    await client.query(
+      `UPDATE companies SET account_status = 'DONDURULDU', frozen_at = CURRENT_TIMESTAMP, frozen_by = $2, frozen_reason = $3 WHERE id = $1`,
+      [tenantId, actorUserId, reason]
+    );
+    await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_FROZEN', 'company', tenantId, { accountStatus: row.account_status }, { reason }, client);
+  });
+}
+
+export async function unfreezeCompany(tenantId: string, actorUserId: string): Promise<void> {
+  return withLockedCompany(tenantId, async (client, row) => {
+    if (row.account_status !== 'DONDURULDU') {
+      throw new ConflictError('Firma dondurulmuş durumda değil.', { error: 'NOT_FROZEN' });
+    }
+    await client.query(
+      `UPDATE companies SET account_status = 'AKTİF', frozen_at = NULL, frozen_by = NULL, frozen_reason = NULL WHERE id = $1`,
+      [tenantId]
+    );
+    await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_UNFROZEN', 'company', tenantId, { accountStatus: 'DONDURULDU' }, { accountStatus: 'AKTİF' }, client);
+  });
+}
+
+/**
+ * AC: "aşamalı silme: 30 günlük bekleme süresiyle soft-delete, sonra kalıcı
+ * kaldırma." Planlama, firmayı da DONDURUR (giriş engellenir — silinmek
+ * üzere olan bir hesapta yeni veri üretilmemeli).
+ */
+export async function scheduleTenantDeletion(tenantId: string, reason: string, actorUserId: string): Promise<void> {
+  return withLockedCompany(tenantId, async (client, row) => {
+    if (row.account_status === 'SILME_BEKLIYOR') {
+      throw new ConflictError('Bu firma için silme zaten planlanmış.', { error: 'ALREADY_SCHEDULED' });
+    }
+    await client.query(
+      `UPDATE companies SET account_status = 'SILME_BEKLIYOR', deletion_scheduled_at = CURRENT_TIMESTAMP,
+          deletion_requested_by = $2, deletion_reason = $3 WHERE id = $1`,
+      [tenantId, actorUserId, reason]
+    );
+    // Önceki (iptal edilmiş) bir döngüden kalmış olabilecek onaylar yeni
+    // planlamaya SAYILMAMALI — her döngü sıfır onayla başlar.
+    await client.query('DELETE FROM tenant_deletion_approvals WHERE tenant_id = $1', [tenantId]);
+    await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_DELETION_SCHEDULED', 'company', tenantId, { accountStatus: row.account_status }, { reason }, client);
+  });
+}
+
+export async function cancelTenantDeletion(tenantId: string, actorUserId: string): Promise<void> {
+  return withLockedCompany(tenantId, async (client, row) => {
+    if (row.account_status !== 'SILME_BEKLIYOR') {
+      throw new ConflictError('Bu firma için planlanmış bir silme yok.', { error: 'NOT_SCHEDULED' });
+    }
+    await client.query(
+      `UPDATE companies SET account_status = 'AKTİF', deletion_scheduled_at = NULL,
+          deletion_requested_by = NULL, deletion_reason = NULL WHERE id = $1`,
+      [tenantId]
+    );
+    await client.query('DELETE FROM tenant_deletion_approvals WHERE tenant_id = $1', [tenantId]);
+    await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_DELETION_CANCELLED', 'company', tenantId, { accountStatus: 'SILME_BEKLIYOR' }, { accountStatus: 'AKTİF' }, client);
+  });
+}
+
+export interface DeletionApprovalResult {
+  executed: boolean;
+  approvalsCount: number;
+  approvedBy: string[];
+}
+
+/**
+ * AC: "kalıcı silme İKİ FARKLI SUPER_ADMIN onayı olmadan gerçekleşemez."
+ * (tenant_id, approved_by) PRIMARY KEY'i AYNI admin'in iki kez "onayladım"
+ * diyerek sayacı kendi başına ikiye çıkarmasını veritabanı seviyesinde
+ * engeller. İkinci FARKLI onay geldiğinde silme AYNI çağrıda gerçekleşir.
+ */
+export async function approveTenantDeletion(tenantId: string, actorUserId: string): Promise<DeletionApprovalResult> {
+  return withLockedCompany(tenantId, async (client, row) => {
+    if (row.account_status !== 'SILME_BEKLIYOR') {
+      throw new ConflictError('Bu firma için planlanmış bir silme yok.', { error: 'NOT_SCHEDULED' });
+    }
+    const scheduledAt = new Date(row.deletion_scheduled_at);
+    const eligibleAt = new Date(scheduledAt.getTime() + TENANT_DELETION_WAITING_PERIOD_DAYS * 24 * 60 * 60 * 1000);
+    if (new Date() < eligibleAt) {
+      throw new ConflictError(
+        `30 günlük bekleme süresi ${eligibleAt.toISOString().slice(0, 10)} tarihine kadar dolmadı.`,
+        { error: 'WAITING_PERIOD_NOT_ELAPSED', eligibleAt: eligibleAt.toISOString() }
+      );
+    }
+
+    await client.query(
+      'INSERT INTO tenant_deletion_approvals (tenant_id, approved_by) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+      [tenantId, actorUserId]
+    );
+    const approvals = await client.query('SELECT approved_by FROM tenant_deletion_approvals WHERE tenant_id = $1 ORDER BY approved_at', [tenantId]);
+    const approvedBy: string[] = approvals.rows.map((r: any) => r.approved_by);
+
+    await insertCompanyAuditLog(tenantId, actorUserId, 'TENANT_DELETION_APPROVED', 'company', tenantId, null, { approvalsCount: approvedBy.length }, client);
+
+    if (approvedBy.length >= TENANT_DELETION_REQUIRED_APPROVALS) {
+      // Kalıcı silme kaydı ÖNCE (companies'e FK'sı YOK — cascade'den bağımsız
+      // hayatta kalır), asıl silme (ON DELETE CASCADE ile TÜM tenant verisi) SONRA.
+      // İkisi aynı transaction'da: silme başarısız olursa "silindi" kaydı da kalmaz.
+      await client.query(
+        `INSERT INTO platform_audit_log (id, deleted_tenant_id, tenant_name, action, actor_user_id, detail)
+         VALUES ($1, $2, $3, 'TENANT_PERMANENTLY_DELETED', $4, $5::jsonb)`,
+        [generateId('paudit'), tenantId, row.name, actorUserId, JSON.stringify({ approvedBy, deletionReason: row.deletion_reason })]
+      );
+      await client.query('DELETE FROM companies WHERE id = $1', [tenantId]);
+      return { executed: true, approvalsCount: approvedBy.length, approvedBy };
+    }
+    return { executed: false, approvalsCount: approvedBy.length, approvedBy };
+  });
+}
+
+/**
+ * AC: "eksiksiz veri dışa aktarımı — tüm tablolar, e-belgeler, telemetri."
+ * `information_schema`'dan tenant_id kolonlu TÜM tabloları ÇALIŞMA ZAMANINDA
+ * keşfeder (sabit bir tablo listesi YOK) — yeni bir tenant tablosu eklendiğinde
+ * bu fonksiyon OTOMATİK olarak onu da kapsar, ayrıca güncellenmesi gerekmez.
+ * Sonuç AES-256-GCM ile şifrelenir (ticket'ın "şifreli arşiv" AC'si).
+ */
+export async function exportTenantDataEncrypted(tenantId: string): Promise<Buffer> {
+  const companyRes = await pool.query('SELECT * FROM companies WHERE id = $1', [tenantId]);
+  if (companyRes.rows.length === 0) throw new NotFoundError('Firma bulunamadı.', { error: 'COMPANY_NOT_FOUND' });
+
+  const tablesRes = await pool.query(
+    `SELECT DISTINCT table_name FROM information_schema.columns
+      WHERE table_schema = 'public' AND column_name = 'tenant_id'
+      ORDER BY table_name`
+  );
+
+  const exportData: Record<string, any> = {
+    exportedAt: new Date().toISOString(),
+    company: companyRes.rows[0]
+  };
+  for (const { table_name: tableName } of tablesRes.rows) {
+    // tableName information_schema'dan geliyor (kullanıcı girdisi DEĞİL) —
+    // SQL injection riski yok, ama yine de tanımlayıcı olarak çift tırnaklandı.
+    const rows = await pool.query(`SELECT * FROM "${tableName}" WHERE tenant_id = $1`, [tenantId]);
+    exportData[tableName] = rows.rows;
+  }
+
+  return encryptTenantExport(JSON.stringify(exportData));
+}
+
+/**
+ * IOT-306 — firmware artefakt kataloğu. `getAllHardwareDevices` ile AYNI
+ * gerekçe: donanım envanteri SUPER_ADMIN'in yönettiği, tek bir (tenant'a
+ * ÖZEL OLMAYAN) kaynak — bu yüzden RLS yok, ham `pool` ile burada.
+ */
+export interface FirmwareArtifactRecord {
+  id: string;
+  version: string;
+  hardware_revision: string;
+  channel: string;
+  artifact_url: string;
+  sha256: string;
+  signature: string;
+  created_by: string;
+  created_at: string;
+}
+
+export async function createFirmwareArtifact(
+  data: { version: string; hardwareRevision: string; channel: 'stable' | 'beta'; artifactUrl: string; sha256: string; signature: string },
+  createdByUserId: string
+): Promise<FirmwareArtifactRecord> {
+  const existing = await pool.query(
+    'SELECT id FROM firmware_artifacts WHERE version = $1 AND hardware_revision = $2',
+    [data.version, data.hardwareRevision]
+  );
+  if (existing.rows.length > 0) {
+    throw new ConflictError(`'${data.hardwareRevision}' donanım revizyonu için '${data.version}' sürümü zaten kayıtlı.`, { error: 'ARTIFACT_ALREADY_EXISTS' });
+  }
+  const id = generateId('fwart');
+  const res = await pool.query(
+    `INSERT INTO firmware_artifacts (id, version, hardware_revision, channel, artifact_url, sha256, signature, created_by)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+    [id, data.version, data.hardwareRevision, data.channel, data.artifactUrl, data.sha256, data.signature, createdByUserId]
+  );
+  return res.rows[0];
+}
+
+export async function getFirmwareArtifacts(filters: { hardwareRevision?: string; channel?: string }): Promise<FirmwareArtifactRecord[]> {
+  const where: string[] = [];
+  const params: any[] = [];
+  if (filters.hardwareRevision) { params.push(filters.hardwareRevision); where.push(`hardware_revision = $${params.length}`); }
+  if (filters.channel) { params.push(filters.channel); where.push(`channel = $${params.length}`); }
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const res = await pool.query(`SELECT * FROM firmware_artifacts ${clause} ORDER BY created_at DESC`, params);
+  return res.rows;
+}
+
+export async function getFirmwareArtifact(id: string): Promise<FirmwareArtifactRecord> {
+  const res = await pool.query('SELECT * FROM firmware_artifacts WHERE id = $1', [id]);
+  if (res.rows.length === 0) throw new NotFoundError('Firmware artefaktı bulunamadı.', { error: 'ARTIFACT_NOT_FOUND' });
+  return res.rows[0];
+}
+
+/**
+ * OPS-1107 — Prometheus iş metrikleri için TENANT-ARASI özet (metrik toplamı tüm platformdur; tenant/cihaz
+ * başına seri ÜRETİLMEZ — kardinalite politikası, bkz. observability/metrics.ts).
+ *
+ * Performans: büyük tablolar (transactions, alarms, despatch_advice_transmissions, notifications) tenant-önce
+ * indekslidir; tenant'sız `SELECT count(*) ... FROM transactions` seq-scan olurdu ve 30 sn'de bir çalışırdı.
+ * Bu yüzden `companies CROSS JOIN LATERAL (... WHERE tenant_id = c.id ...)` kalıbı kullanılır (her tenant için
+ * indeks erişimi). `pool` süper kullanıcıdır → RLS'i atlar (bu dosyanın sözleşmesi); çağıran yalnızca metrik kaydıdır.
+ */
+export interface BusinessMetricsSnapshot {
+  devices: { registered: number; active: number; offline: number; blocked: number };
+  alarmsOpen: Record<string, number>;
+  dispensesToday: number;
+  dispensedLitersToday: number;
+  despatchQueue: Record<string, number>;
+  despatchOldestQueuedAgeSeconds: number;
+  notificationRetryQueue: number;
+  /** webhook_disabled_at dolu (NOTIF-1604 devre kesici AÇIK) kanal sayısı. */
+  notificationCircuitOpen: number;
+  /** e-İrsaliye entegratör devre kesicisi (COMP-602.2) OPEN/HALF_OPEN mi — GLOBAL, Redis'ten okunur. */
+  despatchIntegratorCircuitOpen: boolean;
+}
+
+export async function getBusinessMetricsSnapshot(): Promise<BusinessMetricsSnapshot> {
+  const [dev, off, alarms, disp, despatch, notif, circuit] = await Promise.all([
+    pool.query(
+      `SELECT COUNT(*) FILTER (WHERE status = 'AKTİF')::int AS registered,
+              COUNT(*) FILTER (WHERE status = 'AKTİF' AND last_seen_at > NOW() - INTERVAL '10 minutes')::int AS active,
+              COUNT(*) FILTER (WHERE status = 'BLOKE')::int AS blocked
+         FROM companies c CROSS JOIN LATERAL (
+           SELECT h.status, h.last_seen_at FROM hardware_devices h WHERE h.tenant_id = c.id
+         ) d`
+    ),
+    // Son presence olayı OFFLINE olan cihaz (REP-717/723 ile AYNI tanım). DISTINCT ON cihaz başına tek satır.
+    pool.query(
+      `SELECT COUNT(*)::int AS offline FROM companies c CROSS JOIN LATERAL (
+         SELECT x.status FROM (
+           SELECT DISTINCT ON (e.device_id) e.status FROM device_presence_events e WHERE e.tenant_id = c.id
+            ORDER BY e.device_id, e.occurred_at DESC
+         ) x WHERE x.status = 'OFFLINE'
+       ) o`
+    ),
+    pool.query(
+      `SELECT a.severity, SUM(a.n)::int AS n FROM companies c CROSS JOIN LATERAL (
+         SELECT severity, COUNT(*) AS n FROM alarms WHERE tenant_id = c.id AND status NOT IN ('RESOLVED', 'FALSE_POSITIVE') GROUP BY severity
+       ) a GROUP BY a.severity`
+    ),
+    pool.query(
+      `SELECT COALESCE(SUM(t.n), 0)::int AS n, COALESCE(SUM(t.liters), 0)::float8 AS liters FROM companies c CROSS JOIN LATERAL (
+         SELECT COUNT(*) AS n, SUM(amount_liters) AS liters FROM transactions WHERE tenant_id = c.id AND created_at >= NOW()::date
+       ) t`
+    ),
+    pool.query(
+      `SELECT q.status, SUM(q.n)::int AS n, MIN(q.oldest) AS oldest FROM companies c CROSS JOIN LATERAL (
+         SELECT status, COUNT(*) AS n, MIN(queued_at) AS oldest FROM despatch_advice_transmissions
+          WHERE tenant_id = c.id AND status IN ('QUEUED', 'SENDING', 'FAILED') GROUP BY status
+       ) q GROUP BY q.status`
+    ),
+    pool.query(`SELECT COUNT(*)::int AS n FROM notifications WHERE status = 'BAŞARISIZ'`),
+    pool.query(`SELECT COUNT(*)::int AS n FROM tenant_notification_channels WHERE webhook_disabled_at IS NOT NULL`)
+  ]);
+  // Redis'te GLOBAL bir bayrak (tenant sorgusu değil) — Postgres Promise.all'undan
+  // AYRI, çünkü farklı bir depolama katmanıdır; hatası diğer metrikleri etkilemesin diye ayrıca try/catch.
+  let despatchIntegratorCircuitOpen = false;
+  try {
+    const { getDespatchIntegratorCircuitStatus } = await import('./tenantDb');
+    const circuit = await getDespatchIntegratorCircuitStatus();
+    despatchIntegratorCircuitOpen = circuit.state === 'OPEN' || circuit.state === 'HALF_OPEN';
+  } catch (err) {
+    logger.warn({ err }, '⚠️ [OPS-1108] e-İrsaliye entegratör devre kesici durumu okunamadı (metrik önceki değerde kalır).');
+  }
+  const byKey = (rows: any[], key: string): Record<string, number> => Object.fromEntries(rows.map((r) => [r[key], Number(r.n)]));
+  const queued = despatch.rows.find((r) => r.status === 'QUEUED');
+  return {
+    devices: { registered: dev.rows[0].registered, active: dev.rows[0].active, offline: off.rows[0].offline, blocked: dev.rows[0].blocked },
+    alarmsOpen: byKey(alarms.rows, 'severity'),
+    dispensesToday: disp.rows[0].n,
+    dispensedLitersToday: disp.rows[0].liters,
+    despatchQueue: byKey(despatch.rows, 'status'),
+    despatchOldestQueuedAgeSeconds: queued?.oldest ? Math.max(0, Math.round((Date.now() - new Date(queued.oldest).getTime()) / 1000)) : 0,
+    notificationRetryQueue: notif.rows[0].n,
+    notificationCircuitOpen: circuit.rows[0].n,
+    despatchIntegratorCircuitOpen
+  };
+}

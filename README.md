@@ -52,8 +52,13 @@ YAKITTAKIPSISTEMI/
 ### Docker Compose ile (Önerilen)
 
 ```bash
-# 1. Ortam değişkenlerini konfigüre et
+# 1. Ortam değişkenlerini konfigüre et: .env'i oluştur ve __CHANGE_ME__ yer tutucularını rastgele sırlarla doldur
+#    (yer tutucular backend tarafından REDDEDİLİR; ayrıntı: docs/PROJE-REHBERI.md §7.1)
 cp .env.example .env
+while grep -qE '__CHANGE_ME_RUN_openssl_rand_-hex_[0-9]+__' .env; do
+  n=$(grep -oE -m1 'hex_[0-9]+__' .env | head -1 | tr -dc 0-9)
+  sed -i "0,/__CHANGE_ME_RUN_openssl_rand_-hex_${n}__/s//$(openssl rand -hex "$n")/" .env
+done
 
 # 2. Tüm servisleri başlat (PostgreSQL + Backend + Frontend)
 docker compose up --build
@@ -90,3 +95,17 @@ npm run dev          # http://localhost:3000
 | Auth       | Argon2id + JWT (Access + Refresh Token Rotation)  |
 | IoT        | ESP32, HMAC-SHA256 Hardware Auth, MQTT             |
 | Deploy     | Docker, Docker Compose, Nginx                     |
+
+## 📚 Belgeler
+
+| Belge | Açıklama |
+| ----- | -------- |
+| [docs/PROJE-REHBERI.md](docs/PROJE-REHBERI.md) | **Buradan başlayın** — ekip çalışma rehberi: modül haritası, mimari ve kararların gerekçeleri, Mermaid diyagramları, ortam kurulumu (30 dk), rol matrisi, rapor kataloğu, şema, test stratejisi, riskler |
+| [docs/BIRIM_TEST.md](docs/BIRIM_TEST.md) | Birim test altyapısı: vitest, coverage eşikleri (hesap motorları %90), ortak test fabrikaları |
+| [docs/E2E_TEST.md](docs/E2E_TEST.md) | Uçtan uca testler: izole Postgres+Redis+EMQX+backend (API zinciri) + Playwright ile 3 panelin kritik akışları (`--browser`), paralel/deterministik, CI + nightly |
+| [docs/AYLIK_YONETIM_RAPORU.md](docs/AYLIK_YONETIM_RAPORU.md) | AI destekli aylık yönetim raporu: ölçülen veri / model yorumu ayrımı, çapraz doğrulama, otomatik e-posta |
+| [docs/SUNUM-REHBERI.md](docs/SUNUM-REHBERI.md) | Sunum rehberi: 15 slayt + konuşma metni, asansör konuşması, SSS, canlı demo senaryosu (`node scripts/demo-provasi.mjs`) |
+| [docs/SOZLUK.md](docs/SOZLUK.md) | Terim sözlüğü (~65 terim, Türkçe–İngilizce karşılıklar ve projede kullanıldığı yer) |
+| [docs/HARDWARE_INTEGRATION_GUIDE.md](docs/HARDWARE_INTEGRATION_GUIDE.md) | Pano üreticileri için donanım entegrasyon rehberi (HMAC imza şeması, MQTT topic/LWT, LoRaWAN binary payload formatı, kalibrasyon/fail-open/offline-sync protokolleri) |
+| [docs/SECRETS.md](docs/SECRETS.md) | Ortam değişkenleri ve sır yönetimi |
+| `/api-docs` (backend ayaktayken) | Swagger UI — tüm REST endpoint'lerinin interaktif dokümantasyonu |

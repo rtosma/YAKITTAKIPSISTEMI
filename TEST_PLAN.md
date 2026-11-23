@@ -1,0 +1,1020 @@
+# TEST PLANI — YAKITTAKİPSİSTEMİ
+
+> Bu doküman `ISSUES_ROADMAP.md` ile aynı çalışma biçimini izler: `- [ ]`
+> maddeleri sırayla ele alınıp tamamlandıkça işaretlenir. Amaç, bu projenin
+> **her katmanının** (backend, frontend, veritabanı, güvenlik, altyapı)
+> gerçekten test edilmesini sağlamak, hiçbir güvenlik açığı bırakmamak ve
+> bunu yaparken **kod karmaşası eklememek**.
+
+---
+
+## 0. Mevcut Durum (Baseline) — Bu Tarama Sırasında Tespit Edildi
+
+Plan yazılmadan önce kod tabanı tarandı. Sıfırdan başlamıyoruz — mevcut
+güçlü/zayıf noktalar şöyle:
+
+| Katman | Durum |
+|---|---|
+| **Backend** | 59 adet `test/test_*.ts` entegrasyon testi (gerçek HTTP + gerçek Postgres + gerçek Redis, mock YOK). Neredeyse her `ISSUES_ROADMAP.md` maddesinin kendi testi var. |
+| **Backend güvenlik** | RLS (46 tenant tablosu, `check-rls-coverage.mjs` ile mekanik doğrulama), `gitleaks`, `check-no-raw-pool-query.mjs`, `check-no-direct-process-env.mjs`, `check-env-example-sync.mjs`, HMAC+nonce donanım auth, hesap kilitleme, 2FA, rate limiting, RES-905 graceful-degradation. |
+| **Frontend** | **SIFIR test.** Test framework kurulu değil (`package.json`'da vitest/jest/playwright/cypress yok). Tek kontrol `tsc --noEmit` (lint diye adlandırılmış). |
+| **Veritabanı** | 48 tablo, 46'sı RLS'li ve statik script ile garanti altında. Çapraz-tenant izolasyonu `test_195_tenant_isolation.ts` (TEST-1003) ile aktif test ediliyor. |
+| **CI** | 7 iş: `quality-and-tests`, `auth-integration-test`, `secret-scan`, `build-bundle`, `docker-security-scan` (Trivy), `deploy-zero-downtime`, `load-test` (yalnızca manuel, k6). |
+| **Eksik** | `npm audit`/bağımlılık zafiyet taraması YOK (Trivy yalnızca imaj seviyesinde). ESLint YOK. Frontend build CI'da doğrulanıyor ama HİÇ test edilmiyor. |
+
+### 0.1 Bu Taramada Bulunan Somut (Route Bazlı) Boşluklar
+
+`routes.ts`'teki 207 endpoint, 59 test dosyasının içeriğiyle programatik
+olarak karşılaştırıldı (path prefix eşleştirmesi — parametre içeren yollar
+`:id`'den önceki sabit segment üzerinden eşleştirildi). Sonuç: **205/207
+endpoint en az bir testte geçiyor.** Gerçekten hiç test edilmeyen yalnızca 2
+endpoint bulundu:
+
+- [x] **`GET /tenant-info`** — ✅ test edildi VE kimlik doğrulaması eklendi
+      (ayrıntı: §2.2 GAP-2). Tarama sırasında auth`suz olduğu bulundu.
+- [x] **`GET /policies/fail-open/offline-ratio-alerts`** — ✅ test edildi
+      (ayrıntı: §2.2 GAP-1). Orta risk:
+      `HARDWARE_DEVICE_MANAGER_ROLES` ile korunan, `getOfflineDispenseRatioAlerts()`
+      çağıran bir RBAC'lı okuma ucu, **hiç test edilmemiş**. FUEL-410
+      fail-open politika motorunun bir parçası; hem RBAC hem tenant-scoping
+      açısından doğrulanmalı.
+
+Bu ikisi dışında route-seviyesinde bir boşluk yok — bu, backend'in mevcut
+test disiplininin gerçekten iyi durumda olduğunu doğruluyor. Asıl büyük
+boşluklar **route sayısında değil**, aşağıdaki bölümlerde detaylandırılan
+**test TÜRLERinde** (frontend, race-condition, dependency-audit, vb.).
+
+### 0.2 Test Aşamasında Bulunan KRİTİK Sorun (planda yoktu)
+
+- [x] **🚨 CI workflow dosyası GEÇERSİZ YAML'dı — hiçbir job çalışmıyordu.**
+      `151881b` (2026-09-04, OPS-1105) commit'iyle giren
+      `name: 🔑 OPS-1105: Gitleaks Secret Taraması` satırında, tırnaksız bir
+      YAML skalarının içindeki `: ` bir mapping ayırıcısı olarak yorumlanıyor
+      ve **dosyanın tamamını geçersiz** kılıyordu. İki bağımsız parser
+      (PyYAML + js-yaml) doğruladı.
+      **Etkisi:** GitHub Actions geçersiz bir workflow için "Invalid workflow
+      file" der ve HİÇBİR job çalıştırmaz → RLS kapsama kontrolü, 51
+      entegrasyon testi, gitleaks secret taraması, Trivy imaj taraması ve
+      zero-downtime deploy'un tamamı ~1 haftadır **sessizce devre dışıydı.**
+      **Bu, başarısız olan bir kontrolden daha tehlikelidir: başarısız
+      kontrol kırmızı görünür, çalışmayan kontrol hiç görünmez.**
+      Düzeltildi (başlık tırnaklandı) ve bir daha sessizce olmaması için
+      `scripts/check-workflow-yaml.mjs` guard'ı eklendi.
+      **DERS:** Bu plandaki tüm CI tabanlı güvenceler, CI'ın gerçekten
+      çalıştığı varsayımına dayanıyordu. Bir güvenlik kontrolünün VAR olması
+      ile ÇALIŞIYOR olması ayrı şeylerdir — plan bundan sonra "kontrol
+      eklendi" değil, "kontrolün çalıştığı doğrulandı" ölçütünü kullanır.
+      (Bu yüzden eklenen üç guard'ın da negatif testi yapıldı: kasıtlı bir
+      ihlalde gerçekten exit 1 döndükleri doğrulandı.)
+
+- [x] **🚨 DÜZELTME — YAML onarımı CI'ı TEK BAŞINA geri getirmemişti.**
+      Yukarıdaki düzeltmeden sonra "CI artık çalışıyor" denmişti; bu iddia
+      eksik doğrulamaya dayanıyordu (yalnızca YAML SÖZDİZİMİ kontrol
+      edilmişti). `actionlint` ile ANLAMSAL tarama ikinci bir hata buldu:
+      `2c0d539` (2026-09-04, OPS-1102) deploy job'ının `if:` koşuluna
+      `secrets.DEPLOY_HOST != ''` koymuştu. `secrets` bağlamı `if:` içinde
+      KULLANILAMAZ (izinli: github, inputs, needs, vars) — bu YAML olarak
+      geçerli olduğu için PyYAML/js-yaml geçiriyor, ama GitHub workflow'u
+      yüklerken tüm dosyayı reddeder. Yani CI büyük olasılıkla bu commit'ten
+      beri de çalışmıyordu.
+      Düzeltildi (secret job `env`'ine alındı, koşul adım seviyesinde
+      `env.DEPLOY_HOST` ile — davranış aynı). actionlint üç workflow
+      dosyasında sıfır bulguya indi. Kalıcı kilit: (1) `check-workflow-yaml.mjs`
+      `if:` içinde `secrets.` görürse CI'ı kırar (negatif testle doğrulandı),
+      (2) CI'a pinlenmiş `rhysd/actionlint:1.7.12` adımı eklendi.
+      **DERS (§0.2'nin devamı):** "doğrulandı" demeden önce doğrulamanın
+      KAPSAMI sorulmalı — sözdizimi kontrolü, anlamsal geçerliliği kanıtlamaz.
+      **Son teyit hâlâ GitHub'da:** push sonrası Actions sekmesinde bir
+      workflow run'ının gerçekten başladığı görülmeli.
+
+- [x] **CI'da şema uygulaması SQL hatalarını sessizce yutuyordu.** CI
+      `schema.sql`'i `psql -f` ile `ON_ERROR_STOP` OLMADAN uyguluyordu. Canlı
+      doğrulandı: bozuk bir SQL ifadesinde `psql` **exit 0** dönüyor
+      (`ON_ERROR_STOP=1` ile exit 3). Yani `schema.sql`'deki bir
+      `CREATE POLICY`/`REVOKE` hata verse CI yeşil kalırdı; statik RLS guard'ı
+      dosya METNİNE baktığı için bunu göremezdi — politika dosyada var,
+      veritabanında yok. Repodaki 4 çağrının hepsine `ON_ERROR_STOP=1`
+      eklendi; `check-workflow-yaml.mjs` artık bunu zorunlu tutuyor
+      (negatif testle doğrulandı).
+
+### 0.3 Test Aşamasında Öğrenilen Ortam/Süreç Dersleri
+
+- [x] **Test paketi SIRAYLA koşarken login rate-limit'i yanlış başarısızlık
+      üretiyor.** `loginRateLimiter` IP bazlı (10 deneme / 15 dk) ve tüm
+      testler aynı IP'den geliyor. Yeni yazılan iki test (5 + 1 giriş)
+      limiti tüketince `test_auth201` ve `test_195_tenant_isolation`
+      kırıldı — oysa ikisi de TEK BAŞINA %100 geçiyordu. Bu, testin değil
+      ORTAMIN hatası; mevcut testlerin (`test_fuel410`, `test_arch108`)
+      kullandığı "girişten önce `rl:auth-login:*` anahtarlarını sil"
+      deseni yeni testlere de eklendi.
+      **SİSTEMİK ÇÖZÜM (tamamlandı):** Ölçüm, 52 login yapan test dosyasından
+      40'ının zaten temizlik yaptığını, 12'sinin yapmadığını gösterdi —
+      yani desen zaten yerleşikti, eksik kalmıştı. Ortak yardımcı
+      (`test/helpers/loginRateLimit.ts`) oluşturulup 12 dosyanın hepsine
+      eklendi. Kural artık MEKANİK: `scripts/check-test-rate-limit-hygiene.mjs`
+      `/auth/login` çağıran ama temizlik yapmayan her dosyada CI'ı kırar
+      (negatif testle doğrulandı). Ardışık koşuda 9 test dosyası (daha önce
+      429 ile kırılanlar dahil) art arda geçti.
+      **NEDEN rate limiter'ı test ortamında kapatmadık:** o zaman
+      production'da aktif bir güvenlik kontrolü test ortamında hiç
+      çalışmaz, testlerin ürettiği güvence gerçeği yansıtmazdı.
+- [x] **Ev dizini kotası dolu (4.7 GB'ın %98'i) — ortam çökmelerinin olası
+      nedeni.** Playwright tarayıcı kurulumu `ENOSPC` ile başarısız oldu.
+      Çözüm (başka önbelleklere dokunmadan): tarayıcılar geniş yerel diske
+      kuruldu — `PLAYWRIGHT_BROWSERS_PATH=/goinfre/iekmen/ms-playwright`.
+      E2E komutu: `PLAYWRIGHT_BROWSERS_PATH=/goinfre/iekmen/ms-playwright npm run test:e2e`.
+- [x] **Sıfırdan `docker compose up` bu makinede şema yüklemiyor.**
+      Postgres init script'leri (`docker-entrypoint-initdb.d`) konteynerdeki
+      `postgres` kullanıcısı (uid 70) olarak çalışır; ancak
+      `/sgoinfre/iekmen` dizini `drwx------` (700) olduğu için bind-mount'lu
+      `schema.sql` okunamıyor → `psql: Permission denied` → şema hiç
+      yüklenmiyor → backend `relation "hardware_devices" does not exist`
+      ile restart döngüsüne giriyor. Bu ORTAMA ÖZGÜ bir izin sorunu
+      (CI'da oluşmaz), projenin hatası değil. Geçici çözüm (ev dizini
+      iznini değiştirmeden): şema ve seed'i stdin ile yükle —
+      `docker exec -i yakittakip_postgres psql -U postgres -d yakittakip_db \
+        -v ON_ERROR_STOP=1 < backend/src/db/schema.sql` (sonra seed dosyası).
+      Kalıcı çözüm isteniyorsa `chmod o+x /sgoinfre/iekmen` yeterlidir
+      (dizin listelemeyi açmaz, yalnızca geçiş izni verir) — bu bir
+      kullanıcı kararı olduğu için uygulanmadı.
+
+---
+
+## 1. İlkeler (kod karmaşasından kaçınmak için)
+
+1. **Yeni bir test framework/mocking katmanı EKLEMİYORUZ.** Backend'in
+   mevcut "gerçek HTTP + gerçek Postgres/Redis + tek dosyalık `tsx` script"
+   deseni korunacak. `ISSUES_ROADMAP.md`'deki `TEST-1001`'in önerdiği
+   Testcontainers+vitest/jest yığını **bilinçli olarak atlanıyor** — zaten
+   docker-compose ile AYNI garantiyi (gerçek Postgres+Redis) sağlıyoruz,
+   ayrı bir soyutlama katmanı eklemek net bir kazanç getirmeden karmaşıklık
+   ekler.
+2. **Frontend için EN HAFİF setup:** Vitest (Vite projesine sıfır ek config
+   ile entegre olur) + React Testing Library (component/unit) + Playwright
+   (yalnızca az sayıda KRİTİK E2E akışı — 24 sayfanın hepsini değil).
+   Cypress/Selenium gibi ağır/eski araçlar tercih edilmiyor.
+3. **Mock yalnızca gerçek dış sınırda** (ör. Google Gemini API) kullanılır;
+   iç modüller arası mock YOK — entegrasyon-testi felsefesi korunuyor.
+4. Her yeni backend test dosyası mevcut `test_<ISSUE-KEY>_<konu>.ts`
+   adlandırmasını ve ✅/❌ konsol check desenini izler.
+5. **Test veri hijyeni:** seed/sabit kullanıcı state'ini KALICI DEĞİŞTİREN
+   testler (aşağıda 4.3'te listelendi) ya kendi ürettiği tek-kullanımlık
+   veriye taşınır ya da açıkça "reseed gerektirir" diye başlığında belirtilir.
+6. Yeni bir guard script gerekiyorsa (ör. frontend'de
+   `dangerouslySetInnerHTML` kullanımını yasaklamak), backend'deki
+   `scripts/check-*.mjs` deseniyle AYNI basit, bağımlılıksız Node script
+   yaklaşımı izlenir — ESLint gibi yeni bir araç zinciri kurulmaz.
+
+---
+
+## 2. Backend Test Planı
+
+### 2.1 Zaten Kapsanan Alanlar (regresyon olarak korunacak — YENİDEN YAZILMAYACAK)
+
+Aşağıdaki alanların her biri için ≥1 test dosyası mevcut ve CI'da çalışıyor;
+bunlara dokunmuyoruz, yalnızca "her yeni özellik sonrası tekrar çalıştır"
+listesine ekliyoruz:
+
+- **Auth/Session:** login, refresh rotasyonu + reuse detection, RBAC matrisi,
+  hesap kilitleme (AUTH-209), 2FA/TOTP (AUTH-207), aktif oturum listesi +
+  uzaktan kapatma (AUTH-208), parola sıfırlama (AUTH-206), donanım HMAC+nonce
+  (AUTH-202), donanım cihaz yaşam döngüsü (AUTH-202.3).
+- **Tenant izolasyonu:** RLS statik kapsama + aktif çapraz-tenant sızıntı
+  testi (#195/TEST-1003).
+- **Fuel/Dispense:** ikmal oturumu state machine, çoklu yakıt tipi, manuel
+  ikmal onayı, RFID kara liste, teklif/kota (quota), fail-open politika
+  motoru (FUEL-401 → FUEL-410).
+- **Fleet:** bakım kayıtları + TCO, muayene/lastik takibi (FLEET-1406→1409).
+- **IoT:** MQTT dayanıklılığı, cihaz eşleştirme, cihaz shadow/komut kuyruğu,
+  çevrimdışı toplu senkronizasyon, yetkisiz akış tespiti (IOT-301→305).
+- **Envanter/Laboratuvar:** stok giriş-çıkış-sayım (INV-1506), numune/test
+  sonucu takibi (INV-1507).
+- **İK:** izin takibi (HR-1801).
+- **Billing/Admin:** paket/lisans modeli, modül ek satışları, kullanım
+  ölçümü, tenant dondurma/kalıcı silme/şifreli dışa aktarım (BILL-170x,
+  ARCH-108).
+- **Dayanıklılık:** Redis/DB kısmi arıza senaryoları (RES-905), readiness
+  health-check (RES-906).
+- **Yük/performans:** k6 ile 100 pompa @ 1000 rps (TEST-1002, manuel CI job).
+
+### 2.2 Backend'de Eklenecek Yeni Testler
+
+- [x] **GAP-1:** `GET /policies/fail-open/offline-ratio-alerts` — ✅ TAMAMLANDI
+      (`test/test_gap_untested_endpoints.ts`, Test 1-14). Kapsam: kimlik
+      doğrulama (token yok / bozuk token / "Bearer" öneksiz başlık), RBAC
+      (PUMP_OPERATOR ve SITE_MANAGER → 403; COMPANY_OWNER ve SUPER_ADMIN →
+      200), yanıt sözleşmesi, eşik mantığı (üstü → alarm, altı → yok, TAM
+      eşik → yok, çünkü kod `> eşik` kullanıyor), 30 günlük zaman penceresi
+      ve **çift yönlü tenant izolasyonu**. Sonuç: kod doğru davranıyordu,
+      hiçbir hata bulunmadı — artık regresyona karşı kilitli.
+- [x] **GAP-2:** `GET /tenant-info` — ✅ TAMAMLANDI, **gerçek bir bulgu çıktı**:
+      uç `authenticateJWT` OLMADAN açıktı. Sızdırdığı veri yoktu (context
+      yalnızca authenticateJWT içinde kurulduğundan kimlik doğrulamasız
+      çağrıda boş dönüyordu) ama güvenlik, kodun başka bir yerindeki
+      tesadüfe bağlıydı: context'i auth'tan önce dolduran bir ara katman
+      eklendiği anda `tenantId`/`userId`/`traceId`/`ipAddress` sızardı.
+      Kimlik doğrulaması arkasına alındı (kaldırılmadı — tanılama değeri
+      var ve artık DOLU context döndürüyor). Test 15-17 ile kilitlendi.
+- [x] **Race condition / eşzamanlılık testleri** — ✅ TAMAMLANDI
+      (`test/test_race_conditions.ts`, 10/10). Mevcut 59 testin HEPSİ
+      istekleri SIRAYLA atıyordu; sıralı bir test, `FOR UPDATE` kilitlerini
+      tamamen kaldırsanız bile geçer. Kapsanan:
+      - Envanter: eşzamanlı 2 çıkış (7+7 > stok 10) → tam biri 409;
+        6 eşzamanlı çıkış (6×3, stok 10) → tam 3'ü kabul; stok asla negatif.
+      - **Lost-update kanıtı:** eşzamanlı hareketlerin `balance_after`
+        değerleri benzersiz bir zincir oluşturuyor (10→7→4→1). İki
+        transaction aynı değeri okuyup üzerine yazsaydı aynı `balance_after`
+        yazılırdı.
+      - Tank: 8 eşzamanlı ikmal → hepsi işlendi, seviye tam 8×10 düştü,
+        yazılan ikmal kayıtlarının toplamı tanktan düşenle mutabık.
+      **Mutation ile doğrulandı:** `recordInventoryMovement`'taki
+      `FOR UPDATE` kaldırılıp backend yeniden derlendiğinde 10 testten 5'i
+      kırıldı (tank testleri geçmeye devam etti — onların kilidi yerindeydi),
+      ardından kod geri yüklendi. Yani testler gerçekten kilitleri ölçüyor.
+- [x] ✅ **Kota ve `tenant_deletion_approvals` eşzamanlılığı — 🔴 VERİ KAYBI HATASI BULUNDU.**
+      ARCH-108 yaşam döngüsü (dondur/çöz/planla/iptal/onayla) kilitsiz
+      check-then-act idi. 15'er turluk eşzamanlı prob: **iptal ile onay yarışınca
+      15 turun 14'ünde iptal 200 ("iptal edildi") döndü ama firma TÜM verisiyle
+      kalıcı silindi**; iki admin aynı anda son onayı verince 15/15 turda
+      platform_audit_log'a çift "kalıcı silindi" kaydı; iptal edilmiş firmada
+      bayat onay satırı kalabiliyordu (yeniden planlamada yeni 2-onay şartına
+      sayılırdı). Düzeltme: `withLockedCompany` — firma satırı `FOR UPDATE` ile
+      kilitli tek transaction (denetim kaydı dahil); yeniden planlama eski
+      onayları siler. Yarışı kaybeden iptal artık dürüstçe 404 alır.
+      `test_race_tenant_lifecycle_and_quota.ts` 8/8 — kilit sırasından bağımsız
+      değişmezleri 10'ar turda doğrular (iki sıra da gözlendi: 8 iptal / 2 onay
+      kazandı). Mutasyon: eski kilitsiz kodla 5/8 kırıldı. Çapraz şantiye kotası
+      (100 L, 6×30 L eşzamanlı) tam 3 kabul, used_liters=90. `fuel_quotas`
+      bakiyesi azaltılan sayaç değil işlemlerden hesaplanıyor (yarış yok);
+      Redis önbelleği bilinçli 5 sn TTL.
+- [x] ✅ **Sayfalama/filtre sınır-durumları + girdi güvenliği — TAMAMLANDI,
+      GERÇEK BUG BULUNDU.** (`test/test_input_boundaries.ts`, 22/22)
+      Kapsanan: devasa pageSize (100000 → 400, DoS yüzeyi kapalı), sınırın
+      1 üstü ve tam kendisi (off-by-one yok), negatif/sıfır/ondalıklı/metin
+      sayfalama, bilinmeyen enum, aşırı uzun arama metni, 4 farklı SQL
+      enjeksiyon denemesi (hiçbiri 500 üretmiyor — yani girdi sorguya ham
+      gömülmüyor; tablo sonrasında sağlam), varsayılanlar, çok uzak sayfa.
+
+      **BULGU:** `startDate=2026-13-45` HTTP **500** döndürüyordu. Şemalar
+      tarihleri yalnızca BİÇİM regex'iyle doğruluyordu, takvim geçerliliğini
+      değil — geçersiz tarih Postgres'e gidip "date/time field value out of
+      range" ile patlıyordu. Bilgi sızıntısı YOK (globalErrorHandler jenerik
+      mesaj + traceId döndürüyor) ama üç zararı var: istemci hatası sunucu
+      hatası gibi görünüyor (izleme gürültüsü), kullanıcı hatasını
+      anlayamıyor, her istek stack trace'li log üretiyor.
+      **Kapsam tek bir alan değildi:** 16 şema dosyasındaki **28 tarih
+      alanının TAMAMI** aynı durumdaydı.
+      **Çözüm:** `src/schemas/common/dateString.ts` ortak doğrulayıcısı
+      (round-trip parse: 2026-02-30 ve 2026-02-29 red, 2024-02-29 kabul).
+      28 alanın hepsi buna taşındı — 28 tekrarlanan regex tek yere indi.
+      Regresyon: tarih kullanan 10 modül (quota, fleet1406/1407/1408/1409,
+      hr1801, inv1507, fuel408/409, bill1701) = 124 test, hepsi geçti.
+- [x] ✅ **İdempotency/duplicate-request taraması — envanter çıkarıldı, 2 GERÇEK
+      HATA bulundu ve kapatıldı.** Stok/para yazan fonksiyonların envanteri:
+      | Yol | Tekrar koruması |
+      |---|---|
+      | Cihaz oturumu (finalizeDispenseSession) | ✅ `idempotency_key` |
+      | Çevrimdışı toplu senkron | ✅ `(device_id, local_sequence_id)` UNIQUE |
+      | Manuel ikmal onayı | ✅ FOR UPDATE + durum makinesi |
+      | Envanter sayımı | ✅ mutlak değer yazar (doğası gereği) |
+      | **Yakıt alım irsaliyesi (`POST /tanks/:id/intakes`)** | ❌ → ✅ düzeltildi |
+      | Manuel `POST /dispense`, envanter hareketi | doğal anahtar yok (aynı araca art arda iki meşru ikmal olabilir) → istemci tarafı kilit |
+      **HATA 1 — mükerrer irsaliye hayali stok üretiyordu:** `waybill_no`
+      zorunlu ama benzersiz değildi, kodda kontrol yoktu. Canlı ölçüldü: aynı
+      5.000 L'lik irsaliye iki kez → tank 1.000'den 11.000'e. Bu hayali stok,
+      FUEL-409 mutabakatında gerçek bir kaybı (hırsızlığı) örtebilir. Düzeltme:
+      tank FOR UPDATE kilidinin ARDINDAN (yarış güvenli) aynı tank + tedarikçi
+      (harf/boşluk normalize) + irsaliye no → 409 `DUPLICATE_WAYBILL`. Kapsam
+      bilinçli olarak TANK BAŞINA: tek irsaliyeyle iki tanka bölünen teslimat
+      meşru. Unique index yerine uygulama kontrolü: mevcut verideki olası geçmiş
+      mükerrerler deploy'daki şema uygulamasını kırmasın.
+      `test_idempotency_fuel_intake.ts` 10/10 (eşzamanlı 3 gönderimde tam 1
+      kabul dahil); mutasyonla doğrulandı (kontrol kaldırılınca 7 test kırıldı).
+      **HATA 2 — frontend çift gönderimi yakıtı iki kez düşüyordu:** OverviewPage
+      "İkmalı Kaydet" butonu istek sürerken kilitlenmiyordu. Gerçek tarayıcıda
+      kanıtlandı (Playwright: çift tıklama → 2 `POST /dispense`). Düzeltme: buton
+      `disabled` + handler'da SENKRON `useRef` kilidi (state closure'dan okunduğu
+      için aynı render içindeki ikinci olayı durduramaz). Aynı açık
+      SiteOperatorPanel'de de vardı, aynı desenle kapatıldı.
+      `e2e/double-submit.spec.ts` 3 test; iki katman ayrı ayrı mutasyonla
+      doğrulandı: ref kaldırılınca "aynı görevde iki submit" testi 2 istekle
+      kırıldı, gerçek çift tıklama testi `disabled` sayesinde geçti.
+      **AÇIK (tasarım kararı):** manuel `/dispense` ve envanter hareketlerinde
+      ağ zaman aşımı sonrası TEKRAR GÖNDERME hâlâ sunucu tarafında korunmuyor —
+      kalıcı çözüm istemci üretimli `Idempotency-Key` başlığı olur.
+- [x] **Bağımlılık güvenlik taraması:** ✅ TAMAMLANDI —
+      `scripts/check-dependency-audit.mjs` + CI adımı. Düz
+      `npm audit --audit-level=high` YERİNE GHSA bazlı allowlist tercih
+      edildi: düz eşik ya CI'ı sürekli kırmızı bırakır (bugün düzeltmesi
+      OLMAYAN bulgular yüzünden) ya da eşik gevşetilince gerçek yeni bir
+      bulguyu yutar. Bu script'te allowlist'te OLMAYAN her yeni advisory —
+      severity'si ne olursa olsun — build'i kırar; stale girdiler de
+      raporlanır. **Mevcut 5 bulgu** (xlsx×2 HIGH, qs×2, uuid×1) tek tek
+      incelenip istismar edilebilirlik gerekçesiyle allowlist'e alındı.
+- [x] **Test veri hijyeni:** ✅ İNCELENDİ — **bu tespit KISMEN YANLIŞTI.**
+      `test_auth206_password_reset.ts` aslında `finally` bloğunda parolayı
+      geri yazıyordu (canlı doğrulandı: test koştuktan sonra `orman-santiye`
+      hâlâ `123456` ile giriyor). Gerçek kırılganlık başkaydı: geri yazma
+      **sabit kodlu bir seed hash'inden** yapılıyordu — seed/algoritma
+      değişirse test kobay kullanıcıyı SESSİZCE yanlış parolaya döndürüp
+      `123456` ile giren tüm testleri kırardı. Düzeltildi: test artık
+      bozduğu değeri BAŞINDA ölçüp sonunda onu geri yazıyor (sabit hash
+      sabiti tamamen kaldırıldı — kod da azaldı). 12/12 geçiyor.
+- [x] ✅ **Araç plakası tenant içinde tekil değildi — GERÇEK VERİ BÜTÜNLÜĞÜ AÇIĞI.**
+      Plaka aracın iş anahtarı: `transactions`, `cross_site_permissions` ve
+      tüketim motoru araca plakayla bağlanıyor; FUEL-402 çapraz şantiye
+      kontrolü ev şantiyesini `SELECT site_name FROM vehicles WHERE plate = $1`
+      ile ORDER BY'sız ilk satırdan okuyor. Hem uygulamada hem DB'de kopya
+      engeli yoktu — aynı plaka + aynı RFID ile iki araç API'den kaydedildi.
+      Yerel DB'de `test_auth201`'in her koşuda seed aracı veh-1'in plakasıyla
+      (`34 CTP 82`) eklediği **23 kopya** ve RBAC matrisinin bıraktığı 30 artık
+      araç vardı. Düzeltme: `assertPlateAvailable` — tenant içinde
+      boşluksuz+büyük harf normalize plaka, advisory lock ile (create + plaka
+      değiştiren update) → 409 `DUPLICATE_PLATE`. `test_vehicle_plate_uniqueness.ts`
+      (7/7): kopya, boşluk/harf varyantları (ilk sürüm `upper(btrim)`
+      normalizasyonu `34ctp82`'yi kaçırıyordu — test yakaladı), başka aracı
+      mevcut plakaya çevirme, kendi plakasıyla güncelleme, tenant'lar arası
+      serbestlik, 5 eşzamanlı kayıt → tam 1. **Mutasyonlar:** eski backend 3
+      FAIL (5 eşzamanlı kaydın 5'i kabul); yalnızca advisory lock kaldırılınca
+      Test 7 3/3 koşuda kırmızı. Kirleten iki test benzersiz plaka kullanıp
+      araçlarını siliyor; yerel artıklar (55 satır, açıkça test verisi) temizlendi.
+      **AÇIK KARAR (kullanıcıya):** DB seviyesinde `UNIQUE (tenant_id,
+      normalize(plate))` index'i EKLENMEDİ — production'da (UI hiç engellemediği
+      için) kopya varsa deploy'daki tek-transaction şema adımı durur. Önce
+      production'da kopya sorgusu çalıştırılıp temizlik kararı verilmeli.
+      RFID etiketi de tekil değil (kopya RFID ile kart değişimi TÜM eşleşen
+      araçları günceller) — aynı karar kapsamında.
+
+### 2.3 Backend Regresyon Çalıştırma Matrisi (mevcut, belgeleniyor)
+
+Bu proje boyunca öğrenilen, testleri DOĞRU şekilde koşturmak için gereken üç
+farklı çalıştırma bağlamı — ileride her yeni test bunlardan hangisine
+girdiğini baştan netleştirmeli:
+
+1. **`docker run --network container:backend`** (backend imajının `builder`
+   aşaması + `test/` dizini bind-mount) — Redis/Postgres'e `REDIS_HOST=redis
+   POSTGRES_HOST=postgres` ile, backend'e `localhost:5000` ile erişen testler.
+   Çoğu mevcut test bu kategoride.
+2. **Host'tan doğrudan (`localhost:3000`, nginx üzerinden)** — HEM gerçek
+   HTTP (nginx) HEM host-seviyeli doğrudan Postgres (`localhost:5432`,
+   published) erişimi gerektiren testler (ör. ARCH-108, BILL-1701, RES-905).
+   Redis host'a PUBLISH edilmediği için bu testler Redis manipülasyonunu
+   `docker exec yakittakip_redis redis-cli ...` ile yapmalı — DOĞRUDAN
+   `new Redis({host:'localhost'})` KULLANMAMALI (host'ta ilgisiz bir yerel
+   Redis süreci [`127.0.0.1:6379`] olduğu bu taramada DOĞRULANDI — bu,
+   CI'da (host-Redis published) çalışıp yerelde YANLIŞ Redis'e bağlanan
+   sinsi bir hata sınıfı).
+3. **CI'ın `auth-integration-test` işi** — docker-compose YOK, backend
+   `nohup npx tsx src/bootstrap.ts` ile çıplak, Postgres/Redis GH Actions
+   `services:` (host'a published, gerçek `localhost`) — burada `localhost`
+   HER ZAMAN doğrudur, nginx YOKTUR (port 3000 hardcoded testler CI'da
+   ÇALIŞMAZ, `API_URL` env override şart).
+
+---
+
+## 3. Frontend Test Planı (şu an 0 → hedef: kritik yolların tamamı)
+
+Frontend'de HİÇ test yok. Sıfırdan, hafif bir kurulumla başlanacak.
+
+### 3.1 Kurulum (tek seferlik, düşük karmaşıklık)
+- [x] ✅ TAMAMLANDI — `vitest` + `@testing-library/react` + `jest-dom` +
+      `user-event` + `jsdom` kuruldu; `vitest.config.ts` (ayrı dosya: prod
+      vite config'i saf kalsın diye) + `src/test/setup.ts` (her test öncesi
+      localStorage temizliği — token sızıntısı false-positive üretmesin).
+      `npm run test` / `test:watch` script'leri eklendi, CI'a bağlandı.
+      **Yeni bağımlılıklar hiç yeni zafiyet getirmedi** (dependency-audit
+      guard'ı otomatik doğruladı) ve prod build bozulmadı (4.19s, exit 0).
+- [x] ✅ `@playwright/test` + chromium kuruldu; `playwright.config.ts`
+      (workers:1 — paralel girişler hesap kilitleme/rate limit tetikler),
+      `npm run test:e2e`. CI'a BAĞLANMADI: docker-compose yığını gerekiyor
+      (test_res905/test_iot301 ile aynı gerekçe, bkz. §0.3).
+
+### 3.2 Component/Unit Testleri (Vitest + RTL)
+- [x] ✅ `utils/api.ts` — **17 test**. 401 → sessiz yenileme → oturum düşürme
+      zincirinin TÜM yolları: token'sız 401 oturumu düşürmez (giriş öncesi
+      çağrılar), refresh token yok / sunucu reddetti / ağ koptu / yanıtta
+      accessToken yok, başarısız yenileme sonrası eski token'lar bozulmaz,
+      **eşzamanlı iki 401 TEK yenileme çağrısını paylaşır** (aksi hâlde
+      refresh-token rotasyonu "token reuse" sayılıp tüm oturumları iptal
+      ettirirdi).
+- [x] ✅ `AppContext.tsx` — **7 test**. Giriş (iki token da saklanır, rol
+      JWT'den gelir, başarısız girişte token yazılmaz, sunucu erişilemezse
+      çökmez), çıkış (kimlik bilgileri gerçekten silinir), UNAUTHORIZED
+      olayında otomatik çıkış, provider söküldüğünde dinleyici sızıntısı yok.
+      **Bulgu:** `logoutCompany()` içindeki `YAKIT_IS_AUTH`/`COMPANY_IDX`/
+      `SITE_FILTER` için `removeItem` çağrıları fiilen ETKİSİZ — state'i
+      izleyen `useEffect`'ler değeri hemen geri yazıyor. Güvenlik açığı
+      değil (okuma tarafı `=== 'true'` karşılaştırdığı için `'false'` da
+      "giriş yok" demek) ama kafa karıştırıcı ölü kod; temizliği ayrı bir
+      iş olarak bırakıldı (AppContext ~1200 satır, test aşamasında
+      dokunmak gereksiz risk).
+- [x] **Testlerin kendisi doğrulandı (mutation testing):** api.ts'te 3,
+      AppContext'te 3 olmak üzere 6 kasıtlı mutasyon uygulandı; her biri
+      TAM olarak hedeflediği testi kırdı. Yani testler sahte güvence
+      vermiyor (§0.2'deki "var olması ≠ çalışıyor olması" dersi).
+- [x] ✅ **Rol bazlı UI koşulları — 30 test.** `permissions.ts` "backend'in
+      `authorizeRoles` çağrılarının BİREBİR karşılığı" olduğunu iddia ediyordu
+      ama bunu zorlayan bir şey yoktu. `utils/permissions.test.ts` backend
+      `routes.ts` KAYNAĞINI ayrıştırıp (sabit `..._ROLES` spread'leri dahil)
+      her FE işlemini ve rota grubunu ilgili uçların rol kümesiyle
+      karşılaştırıyor — iki yönde de kayma (FE geniş → 403; FE dar → sessiz
+      özellik kaybı) CI'da kırılır. `components/RoleRoute.test.tsx`: token'sız,
+      bozuk localStorage (`isAuthenticated` var ama kullanıcı yok), zorunlu
+      parola değişikliği ve 3 rota grubu × 4 rol matrisi. **Mutasyonlar:**
+      FE matrisine rol eklemek, RoleRoute'ta parola kapısını kapatmak ve
+      BACKEND'de `/dispense`'ten PUMP_OPERATOR'ı çıkarmak → her biri hedef
+      testi kırdı.
+- [x] ✅ **Giriş sayfaları — 4 test, 2 GERÇEK BULGU.** (1) `LoginPage` ve
+      `SiteLoginPage` formları `camsa`/`gebze-santiye` + `123456` ile DOLU
+      geliyordu; `mock/index.ts` tüm demo firma/şantiye hesaplarının kullanıcı
+      adı + parolasını prod bundle'ına gömüyordu (seed'deki gerçek hesaplarla
+      aynı) — bkz. §3.4. Parola alanını hiçbir kod okumuyordu (`handleQuickFill`
+      ölü kod). (2) `if (isAuthenticated) return <Navigate/>` hook'lardan
+      ÖNCEydi: isAuthenticated false→true olunca React "Rendered fewer hooks
+      than expected" fırlatıyordu (eski kodla kanıtlandı; canlıda navigate()
+      çoğunlukla önce koştuğu için zamanlamaya bağlı gizli bir çökme).
+      `pages/LoginPages.test.tsx` ikisini de kilitliyor (eski kodla 2/2 kırmızı).
+- [x] ✅ **Form doğrulama ↔ backend — 11 test.** Frontend'deki TEK paralel
+      kural plaka regex'i (`utils/validation.ts`), backend
+      `schemas/vehicleSchema.ts`'teki regex'in elle kopyası. (İlk taramada
+      "paralel doğrulama yok" sonucuna varılmıştı; E2E CRUD testi formun
+      `34 E2E 1036`'yı reddetmesiyle bu kopyayı gösterdi — düzeltildi.)
+      `utils/validation.test.ts` backend kaynağından regex'i okuyup kaynak +
+      bayrakları karşılaştırır (backend'de `{1,3}` → `{1,4}` mutasyonu kırdı)
+      ve sınır örneklerini sabitler. Diğer formlar yalnızca boşluk kontrolü
+      yapıyor; asıl doğrulama backend Zod'da (`test_input_boundaries.ts`).
+- [x] **Hesaplama/gösterim — BİLİNÇLİ OLARAK birim testi yazılmadı.** Tank
+      doluluk yüzdeleri tek satırlık `Math.round(level/capacity*100)`;
+      `TankGauge` 0–100'e kıstırıyor ve backend `capacityLiters > 0`,
+      `level ≤ capacity` kurallarını Zod ile zorluyor (sıfıra bölme API'den
+      gelemez). Kota bakiyesi backend'de hesaplanıp (FUEL-402) orada test
+      ediliyor; frontend yalnızca gösteriyor.
+
+### 3.3 E2E Testleri (Playwright — YALNIZCA kritik akışlar)
+
+**İLK TUR TAMAMLANDI** — `frontend/e2e/security-and-auth.spec.ts` (5/5).
+Kapsam ilkesi: E2E yalnızca birim testin YAKALAYAMADIĞI şeyler için.
+- [x] ✅ **CSP gerçek tarayıcıda ihlal üretmiyor** — en değerli test. jsdom
+      CSP'yi yok sayar, `curl -I` yalnızca başlığın döndüğünü gösterir;
+      tarayıcının script/style/font'u GERÇEKTEN yükleyebildiğini sadece bu
+      doğrular. Fazla katı bir CSP uygulamayı sessizce beyaz ekrana çevirir.
+      **Mutation ile doğrulandı:** style-src'den 'unsafe-inline' kaldırılıp
+      frontend yeniden derlendiğinde 2 test kırıldı, geri alınınca 5/5 döndü.
+- [x] ✅ CSP başlığı tarayıcıya ulaşıyor + script-src gevşetilmemiş
+- [x] ✅ Yanlış şifre → panele geçilmiyor, token YAZILMIYOR
+- [x] ✅ Doğru giriş → panele yönlendirme + iki token da saklanıyor +
+      panelde CSP ihlali yok (connect-src yanlış olsaydı API çağrıları
+      burada patlardı)
+- [x] ✅ Token olmadan korumalı sayfaya erişilemiyor (route guard)
+
+**İKİNCİ TUR TAMAMLANDI** — sözleşme taraması + çift gönderim (toplam E2E 11/11).
+- [x] ✅ **Frontend ↔ backend sözleşme taraması (`e2e/api-contract.spec.ts`) —
+      GERÇEK HATA BULDU.** Üç rolün (COMPANY_OWNER, SUPER_ADMIN, şantiye) 18
+      panel sayfası gerçek tarayıcıda açılıp yüklenme sırasındaki API
+      çağrılarından hiçbirinin 4xx/5xx dönmediği doğrulanıyor.
+      **Bulgu:** `AppContext` `GET /transactions?pageSize=200` istiyordu; backend
+      sözleşmesi `pageSize ≤ 100` (DoS sınırı). İstek **18 sayfanın tamamında
+      her yüklenişte 400** alıyordu → genel ikmal listesi hiç yüklenmiyor, her
+      ikmalden sonra hata toast'ı çıkıyordu. İkisi de AYNI commit'te (aca7241,
+      FE-802) girmiş, yani özellik eklendiği günden beri bozuktu. Ne backend
+      testleri (doğru parametre gönderiyor) ne Vitest (fetch mock'lu) bunu
+      görebilirdi. Backend sınırı gevşetilmedi (bilinçli ve test kilitli);
+      frontend `pageSize=100`'e uyduruldu. Tarama başka sözleşme kayması bulmadı.
+- [x] ✅ Çift gönderim E2E'leri — bkz. §2.2 idempotency maddesi.
+- [x] ✅ E2E paketi de login rate-limit'ine takılıyordu (art arda koşularda
+      tüm giriş gerektiren testler 16 sn timeout) → `e2e/helpers.ts`
+      ortak `resetLoginRateLimit` + giriş yardımcıları.
+
+**Üçüncü tur — ✅ TAMAMLANDI (toplam E2E: 20/20).**
+- [x] ✅ **Giriş → panel → çıkış, 3 rol — 2 GERÇEK AÇIK** (`e2e/session-lifecycle.spec.ts`):
+      (1) **"Çıkış Yap" sunucudaki oturumu kapatmıyordu:** frontend
+      `POST /auth/logout`'u HİÇ çağırmıyordu — çıkıştan sonra eski refresh
+      token ile `/auth/refresh` → **200** (canlı curl ile kanıtlandı; token 7
+      gün geçerli). (2) **SUPER_ADMIN arayüzden çıkış YAPAMIYORDU:** admin
+      panelinde çıkış butonu yoktu; "Rol Seçimine Dön" `/`'a gidiyor, giriş
+      sayfası oturum açık olduğu için panele geri yolluyordu. Ayrıca backend
+      `/auth/logout` yalnızca tek refresh jti'sini işaretliyordu: aynı
+      oturumun access token'ı çıkıştan sonra 15 dk daha çalışıyordu
+      (`test_auth208` Test 11 eski backend'de `access=200`). Düzeltmeler:
+      `logoutCompany` refresh token ile `/auth/logout` çağırır (keepalive,
+      yanıt beklemez); admin paneline gerçek "Çıkış Yap"; backend logout
+      AUTH-208 `revokeSession` ile tüm oturum ailesini iptal edip sid'i
+      deny-list'e alır (Redis hatası artık yutulmuyor). Kilitler: E2E 3 rol
+      (düzeltme öncesi 3/3 kırmızı), AppContext birim testi (mutasyonla
+      doğrulandı), `test_auth208` Test 11 (eski backend'de kırmızı).
+- [x] ✅ Hesap kilidi: 5 hatalı denemeden sonra 423 ve "hesap geçici olarak
+      kilitlendi" mesajı formda görünüyor (kilit anahtarları testten sonra temizlenir).
+- [x] ✅ Rol dışı panele URL ile giriş → "Erişim Reddedildi" (COMPANY_OWNER →
+      /admin, SITE_MANAGER → /panel).
+- [x] ✅ Bozuk/süresi dolmuş token → yenileme başarısız → giriş ekranı, token'lar silinmiş.
+- [x] ✅ Mobil (390px): giriş sayfası ve genel bakışta yatay taşma yok.
+- [x] ✅ Dondurulmuş tenant: giriş 403 ve "hesabı dondurulmuştur" mesajı
+      formda; panele geçilmez, token yazılmaz (`e2e/tenant-and-crud.spec.ts`).
+- [x] ✅ **Araç CRUD uçtan uca — GERÇEK VERİ BÜTÜNLÜĞÜ AÇIĞI** (bkz. §2.2 plaka
+      tekilliği): ekle → listede → aynı plaka backend'in 409 mesajıyla
+      formda reddedilir, ikinci satır oluşmaz → sil → DB'de yok.
+- [x] **Manuel ikmal onay akışı — E2E YAZILMADI, çünkü arayüzde YOK.**
+      `manual-dispense` uçları frontend'de hiç çağrılmıyor (FUEL-405 yalnızca
+      API); iki rollü onay akışı backend'de `test_fuel405_manual_dispense.ts`
+      ile kapsanıyor. UI eklendiğinde bu madde yeniden açılmalı.
+
+### 3.4 Frontend Güvenlik Kontrolleri
+- [x] **Guard script:** ✅ TAMAMLANDI — `scripts/check-frontend-security.mjs`
+      (tek dosya, 4 kural): `no-dangerously-set-inner-html`, `no-xlsx-parse`,
+      `no-eval`, `no-inner-html-assignment`. Backend'deki
+      `check-no-raw-pool-query.mjs` ile aynı desen (bağımlılıksız, dosya+kural
+      bazlı allowlist). Repo şu an 4 kuralın hepsinde temiz; **4 kuralın da
+      negatif testi yapıldı** (kasıtlı ihlal → exit 1).
+- [x] `localStorage`'daki access/refresh token'ların XSS'e karşı tek gerçek
+      savunması "hiçbir yerde ham HTML render edilmemesi" — artık yukarıdaki
+      guard bunu mekanik olarak garanti ediyor. (httpOnly cookie'ye geçiş,
+      Bearer-token tabanlı SPA mimarisinin köklü bir değişikliği olur — bu
+      planın kapsamı DEĞİL, ayrı bir mimari karar gerektirir, burada yalnızca
+      NOT düşülüyor.)
+- [x] **xlsx HIGH zafiyeti (GHSA-4r6h-8v6p-xvw6 / GHSA-5pgg-2g8v-p4x9)** —
+      istismar edilebilirlik analizi yapıldı: zafiyetler YALNIZCA parse
+      yolunda (`XLSX.read`/`readFile`); frontend xlsx'i sadece YAZMA için
+      kullanıyor ve uygulamada hiç dosya yükleme ucu
+      (`input[type=file]`/`FileReader`) yok → fiilen istismar edilemez.
+      Bu varsayım artık `no-xlsx-parse` kuralıyla kalıcı: biri okuma yolu
+      eklerse CI kırılır ve bağımlılık kararı yeniden ele alınır.
+- [x] ✅ **Prod bundle sızıntı kontrolü — TAMAMLANDI, GERÇEK BULGU.** Canlı
+      nginx'in sunduğu bundle tarandı: sourcemap yok, `VITE_*`/backend sır
+      adı/JWT/özel anahtar yok — ama **`password:"123456"` ile tüm demo firma
+      (camsa, kusak, avrasya) ve 6 şantiye hesabının kullanıcı adları
+      herkese açık JS dosyasındaydı** (kaynak: `mock/index.ts` + giriş
+      formu varsayılanları; seed hesaplarıyla birebir aynı kimlik bilgileri).
+      Düzeltme: mock'tan ve `Company`/`Site` tiplerinden `username`/`password`
+      kaldırıldı, formlar boş başlıyor, ölü `handleQuickFill` silindi.
+      **Kilit:** `scripts/check-frontend-bundle.mjs` build ÇIKTISINI tarar
+      (gömülü parola alanı, seed parolası, JWT, özel anahtar, backend sır
+      adları, sourcemap referansı, `.map`/`.env` dosyası) — CI'da
+      `build-bundle` job'ında. Eski canlı bundle'da 2 ihlal buldu, yeni
+      build temiz; `.map` dosyası ve eksik dist negatif testleri yapıldı.
+- [x] ✅ **`.dockerignore` açığı:** frontend ve backend yalnızca `.env` ve
+      `.env.local`'i hariç tutuyordu; Vite build modunda `.env.production`'ı
+      da OKUR ve `VITE_` değerlerini bundle'a gömer, backend imajına da sır
+      dosyası katman olarak girerdi. `.env.*` + `!.env.example` yapıldı —
+      gerçek `docker build` bağlamıyla doğrulandı (eski: `.env.production`
+      bağlamda; yeni: yalnızca `.env.example`).
+
+---
+
+## 4. Veritabanı Test Planı
+
+- [x] **RLS — statik kapsama (mevcut):** `check-rls-coverage.mjs` her yeni
+      tenant tablosunun `ENABLE`+`FORCE`+`POLICY` üçlüsüne sahip olduğunu
+      garanti ediyor. Korunuyor. Statik kontrol schema.sql METNİNE baktığı
+      için (ve bu oturumda metnin DB'ye ulaşmadığı yaşandığı için) aynı
+      kontrol artık CANLI DB'de de yapılıyor — aşağıdaki bütünlük testi.
+- [x] ✅ **Canlı DB bütünlüğü + dinamik RLS taraması —
+      `test_db_integrity_tenant_deletion.ts` (7/7).** pg_catalog'dan: 46
+      tenant tablosunun HEPSİNDE companies'e `ON DELETE CASCADE` FK; RLS
+      ENABLE+FORCE; USING ve WITH CHECK ifadeleri `app.current_tenant_id`'ye
+      bağlı. Davranış olarak: app_user rolüyle 46 tablonun HİÇBİRİNDE yabancı
+      satır görünmüyor (23 tabloda gerçekten yabancı veri var — kapsama
+      boş değil); 16 tabloda bir satırın `tenant_id`'sini başka tenant'a
+      TAŞIMA denemesi reddediliyor (WITH CHECK ya da append-only REVOKE).
+      **Mutasyonlar:** `vehicles` RLS'i kapatılınca Test 2/3/4 kırmızı
+      (60 yabancı satır görünür, 1 satır taşındı); `transactions` FK'si
+      düşürülünce Test 1/5 kırmızı (kalıcı silme sonrası 1 artık satır).
+- [ ] **RLS — dinamik sızıntı testi (mevcut):** `test_195_tenant_isolation.ts`
+      gerçek iki tenant arasında çapraz okuma/yazma denemesi yapıyor.
+      Korunacak; **her yeni tablo eklendiğinde bu testin de o tabloyu
+      kapsayacak şekilde genişletilmesi** süreç kuralı olarak eklenmeli.
+- [x] ✅ **`platform_audit_log` ve diğer RLS'siz sistem tabloları — TAMAMLANDI,
+      GERÇEK BULGU ÇIKTI.** Şemadaki 48 tablonun 46'sı RLS'li; RLS'i bilinçli
+      olarak olmayan 2 tablo `companies` ve `platform_audit_log`. Bu ikisinde
+      tek savunma app_user YETKİLERİ — ve ikisi de fazla genişti:
+      app_user her ikisinde de UPDATE/DELETE/TRUNCATE yapabiliyordu.
+      `platform_audit_log` (tenant dondurma/kalıcı silme kayıtları), audit_logs
+      ile AYNI append-only korumasını hak ediyordu ama ARCH-108'de eklenirken
+      REVOKE yazılmamıştı — yani denetim günlüğü silinebilir/tahrif edilebilirdi.
+      Düzeltildi: platform_audit_log'tan UPDATE/DELETE/TRUNCATE, companies'ten
+      INSERT/UPDATE/DELETE/TRUNCATE geri alındı (SELECT + REFERENCES kaldı:
+      app_user companies'i 3 yerde ve daima `WHERE id = $1` ile OKUYOR,
+      hiç yazmıyor — firma yönetimi tamamen adminDb.ts/SUPER_ADMIN'de).
+      `test/test_db_privileges.ts` (12/12) şemadaki REVOKE satırına bakmakla
+      yetinmiyor: app_user rolüne geçip yazmayı DENİYOR ve reddedildiğini
+      doğruluyor. Regresyon: BILL-1701 13/13, ARCH-108 17/17 (hiçbir akış
+      kırılmadı — firma oluşturma/lisans yönetimi superuser üzerinden).
+- [x] (kalan) diğer RLS'siz sistem tabloları — **kalan yok:** canlı
+      katalogda RLS'siz yalnızca `companies` ve `platform_audit_log` var
+      (ikisi de yukarıda yetkiyle kilitlendi).
+- [x] ✅ **Foreign key / cascade + kalıcı silme sonrası artık — TAMAMLANDI,
+      GERÇEK AÇIK.** Bütünlük testi bir tenant'ı gerçek API akışıyla (planlama
+      → 31 gün geriye alma → iki ayrı SUPER_ADMIN onayı) kalıcı siler ve 46
+      tablonun hepsinde o tenant_id için 0 satır kaldığını doğrular.
+      **Bulgu:** silinen tenant'ın kullanıcısının süresi dolmamış access
+      token'ı API'de ÇALIŞMAYA DEVAM EDİYORDU (`GET /vehicles` → 200,
+      `/auth/me` → "Kimlik bilgileri doğrulandı"). Kök neden:
+      `authMiddleware` lisans/dondurma kapısını `if (license) {...}` ile
+      sarıyordu; firma satırı silinince snapshot `null` → tüm kapı sessizce
+      atlanıyordu. Düzeltme: SUPER_ADMIN dışı rolde firma satırı yoksa
+      401 `TENANT_DELETED` — lisans istisna listesinden (`/auth/me`,
+      `/companies/me`) ÖNCE; yalnızca logout serbest. Refresh token yolu
+      zaten reddediyordu (kullanıcı satırı CASCADE ile silindiği için) —
+      Test 7 bunu kilitliyor. Düzeltme öncesi Test 6 kırmızıydı (200).
+      Regresyon: ARCH-108 17/17, BILL-1701/1702/1703 ✅.
+- [x] **Migration/şema değişikliği güvenliği — İNCELENDİ, GERÇEK BOŞLUK.**
+      Tespit (canlı gözlemle): yerel stack farklı/eski bir volume ile yeniden
+      başladığında, `schema.sql`'e eklenmiş `REVOKE` güvenlik düzeltmelerinin
+      o veritabanında OLMADIĞI görüldü (`test_db_privileges` 5/12'ye düştü —
+      yani test, düzeltmenin DB'ye ulaşmadığını doğru şekilde yakaladı).
+      Kök neden: projede migration mekanizması YOK. `schema.sql` imaja
+      kopyalanıyor ama hiçbir kod okumuyor; yalnızca BOŞ bir volume'da
+      `docker-entrypoint-initdb.d` ile çalışıyor. CI her seferinde taze DB
+      kurduğu için testler geçiyor — ama **mevcut bir veritabanına
+      (production dahil) schema.sql'e eklenen hiçbir değişiklik ulaşmıyor.**
+      Deploy job'ındaki "postgres şeması ... up -d --build ile" yorumu da bu
+      yanlış varsayımı belgeliyordu (yorum düzeltildi).
+      **İyi haber — yeniden uygulanabilirlik doğrulandı:** `schema.sql` dolu
+      bir DB'ye (69 kullanıcı / 38 firma) transaction + ROLLBACK ile dry-run
+      edildi: sıfır hata, iz bırakmadı. Seed de idempotent (6 INSERT'in 6'sı
+      `ON CONFLICT`). Ardından gerçek uygulama → `test_db_privileges` 12/12.
+      **Kilit:** CI'a "schema.sql + seed ikinci uygulama" adımı eklendi —
+      idempotent olmayan bir ifade eklenirse CI kırılır (mutation ile
+      doğrulandı: `CREATE TABLE companies` eklenince exit 3, DB değişmedi).
+- [x] ✅ **Production deploy'unda şema otomatik uygulanıyor (kullanıcı kararı:
+      deploy script).** `zero-downtime-deploy.sh` yeni adım 2/8: replika
+      topolojisi doğrulandıktan sonra, yeni replika eklenmeden ÖNCE
+      `psql -v ON_ERROR_STOP=1 -1 < schema.sql` (tek transaction — ya hep ya
+      hiç; transaction dışı DDL olmadığı doğrulandı). Seed BİLİNÇLİ olarak
+      uygulanmıyor. Script GERÇEK koşularla test edildi:
+      - **Başarısızlık yolu:** schema.sql geçici olarak bozuldu (önce canary
+        tablo, sonra hatalı SQL) → deploy exit 1, canary tablo OLUŞMADI
+        (transaction geri alındı), aynı tek eski konteyner yerinde kaldı.
+      - **Başarı yolu:** deploy boyunca sürekli `/health` → 121 istek,
+        **0 başarısız**; konteyner değişti, nginx hedefi durağana döndü.
+      - **Asıl senaryo (uçtan uca):** DB "eski production" durumuna getirildi
+        (düzeltme öncesi yetkiler) → `test_db_privileges` 5/12 → deploy →
+        **12/12**. Güvenlik düzeltmesi deploy ile production'a ulaşıyor.
+      - `shellcheck` temiz, `bash -n` temiz.
+      **KURAL (gelecek şema değişiklikleri için):** eski replika yeni şemayla
+      birkaç saniye birlikte çalıştığından değişiklikler additive/geriye
+      uyumlu olmalı — kolon silme/yeniden adlandırma iki aşamalı yapılmalı.
+- [x] ✅ **Yedekleme/geri yükleme tatbikatı — YAPILDI, PROSEDÜR TUZAĞI BULUNDU.**
+      Canlı DB `pg_dump -Fc` (476 KB, 0,19 sn) ile alınıp ağsız, BOŞ bir
+      `postgres:16-alpine` kümesine geri yüklendi; kaynak ve hedefin parmak izi
+      karşılaştırıldı (tablo satır sayıları, RLS ENABLE/FORCE, politika
+      metinleri, `app_user` yetkileri — REVOKE'lar dahil —, indeksler, FK
+      tanımları, trigger'lar, fonksiyonlar).
+      - **Yalnızca dump (roller yok):** `pg_restore` ilk `GRANT … TO app_user`
+        satırında düşer (`role "app_user" does not exist`); hata atlanırsa
+        286 satırlık fark — tüm app_user yetkileri eksik, uygulama `SET ROLE`
+        adımında çalışamaz. `app_user` küme seviyesinde bir rol, `pg_dump`
+        onu DÖKMEZ.
+      - **Önce `pg_dumpall --roles-only`, sonra dump:** exit 0, **0 fark**;
+        hedefte app_user olarak yabancı tenant satırı görünmüyor (RLS çalışıyor).
+      **Prosedür:** `pg_dumpall -U postgres --roles-only > roles.sql` +
+      `pg_dump -U postgres -d yakittakip_db -Fc > db.dump`; geri yüklemede
+      önce `psql < roles.sql`, sonra `pg_restore -d yakittakip_db
+      --exit-on-error`. (Alternatif: geri yükleme sonrası `schema.sql`'i
+      yeniden uygulamak rolü ve yetkileri kurar — deploy script'i bunu zaten
+      yapıyor.) Redis (`redisdata`, AOF) yedeği kaybedilirse: tüm refresh
+      token'lar düşer (herkes yeniden giriş yapar) ve oturum deny-list'i
+      boşalır — uzaktan kapatılmış bir oturumun access token'ı en fazla
+      15 dk daha geçerli olur.
+- [x] ✅ **İndeks/performans referansı — ALINDI, 1 İYİLEŞTİRME.** Yerel veri
+      çok küçük (transactions 152 satır) olduğu için planlar anlamsızdı; bu
+      yüzden camsa'ya geri alınan bir transaction içinde 200 bin işlem
+      (12 ay, 300 plaka, 3 şantiye) üretilip `app_user` + RLS altında
+      `EXPLAIN (ANALYZE, BUFFERS)` alındı (iz bırakmadı, doğrulandı):
+
+      | Sorgu | Plan | Süre |
+      |---|---|---|
+      | İşlem listesi 1. sayfa | idx_transactions_tenant_created_at | 0,13 ms |
+      | OFFSET 10000 | aynı indeks (doğrusal) | 4,6 ms |
+      | İkmal yolu: plaka + ay toplamı (FLEET-1406) | bitmap + 7,5k satır filtre | 2,1 ms → **0,12 ms** |
+      | Tank + gün toplamı (mutabakat) | indeks | 0,46 ms |
+      | Şantiye filtreli sayım | bitmap, 66k satır | 10,7 ms |
+      | Araç TCO: plaka + 365 gün | paralel sıralı tarama | 18,2 ms → **0,9 ms** |
+
+      RLS koşulu (`tenant_id::text = current_setting(...)`) indeksleri
+      kullanabiliyor (doğrulandı). Her ikmalde çalışan plaka+dönem toplamı
+      için `idx_transactions_tenant_plate_created` eklendi (1M satırda kurulum
+      1,2 sn — deploy'un tek-transaction şema adımında yazmalar bu kadar
+      bekler). İndekssiz FK taraması: `personnel`'de PK dışında HİÇ indeks
+      yoktu → `tenant_id` ve `driver_id` indeksleri eklendi. Bilinçli
+      bırakılanlar: `leave_requests.personnel_id` (bileşik indeks var),
+      `user_totp.tenant_id` (kullanıcı başına tek satır). schema.sql iki kez
+      uygulandı (idempotent, exit 0). Derin OFFSET ve şantiye sayımı veriyle
+      doğrusal büyür; keyset sayfalama zaten mevcut (FE-802).
+
+---
+
+## 5. Güvenlik Test Planı (OWASP Top 10 eşlemesi)
+
+Her madde için: **zaten kapsanan mı, yoksa yeni mi.**
+
+| OWASP kategorisi | Durum |
+|---|---|
+| **A01 Broken Access Control** | Büyük ölçüde kapsanan (167 route'ta `authorizeRoles`, RLS, 35 test dosyası 403 kontrolü yapıyor). **Yeni:** GAP-1 (offline-ratio-alerts RBAC testi). |
+| **A02 Cryptographic Failures** | Argon2id, AES-256-GCM (donanım secret + tenant export), JWT ayrı access/refresh secret. Kapsanan. |
+| **A03 Injection** | Parametreli sorgular `check-no-raw-pool-query.mjs` ile mekanik garanti altında. **Yeni:** frontend'de `dangerouslySetInnerHTML` guard script (bölüm 3.4). |
+| **A04 Insecure Design** | RES-905 (graceful degradation), fail-open/fail-closed kararlarının dokümante matrisi (`redisPool.ts`). Kapsanan. |
+| **A05 Security Misconfiguration** | `check-env-example-sync.mjs`, `.env` placeholder kontrolü, nginx/Express body-size limitleri. **Yeni:** CSP header'ının frontend'de var olup olmadığı kontrol edilecek (aşağıda). |
+| **A06 Vulnerable Components** | **BOŞLUK:** `npm audit` CI'da yok (bölüm 2.2). Trivy yalnızca imaj/OS paketlerini tarıyor. |
+| **A07 Auth Failures** | Rate limiting, hesap kilitleme, 2FA, HMAC+nonce donanım auth — kapsamlı. Kapsanan. |
+| **A08 Software/Data Integrity** | HMAC imzalı donanım paketleri, idempotent batch-sync. Kısmen kapsanan — genel idempotency envanteri (bölüm 2.2) tamamlayıcı. |
+| **A09 Logging/Monitoring Failures** | `audit_logs` (27 test dosyası kontrol ediyor), yapısal Pino logu, hassas alan redaksiyonu (RES-902). Kapsanan. |
+| **A10 SSRF** | Dış URL'e istek atan tek nokta Google Gemini API (sabit endpoint) — kullanıcı girdisiyle URL oluşturan bir nokta YOK. Düşük risk, **yeni:** bunu doğrulayan tek bir grep taraması (kod incelemesi, otomatik test gerekmez). |
+
+### 5.0 Proxy Arkasında İstemci IP'si (test sırasında bulundu — planda yoktu)
+
+- [x] ✅ **🔴 Platform geneli giriş kilidi (DoS) — `trust proxy` eksikti.**
+      E2E hata ayıklarken rate-limit anahtarının `rl:auth-login:172.18.0.5`
+      olduğu görüldü — bu nginx konteynerinin IP'si. nginx gerçek istemci
+      IP'sini `X-Forwarded-For` ile iletiyordu ama Express'te `trust proxy`
+      yoktu; tüm istemciler tek IP görünüyordu. **Aynı anda çalışan iki ayrı
+      konteynerle kanıtlandı:** mağdur (172.18.0.7) önce 200 ile girdi;
+      saldırgan (172.18.0.8) KİMLİK BİLGİSİ OLMADAN 10 istek attı (istekleri
+      doğrulama hatası verse bile ortak kovayı doldurdu); ardından mağdur doğru
+      şifreyle **429** aldı. Yani 15 dakikada 10 istekle platformdaki herkesin
+      girişi kilitlenebiliyordu; IP bazlı brute-force koruması da kişisel değil
+      globaldi ve audit/oturum kayıtlarındaki IP'ler hep nginx'i gösteriyordu.
+      **Düzeltme:** `app.set('trust proxy', 1)` — tam olarak tek atlama.
+      nginx `$proxy_add_x_forwarded_for` ile gerçek adresi listenin sonuna
+      eklediği için Express yalnızca o son girdiyi alır; istemcinin eklediği
+      sahte girdiler yok sayılır. Önkoşul: backend portu dışarı yayınlanmamalı
+      (OPS-1102 zaten kaldırmış). Gerçek nginx senaryosu tekrarlandı: saldırgan
+      11. istekte 429, mağdur 200, Redis'te istemci başına ayrı kova.
+      **Test:** `test_trust_proxy_rate_limit.ts` 5/5 (CI'da da çalışır:
+      X-Forwarded-For ile proxy simülasyonu). Eski koda karşı kırmızı (mağdur
+      429). **Sahtecilik testleri mutasyonla doğrulandı:** `trust proxy = 2`
+      yapılınca saldırgan sahte IP ile kilidi aştı ve Test 4-5 kırıldı.
+      **Kilit:** `check-security-headers.mjs` değer tam `1` değilse CI'ı kırar
+      (satır yok → exit 1, `true` → exit 1 negatif testleri yapıldı).
+
+### 5.1 Ek Güvenlik Test Kalemleri
+- [x] ✅ **CSP header kontrolü — TAMAMLANDI ve EKLENDİ.** Tespit: CSP HİÇ YOKTU.
+      Ayrıca 2 bulgu daha: `X-Powered-By: Express` açıktı (yığın parmak izi)
+      ve CORS tamamen açıktı (`Access-Control-Allow-Origin: *`).
+      Yapılanlar: (1) nginx'e CSP eklendi — her direktif ÖLÇÜLEREK seçildi:
+      build çıktısında inline script OLMADIĞI doğrulandığı için
+      `script-src 'self'` (unsafe-inline YOK); `style-src 'unsafe-inline'`
+      React style={{}} + Google Fonts için; `img-src data: blob:` base64
+      doküman önizleme + URL.createObjectURL için; `connect-src ws: wss:`
+      Socket.io için. (2) `app.disable('x-powered-by')` eklendi.
+      (3) `scripts/check-security-headers.mjs` guard'ı — CSP'nin silinmesini
+      VE script-src'ye 'unsafe-inline' eklenerek etkisizleştirilmesini
+      engelliyor (3 negatif testle doğrulandı). Canlı doğrulandı: başlıklar
+      dönüyor, uygulama (HTML+JS bundle+API) çalışmaya devam ediyor.
+      **AÇIK KALAN:** CORS `*` — düzeltmek production domain bilgisi
+      gerektiriyor, kullanıcı kararına bırakıldı (bkz. §5.2).
+
+- [x] ✅ **CORS politikası daraltıldı (§5.2) — TAMAMLANDI.** Tespit: backend
+      `app.use(cors())` varsayılanıyla çalışıyordu, yani
+      `Access-Control-Allow-Origin: *` — HER origin API'ye istek atabiliyordu.
+      Çözüm: env tabanlı allowlist (`CORS_ALLOWED_ORIGINS`, virgülle ayrılmış).
+      **Varsayılan artık CORS TAMAMEN KAPALI** (same-origin): değişken boşsa
+      cors ara katmanı hiç eklenmiyor. Gerekçe: nginx SPA'yı ve /api'yi aynı
+      origin'den sunuyor, frontend göreli yol kullanıyor, saha cihazları
+      (ESP32/LoRaWAN) tarayıcı olmadığı için CORS'a zaten tabi değil.
+      Canlı doğrulandı: yabancı Origin'e (ve OPTIONS preflight'ına) artık
+      izin verilmiyor; frontend akışı (login + yetkili istek + SPA/bundle)
+      kırılmadı. `test_security_headers_cors.ts` ile kilitlendi.
+- [x] ✅ **Secrets taraması — allowlist incelendi, GERÇEK KÖR NOKTA BULUNDU.**
+      (Not: plandaki "commit geçmişini tarıyor" ifadesi yanlıştı — CI
+      `--no-git` ile yalnızca checkout edilmiş ağacı tarıyor.)
+      **Bulgu:** `.gitleaks.toml` `paths` altında `(^|/)\.env$` hariç
+      tutulmuştu. Gerekçesi yerel geliştiricinin takip dışı `.env`'inin alarm
+      vermemesiydi, ama bu tarayıcıyı **en yaygın gerçek sızıntı senaryosuna
+      (yanlışlıkla commit'lenen `.env`) karşı kör ediyordu.** Repo dışında,
+      gerçek GitHub token desenine uyan sahte bir değerle kanıtlandı:
+      - `.env`, `backend/.env`, `config.txt` → mevcut config yalnızca
+        `config.txt`'i buldu; istisna kaldırılınca **3'ünü de** buldu.
+      - `git add -f .env` sonrası `gitleaks git --pre-commit --staged` bile
+        mevcut config ile **hiçbir şey bulmadı**.
+      **Düzeltmeler:** (1) `.env` istisnası kaldırıldı (CI checkout'unda `.env`
+      yalnızca commit'lenmişse bulunur — yakalanması istenen tam o); yerel
+      kullanım için `gitleaks git --pre-commit --staged` belgelendi. Takip
+      edilen ağaç yeni config ile temiz. (2) CI'a "takip edilen `.env` yasağı"
+      adımı: gitleaks'in kural dışı bıraktığı bir değeri de kapsar
+      (`.env.example` serbest; negatif testle doğrulandı). (3) **gitleaks
+      ikilisi checksum doğrulamasız indiriliyordu** — güvenlik tarayıcısının
+      kendisi supply-chain'e açıktı. SHA-256 resmi checksums dosyasıyla
+      çapraz doğrulanıp pinlendi (bozuk hash ile `sha256sum -c` başarısız
+      olduğu doğrulandı). actionlint ✅.
+      Diğer allowlist girdileri (`ci_only_*`, `__CHANGE_ME_*`, test sabitleri)
+      gitleaks'in varsayılan `regexTarget=secret` davranışıyla yalnızca
+      eşleşen DEĞERİ susturuyor; kabul edilebilir.
+- [x] ✅ **Supply-chain — İNCELENDİ, 2 GERÇEK RİSK KAPATILDI.**
+      - Lockfile'lar: root/backend/frontend `package-lock.json` üçü de takipte;
+        CI'da 7 kurulumun hepsi `npm ci` (hiç `npm install` yok). Sorun yok.
+      - **`aquasecurity/trivy-action@master` — kayan branch.** O repoda master'a
+        giren her commit bizim CI'ımızda çalışıyordu; master HEAD'in son sürümden
+        (v0.36.0) FARKLI olduğu, yani yayımlanmamış kodun çalıştığı görüldü.
+      - **`appleboy/ssh-action@v1.0.3` — production SSH private key'ini alan
+        üçüncü taraf action, değiştirilebilir tag'e bağlı.** Tag'i ele geçiren
+        biri prod anahtarını alırdı.
+      - Düzeltme: 4 üçüncü taraf action commit SHA'sına pinlendi (tag → SHA
+        doğrudan kaynak repolardan `git ls-remote` ile çözüldü; trivy v0.36.0
+        ve ssh-action v1.0.3'ün kullandığımız TÜM girdileri desteklediği
+        `action.yaml`'larından doğrulandı; docker action'larının kayan
+        v3/v5 tag'leri zaten v3.12.0/v5.4.0 ile aynı commit — davranış değişmedi).
+        GitHub'ın kendi `actions/*`'ı tag ile bırakıldı.
+      - Kilit: `check-workflow-yaml.mjs` artık SHA'ya pinlenmemiş her üçüncü
+        taraf action'da CI'ı kırıyor (HEAD sürümüne karşı negatif testte 4/4
+        yakaladı). actionlint ✅.
+      - (Önceki commit) gitleaks ikilisi checksum ile pinlendi.
+      - Kalan küçük not: Docker imajları (`rhysd/actionlint:1.7.12`,
+        `curlimages/curl:latest` load-test'te) tag ile; digest pinleme
+        opsiyonel bir sonraki adım.
+- [x] ✅ **Oturum kapatma (logout) — 2 GERÇEK AÇIK:** bkz. §3.3 üçüncü tur
+      (çıkış sunucu oturumunu kapatmıyordu; SUPER_ADMIN çıkış yapamıyordu;
+      logout access token'ı 15 dk açık bırakıyordu).
+- [x] ✅ **Log atfı sahteciliği — GERÇEK BULGU.** `getLoggingTenantContext`
+      tenant/user bağlamı yoksa (kimliksiz istekler: login, refresh, parola
+      sıfırlama) `X-Tenant-ID`/`X-User-ID` İSTEMCİ başlıklarını log satırına
+      yazıyordu. Canlı kanıt: `nobody-x` kullanıcısının hatalı giriş denemesi
+      `tenantId=comp-kusak, userId=usr-kusak-owner` olarak loglandı — bir
+      brute-force başka firma/kullanıcının üzerine yıkılabiliyordu. Ayrıca
+      frontend HER girişte sabit `X-Tenant-ID: comp-camsa` gönderiyordu (tüm
+      tenant'ların giriş logları camsa'ya atfediliyordu). Kimliği doğrulanmış
+      isteklerde sorun yoktu (ALS store önce geliyor — o da doğrulandı).
+      Düzeltme: başlık fallback'i kaldırıldı (kimliksiz → `N/A`), frontend
+      başlığı silindi. **Kilit:** `test_res902.ts` 9. test pino logger'ının
+      KENDİ stream nesnesini yamalayıp GERÇEK log satırlarını okuyor (istek
+      logu + hata logu + doğrulanmış bağlam). İlk yazdığım sürüm fonksiyonu
+      argümansız çağırdığı için mutasyonu YAKALAMADI — bu yüzden gerçek log
+      satırına geçildi; başlık fallback'i geri eklenince artık kırmızı.
+- [x] ✅ **Docker imaj sertleştirme regresyonu — kontrol edildi.** Backend:
+      `USER node` (uid 1000, canlı konteynerde doğrulandı), derleme araçları
+      (python3/make/g++) imajda yok, npm CLI kaldırılmış. Boyut: açık katman
+      toplamı ~391 MB (CI tavanı 450 MB — AC'nin 150 MB'ı baz imaj yüzünden
+      ulaşılamaz, CI yorumunda gerekçeli). Not: yerel containerd deposunda
+      `docker images` 486 MB gösterir (sıkıştırılmış+açık) — CI runner'ında
+      ölçüm farklıdır, yanlış alarm değildir. Frontend: nginx master süreci
+      root (resmî nginx:alpine varsayılanı; worker'lar `nginx` kullanıcısı) —
+      `nginx-unprivileged`'a geçiş port/compose değişikliği gerektirdiği için
+      AYRI bir iş olarak bırakıldı.
+
+---
+
+## 6. CI/CD ve Altyapı Test Planı
+
+- [x] `npm audit` adımı (backend + frontend) — `check-dependency-audit.mjs` (P0).
+- [x] `npm ci` kullanımının tüm job'larda tutarlı olduğu doğrulandı (§5.1
+      supply-chain: 7 kurulumun hepsi `npm ci`).
+- [x] ✅ **Job zaman aşımı — GERÇEK BULGU.** Hiçbir job'da `timeout-minutes`
+      yoktu (varsayılan 360 dk). Tam regresyonda `test_ai502` 11/11 geçtikten
+      sonra süreç HİÇ kapanmadı (import ettiği src modüllerinin paylaşımlı
+      Redis/pg havuzları açık; başarı yolunda `process.exit` yoktu) — CI'da
+      `auth-integration-test` 6 saat asılı kalırdı. Düzeltme: test açıkça
+      çıkıyor (3,8 sn); 9 job'a gerçekçi `timeout-minutes`; ve
+      `check-workflow-yaml.mjs` `job-without-timeout` kuralı (9/9 job'u
+      yakaladı — sütun-0 yorum satırının taramayı erken bitirdiği ilk sürüm
+      de bu sayede fark edildi). actionlint ✅.
+- [x] ✅ **OPS-1101 SIGTERM testi AUTH-202.3'ten beri KIRIKTI.** CI bu testi
+      `POSTGRES_HOST=__CI_SKIP__` (DB'siz) çalıştırır; `startServer()` ise
+      `listen` ve SIGTERM handler'ından ÖNCE DB'ye seed yazmaya başlıyordu →
+      sunucu hiç ayağa kalkmadan ölüyordu. CI ortamı (ağ yok, job env'i
+      birebir) ile yeniden üretildi. Düzeltme: seed `MQTT_URL`'deki aynı
+      `__CI_SKIP__` sözleşmesine uyuyor. **Testin kendisi de zayıftı:**
+      `npx` sarmalayıcısı SIGTERM'de 143 ile öldüğü için `code === 0 ||
+      signal === 'SIGTERM'` koşulu handler'sız öldürülen bir sunucuyu da
+      "güvenli kapandı" sayıyordu; sabit 2,5 sn bekleme de yavaş makinede
+      handler kurulmadan sinyal gönderiyordu. Artık `node --import tsx` ile
+      doğrudan başlatılıyor, "Başlatıldı" logu beklenip çıkış kodu 0 ve
+      kapanma logları şart. Mutasyonlar: eski index.ts → 3 FAIL; SIGTERM
+      handler kaydı silinince → 2 FAIL (eski test bunu geçirirdi).
+- [x] ✅ **`test_res906` Test 8 zamanlamaya bağlı kırılıyordu:** cache
+      testi `checkedAt` ISO damgalarını karşılaştırıyordu; force'lu iki
+      kontrol aynı milisaniyede bitince (pg+redis <1 ms) eşit çıkıyordu (tam
+      regresyonda gözlemlendi). Artık nesne kimliği karşılaştırılıyor.
+- [ ] ⚠️ **ÇÖZÜLMEMİŞ gözlem — `test_fleet1405` bir kez kırmızı:** tam
+      regresyonda veh-1 için bu ay 25 L beklenirken 175 L okundu (+150 L).
+      Tek başına, CI sırasıyla 42 testin ardından (her testten sonra veh-1
+      işlemleri sorgulanarak) ve fuel401'in (50+100 L üreten tek test)
+      ardından 12 dk bekleyerek tekrar üretilemedi; kaynak satırlar sonraki
+      `fleet1406` temizliğiyle (plaka + son 30 saat) silindiği için geriye
+      dönük incelenemedi. O koşuda eşzamanlı elle çalıştırılan testler vardı
+      (en olası neden bu, ama kanıtlanmadı). CI'da tekrarlarsa: fleet1405
+      başında ve Test 1 anında `transactions WHERE vehicle_plate='34 CTP 82'`
+      dökümü alınmalı.
+- [x] ✅ **Trivy tatbikatı — GERÇEK BULGU.** CI ile aynı ayarlarla
+      (`--severity CRITICAL,HIGH --ignore-unfixed --exit-code 1`, trivy 0.66)
+      iki imaj yerelde tarandı (rootless docker soketi yüzünden `docker save`
+      + `--input`). Backend: **0** (exit 0). Frontend (internete bakan nginx,
+      alpine 3.21.3): **36 düzeltmesi yayımlanmış açık — 2 CRITICAL (OpenSSL
+      CVE-2026-31789), 34 HIGH** (c-ares, libexpat, libpng, libxml2, musl,
+      nghttp2, zlib) → **exit 1**. Yani eşik gerçekten build'i kırıyor (tatbikat
+      kendiliğinden doğrulandı) — ama CI **yalnızca backend imajını**
+      tarıyordu; frontend hiç taranmıyordu. Düzeltme: frontend Dockerfile'da
+      `apk upgrade --no-cache` (backend ile aynı çözüm) → yeniden tarama **0**;
+      E2E 20/20 (CSP dahil) kırılmadı; imaj ~95 MB. CI'a frontend imaj derleme
+      + aynı pinli Trivy adımı eklendi. actionlint ✅.
+- [ ] `deploy-zero-downtime` job'ının GERÇEKTEN sıfır kesinti sağladığı —
+      dağıtım sırasında sürekli health-check atan bir arka plan script'iyle
+      (zaten `scripts/zero-downtime-deploy.sh` var) bir kez canlı doğrulama.
+- [x] ✅ CI'daki `test/*.ts` çağrılarının `API_URL`/port tutarlılığı — CI
+      doğruydu (3000 varsayılanlı 6 CI testinin hepsinde adım env'i vardı) ve
+      yanlış port sessiz değil ECONNREFUSED ile gürültülü patlıyor; bu yüzden
+      guard yerine sadeleştirildi: 7 testin varsayılanı diğer 58 testle aynı
+      `localhost:5000` yapıldı, CI'daki 6 `API_URL` override'ı silindi; 7'si de
+      override'sız geçti. Bilinçli olarak 3000'de (nginx) kalanlar: `docker`
+      CLI'ı çağırdıkları için host'tan çalışmak ZORUNDA olan RES-905, IOT-305,
+      FUEL-406 (host'tan backend 5000 yayında değil — ilk denemede bu ikisi de
+      değiştirilmişti, host koşusunda bozulduğu görülüp geri alındı: 9/9, 4/4)
+      ve nginx başlıklarını test eden security-headers.
+- [x] ✅ **TEST-1002 yük testi job'u ARCH-108'den beri BAŞLAYAMIYORDU.**
+      `docker-compose.yml` `TENANT_EXPORT_ENCRYPTION_KEY`'i `${…:?}` ile zorunlu
+      tutuyor; job'un ürettiği `.env`'de yoktu → `docker compose config` exit 1
+      (job yalnızca manuel tetiklendiği için görülmedi). Eklendi (doğrulandı:
+      exit 0) + `check-workflow-yaml.mjs` `compose-required-env-missing`
+      kuralı: workflow'da üretilen her `.env` heredoc'u compose'un zorunlu
+      değişkenlerini içermeli (değişken silinince yakaladı).
+      (önceki oturumlarda bulunup düzeltilen 3000↔5000 karışıklığı) — yeni
+      bir test dosyası eklendiğinde bunun bir PR checklist maddesi olarak
+      hatırlatılması (bu dokümanın kendisi bu hatırlatıcı).
+
+---
+
+## 7. Performans / Yük Test Planı
+
+- [x] ✅ `TEST-1002` regresyonu (bu oturumun trust proxy, havuz zaman
+      aşımları, fail-closed login değişikliklerinden SONRA), tam AC profili
+      yerelde: 1000 rps × 90 sn, 300 cihaz → **PASS** — 90.001 istek, HTTP P95
+      **2,25 ms** (önceki koşu 3,32 ms), hata oranı %0,22 (eşik %1; önceki
+      %0,27 — cihaz başına 5/sn limitine yakın rastgele dağılımdan gelen 429
+      patlamaları), event loop p99 **4,08 ms**. Smoke profili de PASS. Test
+      cihazları `cleanup-devices.mjs` ile temizlendi (300 → 0). CI job'unun
+      kendisi başlayamıyordu — bkz. §6.
+- [x] ✅ **Postgres havuz doygunluğu — GERÇEK AÇIK: TENANT'LAR ARASI DoS.**
+      Havuz `max: 10`, `connectionTimeoutMillis` yok (sonsuz bekleme), DB'de
+      `lock_timeout`/`statement_timeout`/`idle_in_transaction_session_timeout`
+      yok. Tatbikat (`test_db_pool_saturation.ts`): bir bağlantı camsa'daki bir
+      tank satırını 12 sn kilitli tutarken o tanka 14 eşzamanlı ikmal → hepsi
+      havuzdan bağlantı alıp kilidi SÜRESİZ bekledi; **kilitle hiçbir ilgisi
+      olmayan kusak'ın `GET /vehicles` isteği 8 sn'de yanıt ALAMADI** (tek
+      tenant'taki bir asılı transaction tüm platformu durdurur); 14 ikmalin
+      14'ü kilit kalkınca 12 sn sonra tamamlandı. Düzeltme (`postgresPool.ts`):
+      `lock_timeout 5s`, `connectionTimeoutMillis 10s`, `statement_timeout 60s`,
+      `idle_in_transaction_session_timeout 60s`; errorHandler 55P03/57014/havuz
+      zaman aşımını 500 yerine yeniden denenebilir **503 `DB_BUSY`**'ye çevirir.
+      Sonuç: kusak isteği ~5 sn'de 200; kilidi bekleyen ≥10 ikmal kilit
+      kalkmadan 503; stok/işlem sayısı yalnızca başarılı isteklerle tutarlı;
+      sonrasında ikmal 200 ve `/health/ready` 200. (İlk test sürümü, havuzdan
+      geç bağlantı alıp kilidi 5 sn'den kısa bekleyen bir isteğin meşru 200'ünü
+      hata sayıyordu — değişmezler düzeltildi.) Tam regresyon zaman aşımlarıyla
+      yeşil (yarış/despatch advisory lock/dışa aktarma dahil).
+- [x] ✅ **Redis bellek baskısı — GERÇEK AÇIK: PAROLA KÂHİNİ.** Redis
+      `maxmemory 0` (sınırsız) + `noeviction`. Tatbikat: maxmemory kullanımın
+      altına çekildi (noeviction → yazmalar "OOM", okumalar çalışır): yanlış
+      parolayla 12 deneme 12×401 — **hesap kilidi VE IP rate limit sessizce
+      kalktı** (normalde 4×401, 423, …, 429); **doğru parola 500** (refresh
+      token yazılamıyor). Yani RES-905'in fail-open kararı hiçbir meşru girişi
+      kurtarmıyor (giriş zaten tamamlanamıyor — RES-905 testi de bunu "kasıtlı
+      fail-closed sınır" diye belgeliyordu), yalnızca saldırgana sınırsız
+      deneme + "500 = doğru parola" kâhini veriyordu. Gerçek Redis kesintisinde
+      de aynı. Düzeltme: `checkLockout` TTL okuması + zararsız yazmayı tek
+      MULTI'de yapar, yazılamıyorsa parola doğrulamadan **503
+      `AUTH_STORE_UNAVAILABLE`**; login rotası hataları artık globalErrorHandler'a
+      verir (önceden Redis hatası dahil her şey 500 "Veritabanı bağlantı
+      hatası" diye yanlış raporlanıyordu). docker-compose'a `--maxmemory 256mb
+      --maxmemory-policy noeviction` (tahliye BİLEREK yok: deny-list/kilit
+      anahtarları silinirse iptal edilmiş token açılır/brute-force kilidi düşer).
+      Kilitler: `test_redis_memory_pressure.ts` (eski kodla 2 FAIL: 7×401,
+      doğru=500/yanlış=401), RES-905 gerçek kesinti testi 11/11 (Test 4 artık
+      doğru/yanlış parolayı ayırt edilemez 503 bekliyor).
+
+---
+
+## 8. Öncelik Sıralaması (yol haritası — "sonra teste geçeceğiz" için)
+
+Test aşamasına geçildiğinde önerilen sıra (yüksek etki / düşük efor önce):
+
+1. **P0 — ✅ TAMAMLANDI (2026-09-12):**
+   - [x] Bağımlılık zafiyet denetimi — `check-dependency-audit.mjs` + CI adımı.
+   - [x] GAP-1/GAP-2 uç testleri — `test_gap_untested_endpoints.ts` (17/17).
+   - [x] `test_auth206` veri hijyeni — sabit kodlu hash bağımlılığı kaldırıldı.
+   - [x] Frontend güvenlik guard'ı — `check-frontend-security.mjs` (4 kural).
+   - [x] **(Planda yoktu, test sırasında bulundu)** CI workflow'unun geçersiz
+         YAML olduğu ve hiçbir job'ın çalışmadığı tespit edildi; düzeltildi ve
+         `check-workflow-yaml.mjs` ile kilitlendi (bkz. §0.2).
+
+   **P0 net kazanım:** 7 guard script (4 mevcut + 3 yeni) ve 17 yeni test;
+   1 kritik CI arızası, 1 kimlik doğrulama boşluğu ve 1 test kırılganlığı
+   giderildi.
+2. **P1 — Orta efor, yüksek değer:**
+   - [x] ✅ Frontend Vitest+RTL kurulumu + AppContext/api.ts testleri
+         (bölüm 3.1-3.2) — **24 test**, 6 mutasyonla doğrulandı.
+   - [x] ✅ Race-condition testleri (bölüm 2.2) — 10 test, mutation ile doğrulandı.
+   - [x] CSP header tespiti + öneri (bölüm 5.1).
+   - [x] Rol bazlı UI koşulları (30 test) + giriş sayfaları (4 test);
+         form doğrulama/hesaplama için bilinçli "test yok" kararı (bölüm 3.2).
+3. **P2 — Daha büyük efor:**
+   - Playwright E2E kritik akışlar (bölüm 3.3).
+   - Pagination/idempotency sistematik taraması (bölüm 2.2).
+   - DB migration/backup-restore tatbikatı (bölüm 4).
+4. **P3 — Periyodik/tatbikat niteliğinde:**
+   - Yük testi regresyonu (bölüm 7).
+   - Zero-downtime deploy canlı doğrulama (bölüm 6).
+   - Docker sertleştirme periyodik kontrol.
+
+---
+
+*Bu plan `ISSUES_ROADMAP.md` ile aynı ruhla yaşayan bir dokümandır — test
+aşamasında yeni bir boşluk bulundukça buraya `- [ ]` olarak eklenir, biten
+maddeler `- [x]` olarak işaretlenir.*

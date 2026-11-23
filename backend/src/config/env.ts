@@ -1,96 +1,295 @@
-import dotenv from 'dotenv';
-import crypto from 'crypto';
+import { z } from 'zod';
 
 /**
- * Central environment loader and validator.
+ * ARCH-110 — tüm ortam değişkenlerinin TEK doğrulama noktası.
  *
- * This module MUST be the first thing the process evaluates. index.ts used to
- * call dotenv.config() in its body, but ES module imports are hoisted and
- * evaluated before that body runs - so every module that read process.env at
- * load time (tokenService, postgresPool, redisPool, mqttClient) silently saw an
- * unloaded environment and fell back to its defaults. A .env file simply never
- * applied in local development; it only looked like it worked under Docker,
- * where compose injects real environment variables.
+ * Amaç: eksik ya da hatalı bir ortam değişkeninin (örn. JWT_SECRET boş,
+ * POSTGRES_PORT sayı olmayan bir metin) uygulama CANLIDA çalışırken değil,
+ * AYAĞA KALKARKEN fark edilmesi. Bu dosya dışında hiçbir modül `process.env`e
+ * doğrudan erişmemeli — CI bunu scripts/check-no-direct-process-env.mjs ile
+ * denetler (repoda ESLint kurulumu yok; ARCH-101.2'deki
+ * check-no-raw-pool-query.mjs ile aynı gerekçeyle aynı desen kullanıldı).
  *
- * Loading dotenv here, and exporting the values other modules need, makes the
- * ordering a dependency of the module graph instead of a convention someone has
- * to remember.
+ * Bu proje NestJS/Drizzle KULLANMIYOR (ticket'ın "Teknik Yığın" alanı
+ * @nestjs/config öneriyor ama kod tabanı düz Express) — bu yüzden burada
+ * bağımsız bir Zod şeması + module-level fail-fast doğrulama var, NestJS'e
+ * özgü bir ConfigModule değil.
  */
-dotenv.config();
 
-export const NODE_ENV = process.env.NODE_ENV || 'development';
-export const IS_PRODUCTION = NODE_ENV === 'production';
+// Süreç saat dilimi HER ZAMAN UTC. Kod tabanı yerel (İstanbul) saati sistem
+// saatinden değil sabit +3 ofsetle kendisi hesaplıyor (bkz. tenantDb.ts
+// istanbulLocalParts) ve sistemin UTC olduğunu varsayıyor. Aksi halde
+// node-postgres DATE kolonlarını YEREL gece yarısı olarak ayrıştırır ve
+// toISOString() pozitif ofsetli bir dilimde (örn. TZ=Europe/Istanbul) her
+// tarihi BİR GÜN geri kaydırır: belge son kullanma 2026-12-08 → 2026-12-07.
+// Docker/CI zaten UTC'de olduğu için bu yalnızca TZ'si ayarlı bir sunucuda
+// veya yerel geliştirmede görünürdü. Bu modül import zincirinde ilk
+// değerlendirilenlerden olduğundan (logger/havuzlar buna bağımlı) atama
+// herhangi bir tarih dönüşümünden önce gerçekleşir; Node TZ'yi her atamada
+// yeniden okur.
+process.env.TZ = 'UTC';
 
-/**
- * HS256 keys shorter than this are brute-forceable offline. jsonwebtoken itself
- * accepts any non-empty string without complaint, so the floor has to be ours.
- */
-const MIN_SECRET_LENGTH = 32;
+// .env.example'daki placeholder'lar — üretimde JWT/MQTT sırlarından biri hâlâ
+// bu değerlerden birindeyse "yapılandırılmış görünüyor ama aslında değil"
+// durumudur (bkz. loadConfig()'teki POSTGRES_PASSWORD'ün neden bu listeye
+// dahil OLMADIĞINA dair not).
+const KNOWN_PLACEHOLDER_VALUES = new Set([
+  '__CHANGE_ME_RUN_openssl_rand_-hex_64__',
+  '__CHANGE_ME_RUN_openssl_rand_-hex_32__'
+]);
 
-function fail(message: string): never {
-  // Thrown during module evaluation, before registerProcessExceptionHandlers()
-  // runs - so Node prints it and exits non-zero instead of the handler (which
-  // does not call process.exit) swallowing it and leaving a half-started server.
-  throw new Error(
-    `\n\n[YAPILANDIRMA HATASI] ${message}\n` +
-      `Sunucu güvenli bir şekilde başlatılamadığı için durduruldu.\n` +
-      `Yeni bir sır üretmek için: openssl rand -base64 48\n`
-  );
+// OPS-1104: ortam şablonları (deploy/env/*.env.example) `__CHANGE_ME_<ORTAM>_ONLY_...` biçiminde
+// ortama özel placeholder'lar içerir — tam-eşleşme listesi bunları KAÇIRIRDI. `__CHANGE_ME` önekli
+// her değer "doldurulmamış şablon" sayılır (KNOWN_PLACEHOLDER_VALUES'un üst kümesi).
+const isPlaceholderValue = (v: string): boolean => KNOWN_PLACEHOLDER_VALUES.has(v) || v.startsWith('__CHANGE_ME');
+
+const JWT_SECRET_MIN_LENGTH = 32;
+
+const envSchema = z.object({
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
+  PORT: z.coerce.number().int().positive().default(5000),
+  LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+
+  // OPS-1110: çalışan sürümün etiketi (git tag/kısa SHA) — GET /api/v1/health `version` alanında görünür;
+  // zero-downtime-deploy.sh/rollback.sh derleme sırasında `APP_VERSION` build-arg olarak geçirir. Yerelde 'dev'.
+  APP_VERSION: z.string().regex(/^[A-Za-z0-9._+-]{1,64}$/, 'APP_VERSION en fazla 64 karakter; yalnızca harf/rakam/._+- içerebilir.').default('dev'),
+
+  // RES-907: Sentry hata izleme. DSN BOŞ/TANIMSIZ = kapalı (bu durumda backend olay göndermez ve tarayıcı tüneli 204 döner).
+  // Örnekleme (maliyet kontrolü): hata olaylarının yüzdesi ve performans izlerinin yüzdesi AYRI ayarlanır; performans izi
+  // varsayılan KAPALI (0) — açılırsa maliyeti örnekleme oranı belirler.
+  SENTRY_DSN: z.string().url('SENTRY_DSN geçerli bir URL olmalıdır (örn. https://<key>@o0.ingest.sentry.io/<proje>).').optional(),
+  SENTRY_ERROR_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
+  SENTRY_TRACES_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0),
+  SENTRY_ENVIRONMENT: z.string().min(1).max(64).optional(),
+
+  POSTGRES_HOST: z.string().min(1).default('localhost'),
+  POSTGRES_PORT: z.coerce.number().int().positive().default(5432),
+  POSTGRES_USER: z.string().min(1).default('postgres'),
+  POSTGRES_PASSWORD: z.string().min(1).default('postgres'),
+  POSTGRES_DB: z.string().min(1).default('yakittakip_db'),
+
+  REDIS_HOST: z.string().min(1).default('localhost'),
+  REDIS_PORT: z.coerce.number().int().positive().default(6379),
+
+  // JWT_SECRET/JWT_REFRESH_SECRET her ortamda ZORUNLU — varsayılan bir
+  // değer, kaynak koduna gömülü bir sır demektir ve repoyu okuyan herkes
+  // geçerli token sahteleyebilir (bkz. tokenService.ts'in eski requireSecret()
+  // yorumu, artık bu şemaya taşındı).
+  // `{ message }` hem "hiç tanımlı değil" (undefined) hem "boş string" (min(1))
+  // durumunu aynı anlaşılır Türkçe mesajla kapsar — yalnızca .min(1, msg)
+  // kullanmak undefined durumunda Zod'un jenerik "expected string, received
+  // undefined" mesajına düşerdi.
+  //
+  // En az 32 karakter (#213): HS256 anahtarı bundan kısaysa çevrimdışı kaba
+  // kuvvetle kırılabilir ve jsonwebtoken boş olmayan HER stringi şikâyetsiz
+  // kabul eder — taban bizim olmak zorunda. İkisinin FARKLI olması kuralı
+  // aşağıda loadConfig()'te (alanlar arası kontrol).
+  JWT_SECRET: z.string({ message: 'JWT_SECRET tanımlı değil. .env dosyanızda ayarlayın (öneri: openssl rand -hex 64).' })
+    .min(1, 'JWT_SECRET boş olamaz.')
+    .min(JWT_SECRET_MIN_LENGTH, `JWT_SECRET en az ${JWT_SECRET_MIN_LENGTH} karakter olmalıdır (öneri: openssl rand -hex 64).`),
+  JWT_REFRESH_SECRET: z.string({ message: 'JWT_REFRESH_SECRET tanımlı değil. .env dosyanızda ayarlayın (öneri: openssl rand -hex 64).' })
+    .min(1, 'JWT_REFRESH_SECRET boş olamaz.')
+    .min(JWT_SECRET_MIN_LENGTH, `JWT_REFRESH_SECRET en az ${JWT_SECRET_MIN_LENGTH} karakter olmalıdır (öneri: openssl rand -hex 64).`),
+
+  MQTT_URL: z.string().min(1).default('mqtt://localhost:1883'),
+  // EMQX artık anonim bağlantı kabul etmiyor (bkz. docker/emqx/entrypoint.sh)
+  // — bu ikisi de her ortamda zorunlu.
+  MQTT_USERNAME: z.string({ message: 'MQTT_USERNAME tanımlı değil.' }).min(1, 'MQTT_USERNAME boş olamaz.'),
+  MQTT_PASSWORD: z.string({ message: 'MQTT_PASSWORD tanımlı değil.' }).min(1, 'MQTT_PASSWORD boş olamaz.'),
+
+  // OPS-1105: bu 3 donanım cihaz sırrı önceden hardwareAuthMiddleware.ts'te
+  // düz metin olarak kaynak kodundaydı (`git log` diffiyle görülebilir) —
+  // gitleaks taraması bunu gerçek bir sızıntı olarak işaretledi (bkz.
+  // scripts/gitleaks.toml). AUTH-202.3 (cihaz secret yaşam döngüsü — üretim,
+  // provisioning, rotasyon) henüz yapılmadığından bunlar hâlâ sabit/statik
+  // sırlar, ama en azından artık KAYNAK KODUNDA DEĞİLLER.
+  HW_SECRET_ESP32_PUMP_01: z.string({ message: 'HW_SECRET_ESP32_PUMP_01 tanımlı değil.' }).min(1),
+  HW_SECRET_ESP32_TANK_01: z.string({ message: 'HW_SECRET_ESP32_TANK_01 tanımlı değil.' }).min(1),
+  HW_SECRET_ESP32_FLOW_ISR: z.string({ message: 'HW_SECRET_ESP32_FLOW_ISR tanımlı değil.' }).min(1),
+
+  // FUEL-401.4: finalize edilen her ikmal kaydına, sonradan doğrudan DB
+  // üzerinden (bu HMAC anahtarını bilmeden) fark ettirilmeden değiştirilemeyecek
+  // bir "değişmezlik mührü" (hash_signature) eklemek için kullanılan sunucu
+  // sırrı. JWT_SECRET'ın yeniden kullanılması BİLİNÇLİ OLARAK tercih
+  // edilmedi — token imzalama ile kayıt bütünlüğü farklı tehdit modelleri
+  // (biri sızarsa diğerini de tehlikeye atmamalı).
+  TRANSACTION_HASH_SECRET: z.string({ message: 'TRANSACTION_HASH_SECRET tanımlı değil.' }).min(1),
+
+  // AUTH-202.3: hardware_devices.encrypted_secret'ı şifrelemek/çözmek için
+  // kullanılan AES-256-GCM anahtarı (pepper) — tam olarak 32 bayt (64 hex
+  // karakter) olmalı, aksi halde crypto.createCipheriv çalışma zamanında
+  // (ilk cihaz kaydında) patlar; burada fail-fast doğrulanıyor.
+  HW_SECRET_ENCRYPTION_KEY: z.string({ message: 'HW_SECRET_ENCRYPTION_KEY tanımlı değil.' })
+    .regex(/^[0-9a-fA-F]{64}$/, 'HW_SECRET_ENCRYPTION_KEY tam olarak 64 hex karakter (32 bayt) olmalıdır (öneri: openssl rand -hex 32).'),
+
+  // ARCH-108: tenant veri dışa aktarım arşivini (companies dahil TÜM tenant
+  // tablolarının JSON dökümü) AES-256-GCM ile şifrelemek için kullanılan
+  // pepper — HW_SECRET_ENCRYPTION_KEY'in YENİDEN kullanılması BİLİNÇLİ OLARAK
+  // tercih edilmedi (cihaz sırları ile bir müşterinin TÜM verisi farklı
+  // tehdit modelleri — biri sızarsa diğerini tehlikeye atmamalı, hardware
+  // secret crypto ile AYNI gerekçe).
+  TENANT_EXPORT_ENCRYPTION_KEY: z.string({ message: 'TENANT_EXPORT_ENCRYPTION_KEY tanımlı değil.' })
+    .regex(/^[0-9a-fA-F]{64}$/, 'TENANT_EXPORT_ENCRYPTION_KEY tam olarak 64 hex karakter (32 bayt) olmalıdır (öneri: openssl rand -hex 32).'),
+
+  // NOTIF-1604: HW_SECRET_ENCRYPTION_KEY/TENANT_EXPORT_ENCRYPTION_KEY ile
+  // AYNI gerekçe — bu ayrı pepper, Telegram bot token'ı/webhook HMAC
+  // sırrının şifrelenmesi için. "Bot token'ı tenant bazında saklanmalı ve
+  // ŞİFRELENMELİDİR" AC'sinin ön koşulu.
+  NOTIFICATION_CHANNEL_ENCRYPTION_KEY: z.string({ message: 'NOTIFICATION_CHANNEL_ENCRYPTION_KEY tanımlı değil.' })
+    .regex(/^[0-9a-fA-F]{64}$/, 'NOTIFICATION_CHANNEL_ENCRYPTION_KEY tam olarak 64 hex karakter (32 bayt) olmalıdır (öneri: openssl rand -hex 32).'),
+
+  // NOTIF-1604: SMTP_HOST/SMS_PROVIDER_URL ile AYNI gerekçe — test/dev
+  // ortamında GERÇEK Telegram sunucularına gitmeden yerel bir mock uca
+  // yönlendirilebilmesi için. Üretimde hiç ayarlanmaz (varsayılan gerçek API).
+  TELEGRAM_API_BASE_URL: z.string().url().default('https://api.telegram.org'),
+
+  // AI-502: yukarıdaki sırların aksine BİLEREK opsiyonel — bu özellik
+  // (Gemini ile tüketim anomali analizi) yapılandırılmamışsa uygulamanın
+  // TAMAMI ayağa kalkmayı reddetmemeli, yalnızca consumptionAnomalyService.ts
+  // ilgili isteği 503 ile nazikçe reddetmeli (bkz. o dosyadaki
+  // requestAnomalyAnalysis). JWT/MQTT/HW_SECRET_* sırlarının hepsi sistemin
+  // ÇEKİRDEK güvenlik/işlev omurgası; bu ise P2 öncelikli, isteğe bağlı bir
+  // AI zenginleştirmesi.
+  GEMINI_API_KEY: z.string().min(1).optional(),
+
+  // IOT-302.1: ChirpStack/TTN uplink webhook'unun paylaşılan doğrulama
+  // token'ı. AI-502 gibi opsiyonel AMA "fail-closed": tanımlı değilse
+  // POST /lorawan/uplink TÜM çağrıları 503 ile reddeder (yapılandırılmamış
+  // bir webhook, doğrulanmamış istekleri kabul etmektense hiç veri almasın —
+  // internete açık bir uçtan sahte tank seviyesi enjeksiyonu bu şekilde
+  // engellenir). En az 24 karakter (öneri: openssl rand -hex 32).
+  LORAWAN_WEBHOOK_TOKEN: z.string().min(24).optional(),
+
+  // NOTIF-1602: AI-502 ile AYNI gerekçe — bu ortamda gerçek bir SMTP
+  // sunucusu YOK, e-posta kanalı opsiyonel bir zenginleştirme. Tanımlı
+  // değilse emailChannel.ts açıkça "SMTP yapılandırılmamış" hatası fırlatır
+  // (notifyEvent bunu yutar, bildirim BAŞARISIZ'a düşer) — sistemin çekirdek
+  // (IN_APP) bildirim akışını hiç etkilemez.
+  SMTP_HOST: z.string().min(1).optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_USER: z.string().min(1).optional(),
+  SMTP_PASSWORD: z.string().min(1).optional(),
+  SMTP_FROM: z.string().email('SMTP_FROM geçerli bir e-posta adresi olmalıdır.').optional(),
+
+  // NOTIF-1603: SMTP_HOST ile AYNI gerekçe — bu ortamda gerçek bir SMS
+  // sağlayıcısı YOK. Tanımlı değilse smsChannel.ts açıkça hata fırlatır.
+  SMS_PROVIDER_URL: z.string().url().optional(),
+  SMS_PROVIDER_API_KEY: z.string().min(1).optional(),
+
+  // AUTH-207: "true"/"1" ise SUPER_ADMIN ve COMPANY_OWNER hesapları 2FA
+  // KURMADAN sisteme giremez (login yalnızca kurulum için kısmi token döner;
+  // refresh de reddedilir). Varsayılan KAPALI — aksi halde seed/demo yönetici
+  // hesapları ve mevcut entegrasyon test paketi kilitlenirdi. 2FA'yı kendi
+  // isteğiyle KURAN her kullanıcı, bu bayraktan bağımsız olarak her girişte
+  // kod ister (opt-in geri alınamaz gevşeklikle çelişmesin).
+  TOTP_ENFORCED: z.string().optional().default('false').transform((v) => v === 'true' || v === '1'),
+
+  // TEST_PLAN.md §5.2 — CORS allowlist (virgülle ayrılmış origin listesi).
+  // Önceden `app.use(cors())` varsayılanıyla çalışılıyordu, yani
+  // `Access-Control-Allow-Origin: *` — HER origin API'ye istek atabiliyordu.
+  // Pratikte buna hiç gerek yok: nginx hem SPA'yı hem /api'yi AYNI origin'den
+  // sunuyor ve frontend API'yi göreli yolla (`/api/v1`) çağırıyor; saha
+  // cihazları (ESP32/LoRaWAN) ise tarayıcı olmadığı için CORS'a zaten tabi
+  // değil. Bu yüzden VARSAYILAN artık "CORS tamamen kapalı" (same-origin):
+  // değişken tanımsız/boşsa cors ara katmanı HİÇ eklenmez.
+  // Farklı bir origin'den (ayrı domain'de barındırılan panel, mobil web,
+  // staging) erişim gerekirse buraya açıkça yazılır:
+  //   CORS_ALLOWED_ORIGINS=https://panel.ornek.com,https://staging.ornek.com
+  CORS_ALLOWED_ORIGINS: z.string().optional(),
+
+  // OPS-1107: /metrics uç noktası için opsiyonel taşıyıcı (Bearer) token. Tanımlıysa Prometheus `authorization` ile göndermek ZORUNDA;
+  // tanımsızsa uç yalnızca compose iç ağından erişilebilir (nginx /metrics'i proxy'lemez). Üretimde tanımlamanız önerilir (openssl rand -hex 24).
+  METRICS_TOKEN: z.string().min(16).optional()
+});
+
+type EnvShape = z.infer<typeof envSchema>;
+export type AppConfig = EnvShape & { readonly isProduction: boolean };
+
+let cachedConfig: AppConfig | undefined;
+
+function failFast(message: string): never {
+  // Henüz logger başlatılmamış olabilir (logger.ts de bu modüle bağımlı) —
+  // bu yüzden bilinçli olarak console.error kullanılıyor, tek istisna bu.
+  // eslint-disable-next-line no-console
+  console.error(`\n🚨 [ARCH-110] Ortam değişkeni doğrulaması başarısız — uygulama başlatılamıyor.\n\n${message}\n`);
+  process.exit(1);
 }
 
-/**
- * Resolve a signing secret.
- *
- * Production: the variable is mandatory. There is deliberately no fallback -
- * a hard-coded default that reaches production means anyone who can read the
- * repository can mint a token for any tenant and role, which also defeats the
- * RLS tenant isolation (authMiddleware feeds the token's tenantId straight into
- * the RLS session context).
- *
- * Non-production: generate a random secret per boot and say so loudly. This
- * keeps `npm run dev`, `tsx src/index.ts` and CI working with no configuration
- * while leaving no usable secret in the repository. Rotating per boot costs
- * nothing here: refreshTokenStore is an in-process Map, so a restart already
- * invalidates every session.
- */
-function resolveSecret(name: 'JWT_SECRET' | 'JWT_REFRESH_SECRET'): string {
-  const raw = process.env[name]?.trim();
+// OPS-1104: docker-compose isteğe bağlı değişkenleri `${VAR:-}` ile BOŞ STRING olarak konteynere geçirir
+// (bkz. docker-compose.yml) ve .env şablonları da bu anahtarları boş bırakır (`GEMINI_API_KEY=`). Zod'un
+// `.min(1).optional()` kuralı boş stringi REDDEDER → bu anahtarları hiç yapılandırmayan YENİ bir ortamda
+// (staging/production) backend açılmıyordu. Yalnızca AŞAĞIDAKİ isteğe bağlı anahtarlar için boş = tanımsız
+// sayılır; zorunlu sırlar (JWT_*, MQTT_*, HW_*, ... ) ve POSTGRES_* boş bırakılırsa hâlâ REDDEDİLİR.
+const OPTIONAL_KEYS_EMPTY_MEANS_UNSET = [
+  'GEMINI_API_KEY', 'LORAWAN_WEBHOOK_TOKEN', 'SMTP_HOST', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_FROM',
+  'SMS_PROVIDER_URL', 'SMS_PROVIDER_API_KEY', 'CORS_ALLOWED_ORIGINS', 'TELEGRAM_API_BASE_URL', 'METRICS_TOKEN', 'APP_VERSION',
+  'SENTRY_DSN', 'SENTRY_ERROR_SAMPLE_RATE', 'SENTRY_TRACES_SAMPLE_RATE', 'SENTRY_ENVIRONMENT'
+] as const;
 
-  if (raw) {
-    if (raw.length < MIN_SECRET_LENGTH) {
-      fail(`${name} en az ${MIN_SECRET_LENGTH} karakter olmalıdır (şu an ${raw.length}).`);
+function loadConfig(): AppConfig {
+  const rawEnv: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of OPTIONAL_KEYS_EMPTY_MEANS_UNSET) if (rawEnv[key] === '') delete rawEnv[key];
+  const result = envSchema.safeParse(rawEnv);
+  if (!result.success) {
+    const details = result.error.issues
+      .map((issue) => `  - ${issue.path.join('.')}: ${issue.message}`)
+      .join('\n');
+    failFast(`${details}\n\nbackend/.env.example dosyasına bakıp .env dosyanızı tamamlayın.`);
+  }
+
+  const data: EnvShape = result.data;
+  const isProduction = data.NODE_ENV === 'production';
+
+  if (isProduction) {
+    // Üretimde .env.example'daki placeholder değerlerden biri hâlâ
+    // kullanılıyorsa "yapılandırılmış görünüp aslında güvensiz" bir kuruluma
+    // canlıya çıkmayı engelle. Değişkenin ADI loglanır, DEĞERİ asla.
+    //
+    // POSTGRES_PASSWORD kasıtlı olarak bu listede DEĞİL: bu projede Postgres
+    // hiçbir zaman docker-compose'un dahili ağının dışına çıkmıyor (host'a
+    // port yayını yok, bkz. OPS-1102) ve docker-compose.yml'nin kendisi
+    // postgres servisinin şifresini de AYNI ${POSTGRES_PASSWORD:-postgres}
+    // değişkeninden okuyor — yani container ayağa kalkarken veritabanının
+    // GERÇEK şifresi zaten bu değerle set ediliyor; .env'de "güçlü" bir
+    // değere sadece burada geçmek DB'nin şifresini DEĞİŞTİRMEZ (Postgres
+    // parolayı yalnızca ilk init'te, boş bir data dizininden okur) ve backend
+    // kimlik doğrulamasını kırar. JWT/MQTT ise gerçek yetkilendirme/kimlik
+    // sınırları olduğundan (oturum sahteciliği, sahte cihaz) bu kontrolde kalıyor.
+    // Bunlar DEĞİŞKEN ADLARI, bir sır listesi değil — gitleaks:allow (bkz.
+    // .gitleaks.toml: generic-api-key kuralı yalnızca ard arda gelen bu
+    // isimlerin dizi görünümüne yanlışlıkla takılıyordu).
+    const stillPlaceholder = ([
+      'JWT_SECRET', 'JWT_REFRESH_SECRET', 'MQTT_PASSWORD',
+      'HW_SECRET_ESP32_PUMP_01', 'HW_SECRET_ESP32_TANK_01', 'HW_SECRET_ESP32_FLOW_ISR', // gitleaks:allow
+      'TRANSACTION_HASH_SECRET', 'HW_SECRET_ENCRYPTION_KEY', 'TENANT_EXPORT_ENCRYPTION_KEY'
+    ] as const).filter((key) => isPlaceholderValue(data[key]));
+
+    if (stillPlaceholder.length > 0) {
+      failFast(
+        `Üretim ortamında hâlâ .env.example'daki varsayılan/placeholder değer(ler) kullanılıyor: ${stillPlaceholder.join(', ')}.\n` +
+        `Bunları gerçek, rastgele üretilmiş sırlarla değiştirin (öneri: openssl rand -hex 64).`
+      );
     }
-    return raw;
   }
 
-  if (IS_PRODUCTION) {
-    fail(`${name} tanımlı değil. Üretimde bu değişken zorunludur.`);
+  // #213: iki anahtarın farklı olması kozmetik değil. Tek bir ortak anahtarla
+  // refresh token access token olarak da doğrulanır: authenticateJWT onu kabul
+  // edip RLS tenant bağlamını ondan kurar ve taşıyıcısı hiç giriş yapmadan
+  // JWT korumalı uçlara erişir. Her ortamda zorunlu. Üretimdeki placeholder
+  // kontrolünden SONRA: doldurulmamış şablonda (iki placeholder aynı) önce o
+  // daha açıklayıcı mesaj görünsün.
+  if (data.JWT_SECRET === data.JWT_REFRESH_SECRET) {
+    failFast('  - JWT_SECRET ve JWT_REFRESH_SECRET aynı değere sahip olamaz. İkisi için ayrı ayrı üretin (öneri: openssl rand -hex 64).');
   }
 
-  const generated = crypto.randomBytes(48).toString('base64url');
-  logStartupWarning(name);
-  return generated;
+  return { ...data, isProduction };
 }
-
-function logStartupWarning(name: string): void {
-  // console on purpose: this has to be readable by a developer scanning the
-  // terminal, and it fires before the pino logger is meaningfully configured.
-  console.warn(
-    `[UYARI] ${name} tanımlı değil; bu açılış için rastgele bir sır üretildi. ` +
-      `Süreç yeniden başladığında tüm oturumlar geçersiz olur. ` +
-      `Üretimde bu değişken zorunludur.`
-  );
-}
-
-export const JWT_SECRET = resolveSecret('JWT_SECRET');
-export const JWT_REFRESH_SECRET = resolveSecret('JWT_REFRESH_SECRET');
 
 /**
- * Distinct keys are required, not cosmetic. With one shared key a refresh token
- * verifies as an access token: authenticateJWT would accept it and populate the
- * RLS tenant context from it, handing the bearer every JWT-only endpoint
- * (/vehicles, /drivers, /tanks, /sites, /auth/me) without ever logging in.
+ * Tipli, doğrulanmış konfigürasyon nesnesi — kod tabanındaki tüm ortam
+ * değişkeni erişimi buradan geçmeli. Modül ilk import edildiğinde (bkz.
+ * bootstrap.ts: dotenv/config'ten SONRA, başka her şeyden ÖNCE) bir kez
+ * doğrulanır; eksik/hatalı bir değişken varsa süreç burada, canlıya
+ * çıkmadan, exit code 1 ile sonlanır.
  */
-if (JWT_SECRET === JWT_REFRESH_SECRET) {
-  fail('JWT_SECRET ve JWT_REFRESH_SECRET aynı değere sahip olamaz.');
-}
+export const config: AppConfig = cachedConfig ?? (cachedConfig = loadConfig());

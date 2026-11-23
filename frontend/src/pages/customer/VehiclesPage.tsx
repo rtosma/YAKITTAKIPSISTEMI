@@ -2,9 +2,12 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Vehicle } from '../../types';
 import { isValidPlate } from '../../utils/validation';
+import { VehicleMaintenanceModal } from '../../components/VehicleMaintenanceModal';
+import { RfidCardStatusModal } from '../../components/RfidCardStatusModal';
+import { EmptyState } from '../../components/EmptyState';
 
 export const VehiclesPage: React.FC = () => {
-  const { vehicles, selectedSiteFilter, addVehicle, updateVehicle, deleteVehicle, currentCompany, drivers, isManagerMode, currentUser, sites } = useApp();
+  const { vehicles, selectedSiteFilter, addVehicle, updateVehicle, deleteVehicle, currentCompany, drivers, isManagerMode, currentUser, sites, rfidDenylist } = useApp();
 
   const availableSites = Array.from(new Set([...sites, ...currentCompany.sites.map(s => s.name)])).filter(Boolean);
 
@@ -12,6 +15,11 @@ export const VehiclesPage: React.FC = () => {
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
   const [deletingVehicle, setDeletingVehicle] = useState<Vehicle | null>(null);
+  // FLEET-1407 AC: "Bakım kayıtları araç kartında listelenmelidir."
+  const [maintenanceVehicle, setMaintenanceVehicle] = useState<Vehicle | null>(null);
+  // FE-808: AUTH-210 kart kayıp/blokaj/değiştirme akışı.
+  const [rfidCardVehicle, setRfidCardVehicle] = useState<Vehicle | null>(null);
+  const isCardBlocked = (cardUid: string) => rfidDenylist.some((r) => r.card_uid === cardUid && r.status !== 'REPLACED');
 
   // Form Fields
   const [plate, setPlate] = useState('');
@@ -20,7 +28,7 @@ export const VehiclesPage: React.FC = () => {
   const [siteName, setSiteName] = useState(availableSites[0] || 'Gebze Ana Şantiye');
   const [assignedDriver, setAssignedDriver] = useState('');
   const [fuelCapacityLiters, setFuelCapacityLiters] = useState(450);
-  const [status, setStatus] = useState<'AKTİF' | 'BAKIMDA' | 'PASİF'>('AKTİF');
+  const [status, setStatus] = useState<'AKTİF' | 'BAKIMDA' | 'PASİF' | 'BLOKE'>('AKTİF');
   const [plateError, setPlateError] = useState('');
 
   const filteredVehicles = vehicles
@@ -48,7 +56,7 @@ export const VehiclesPage: React.FC = () => {
     setPlateError('');
 
     if (!isValidPlate(plate)) {
-      setPlateError('Geçersiz Türkiye plaka formatı! (Örn: 34 CTP 82 veya 06 A 1234)');
+      setPlateError('Geçersiz plaka/tanım kodu formatı! (Örn: 34 CTP 82 ya da plakasız iş makineleri için EKS-04)');
       return;
     }
 
@@ -87,7 +95,7 @@ export const VehiclesPage: React.FC = () => {
     if (!editingVehicle) return;
 
     if (!isValidPlate(plate)) {
-      setPlateError('Geçersiz Türkiye plaka formatı! (Örn: 34 CTP 82 veya 06 A 1234)');
+      setPlateError('Geçersiz plaka/tanım kodu formatı! (Örn: 34 CTP 82 ya da plakasız iş makineleri için EKS-04)');
       return;
     }
 
@@ -129,6 +137,7 @@ export const VehiclesPage: React.FC = () => {
         </div>
 
         <button
+          data-testid="vehicle-add-open"
           onClick={handleOpenAdd}
           className="px-5 py-3 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] hover:from-[#ffdca1] hover:to-[#ffb77f] text-[#412d00] font-black rounded-md text-xs flex items-center space-x-2 transition-all cursor-pointer shadow-sm shrink-0"
         >
@@ -175,13 +184,20 @@ export const VehiclesPage: React.FC = () => {
           </thead>
           <tbody className="divide-y divide-[#514532]/20 font-mono">
             {filteredVehicles.map(v => (
-              <tr key={v.id} className="hover:bg-[#20201f] transition-colors">
+              <tr key={v.id} data-testid="vehicle-row" data-plate={v.plate} data-vehicle-status={v.status} className="hover:bg-[#20201f] transition-colors">
                 <td className="py-3.5 px-4 font-black text-[#ffdca1] text-sm">{v.plate}</td>
                 <td className="py-3.5 px-4 text-[#e5e2e1] font-bold">{v.brandModel}</td>
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{v.type}</td>
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{v.siteName}</td>
                 <td className="py-3.5 px-4 text-[#e5e2e1]">{v.assignedDriver}</td>
-                <td className="py-3.5 px-4 text-[#ffb77f]">{v.rfidTag}</td>
+                <td className="py-3.5 px-4 text-[#ffb77f]">
+                  {v.rfidTag}
+                  {isCardBlocked(v.rfidTag) && (
+                    <span data-testid="rfid-card-blocked-badge" className="ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#ffb4ab]/20 text-[#ffb4ab] border border-[#ffb4ab]/40 align-middle">
+                      KART BLOKE
+                    </span>
+                  )}
+                </td>
                 <td className="py-3.5 px-4 text-[#e5e2e1] font-bold">{v.fuelCapacityLiters} Litre</td>
                 <td className="py-3.5 px-4">
                   <span className={`text-[10px] font-bold px-2.5 py-1 rounded border ${
@@ -193,6 +209,13 @@ export const VehiclesPage: React.FC = () => {
                 <td className="py-3.5 px-4 text-right">
                   <div className="flex items-center justify-end space-x-1">
                     <button
+                      onClick={() => setMaintenanceVehicle(v)}
+                      title="Bakım Geçmişi"
+                      className="p-1.5 text-[#d5c4ab] hover:text-[#a1e8a2] hover:bg-[#353535] rounded transition-colors cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-base">build</span>
+                    </button>
+                    <button
                       onClick={() => handleOpenEdit(v)}
                       title="Düzenle"
                       className="p-1.5 text-[#d5c4ab] hover:text-[#ffdca1] hover:bg-[#353535] rounded transition-colors cursor-pointer"
@@ -200,11 +223,19 @@ export const VehiclesPage: React.FC = () => {
                       <span className="material-symbols-outlined text-base">edit</span>
                     </button>
                     <button
+                      data-testid="rfid-card-status-open"
+                      onClick={() => setRfidCardVehicle(v)}
+                      title="RFID Kart Durumu"
+                      className="p-1.5 text-[#d5c4ab] hover:text-[#ffb77f] hover:bg-[#353535] rounded transition-colors cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-base">contactless</span>
+                    </button>
+                    <button
                       onClick={() => setDeletingVehicle(v)}
-                      title="Sil"
+                      title="Pasife Al"
                       className="p-1.5 text-[#d5c4ab] hover:text-[#ffb4ab] hover:bg-[#93000a]/30 rounded transition-colors cursor-pointer"
                     >
-                      <span className="material-symbols-outlined text-base">delete</span>
+                      <span className="material-symbols-outlined text-base">block</span>
                     </button>
                   </div>
                 </td>
@@ -213,8 +244,15 @@ export const VehiclesPage: React.FC = () => {
 
             {filteredVehicles.length === 0 && (
               <tr>
-                <td colSpan={9} className="py-12 text-center text-[#d5c4ab]">
-                  Kayıtlı araç bulunamadı.
+                <td colSpan={9} className="py-6">
+                  <EmptyState
+                    icon="local_shipping"
+                    title={vehicles.length === 0 ? 'Henüz araç eklenmedi.' : 'Filtre kriterlerine uygun araç bulunamadı.'}
+                    description={vehicles.length === 0 ? 'İlk aracınızı ekleyerek başlayın.' : undefined}
+                    actionLabel={vehicles.length === 0 ? 'İlk Aracınızı Ekleyin' : undefined}
+                    onAction={vehicles.length === 0 ? handleOpenAdd : undefined}
+                    testId="vehicles-empty"
+                  />
                 </td>
               </tr>
             )}
@@ -224,7 +262,7 @@ export const VehiclesPage: React.FC = () => {
 
       {/* MODAL 1: ADD VEHICLE */}
       {isAddOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-md w-full space-y-6">
             <div className="flex items-center justify-between border-b border-[#514532]/20 pb-4">
               <h3 className="text-base font-bold text-[#e5e2e1] uppercase flex items-center space-x-2">
@@ -246,7 +284,8 @@ export const VehiclesPage: React.FC = () => {
                     setPlate(e.target.value);
                     if (plateError) setPlateError('');
                   }}
-                  placeholder="örn. 34 CTP 99"
+                  data-testid="vehicle-plate-input"
+                  placeholder="örn. 34 CTP 99 ya da EKS-04"
                   className={`w-full bg-[#0e0e0e] border ${plateError ? 'border-[#ffb4ab]' : 'border-[#514532]/30'} text-[#e5e2e1] font-mono text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]`}
                   required
                 />
@@ -264,6 +303,7 @@ export const VehiclesPage: React.FC = () => {
                   type="text"
                   value={brandModel}
                   onChange={(e) => setBrandModel(e.target.value)}
+                  data-testid="vehicle-brand-input"
                   placeholder="örn. Volvo FMX 460 Damperli"
                   className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                   required
@@ -291,6 +331,7 @@ export const VehiclesPage: React.FC = () => {
                   <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Bağlı Şantiye</label>
                   {isManagerMode ? (
                     <select
+                      data-testid="vehicle-site-select"
                       value={siteName}
                       onChange={(e) => setSiteName(e.target.value)}
                       className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
@@ -325,6 +366,7 @@ export const VehiclesPage: React.FC = () => {
                 <div>
                   <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Sorumlu Şoför</label>
                   <select
+                    data-testid="vehicle-driver-select"
                     value={assignedDriver}
                     onChange={(e) => setAssignedDriver(e.target.value)}
                     className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
@@ -349,6 +391,7 @@ export const VehiclesPage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
+                  data-testid="vehicle-save"
                   className="px-5 py-2 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] text-[#412d00] rounded-md text-xs font-black"
                 >
                   Aracı Kaydet
@@ -361,7 +404,7 @@ export const VehiclesPage: React.FC = () => {
 
       {/* MODAL 2: EDIT VEHICLE */}
       {editingVehicle && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-md w-full space-y-6">
             <div className="flex items-center justify-between border-b border-[#514532]/20 pb-4">
               <h3 className="text-base font-bold text-[#e5e2e1] uppercase flex items-center space-x-2">
@@ -458,6 +501,7 @@ export const VehiclesPage: React.FC = () => {
                     <option value="AKTİF">AKTİF</option>
                     <option value="BAKIMDA">BAKIMDA</option>
                     <option value="PASİF">PASİF</option>
+                    <option value="BLOKE">BLOKE (yakıt alımı bloke)</option>
                   </select>
                 </div>
               </div>
@@ -482,17 +526,20 @@ export const VehiclesPage: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL 3: DELETE CONFIRMATION */}
+      {/* MODAL 3: PASİFE ALMA ONAYI — FLEET-1401: bu araç artık SİLİNMİYOR,
+          PASİF'e alınıyor; geçmiş kayıtları (ikmal, bakım, atama) korunur ve
+          "Düzenle" formundan durum tekrar AKTİF yapılarak geri alınabilir. */}
       {deletingVehicle && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-sm w-full space-y-4 text-center">
             <div className="w-12 h-12 bg-[#93000a]/20 border border-[#93000a] text-[#ffb4ab] rounded-full flex items-center justify-center mx-auto">
               <span className="material-symbols-outlined text-2xl">warning</span>
             </div>
 
-            <h3 className="text-base font-bold text-[#e5e2e1]">Bu Aracı Silmek İstediğinize Emin Misiniz?</h3>
+            <h3 className="text-base font-bold text-[#e5e2e1]">Bu Aracı Pasife Almak İstediğinize Emin Misiniz?</h3>
             <p className="text-xs text-[#d5c4ab]">
-              <span className="font-bold text-[#e5e2e1]">{deletingVehicle.plate} ({deletingVehicle.brandModel})</span> kaydı sistemden kalıcı olarak silinecektir.
+              <span className="font-bold text-[#e5e2e1]">{deletingVehicle.plate} ({deletingVehicle.brandModel})</span> artık yakıt alamayacak.
+              Kayıt SİLİNMEZ — geçmiş ikmal/bakım/atama bilgileri korunur ve istendiğinde "Düzenle" ile tekrar aktif hale getirilebilir.
             </p>
 
             <div className="pt-4 flex items-center justify-center space-x-3">
@@ -506,11 +553,19 @@ export const VehiclesPage: React.FC = () => {
                 onClick={handleConfirmDelete}
                 className="px-5 py-2 bg-[#93000a] hover:bg-[#b5000d] text-[#ffdad6] rounded-md text-xs font-black"
               >
-                Sil ve Kaldır
+                Pasife Al
               </button>
             </div>
           </div>
         </div>
+      )}
+
+      {maintenanceVehicle && (
+        <VehicleMaintenanceModal vehicle={maintenanceVehicle} onClose={() => setMaintenanceVehicle(null)} />
+      )}
+
+      {rfidCardVehicle && (
+        <RfidCardStatusModal cardUid={rfidCardVehicle.rfidTag} entityLabel={rfidCardVehicle.plate} onClose={() => setRfidCardVehicle(null)} />
       )}
 
     </div>

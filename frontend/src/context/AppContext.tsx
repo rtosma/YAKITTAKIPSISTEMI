@@ -1,7 +1,9 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
-import { apiFetch } from '../utils/api';
+import { apiFetch, UNAUTHORIZED_EVENT } from '../utils/api';
+import { socket, connectSocket, disconnectSocket } from '../utils/socket';
 import { 
   Company, 
   Site,
@@ -10,26 +12,43 @@ import {
   FuelTransaction, 
   Tank, 
   CrossSitePermission, 
-  HardwareDevice, 
+  HardwareDevice,
   HardwareLog,
-  CompanyModule
+  CompanyModule,
+  UnmatchedRfidAlert,
+  TenantProvisioningResult,
+  SystemMetricsSnapshot,
+  SiteProvisioningResult,
+  SiteDetail,
+  RfidBlacklistRecord,
+  TenantHardwareDevice,
+  DeviceClaimCode,
+  StrappingUploadError,
+  SiteEmergencyStatus,
+  FuelQuota,
+  QuotaBalance,
+  QuotaExhaustedAlert,
+  CrossSiteSettlementSummaryRow,
+  DespatchAdviceStatus,
+  AlarmRaisedEvent
 } from '../types';
-import { 
-  INITIAL_COMPANIES, 
-  INITIAL_VEHICLES, 
-  INITIAL_DRIVERS, 
-  INITIAL_TANKS, 
-  INITIAL_TRANSACTIONS, 
-  INITIAL_CROSS_SITE_PERMISSIONS, 
-  INITIAL_HARDWARE_DEVICES, 
-  INITIAL_HARDWARE_LOGS 
-} from '../mock';
+import { playAlertBeep } from '../utils/alertSound';
+// NOTE: Oturum açıldığında firma bilgisi de dahil her şey PostgreSQL backend'inden
+// (apiFetch) çekiliyor: firma profili -> GET /companies/me (yalnızca giriş yapan
+// tenant, SITE_MANAGER için tek şantiye). INITIAL_COMPANIES yalnızca giriş
+// yapılmadan önceki ilk state ve auth'suz /admin (Süper Admin) paneli için durur.
+import { INITIAL_COMPANIES } from '../mock';
 
 interface ToastState {
   id: string;
   message: string;
   type: 'success' | 'info' | 'warning' | 'error';
 }
+
+// Backend'in JWT payload'ında döndürdüğü GERÇEK yetki rolü (bkz.
+// backend/src/services/tokenService.ts UserRole). FE-803: rota koruması ve
+// UI element gizleme bu değere göre yapılır — asla görüntü metnine göre değil.
+export type UserRole = 'SUPER_ADMIN' | 'COMPANY_OWNER' | 'SITE_MANAGER' | 'PUMP_OPERATOR' | 'DRIVER';
 
 
 
@@ -38,10 +57,15 @@ interface AppContextType {
   isAuthenticated: boolean;
   isManagerMode: boolean;
   setIsManagerMode: (val: boolean) => void;
-  currentUser: { username: string; companyName: string; role: string; siteName?: string } | null;
+  currentUser: { username: string; companyName: string; role: UserRole; siteName?: string; mustChangePassword?: boolean } | null;
   loginCompany: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   loginSiteOperator: (username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logoutCompany: () => void;
+  // AUTH-204/FE-804: geçici parolayla giriş yapan kullanıcı parolasını
+  // değiştirdiğinde çağrılır — /auth/change-password taze bir token çifti
+  // (mustChangePassword: false) döner, bu fonksiyon onları saklayıp
+  // currentUser'ı günceller ki route guard'ları paneli açsın.
+  completePasswordChange: (accessToken: string, refreshToken: string) => void;
 
   // Current Customer Firm State (Default: ÇamSA Pelet)
   currentCompany: Company;
@@ -55,12 +79,15 @@ interface AppContextType {
   tanks: Tank[];
   transactions: FuelTransaction[];
   crossSitePermissions: CrossSitePermission[];
+  fetchCrossSitePermissions: () => Promise<void>;
   hardwareDevices: HardwareDevice[];
   hardwareLogs: HardwareLog[];
+  systemMetrics: SystemMetricsSnapshot | null;
+  fetchSystemMetrics: () => Promise<void>;
 
   // Refresh trigger for animations
   tankRefreshKey: number;
-  triggerTankRefresh: () => void;
+  triggerTankRefresh: () => Promise<void>;
 
   // Latency & Terminal Stream
   simulatedLatencyMs: number;
@@ -68,7 +95,9 @@ interface AppContextType {
   setIsLogStreamActive: (active: boolean) => void;
 
   // Actions
-  toggleCompanyModule: (companyId: string, moduleKey: keyof CompanyModule) => void;
+  fetchCompanies: () => Promise<void>;
+  fetchHardwareDevices: () => Promise<void>;
+  toggleCompanyModule: (companyId: string, moduleKey: keyof CompanyModule) => Promise<void>;
   
   // Tank CRUD
   addTank: (tank: Omit<Tank, 'id'>) => void;
@@ -81,6 +110,73 @@ interface AppContextType {
   updateVehicle: (id: string, updatedVehicle: Partial<Vehicle>) => Promise<void>;
   deleteVehicle: (id: string) => Promise<void>;
 
+  // FLEET-1402: pompada okutulan, sisteme kayıtlı OLMAYAN RFID kartları —
+  // canlı Socket.io 'rfid:unmatched' olayından beslenir (bkz. backend
+  // tenantDb.ts authorizeDispenseRequest CARD_UNKNOWN dalı).
+  unmatchedRfidAlerts: UnmatchedRfidAlert[];
+  dismissRfidAlert: (cardUid: string) => void;
+
+  // FE-808: AUTH-210'un kayıp/blokaj/değiştirme akışı (bkz. types.ts
+  // RfidBlacklistRecord yorumu) — önceden frontend'de hiç arayüzü yoktu.
+  rfidDenylist: RfidBlacklistRecord[];
+  fetchRfidDenylist: () => Promise<void>;
+  reportRfidCardLost: (cardUid: string, status: 'LOST' | 'BLOCKED', reason?: string) => Promise<boolean>;
+  unblockRfidCardByUid: (cardUid: string) => Promise<boolean>;
+  replaceRfidCardByUid: (oldCardUid: string, newCardUid: string) => Promise<boolean>;
+
+  // FE-809: tenant'ın KENDİ cihaz yönetimi (pompa-tank ilişkisi, provisioning/
+  // claim akışı) — SUPER_ADMIN'in çapraz-tenant geliştirici paneli (FE-806)
+  // İLE AYNI VERİ KAYNAĞI (hardware_devices/IOT-308) ama tenant'a kısıtlı.
+  tenantHardwareDevices: TenantHardwareDevice[];
+  fetchTenantHardwareDevices: () => Promise<void>;
+  assignDeviceTank: (deviceId: string, tankName: string | null) => Promise<boolean>;
+  deviceClaimCodes: DeviceClaimCode[];
+  fetchDeviceClaimCodes: () => Promise<void>;
+  generateDeviceClaimCode: (siteName: string, deviceName: string, expiresInMinutes?: number) => Promise<DeviceClaimCode | null>;
+  // FE-809 AC: "Strapping table yüklemesi hata raporuyla birlikte
+  // çalışmalıdır." Başarılıysa BOŞ dizi döner; satır bazlı hatalar varsa dolu.
+  uploadTankStrappingTable: (tankId: string, csvContent: string) => Promise<StrappingUploadError[]>;
+
+  // FE-811 AC: "Acil durdurma (pompa/şantiye bazında) ... onay gerektirmeli
+  // ve audit'lenmelidir." Yeni bir komut mekanizması YOK — zaten var olan
+  // cihaz bloke mekanizması (FLEET-1401) şantiye çapında toplu uygulanır.
+  siteEmergencyStatus: SiteEmergencyStatus | null;
+  fetchSiteEmergencyStatus: (siteName: string) => Promise<void>;
+  emergencyStopSite: (siteName: string, reason: string) => Promise<boolean>;
+  emergencyResumeSite: (siteName: string) => Promise<boolean>;
+
+  // FE-810 Kapsam: "Kota tanımı/kullanım göstergeleri." FUEL-402.1'in zaten
+  // tam olan /quotas backend'i (GENEL, cross_site_permissions'tan AYRI kota
+  // sistemi) — önceden frontend'de hiç arayüzü yoktu.
+  fuelQuotas: FuelQuota[];
+  fetchFuelQuotas: () => Promise<void>;
+  createFuelQuota: (data: { vehiclePlate?: string; siteName?: string; periodType: FuelQuota['periodType']; limitLiters: number; carryoverPolicy: FuelQuota['carryoverPolicy']; validFrom?: string; validUntil?: string }) => Promise<boolean>;
+  setFuelQuotaStatus: (quotaId: string, status: 'AKTİF' | 'PASİF') => Promise<void>;
+  quotaBalances: Record<string, QuotaBalance>;
+  fetchQuotaBalance: (quotaId: string) => Promise<void>;
+
+  // FE-810 AC: "Kota tükendiğinde ekrana anlık uyarı düşmelidir (FUEL-402.2)."
+  // Backend 'quota:exhausted' Socket.io olayından beslenir (bkz. types.ts
+  // QuotaExhaustedAlert yorumu — GENEL fuel_quotas DEĞİL, çapraz şantiye
+  // izninin kendi tükenmesi).
+  quotaExhaustedAlerts: QuotaExhaustedAlert[];
+  dismissQuotaExhaustedAlert: (permissionId: string | null, occurredAt: string) => void;
+
+  // FE-810 Kapsam: "Mahsuplaşma özetine hızlı erişim (REP-715)." Tam bir
+  // rapor merkezi YOK (henüz hiçbir rapor görüntüleyici sayfa yok) — bu
+  // yüzden zaten var olan genel /reports/:reportId ucu (rep-715-mahsup)
+  // doğrudan, küçük bir özet widget'ı için çağrılıyor.
+  crossSiteSettlementSummary: CrossSiteSettlementSummaryRow[];
+  fetchCrossSiteSettlementSummary: () => Promise<void>;
+
+  // FE-801 AC: "Eski veri açıkça işaretlenmelidir." — Socket.io bağlantısı
+  // canlı değilken (kopuk/yeniden bağlanıyor/sekme arka planda) ekranda
+  // duran tank/pompa verisinin ARTIK KANITLANMIŞ-GÜNCEL olmadığını
+  // sayfaların kendi başına türetebilmesi için.
+  isSocketConnected: boolean;
+  lastTelemetryAt: string | null;
+  deviceOnlineStatus: Record<string, boolean>;
+
   // Driver CRUD
   fetchDrivers: () => Promise<void>;
   addDriver: (driver: Omit<Driver, 'id' | 'totalFuelPumpedLiters'>) => Promise<void>;
@@ -90,13 +186,37 @@ interface AppContextType {
   // Tank CRUD
   fetchTanks: () => Promise<void>;
 
-  addFuelTransaction: (tx: Omit<FuelTransaction, 'id' | 'timestamp'>) => void;
+  // Transaction (İkmal) history
+  fetchTransactions: () => Promise<void>;
+  addFuelTransaction: (tx: Omit<FuelTransaction, 'id' | 'timestamp'>) => Promise<void>;
+  // FE-812 Kapsam: "Satır detayında ... e-İrsaliye durumu." Paylaşılan state
+  // DEĞİL — satır detayı açıldığında on-demand çağrılır. Henüz üretilmemiş
+  // bir e-İrsaliye için backend 404 döner, bu fonksiyon o durumda null döner
+  // (hata toast'u GÖSTERMEZ — "henüz oluşturulmadı" normal bir durumdur).
+  fetchTransactionDespatchStatus: (transactionId: string) => Promise<DespatchAdviceStatus | null>;
+
+  // FE-815 Kapsam: "Canlı alarm bildirimi ... ve okunmamış sayacı." Backend
+  // 'alarm:raised' olayı (bu PR'da eklendi, bkz. tenantDb.ts raiseAlarm) —
+  // önceden HİÇ yayınlanmıyordu. Sayaç yalnızca "Bildirimler" sayfası
+  // ziyaret edilince sıfırlanır (NotificationsPage.tsx mount effect'i).
+  unreadAlarmCount: number;
+  clearUnreadAlarmCount: () => void;
+
+  // FE-817 — "Hiçbir ekranda boş beyaz sayfayla veya donmuş arayüzle
+  // karşılaşılmamalı." Girişten sonraki ilk veri yüklemesinin (özellikle
+  // /companies/me) durumu: önceden bu başarısız olunca `companies` state'i
+  // sessizce `INITIAL_COMPANIES` mock'unda (bkz. mock.ts) KALIYOR ve
+  // kullanıcıya gerçek firma verisi gibi gösteriliyordu — hiçbir hata
+  // göstergesi yoktu (gerçek bulunan hata; bkz. commit mesajı).
+  isLoadingInitialData: boolean;
+  initialLoadError: string | null;
+  retryInitialDataLoad: () => void;
   addHardwareLog: (log: Omit<HardwareLog, 'id' | 'timestamp'>) => void;
   clearHardwareLogs: () => void;
-  toggleCrossSiteStatus: (id: string) => void;
-  addCrossSitePermission: (perm: Omit<CrossSitePermission, 'id' | 'usedLiters' | 'status'>) => void;
-  addCompany: (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules'>) => void;
-  updateCompanyStatus: (companyId: string, status: 'AKTİF' | 'ASKIDA' | 'DENEME') => void;
+  toggleCrossSiteStatus: (id: string) => Promise<void>;
+  addCrossSitePermission: (perm: Omit<CrossSitePermission, 'id' | 'usedLiters' | 'status'>) => Promise<void>;
+  addCompany: (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules' | 'lastActivityAt'>) => Promise<TenantProvisioningResult | null>;
+  updateCompanyStatus: (companyId: string, status: 'AKTİF' | 'ASKIDA' | 'DENEME') => Promise<void>;
 
   // Toast
   toast: ToastState | null;
@@ -116,13 +236,19 @@ interface AppContextType {
   // Real DB Sites
   sites: string[];
   fetchSites: () => Promise<void>;
-  addSite: (siteName: string) => Promise<void>;
+  siteDetails: SiteDetail[];
+  fetchSiteDetails: () => Promise<void>;
+  addSite: (siteName: string, location?: string) => Promise<SiteProvisioningResult | null>;
   deleteSite: (siteName: string) => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
+  // FE-802: TransactionsPage kendi TanStack Query önbelleğinden okuyor — bir
+  // dispense olayı Socket.io üzerinden geldiğinde o önbelleği de geçersiz
+  // kılmak için (bkz. aşağıdaki handleDispenseCompleted).
+  const queryClient = useQueryClient();
   const [companies, setCompanies] = useState<Company[]>(INITIAL_COMPANIES);
   const [currentCompanyIndex, setCurrentCompanyIndex] = useState<number>(() => {
     const saved = localStorage.getItem('YAKIT_COMPANY_IDX');
@@ -143,7 +269,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return saved !== null ? saved === 'true' : true;
   });
 
-  const [currentUser, setCurrentUser] = useState<{ username: string; companyName: string; role: string; siteName?: string } | null>(() => {
+  const [currentUser, setCurrentUser] = useState<{ username: string; companyName: string; role: UserRole; siteName?: string; mustChangePassword?: boolean } | null>(() => {
     const saved = localStorage.getItem('YAKIT_CURRENT_USER');
     if (!saved) return null;
     try {
@@ -193,14 +319,40 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const [drivers, setDrivers] = useState<Driver[]>([]);
   const [tanks, setTanks] = useState<Tank[]>([]);
   const [sites, setSites] = useState<string[]>([]);
-  const [transactions, setTransactions] = useState<FuelTransaction[]>(INITIAL_TRANSACTIONS);
-  const [crossSitePermissions, setCrossSitePermissions] = useState<CrossSitePermission[]>(INITIAL_CROSS_SITE_PERMISSIONS);
-  const [hardwareDevices, setHardwareDevices] = useState<HardwareDevice[]>(INITIAL_HARDWARE_DEVICES);
-  const [hardwareLogs, setHardwareLogs] = useState<HardwareLog[]>(INITIAL_HARDWARE_LOGS);
+  const [siteDetails, setSiteDetails] = useState<SiteDetail[]>([]);
+  // Bu koleksiyonların henüz backend endpoint'i yok; boş başlarlar ve yalnızca
+  // kullanıcı eylemleriyle (ikmal kaydı, yetki ekleme, IoT logu) dolarlar.
+  const [transactions, setTransactions] = useState<FuelTransaction[]>([]);
+  const [crossSitePermissions, setCrossSitePermissions] = useState<CrossSitePermission[]>([]);
+  const [hardwareDevices, setHardwareDevices] = useState<HardwareDevice[]>([]);
+  const [hardwareLogs, setHardwareLogs] = useState<HardwareLog[]>([]);
+  const [systemMetrics, setSystemMetrics] = useState<SystemMetricsSnapshot | null>(null);
 
   const [simulatedLatencyMs, setSimulatedLatencyMs] = useState<number>(14);
   const [isLogStreamActive, setIsLogStreamActive] = useState<boolean>(true);
+  // FE-806 Teknik Not: "duraklat düğmesi olmalıdır." Soket bağlantısının
+  // KENDİSİ duraklatmayla kesilmez (telemetri/tank/pompa ekranları hâlâ
+  // canlı kalmalı) — yalnızca CANLI LOG TERMİNALİNE yeni satır eklenmesi
+  // duraklatılır. Ref kullanılıyor ki bu ayarı değiştirmek soket
+  // useEffect'ini yeniden çalıştırıp bağlantıyı KOPARMASIN.
+  const isLogStreamActiveRef = useRef(true);
+  useEffect(() => { isLogStreamActiveRef.current = isLogStreamActive; }, [isLogStreamActive]);
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [unmatchedRfidAlerts, setUnmatchedRfidAlerts] = useState<UnmatchedRfidAlert[]>([]);
+  const [rfidDenylist, setRfidDenylist] = useState<RfidBlacklistRecord[]>([]);
+  const [siteEmergencyStatus, setSiteEmergencyStatus] = useState<SiteEmergencyStatus | null>(null);
+  const [fuelQuotas, setFuelQuotas] = useState<FuelQuota[]>([]);
+  const [quotaBalances, setQuotaBalances] = useState<Record<string, QuotaBalance>>({});
+  const [quotaExhaustedAlerts, setQuotaExhaustedAlerts] = useState<QuotaExhaustedAlert[]>([]);
+  // FE-817: isAuthenticated true olduğu HER an (ilk giriş veya F5 sonrası
+  // token rehydrate) true'dan başlar — panel/santiye layout'ları bu bayrak
+  // true iken tam sayfa skeleton gösterir, Outlet'i DEĞİL.
+  const [isLoadingInitialData, setIsLoadingInitialData] = useState(true);
+  const [initialLoadError, setInitialLoadError] = useState<string | null>(null);
+  const [unreadAlarmCount, setUnreadAlarmCount] = useState(0);
+  const [crossSiteSettlementSummary, setCrossSiteSettlementSummary] = useState<CrossSiteSettlementSummaryRow[]>([]);
+  const [tenantHardwareDevices, setTenantHardwareDevices] = useState<TenantHardwareDevice[]>([]);
+  const [deviceClaimCodes, setDeviceClaimCodes] = useState<DeviceClaimCode[]>([]);
   const [selectedTenantForDetail, setSelectedTenantForDetail] = useState<Company | null>(null);
   const [tankRefreshKey, setTankRefreshKey] = useState<number>(0);
 
@@ -257,10 +409,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       // Send login request to Backend API (PostgreSQL + Argon2id Verification)
       const response = await fetch(`${API_BASE_URL}/auth/login`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Tenant-ID': 'comp-camsa'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: trimmedUsername, password: trimmedPassword })
       });
 
@@ -274,27 +423,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       localStorage.setItem('YAKIT_ACCESS_TOKEN', data.accessToken);
       localStorage.setItem('YAKIT_REFRESH_TOKEN', data.refreshToken);
 
-      const targetComp = companies.find(
-        c => (c.username && c.username.toLowerCase() === trimmedUsername) ||
-             c.code.toLowerCase() === trimmedUsername ||
-             c.name.toLowerCase().includes(trimmedUsername)
-      ) || companies[0];
-
-      const targetIdx = companies.findIndex(c => c.id === targetComp.id);
-      if (targetIdx !== -1) {
-        setCurrentCompanyIndex(targetIdx);
-      }
+      // Firma bilgisi artık mock eşleştirmeyle değil, DB'den (/companies/me) çekiliyor.
+      const profile = await fetchCompanyProfile();
+      const companyName = profile?.name || data.user?.username || username.trim();
 
       setIsAuthenticated(true);
       setIsManagerMode(true);
       setRawSelectedSiteFilter('TÜMÜ');
       setCurrentUser({
-        username: data.user?.username || targetComp.username || username.trim(),
-        companyName: targetComp.name,
-        role: 'Firma Yöneticisi'
+        username: data.user?.username || username.trim(),
+        companyName,
+        // Backend'in JWT'de imzaladığı GERÇEK rol (SUPER_ADMIN/COMPANY_OWNER/...) —
+        // önceden burada sabit "Firma Yöneticisi" metni tutuluyordu ve hiçbir rol
+        // kontrolü mümkün değildi (FE-803 ihlali). Fallback yalnızca beklenmeyen
+        // bir API yanıtına karşı son çare.
+        role: (data.user?.role as UserRole) || 'COMPANY_OWNER',
+        // AUTH-204: true ise (geçici parolayla giriş) route guard'ları
+        // kullanıcıyı doğrudan panele değil parola değiştirme ekranına
+        // yönlendirir — bkz. CustomerLayout/DeveloperLayout.
+        mustChangePassword: data.user?.mustChangePassword === true
       });
 
-      showToast(`PostgreSQL Giriş Başarılı: ${targetComp.name} Yönetici paneline yönlendiriliyorsunuz`, 'success');
+      showToast(`PostgreSQL Giriş Başarılı: ${companyName} Yönetici paneline yönlendiriliyorsunuz`, 'success');
       return { success: true };
     } catch (err: any) {
       console.error('Backend API Hatası:', err);
@@ -330,35 +480,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       localStorage.setItem('YAKIT_ACCESS_TOKEN', data.accessToken);
       localStorage.setItem('YAKIT_REFRESH_TOKEN', data.refreshToken);
 
-      let matchedSite: Site | undefined;
-      let matchedCompany: Company | undefined;
-
-      for (const company of companies) {
-        const site = company.sites.find(
-          s => (s.username && s.username.toLowerCase() === trimmedUsername) ||
-               s.id.toLowerCase() === trimmedUsername
-        );
-        if (site) {
-          matchedSite = site;
-          matchedCompany = company;
-          break;
-        }
-      }
-
-      const activeComp = matchedCompany || companies[0];
-      const activeSiteName = data.user?.siteName || matchedSite?.name || 'Gebze Ana Şantiye';
+      // Şantiye operatörünün firması ve şantiyesi DB'den (/companies/me) geliyor;
+      // SITE_MANAGER token'ında yalnızca kendi şantiyesi döner.
+      const profile = await fetchCompanyProfile();
+      const activeSiteName = data.user?.siteName || profile?.sites[0]?.name || '';
+      const companyName = profile?.name || username.trim();
 
       setRawSelectedSiteFilter(activeSiteName);
       setIsAuthenticated(true);
       setIsManagerMode(false);
       setCurrentUser({
         username: data.user?.username || username.trim(),
-        companyName: activeComp.name,
+        companyName,
         siteName: activeSiteName,
-        role: 'Şantiye Saha Operatörü'
+        // bkz. loginCompany yorumu — backend'in gerçek rolü kullanılır.
+        role: (data.user?.role as UserRole) || 'SITE_MANAGER',
+        // AUTH-204: şantiye yöneticisi hesapları hep geçici parolayla
+        // provizyonlanır (bkz. backend createSiteWithManager) — bu akış
+        // gerçekte en sık BURADA tetiklenir.
+        mustChangePassword: data.user?.mustChangePassword === true
       });
 
-      showToast(`PostgreSQL Şantiye Girişi Başarılı: ${activeSiteName} modunda panele yönlendiriliyorsunuz`, 'success');
+      showToast(`PostgreSQL Şantiye Girişi Başarılı: ${activeSiteName || companyName} modunda panele yönlendiriliyorsunuz`, 'success');
       return { success: true };
     } catch (err: any) {
       console.error('Backend API Hatası:', err);
@@ -366,7 +509,27 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
+  const completePasswordChange = (accessToken: string, refreshToken: string) => {
+    localStorage.setItem('YAKIT_ACCESS_TOKEN', accessToken);
+    localStorage.setItem('YAKIT_REFRESH_TOKEN', refreshToken);
+    setCurrentUser(prev => (prev ? { ...prev, mustChangePassword: false } : prev));
+    showToast('Parolanız güncellendi. Panele yönlendiriliyorsunuz.', 'success');
+  };
+
   const logoutCompany = () => {
+    // Sunucudaki oturumu da kapat (refresh ailesi iptal + access token
+    // deny-list). Önceden çıkış yalnızca localStorage'ı siliyordu; refresh
+    // token 7 gün geçerli kalıyordu. Yanıt beklenmez — çıkış ağ hatasında da
+    // yerelde tamamlanmalı; keepalive sayfa kapanırken de isteği gönderir.
+    const refreshToken = localStorage.getItem('YAKIT_REFRESH_TOKEN');
+    if (refreshToken) {
+      fetch(`${API_BASE_URL}/auth/logout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+        keepalive: true
+      }).catch(() => {});
+    }
     setIsAuthenticated(false);
     setIsManagerMode(true);
     setCurrentUser(null);
@@ -380,9 +543,429 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     showToast('Oturum kapatıldı. Giriş sayfasına dönüldü.', 'info');
   };
 
-  const triggerTankRefresh = () => {
+  // 401 (token süresi dolmuş/geçersiz) durumunda önceden sadece console.warn
+  // basılıyordu; kullanıcı oturumu düşmeden sonsuza kadar başarısız istek
+  // toast'ları görmeye devam ediyordu. apiFetch artık bu durumda bir olay
+  // yayınlıyor (bkz. utils/api.ts), burada onu dinleyip otomatik logout
+  // yapıyoruz — mevcut layout guard'ları (isAuthenticated kontrolü) kullanıcıyı
+  // otomatik olarak giriş ekranına yönlendirir.
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      logoutCompany();
+      showToast('Oturum süreniz doldu. Lütfen tekrar giriş yapın.', 'warning');
+    };
+    window.addEventListener(UNAUTHORIZED_EVENT, handleUnauthorized);
+    return () => window.removeEventListener(UNAUTHORIZED_EVENT, handleUnauthorized);
+  }, []);
+
+  // FE-801: Socket.io canlı bağlantı. Bir ikmal tamamlandığında (başka bir
+  // sekmede/kullanıcıda dahi olsa) tank seviyeleri ve işlem geçmişi sayfa
+  // yenilenmeden anında güncellenir.
+  const wasConnectedRef = useRef(false);
+  // FE-801 AC: "Eski veri açıkça işaretlenmelidir." — bağlantı henüz hiç
+  // kurulmamışken (ilk render) bir "eski veri" yanıp sönmesin diye iyimser
+  // (true) başlar; İLK gerçek 'disconnect' onu false'a çeker.
+  const [isSocketConnected, setIsSocketConnected] = useState<boolean>(true);
+  const [lastTelemetryAt, setLastTelemetryAt] = useState<string | null>(null);
+  const [deviceOnlineStatus, setDeviceOnlineStatus] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!isAuthenticated) {
+      disconnectSocket();
+      return;
+    }
+
+    const handleDispenseCompleted = (payload: { transaction: any; tanks: any[] }) => {
+      const mappedTanks: Tank[] = payload.tanks.map((t: any) => ({
+        id: t.id,
+        name: t.name,
+        siteName: t.site_name || 'Gebze Ana Şantiye',
+        capacityLiters: Number(t.capacity_liters),
+        currentLevelLiters: Number(t.current_level_liters),
+        fuelType: t.fuel_type,
+        temperatureC: 22.5,
+        lastRefillDate: 'Bilinmiyor',
+        sensorId: 'SEN-' + t.id.substring(4, 10),
+        status: t.status
+      }));
+      setTanks(mappedTanks);
+
+      const tx = payload.transaction;
+      const newTx: FuelTransaction = {
+        id: tx.id,
+        timestamp: new Date(tx.created_at).toLocaleString('tr-TR').replace(',', ''),
+        siteName: tx.site_name,
+        vehiclePlate: tx.vehicle_plate,
+        driverName: tx.driver_name || '',
+        tankName: tx.tank_name || '',
+        amountLiters: Number(tx.amount_liters),
+        flowRateLpm: tx.flow_rate_lpm != null ? Number(tx.flow_rate_lpm) : 0,
+        pumpStatus: tx.pump_status,
+        type: tx.type,
+        rfidAuth: tx.rfid_auth
+      };
+      // Aynı işlem zaten local olarak eklenmiş olabilir (ikmali BEN
+      // başlattıysam addFuelTransaction kendi fetchTransactions'ını zaten
+      // çağırdı) — id'ye göre tekilleştir.
+      setTransactions(prev => prev.some(p => p.id === newTx.id) ? prev : [newTx, ...prev]);
+
+      // TransactionsPage'in sunucu taraflı sayfalı sorgusu ayrı bir önbellekte
+      // yaşıyor (bkz. useTransactionsQuery) — o sayfa açıksa yeni ikmali
+      // görebilsin diye geçersiz kılınıyor (React Query açık sorguları
+      // otomatik olarak arka planda yeniden çeker).
+      queryClient.invalidateQueries({ queryKey: ['transactions'] });
+    };
+
+    // FLEET-1402 AC: "Eşleşmemiş kart okutulduğunda uyarı... panele anlık
+    // düşmelidir." Aynı UID kısa aralıkla tekrar okutulursa (kart sahibi
+    // ısrarla deniyor) listeyi ŞİŞİRMEMEK için cardUid'e göre tekilleştirilir
+    // — YENİ okutma, aynı UID'nin ESKİ girdisinin ÜZERİNE yazar (zaman damgası
+    // güncellenir), yığılmaz.
+    const handleUnmatchedRfid = (payload: UnmatchedRfidAlert) => {
+      setUnmatchedRfidAlerts(prev => [payload, ...prev.filter(a => a.cardUid !== payload.cardUid)].slice(0, 10));
+    };
+
+    // FE-810 AC: "Kota tükendiğinde ekrana anlık uyarı düşmelidir." rfid:unmatched
+    // İLE AYNI tekilleştirme deseni — permissionId'ye göre (aynı izin kısa
+    // aralıkla tekrar tükenirse yığılmaz, güncellenir).
+    const handleQuotaExhausted = (payload: QuotaExhaustedAlert) => {
+      setQuotaExhaustedAlerts(prev => [payload, ...prev.filter(a => a.permissionId !== payload.permissionId)].slice(0, 10));
+    };
+
+    // FE-815 AC: "Kritik alarm ekranda anlık bildirim üretmelidir." + "okunmamış
+    // sayacı." rfid:unmatched/quota:exhausted İLE AYNI toast deseni; sesli
+    // uyarı SADECE CRITICAL için VE kullanıcı daha önce etkinleştirdiyse
+    // (bkz. utils/alertSound.ts — tarayıcı autoplay politikası).
+    const handleAlarmRaised = (payload: AlarmRaisedEvent) => {
+      setUnreadAlarmCount(prev => prev + 1);
+      showToast(`${payload.title}${payload.siteName ? ` — ${payload.siteName}` : ''}`, payload.severity === 'CRITICAL' ? 'error' : payload.severity === 'WARNING' ? 'warning' : 'info');
+      if (payload.severity === 'CRITICAL') playAlertBeep();
+    };
+
+    // FE-801 AC: bağlantı koptuğunda "Bağlantı Yenileniyor..." uyarısı +
+    // exponential backoff ile yeniden bağlanma (socket.io-client'ın
+    // reconnectionDelay/reconnectionDelayMax ayarı bunu zaten yapar — bkz.
+    // utils/socket.ts). Kasıtlı (logout / sekme gizlenme) kopmalarda toast
+    // gösterilmez — yalnızca gerçek bağlantı sorunlarında.
+    const handleConnect = () => {
+      // TEST-1004: e2e testleri canlı olay enjekte etmeden ÖNCE gerçek bağlantıyı bu işaretten bekler (isSocketConnected başlangıçta iyimser true).
+      document.documentElement.dataset.socket = 'connected';
+      if (wasConnectedRef.current) {
+        showToast('Canlı bağlantı yeniden sağlandı.', 'success');
+      }
+      wasConnectedRef.current = true;
+      setIsSocketConnected(true);
+    };
+    const handleDisconnect = (reason: string) => {
+      document.documentElement.dataset.socket = 'disconnected';
+      // FE-801 AC: "Eski veri açıkça işaretlenmelidir." Nedeni ne olursa
+      // olsun (kasıtlı sekme gizlenmesi dahil) — bağlantı canlı DEĞİLKEN
+      // ekranda duran veri artık kanıtlanmış-güncel değildir, bu yüzden
+      // toast'tan (yalnızca GERÇEK kopmalarda gösterilir) FARKLI olarak her
+      // koşulda işaretleniyor.
+      setIsSocketConnected(false);
+      if (reason !== 'io client disconnect') {
+        showToast('Bağlantı Yenileniyor...', 'warning');
+      }
+    };
+    // FE-801 AC: "Pompa debisinin, tank seviyelerinin... gecikmesiz
+    // güncellenmesi." Backend `telemetry:data`/`device:status`'ü ZATEN
+    // `tenant:` odasına yayınlıyordu ama önceden burada HİÇ dinleyici yoktu.
+    // Ham telemetri (distanceMm/batteryVoltage/...) cihaza göre değişen,
+    // sunucu tarafında (strapping tablosu + ASTM D1250 düzeltmesi ile)
+    // hacme çevrilmesi gereken bir sinyaldir — bu dönüşümü İSTEMCİDE
+    // TEKRARLAMAK (yanlış/kalibrasyonsuz bir sayı göstermek riskiyle)
+    // BİLİNÇLİ olarak YAPILMADI. Bunun yerine "son telemetri ne zaman
+    // alındı" + "hangi cihaz o an çevrimiçi" bilgisi tutuluyor — tank/pompa
+    // ekranlarının doğru sayıyı yine `dispense:completed`/REST'ten (mevcut,
+    // doğrulanmış kaynak) aldığı, yalnızca CANLILIK sinyalinin buradan
+    // geldiği bir model.
+    const handleTelemetryData = (payload: { timestamp?: string; deviceId?: string; siteId?: string; deviceType?: string }) => {
+      setLastTelemetryAt(payload?.timestamp || new Date().toISOString());
+      // FE-806 Kapsam: "Canlı log akışı (WebSocket)." Önceden bu terminal
+      // yalnızca UI'dan tetiklenen SAHTE olaylarla (ping butonu, kalibrasyon
+      // sihirbazı) doluyordu — GERÇEK bir WebSocket akışı yoktu. Artık
+      // backend'in zaten yayınladığı bu olay (FE-801'in tank/pompa
+      // canlılığı için kullandığı KAYNAK) log terminaline de yansıyor.
+      if (isLogStreamActiveRef.current && payload?.deviceId) {
+        addHardwareLog({ deviceCode: payload.deviceId, siteName: payload.siteId, tag: 'SENSOR', message: `[TELEMETRY] ${payload.deviceType || 'cihaz'} veri paketi alındı.` });
+      }
+    };
+    const handleDeviceStatusChanged = (payload: { deviceId: string; status: 'ONLINE' | 'OFFLINE'; siteId?: string }) => {
+      if (!payload?.deviceId) return;
+      setDeviceOnlineStatus((prev) => ({ ...prev, [payload.deviceId]: payload.status === 'ONLINE' }));
+      if (isLogStreamActiveRef.current) {
+        addHardwareLog({ deviceCode: payload.deviceId, siteName: payload.siteId, tag: payload.status === 'ONLINE' ? 'MQTT' : 'WARN', message: `[DEVICE_STATUS] Cihaz durumu → ${payload.status}` });
+      }
+    };
+
+    socket.on('connect', handleConnect);
+    socket.on('disconnect', handleDisconnect);
+    socket.on('dispense:completed', handleDispenseCompleted);
+    socket.on('rfid:unmatched', handleUnmatchedRfid);
+    socket.on('quota:exhausted', handleQuotaExhausted);
+    socket.on('alarm:raised', handleAlarmRaised);
+    socket.on('telemetry:data', handleTelemetryData);
+    socket.on('device:status', handleDeviceStatusChanged);
+
+    document.documentElement.dataset.socket = socket.connected ? 'connected' : 'connecting';
+    connectSocket();
+
+    // FE-801 AC: sekme arka plana alındığında bağlantıyı kapatıp gereksiz
+    // render/bellek sızıntısını önle; tekrar görünür olunca sessizce (toast
+    // göstermeden) yeniden bağlan.
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        socket.disconnect();
+        setIsSocketConnected(false);
+      } else {
+        wasConnectedRef.current = false;
+        connectSocket();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      socket.off('connect', handleConnect);
+      socket.off('disconnect', handleDisconnect);
+      socket.off('dispense:completed', handleDispenseCompleted);
+      socket.off('rfid:unmatched', handleUnmatchedRfid);
+      socket.off('quota:exhausted', handleQuotaExhausted);
+      socket.off('alarm:raised', handleAlarmRaised);
+      socket.off('telemetry:data', handleTelemetryData);
+      socket.off('device:status', handleDeviceStatusChanged);
+      disconnectSocket();
+      wasConnectedRef.current = false;
+    };
+  }, [isAuthenticated]);
+
+  const triggerTankRefresh = async () => {
+    // Önceden bu fonksiyon backend'e hiç sormadan sadece animasyon anahtarını
+    // artırıp "yenilendi" toast'ı gösteriyordu — kullanıcı gerçekte bayat veri
+    // görmeye devam ediyordu. Artık gerçekten fetchTanks() ile DB'den taze
+    // veri çekip öyle güncelliyor.
+    await fetchTanks();
     setTankRefreshKey(prev => prev + 1);
     showToast('Tank verileri ve göstergeleri yenilendi', 'info');
+  };
+
+  const dismissRfidAlert = (cardUid: string) => {
+    setUnmatchedRfidAlerts(prev => prev.filter(a => a.cardUid !== cardUid));
+  };
+
+  // FE-808: AUTH-210'un kayıp/blokaj/değiştirme akışının frontend karşılığı.
+  const fetchRfidDenylist = async () => {
+    try {
+      const response = await apiFetch('/rfid-cards/denylist');
+      if (response.success && response.data) {
+        setRfidDenylist(response.data);
+      }
+    } catch (err: any) {
+      console.error('RFID kara listesi getirilirken hata:', err);
+    }
+  };
+
+  const reportRfidCardLost = async (cardUid: string, status: 'LOST' | 'BLOCKED', reason?: string): Promise<boolean> => {
+    try {
+      const response = await apiFetch(`/rfid-cards/${encodeURIComponent(cardUid)}/block`, {
+        method: 'POST',
+        body: JSON.stringify({ status, reason })
+      });
+      if (response.success) {
+        showToast(`Kart ${status === 'LOST' ? 'kayıp' : 'bloke'} olarak işaretlendi: ${cardUid}`, 'warning');
+        await fetchRfidDenylist();
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      showToast(`Kart işaretlenirken hata: ${err.message}`, 'error');
+      return false;
+    }
+  };
+
+  const unblockRfidCardByUid = async (cardUid: string): Promise<boolean> => {
+    try {
+      const response = await apiFetch(`/rfid-cards/${encodeURIComponent(cardUid)}/unblock`, { method: 'POST' });
+      if (response.success) {
+        showToast(`Kart blokesi kaldırıldı: ${cardUid}`);
+        await fetchRfidDenylist();
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      showToast(`Blokesi kaldırılırken hata: ${err.message}`, 'error');
+      return false;
+    }
+  };
+
+  const replaceRfidCardByUid = async (oldCardUid: string, newCardUid: string): Promise<boolean> => {
+    try {
+      const response = await apiFetch('/rfid-cards/replace', {
+        method: 'POST',
+        body: JSON.stringify({ oldCardUid, newCardUid })
+      });
+      if (response.success) {
+        showToast(`Kart değiştirildi: ${oldCardUid} → ${newCardUid}`);
+        await fetchRfidDenylist();
+        // Eski kart artık REPLACED; yeni uid aracın/şoförün kaydına ZATEN
+        // backend tarafında yazıldı (replaceRfidCard) — listeleri tazele.
+        await fetchVehicles();
+        await fetchDrivers();
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      showToast(`Kart değiştirilirken hata: ${err.message}`, 'error');
+      return false;
+    }
+  };
+
+  // FE-809: tenant'ın kendi cihaz yönetimi — GET /hardware-devices BİLEREK
+  // ham (snake_case) satır döner (AUTH-202.3'ten beri değişmedi, uygulama
+  // genelinde başka tüketicisi olduğundan sözleşmesi değiştirilmedi); burada
+  // çeviriliyor.
+  const fetchTenantHardwareDevices = async () => {
+    try {
+      const response = await apiFetch('/hardware-devices');
+      if (response.success && response.data) {
+        setTenantHardwareDevices(response.data.map((d: any) => ({
+          id: d.id,
+          deviceId: d.device_id,
+          name: d.name,
+          siteName: d.site_name,
+          status: d.status,
+          tankName: d.tank_name,
+          firmwareVersion: d.firmware_version,
+          lastSeenAt: d.last_seen_at,
+          lastReportedRssi: d.last_reported_rssi,
+          kFactor: d.k_factor !== null && d.k_factor !== undefined ? Number(d.k_factor) : null
+        })));
+      }
+    } catch (err: any) {
+      console.error('Cihazlar getirilirken hata:', err);
+    }
+  };
+
+  const assignDeviceTank = async (deviceId: string, tankName: string | null): Promise<boolean> => {
+    try {
+      const response = await apiFetch(`/hardware-devices/${encodeURIComponent(deviceId)}/tank`, {
+        method: 'PATCH',
+        body: JSON.stringify({ tankName })
+      });
+      if (response.success) {
+        showToast(tankName ? `${deviceId} → ${tankName} tankına bağlandı.` : `${deviceId} tank bağlantısı kaldırıldı.`);
+        await fetchTenantHardwareDevices();
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      showToast(`Tank bağlanırken hata: ${err.message}`, 'error');
+      return false;
+    }
+  };
+
+  const fetchDeviceClaimCodes = async () => {
+    try {
+      const response = await apiFetch('/devices/claim-codes');
+      if (response.success && response.data) {
+        setDeviceClaimCodes(response.data.map((c: any) => ({
+          id: c.id,
+          code: c.code,
+          siteName: c.site_name,
+          deviceName: c.device_name,
+          status: c.status,
+          expiresAt: c.expires_at,
+          redeemedDeviceId: c.redeemed_device_id,
+          redeemedAt: c.redeemed_at,
+          createdAt: c.created_at
+        })));
+      }
+    } catch (err: any) {
+      console.error('Claim kodları getirilirken hata:', err);
+    }
+  };
+
+  const generateDeviceClaimCode = async (siteName: string, deviceName: string, expiresInMinutes?: number): Promise<DeviceClaimCode | null> => {
+    try {
+      const response = await apiFetch('/devices/claim-codes', {
+        method: 'POST',
+        body: JSON.stringify({ siteName, deviceName, expiresInMinutes })
+      });
+      if (response.success && response.data) {
+        await fetchDeviceClaimCodes();
+        const c = response.data;
+        return {
+          id: c.id, code: c.code, siteName: c.site_name, deviceName: c.device_name,
+          status: c.status, expiresAt: c.expires_at, redeemedDeviceId: c.redeemed_device_id,
+          redeemedAt: c.redeemed_at, createdAt: c.created_at
+        };
+      }
+      return null;
+    } catch (err: any) {
+      showToast(`Claim kodu üretilirken hata: ${err.message}`, 'error');
+      return null;
+    }
+  };
+
+  const uploadTankStrappingTable = async (tankId: string, csvContent: string): Promise<StrappingUploadError[]> => {
+    try {
+      await apiFetch(`/tanks/${encodeURIComponent(tankId)}/strapping-table`, {
+        method: 'POST',
+        body: JSON.stringify({ csvContent })
+      });
+      showToast('Daldırma cetveli (strapping table) başarıyla kaydedildi.');
+      return [];
+    } catch (err: any) {
+      if (err.status === 400 && Array.isArray(err.details?.rows)) {
+        return err.details.rows as StrappingUploadError[];
+      }
+      showToast(`Cetvel yüklenirken hata: ${err.message}`, 'error');
+      return [{ row: 0, message: err.message || 'Bilinmeyen hata.' }];
+    }
+  };
+
+  const fetchSiteEmergencyStatus = async (siteName: string) => {
+    try {
+      const response = await apiFetch(`/sites/${encodeURIComponent(siteName)}/emergency-status`);
+      if (response.success && response.data) {
+        setSiteEmergencyStatus(response.data);
+      }
+    } catch (err: any) {
+      console.error('Şantiye acil durdurma durumu getirilirken hata:', err);
+    }
+  };
+
+  const emergencyStopSite = async (siteName: string, reason: string): Promise<boolean> => {
+    try {
+      const response = await apiFetch(`/sites/${encodeURIComponent(siteName)}/emergency-stop`, {
+        method: 'POST',
+        body: JSON.stringify({ reason })
+      });
+      if (response.success) {
+        showToast(response.message || 'Şantiye acil durduruldu.', 'warning');
+        await fetchSiteEmergencyStatus(siteName);
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      showToast(`Acil durdurma başarısız: ${err.message}`, 'error');
+      return false;
+    }
+  };
+
+  const emergencyResumeSite = async (siteName: string): Promise<boolean> => {
+    try {
+      const response = await apiFetch(`/sites/${encodeURIComponent(siteName)}/emergency-resume`, { method: 'POST' });
+      if (response.success) {
+        showToast(response.message || 'Şantiye tekrar aktifleştirildi.');
+        await fetchSiteEmergencyStatus(siteName);
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      showToast(`Devam ettirme başarısız: ${err.message}`, 'error');
+      return false;
+    }
   };
 
   // Toast Helper
@@ -402,73 +985,95 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     return () => clearInterval(interval);
   }, []);
 
-  // Simulate live IoT Log Stream
-  useEffect(() => {
-    if (!isLogStreamActive) return;
-
-    const sampleLogs = [
-      { tag: 'MQTT' as const, msg: '[MQTT_PUB] Topic: camsa/gebze/telemetry Payload: {"flow_rate": 48.2, "rssi": -65}', site: 'Gebze Ana Şantiye', dev: 'ESP32_PUMP_01' },
-      { tag: 'RFID' as const, msg: '[RFID] Plaka 34 BKT 19 Okundu → Auth: Başarılı (CARD-881203)', site: 'Gebze Ana Şantiye', dev: 'ESP32_RFID_01' },
-      { tag: 'PUMP' as const, msg: '[PUMP] Pompa #1 Akış Başladı — 51.8 Litre/dk (Solenoid RÖLE: AÇIK)', site: 'Gebze Ana Şantiye', dev: 'ESP32_PUMP_01' },
-      { tag: 'SENSOR' as const, msg: '[SENSOR] Tank-1 Ultrasonik Seviye: 14,830 Litre (%74.1) | 18.5°C', site: 'Gebze Ana Şantiye', dev: 'ESP32_TANK_01' },
-      { tag: 'WARN' as const, msg: '[WARN] Tank-3 (Silivri) Seviye %12.8 KRİTİK EŞİK DÜŞÜKLÜĞÜ', site: 'Silivri Tesisleri', dev: 'ESP32_TANK_03' },
-    ];
-
-    const interval = setInterval(() => {
-      const log = sampleLogs[Math.floor(Math.random() * sampleLogs.length)];
-      const now = new Date();
-      const timeStr = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-      setHardwareLogs(prev => [
-        ...prev.slice(-49), // keep last 50
-        {
-          id: Date.now().toString() + Math.random().toString(36).substring(2, 5),
-          timestamp: timeStr,
-          deviceCode: log.dev,
-          tag: log.tag,
-          message: log.msg,
-          siteName: log.site
-        }
-      ]);
-    }, 3500);
-
-    return () => clearInterval(interval);
-  }, [isLogStreamActive]);
+  // NOT: Sahte IoT log akışı simülasyonu kaldırıldı. hardwareLogs artık yalnızca
+  // gerçek kullanıcı eylemleriyle (addHardwareLog / EEPROM kalibrasyon kaydı) dolar.
+  // Gerçek telemetri için ileride bir /telemetry veya /hardware-logs endpoint'i eklenmeli.
 
   // Actions
-  const toggleCompanyModule = (companyId: string, moduleKey: keyof CompanyModule) => {
-    setCompanies(prev => prev.map(c => {
-      if (c.id === companyId) {
-        const updatedVal = !c.modules[moduleKey];
-        const updated = {
-          ...c,
-          modules: {
-            ...c.modules,
-            [moduleKey]: updatedVal
-          }
-        };
-        if (selectedTenantForDetail?.id === companyId) {
-          setSelectedTenantForDetail(updated);
-        }
-        showToast(`Modül durumu güncellendi: ${moduleKey} → ${updatedVal ? 'AKTİF' : 'PASİF'}`);
-        return updated;
+  // Önceden bu iki fonksiyon yalnızca local state'i güncelliyordu (sayfa
+  // yenilenince kayboluyordu). Artık PATCH /companies/:id (SUPER_ADMIN)
+  // çağırıp gerçek listeyi yeniden çekiyor.
+  const toggleCompanyModule = async (companyId: string, moduleKey: keyof CompanyModule) => {
+    const target = companies.find(c => c.id === companyId);
+    if (!target) return;
+    const updatedVal = !target.modules[moduleKey];
+    try {
+      await apiFetch(`/companies/${companyId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ modules: { [moduleKey]: updatedVal } })
+      });
+      await fetchCompanies();
+      if (selectedTenantForDetail?.id === companyId) {
+        setSelectedTenantForDetail({ ...target, modules: { ...target.modules, [moduleKey]: updatedVal } });
       }
-      return c;
-    }));
+      showToast(`Modül durumu güncellendi: ${moduleKey} → ${updatedVal ? 'AKTİF' : 'PASİF'}`);
+    } catch (err: any) {
+      showToast(`Modül güncellenirken hata: ${err.message}`, 'error');
+    }
   };
 
-  const updateCompanyStatus = (companyId: string, status: 'AKTİF' | 'ASKIDA' | 'DENEME') => {
-    setCompanies(prev => prev.map(c => {
-      if (c.id === companyId) {
-        const updated = { ...c, licenseStatus: status };
-        if (selectedTenantForDetail?.id === companyId) {
-          setSelectedTenantForDetail(updated);
-        }
-        showToast(`${c.name} lisans durumu güncellendi: ${status}`);
-        return updated;
+  const updateCompanyStatus = async (companyId: string, status: 'AKTİF' | 'ASKIDA' | 'DENEME') => {
+    const target = companies.find(c => c.id === companyId);
+    if (!target) return;
+    try {
+      await apiFetch(`/companies/${companyId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ licenseStatus: status })
+      });
+      await fetchCompanies();
+      if (selectedTenantForDetail?.id === companyId) {
+        setSelectedTenantForDetail({ ...target, licenseStatus: status });
       }
-      return c;
-    }));
+      showToast(`${target.name} lisans durumu güncellendi: ${status}`);
+    } catch (err: any) {
+      showToast(`Lisans durumu güncellenirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  // Firma profili — yalnızca oturum açan tenant'ın firması DB'den (/companies/me).
+  // SITE_MANAGER (şantiye) girişinde backend yalnızca o şantiyeyi döndürür.
+  const fetchCompanyProfile = async (): Promise<Company | null> => {
+    try {
+      const response = await apiFetch('/companies/me');
+      if (response.success && response.data) {
+        const d = response.data;
+        const company: Company = {
+          id: d.id,
+          name: d.name,
+          code: d.code || String(d.id || '').toUpperCase(),
+          taxNumber: d.taxNumber || '',
+          city: d.city || '',
+          licenseStatus: d.licenseStatus || 'AKTİF',
+          licenseExpiry: d.licenseExpiry || '',
+          lastActivityAt: null, // FE-805: yalnızca geliştirici panelinin firma listesinde kullanılır, /companies/me'de yok
+          sites: Array.isArray(d.sites)
+            ? d.sites.map((s: any) => ({
+                id: s.id,
+                name: s.name,
+                location: s.location || '',
+                activeTanksCount: s.activeTanksCount ?? 0,
+                activeVehiclesCount: s.activeVehiclesCount ?? 0
+              }))
+            : [],
+          modules: {
+            aiAnomaly: !!d.modules?.aiAnomaly,
+            eInvoice: !!d.modules?.eInvoice,
+            smartWarehouse: !!d.modules?.smartWarehouse,
+            maintenanceTrack: !!d.modules?.maintenanceTrack,
+            driverScore: !!d.modules?.driverScore,
+            crossSiteAuth: !!d.modules?.crossSiteAuth
+          },
+          activeVehiclesCount: d.activeVehiclesCount ?? 0,
+          totalFuelThisMonth: d.totalFuelThisMonth ?? 0
+        };
+        setCompanies([company]);
+        setCurrentCompanyIndex(0);
+        return company;
+      }
+    } catch (err: any) {
+      console.error('Firma profili getirilirken hata:', err);
+    }
+    return null;
   };
 
   // Sites Fetch
@@ -483,19 +1088,46 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const addSite = async (siteName: string) => {
+  // FE-807: SitesPage'in kart listesindeki GERÇEK konum — fetchSites()
+  // (üstte) yalnızca ad döndüğünden (bkz. tenantDb.ts getTenantSites
+  // yorumu) SitesPage önceden her şantiye için 'Türkiye' UYDURUYORDU.
+  const fetchSiteDetails = async () => {
+    try {
+      const response = await apiFetch('/sites/details');
+      if (response.success && response.data) {
+        setSiteDetails(response.data);
+      }
+    } catch (err: any) {
+      console.error('Şantiye detayları getirilirken hata:', err);
+    }
+  };
+
+  const addSite = async (siteName: string, location?: string) => {
     try {
       const response = await apiFetch('/sites', {
         method: 'POST',
-        body: JSON.stringify({ siteName })
+        body: JSON.stringify(location ? { siteName, location } : { siteName })
       });
       if (response.success) {
         showToast(`Yeni şantiye eklendi: ${siteName}`);
         await fetchSites();
+        await fetchSiteDetails();
         await fetchTanks();
+        // FE-807 AC: "Şantiye oluşturma tek akışta kullanıcı ve parola
+        // üretmelidir" + "Parola yalnızca bir kez gösterilmeli." AUTH-204
+        // (POST /sites) bunu ZATEN üretiyordu — yanıt burada TAMAMEN
+        // ATILIYORDU (ARCH-105/FE-805'teki addCompany İLE AYNI hata
+        // deseni). Üretilen kimlik bilgileri, bir daha üretilemeyeceği
+        // için çağırana (sihirbaz) taşınıyor.
+        const manager = response.data?.manager;
+        if (manager?.username && manager?.temporaryPassword && manager?.passwordExpiresAt) {
+          return manager as SiteProvisioningResult;
+        }
       }
+      return null;
     } catch (err: any) {
       showToast(`Şantiye eklenirken hata: ${err.message}`, 'error');
+      return null;
     }
   };
 
@@ -507,6 +1139,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (response.success) {
         showToast(`Şantiye silindi: ${siteName}`, 'warning');
         await fetchSites();
+        await fetchSiteDetails();
         await fetchVehicles();
         await fetchDrivers();
         await fetchTanks();
@@ -516,15 +1149,88 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  // Automatically fetch DB sites, vehicles, drivers & tanks when user is authenticated
-  useEffect(() => {
-    if (isAuthenticated) {
-      fetchSites();
-      fetchVehicles();
-      fetchDrivers();
-      fetchTanks();
+  // Automatically fetch DB company profile, sites, vehicles, drivers, tanks &
+  // transactions when user is authenticated
+  // (F5 sonrası token localStorage'da kaldığından bu effect firma bilgisini yeniden kurar)
+  //
+  // FE-817: `fetchCompanyProfile()` başarısız olursa (ÖNCEDEN) hiçbir şey
+  // değişmiyordu — `companies` state'i mount'ta seed edilen
+  // `INITIAL_COMPANIES` mock'unda SESSİZCE kalıyor, kullanıcı gerçek
+  // firmasıymış gibi SAHTE veri görüyordu (gerçek bulunan hata). Artık bu
+  // çağrının sonucu `initialLoadError`'a yansır; panel/santiye layout'ları
+  // bu alanı `isLoadingInitialData` ile birlikte okuyup skeleton/hata
+  // ekranı gösterir — diğer fetch'ler (sites/vehicles/...) kendi mevcut
+  // sessiz-log/toast davranışını KORUR (her biri zaten kendi boş-liste
+  // durumuna güvenle düşer, bu ticket'ın kapsamı yalnızca "hangisi
+  // KRİTİK" olan companyProfile).
+  const loadInitialData = async () => {
+    setIsLoadingInitialData(true);
+    setInitialLoadError(null);
+    const company = await fetchCompanyProfile();
+    if (!company) {
+      setInitialLoadError('Firma bilgileri yüklenemedi. İnternet bağlantınızı kontrol edip tekrar deneyin.');
+      setIsLoadingInitialData(false);
+      return;
     }
-  }, [isAuthenticated]);
+    fetchSites();
+    fetchSiteDetails();
+    fetchVehicles();
+    fetchDrivers();
+    fetchTanks();
+    fetchTransactions();
+    fetchCrossSitePermissions();
+    // Yalnızca SUPER_ADMIN — /companies tüm tenant'ları döndürür, diğer
+    // roller zaten 403 alır.
+    if (currentUser?.role === 'SUPER_ADMIN') {
+      fetchCompanies();
+      fetchHardwareDevices();
+      fetchSystemMetrics();
+    }
+    // FE-808: RFID kara listesi yönetimi RfidUnmatchedAlerts İLE AYNI rol
+    // kümesine açık (backend RFID_CARD_MANAGER_ROLES) — diğer roller
+    // (PUMP_OPERATOR) zaten 403 alır, gereksiz çağrı yapılmıyor.
+    if (currentUser && ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'].includes(currentUser.role)) {
+      fetchRfidDenylist();
+    }
+    // FE-809: cihaz yönetimi (hardware-devices/claim-codes) backend'in
+    // HARDWARE_DEVICE_MANAGER_ROLES İLE AYNI kısıtı — SITE_MANAGER burada
+    // YOK (yalnızca SUPER_ADMIN/COMPANY_OWNER cihaz provizyonlayabilir).
+    if (currentUser && ['SUPER_ADMIN', 'COMPANY_OWNER'].includes(currentUser.role)) {
+      fetchTenantHardwareDevices();
+      fetchDeviceClaimCodes();
+    }
+    // FE-810: backend QUOTA_MANAGER_ROLES İLE AYNI kısıt (/quotas,
+    // rep-715-mahsup de aynı rol kümesine açık).
+    if (currentUser && ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'].includes(currentUser.role)) {
+      fetchFuelQuotas();
+      fetchCrossSiteSettlementSummary();
+    }
+    setIsLoadingInitialData(false);
+  };
+
+  // FE-817: `mustChangePassword` true iken (ForcedPasswordChangePage'e
+  // yönlendirilir, bkz. CustomerLayout/SiteOperatorPanel'in erken return'ü)
+  // hiçbir panel verisi anlamlı değildir. ÖNCEDEN bu effect yalnızca
+  // `isAuthenticated`'a bakıyordu — geçici parolayla giriş ANINDA
+  // `fetchCompanyProfile()` ateşleniyordu, parola değişimi İSE AYNI ANDA
+  // token'ı YENİLİYORDU (gerçek bir yarış: bazen eski token'la giden bu
+  // istek net bir 401 değil, ÇİĞ bir ağ hatası olarak başarısız oluyordu —
+  // E2E'de bulundu, bkz. commit mesajı). ÖNCEDEN bunun hiçbir sonucu
+  // GÖRÜNMÜYORDU çünkü bu çağrının başarısı/başarısızlığı HİÇBİR ŞEYİ
+  // engellemiyordu — artık `initialLoadError` tüm paneli kapsadığından
+  // (AC: "boş beyaz sayfa/donmuş arayüz" DEĞİL, gerçek bir hata ekranı),
+  // bu önceden görünmez yarış durumu artık GERÇEKTEN paneli bloke ederdi.
+  // Çözüm: parola değişimi bitene (mustChangePassword false olana) kadar
+  // hiç tetikleme — bu effect o geçiş için de YENİDEN çalışır.
+  useEffect(() => {
+    if (isAuthenticated && !currentUser?.mustChangePassword) {
+      loadInitialData();
+    } else if (!isAuthenticated) {
+      setIsLoadingInitialData(false);
+    }
+  }, [isAuthenticated, currentUser?.mustChangePassword]);
+
+  const retryInitialDataLoad = () => { loadInitialData(); };
 
   // Vehicle CRUD
   const fetchVehicles = async () => {
@@ -538,9 +1244,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           brandModel: v.brand_model,
           type: v.vehicle_type,
           siteName: v.site_name || 'Gebze Ana Şantiye',
-          assignedDriver: 'Atanmadı', // TODO: Fetch from relations
+          assignedDriver: v.assigned_driver_name || 'Atanmadı',
           rfidTag: v.rfid_tag,
-          fuelCapacityLiters: 500, // TODO: Mock or new DB column
+          fuelCapacityLiters: v.fuel_capacity_liters != null ? Number(v.fuel_capacity_liters) : 0,
           lastRefuelDate: 'Henüz yok', // TODO: Calculate from transactions
           lastRefuelLiters: 0,
           totalRefuelsCount: 0,
@@ -562,7 +1268,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         rfidTag: newVeh.rfidTag,
         siteName: newVeh.siteName,
         fuelCapacityLiters: newVeh.fuelCapacityLiters || 450,
-        status: newVeh.status
+        status: newVeh.status,
+        assignedDriver: newVeh.assignedDriver
       };
       await apiFetch('/vehicles', {
         method: 'POST',
@@ -571,6 +1278,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       showToast(`Yeni araç kaydedildi: ${newVeh.plate}`);
       await fetchVehicles();
       await fetchSites();
+      await fetchDrivers();
     } catch (err: any) {
       showToast(`Araç eklenirken hata: ${err.message}`, 'error');
     }
@@ -585,7 +1293,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...(updatedVeh.rfidTag && { rfidTag: updatedVeh.rfidTag }),
         ...(updatedVeh.siteName && { siteName: updatedVeh.siteName }),
         ...(updatedVeh.fuelCapacityLiters && { fuelCapacityLiters: updatedVeh.fuelCapacityLiters }),
-        ...(updatedVeh.status && { status: updatedVeh.status })
+        ...(updatedVeh.status && { status: updatedVeh.status }),
+        ...(updatedVeh.assignedDriver !== undefined && { assignedDriver: updatedVeh.assignedDriver })
       };
       await apiFetch(`/vehicles/${id}`, {
         method: 'PUT',
@@ -594,31 +1303,27 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       showToast('Araç bilgileri güncellendi');
       await fetchVehicles();
       await fetchSites();
+      await fetchDrivers();
     } catch (err: any) {
       showToast(`Araç güncellenirken hata: ${err.message}`, 'error');
     }
   };
 
+  // FLEET-1401: uç ARTIK gerçekten silmiyor, aracı 'PASİF'e alıyor (bkz.
+  // backend routes.ts DELETE /vehicles/:id yorumu) — fonksiyon/prop adı
+  // (`deleteVehicle`) ve HTTP metodu istemci sözleşmesiyle tutarlı kalsın
+  // diye DEĞİŞTİRİLMEDİ, yalnızca kullanıcıya gösterilen metin düzeltildi.
   const deleteVehicle = async (id: string) => {
     try {
       await apiFetch(`/vehicles/${id}`, {
         method: 'DELETE'
       });
-      showToast(`Araç kaydı silindi`, 'warning');
+      showToast(`Araç pasife alındı`, 'warning');
       await fetchVehicles();
     } catch (err: any) {
-      showToast(`Araç silinirken hata: ${err.message}`, 'error');
+      showToast(`Araç pasife alınırken hata: ${err.message}`, 'error');
     }
   };
-
-  useEffect(() => {
-    if (isAuthenticated) {
-      fetchSites();
-      fetchVehicles();
-      fetchDrivers();
-      fetchTanks();
-    }
-  }, [isAuthenticated]);
 
   // Driver CRUD
   const fetchDrivers = async () => {
@@ -634,7 +1339,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           rfidCardId: d.rfid_card_id,
           status: d.status,
           siteName: d.site_name || 'Gebze Ana Şantiye',
-          assignedVehiclePlate: 'Atanmadı', // TODO: Map this correctly from relations
+          assignedVehiclePlate: d.assigned_vehicle_plate || 'Atanmadı',
           performanceScore: 100, // Mock
           totalFuelPumpedLiters: 0 // Mock
         }));
@@ -654,7 +1359,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         licenseType: newDrv.licenseType,
         rfidCardId: newDrv.rfidCardId,
         siteName: newDrv.siteName,
-        status: newDrv.status
+        status: newDrv.status,
+        assignedVehiclePlate: newDrv.assignedVehiclePlate
       };
       await apiFetch('/drivers', {
         method: 'POST',
@@ -663,6 +1369,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       showToast(`Yeni şoför eklendi: ${newDrv.name}`);
       await fetchDrivers();
       await fetchSites();
+      // Şoför-araç ataması çift yönlü senkronize edilir (bkz. backend
+      // syncDriverVehicleAssignment) — vehicles listesi de güncel kalmalı.
+      await fetchVehicles();
     } catch (err: any) {
       showToast(`Şoför eklenirken hata: ${err.message}`, 'error');
     }
@@ -677,7 +1386,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...(updatedDrv.licenseType && { licenseType: updatedDrv.licenseType }),
         ...(updatedDrv.rfidCardId && { rfidCardId: updatedDrv.rfidCardId }),
         ...(updatedDrv.siteName && { siteName: updatedDrv.siteName }),
-        ...(updatedDrv.status && { status: updatedDrv.status })
+        ...(updatedDrv.status && { status: updatedDrv.status }),
+        ...(updatedDrv.assignedVehiclePlate !== undefined && { assignedVehiclePlate: updatedDrv.assignedVehiclePlate })
       };
       await apiFetch(`/drivers/${id}`, {
         method: 'PUT',
@@ -686,6 +1396,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       showToast('Şoför bilgileri güncellendi');
       await fetchDrivers();
       await fetchSites();
+      await fetchVehicles();
     } catch (err: any) {
       showToast(`Şoför güncellenirken hata: ${err.message}`, 'error');
     }
@@ -783,44 +1494,105 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const addFuelTransaction = (newTx: Omit<FuelTransaction, 'id' | 'timestamp'>) => {
-    const now = new Date();
-    const dateStr = now.toISOString().replace('T', ' ').substring(0, 19);
-    const tx: FuelTransaction = {
-      ...newTx,
-      id: 'tx-' + Date.now(),
-      timestamp: dateStr
-    };
-    setTransactions(prev => [tx, ...prev]);
-
-    // Update tank current level
-    setTanks(prev => prev.map(t => {
-      if (t.name === newTx.tankName || t.siteName === newTx.siteName) {
-        const updatedLevel = Math.max(0, t.currentLevelLiters - newTx.amountLiters);
-        const percentage = (updatedLevel / t.capacityLiters) * 100;
-        let status: 'GÜVENLİ' | 'UYARI' | 'KRİTİK' = 'GÜVENLİ';
-        if (percentage < 20) status = 'KRİTİK';
-        else if (percentage < 40) status = 'UYARI';
-
-        return { ...t, currentLevelLiters: updatedLevel, status };
+  const fetchTransactions = async () => {
+    try {
+      // Bu global liste; genel bakış/arşiv gibi widget'ların "son N hareket"
+      // ihtiyacı için tek seferde çekiliyor. Tam sayfalı/filtreli geçmiş tablosu
+      // (TransactionsPage) kendi TanStack Query kancasıyla ayrıca sunucu taraflı
+      // sayfalama yapıyor (bkz. src/hooks/useTransactionsQuery.ts) — FE-802.
+      //
+      // TEST_PLAN §2.2/§3.3 — burada önceden pageSize=200 isteniyordu, ama
+      // backend sözleşmesi pageSize ≤ 100 (transactionQuerySchema; DoS sınırı,
+      // test_input_boundaries ile kilitli). İstek HER SEFERİNDE 400 alıyordu:
+      // bu liste FE-802'nin eklendiği günden (aca7241) beri hiç yüklenmiyordu ve
+      // her ikmalden sonra hata toast'ı çıkıyordu. E2E "sayfa yüklenirken
+      // başarısız API çağrısı yok" kontrolü (e2e/api-contract.spec.ts) buldu.
+      const response = await apiFetch('/transactions?page=1&pageSize=100');
+      if (response.success && response.data) {
+        const mappedTransactions: FuelTransaction[] = response.data.map((t: any) => ({
+          id: t.id,
+          timestamp: new Date(t.created_at).toLocaleString('tr-TR').replace(',', ''),
+          siteName: t.site_name,
+          vehiclePlate: t.vehicle_plate,
+          driverName: t.driver_name || '',
+          tankName: t.tank_name || '',
+          amountLiters: Number(t.amount_liters),
+          flowRateLpm: t.flow_rate_lpm != null ? Number(t.flow_rate_lpm) : 0,
+          pumpStatus: t.pump_status,
+          type: t.type,
+          rfidAuth: t.rfid_auth
+        }));
+        setTransactions(mappedTransactions);
       }
-      return t;
-    }));
-
-    showToast(`İkmal kaydedildi: ${newTx.vehiclePlate} — ${newTx.amountLiters} Litre`);
+    } catch (err: any) {
+      showToast(`İkmal geçmişi getirilirken hata: ${err.message}`, 'error');
+    }
   };
 
+  // Önceden bu fonksiyon backend'e hiç yazmadan yalnızca local React state'i
+  // güncelliyordu (bir sonraki fetchTanks()/sayfa yenilemesinde kayıp
+  // gidiyordu) ve tank seviyesini de yalnızca client tarafında düşürüyordu.
+  // Artık gerçek POST /dispense çağrısı yapıyor; tank seviyesi sunucuda
+  // atomik olarak düşürülüyor, ardından transactions ve tanks yeniden çekiliyor.
+  const addFuelTransaction = async (newTx: Omit<FuelTransaction, 'id' | 'timestamp'>) => {
+    try {
+      await apiFetch('/dispense', {
+        method: 'POST',
+        body: JSON.stringify({
+          siteName: newTx.siteName,
+          vehiclePlate: newTx.vehiclePlate,
+          driverName: newTx.driverName,
+          tankName: newTx.tankName,
+          amountLiters: newTx.amountLiters,
+          flowRateLpm: newTx.flowRateLpm,
+          pumpStatus: newTx.pumpStatus,
+          type: newTx.type,
+          rfidAuth: newTx.rfidAuth
+        })
+      });
+
+      await Promise.all([fetchTransactions(), fetchTanks()]);
+      showToast(`İkmal kaydedildi: ${newTx.vehiclePlate} — ${newTx.amountLiters} Litre`);
+    } catch (err: any) {
+      showToast(`İkmal kaydedilirken hata: ${err.message}`, 'error');
+      throw err;
+    }
+  };
+
+  const fetchTransactionDespatchStatus = async (transactionId: string): Promise<DespatchAdviceStatus | null> => {
+    try {
+      const response = await apiFetch(`/transactions/${transactionId}/e-irsaliye/status`);
+      return response.success ? response.data : null;
+    } catch (err: any) {
+      // 404 ("henüz üretilmiş bir e-İrsaliye yok") bu akışta BEKLENEN bir
+      // durumdur — hata toast'u göstermeden sessizce null dönülür. Gerçek bir
+      // sunucu/yetki hatası ayrı bir durumdur ama burada da UI'ı bozmamak
+      // için null'a düşürülüyor; satır detayı bunu "henüz oluşturulmadı" gösterir.
+      if (err.status !== 404) console.error('e-İrsaliye durumu getirilirken hata:', err);
+      return null;
+    }
+  };
+
+  // FE-806 Teknik Not: "Canlı log ekranı sınırsız birikmemelidir; sabit
+  // tampon (öneri: son 500 satır)." Önceden bu dizi HİÇBİR sınır olmadan
+  // büyüyordu (bellek sızıntısı, AC ihlali) — artık en eski satırlar atılır.
+  const MAX_HARDWARE_LOG_LINES = 500;
+  const hardwareLogSeq = useRef(0);
   const addHardwareLog = (log: Omit<HardwareLog, 'id' | 'timestamp'>) => {
     const now = new Date();
     const timeStr = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    setHardwareLogs(prev => [
-      ...prev,
-      {
-        ...log,
-        id: Date.now().toString(),
-        timestamp: timeStr
-      }
-    ]);
+    hardwareLogSeq.current += 1;
+    setHardwareLogs(prev => {
+      const next = [
+        ...prev,
+        {
+          ...log,
+          id: `${Date.now()}-${hardwareLogSeq.current}`,
+          timestamp: timeStr
+        }
+      ];
+      return next.length > MAX_HARDWARE_LOG_LINES ? next.slice(next.length - MAX_HARDWARE_LOG_LINES) : next;
+    });
   };
 
   const clearHardwareLogs = () => {
@@ -828,55 +1600,229 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     showToast('IoT log ekranı temizlendi', 'info');
   };
 
-  const toggleCrossSiteStatus = (id: string) => {
-    setCrossSitePermissions(prev => prev.map(p => {
-      if (p.id === id) {
-        const nextStatus = p.status === 'AKTİF' ? 'SÜRESİ_DOLDU' : 'AKTİF';
-        showToast(`Yetki durumu değişti: ${p.vehiclePlate} (${nextStatus})`);
-        return { ...p, status: nextStatus };
+  // Önceden bu iki fonksiyon yalnızca local state'i güncelliyordu; kota
+  // takibi de client tarafında sahteydi. Artık gerçek backend'e yazıyor —
+  // POST /dispense artık bu tabloyu kontrol edip used_liters'ı atomik
+  // olarak günceliyor (bkz. tenantDb.createTransaction, FUEL-402).
+  const fetchCrossSitePermissions = async () => {
+    try {
+      const response = await apiFetch('/cross-site-permissions');
+      if (response.success && response.data) {
+        const mapped: CrossSitePermission[] = response.data.map((p: any) => ({
+          id: p.id,
+          vehiclePlate: p.vehicle_plate,
+          driverName: p.driver_name || '',
+          homeSite: p.home_site,
+          targetSite: p.target_site,
+          allowedLiters: Number(p.allowed_liters),
+          usedLiters: Number(p.used_liters),
+          expiryDate: p.expiry_date,
+          status: p.status
+        }));
+        setCrossSitePermissions(mapped);
       }
-      return p;
-    }));
+    } catch (err: any) {
+      showToast(`Çapraz şantiye yetkileri getirilirken hata: ${err.message}`, 'error');
+    }
   };
 
-  const addCrossSitePermission = (perm: Omit<CrossSitePermission, 'id' | 'usedLiters' | 'status'>) => {
-    const newPerm: CrossSitePermission = {
-      ...perm,
-      id: 'csp-' + Date.now(),
-      usedLiters: 0,
-      status: 'AKTİF'
-    };
-    setCrossSitePermissions(prev => [newPerm, ...prev]);
-    showToast(`Çapraz şantiye yetkisi eklendi: ${perm.vehiclePlate} → ${perm.targetSite}`);
+  const toggleCrossSiteStatus = async (id: string) => {
+    const target = crossSitePermissions.find(p => p.id === id);
+    if (!target) return;
+    const nextStatus = target.status === 'AKTİF' ? 'SÜRESİ_DOLDU' : 'AKTİF';
+    try {
+      await apiFetch(`/cross-site-permissions/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: nextStatus })
+      });
+      await fetchCrossSitePermissions();
+      showToast(`Yetki durumu değişti: ${target.vehiclePlate} (${nextStatus})`);
+    } catch (err: any) {
+      showToast(`Yetki durumu güncellenirken hata: ${err.message}`, 'error');
+    }
   };
 
-  const addCompany = (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules'>) => {
-    const code = 'COMP-' + (companies.length + 1).toString().padStart(2, '0');
-    const compUsername = comp.name.toLowerCase().replace(/[^a-z0-9]/g, '') || 'firma';
-    const newComp: Company = {
-      ...comp,
-      id: 'comp-' + Date.now(),
-      code,
-      username: compUsername,
-      password: '123456',
-      sites: [
-        { id: 'site-' + Date.now(), name: `${comp.name} Ana Şantiye`, username: `${compUsername}-santiye`, password: '123456', location: comp.city, activeVehiclesCount: 2, activeTanksCount: 1 }
-      ],
-      totalFuelThisMonth: 0,
-      activeVehiclesCount: 2,
-      licenseExpiry: '2027-12-31',
-      licenseStatus: 'AKTİF',
-      modules: {
-        eInvoice: true,
-        aiAnomaly: true,
-        smartWarehouse: false,
-        maintenanceTrack: true,
-        driverScore: true,
-        crossSiteAuth: true
+  const addCrossSitePermission = async (perm: Omit<CrossSitePermission, 'id' | 'usedLiters' | 'status'>) => {
+    try {
+      await apiFetch('/cross-site-permissions', {
+        method: 'POST',
+        body: JSON.stringify(perm)
+      });
+      await fetchCrossSitePermissions();
+      showToast(`Çapraz şantiye yetkisi eklendi: ${perm.vehiclePlate} → ${perm.targetSite}`);
+    } catch (err: any) {
+      showToast(`Çapraz şantiye yetkisi eklenirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  // FE-810 Kapsam: FUEL-402.1'in zaten tam olan /quotas CRUD'u (GENEL,
+  // cross_site_permissions'tan AYRI kota sistemi) — önceden frontend'de
+  // hiç arayüzü yoktu.
+  const fetchFuelQuotas = async () => {
+    try {
+      const response = await apiFetch('/quotas');
+      if (response.success && response.data) {
+        const mapped: FuelQuota[] = response.data.map((q: any) => ({
+          id: q.id,
+          vehiclePlate: q.vehicle_plate,
+          siteName: q.site_name,
+          periodType: q.period_type,
+          limitLiters: Number(q.limit_liters),
+          carryoverPolicy: q.carryover_policy,
+          periodStart: q.period_start,
+          periodEnd: q.period_end,
+          carriedOverLiters: Number(q.carried_over_liters),
+          validFrom: q.valid_from,
+          validUntil: q.valid_until,
+          status: q.status,
+          createdBy: q.created_by
+        }));
+        setFuelQuotas(mapped);
       }
-    };
-    setCompanies(prev => [...prev, newComp]);
-    showToast(`Yeni firma sisteme tanımlandı: ${newComp.name}`);
+    } catch (err: any) {
+      showToast(`Yakıt kotaları getirilirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  const createFuelQuota = async (data: { vehiclePlate?: string; siteName?: string; periodType: FuelQuota['periodType']; limitLiters: number; carryoverPolicy: FuelQuota['carryoverPolicy']; validFrom?: string; validUntil?: string }): Promise<boolean> => {
+    try {
+      await apiFetch('/quotas', { method: 'POST', body: JSON.stringify(data) });
+      await fetchFuelQuotas();
+      showToast('Yakıt kotası tanımlandı.');
+      return true;
+    } catch (err: any) {
+      showToast(`Kota tanımlanırken hata: ${err.message}`, 'error');
+      return false;
+    }
+  };
+
+  const setFuelQuotaStatus = async (quotaId: string, status: 'AKTİF' | 'PASİF') => {
+    try {
+      await apiFetch(`/quotas/${quotaId}`, { method: 'PATCH', body: JSON.stringify({ status }) });
+      await fetchFuelQuotas();
+      showToast(`Kota durumu değişti: ${status}`);
+    } catch (err: any) {
+      showToast(`Kota durumu güncellenirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  const fetchQuotaBalance = async (quotaId: string) => {
+    try {
+      const response = await apiFetch(`/quotas/${quotaId}/balance`);
+      if (response.success && response.data) {
+        setQuotaBalances(prev => ({ ...prev, [quotaId]: response.data }));
+      }
+    } catch (err: any) {
+      console.error('Kota bakiyesi getirilirken hata:', err);
+    }
+  };
+
+  const dismissQuotaExhaustedAlert = (permissionId: string | null, occurredAt: string) => {
+    setQuotaExhaustedAlerts(prev => prev.filter(a => !(a.permissionId === permissionId && a.occurredAt === occurredAt)));
+  };
+
+  const clearUnreadAlarmCount = () => setUnreadAlarmCount(0);
+
+  // FE-810 Kapsam: "Mahsuplaşma özetine hızlı erişim (REP-715)." Tam bir
+  // rapor merkezi sayfası YOK — zaten var olan genel /reports/:reportId
+  // ucu (rep-715-mahsup, backend rep715CrossSite.ts) doğrudan çağrılıyor.
+  const fetchCrossSiteSettlementSummary = async () => {
+    try {
+      const response = await apiFetch('/reports/rep-715-mahsup?pageSize=5&sortBy=month_start&sortDir=desc');
+      if (response.success && response.data) {
+        const mapped: CrossSiteSettlementSummaryRow[] = response.data.map((r: any) => ({
+          id: r.id,
+          siteA: r.site_a,
+          siteB: r.site_b,
+          monthLabel: r.month_label,
+          movementCount: Number(r.movement_count),
+          netCost: Number(r.net_cost),
+          debtor: r.debtor,
+          creditor: r.creditor,
+          netAmount: Number(r.net_amount)
+        }));
+        setCrossSiteSettlementSummary(mapped);
+      }
+    } catch (err: any) {
+      console.error('Mahsuplaşma özeti getirilirken hata:', err);
+    }
+  };
+
+  // Süper Admin panelinden yeni tenant firma oluşturur — backend companies +
+  // ilk şantiye + COMPANY_OWNER giriş hesabını tek DB transaction'ında yazar
+  // (bkz. adminDb.createCompanyWithOwner). Önceden bu tamamen local state'ti.
+  const fetchCompanies = async () => {
+    try {
+      const response = await apiFetch('/companies');
+      if (response.success && response.data) {
+        setCompanies(response.data);
+      }
+    } catch (err: any) {
+      showToast(`Firmalar getirilirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  // Kayıtlı ESP32/debimetre cihazlarını Redis'teki gerçek son bağlantı
+  // durumuyla birlikte getirir (bkz. GET /devices). Önceden hardwareDevices
+  // her zaman boş diziydi — hiçbir fetch bağlı değildi.
+  const fetchHardwareDevices = async () => {
+    try {
+      const response = await apiFetch('/devices');
+      if (response.success && response.data) {
+        const mapped: HardwareDevice[] = response.data.map((d: any) => ({
+          id: d.deviceCode,
+          deviceCode: d.deviceCode,
+          name: d.name,
+          type: d.deviceCode.includes('TANK') ? 'Ultrasonik Tank Sensörü' : 'Debimetre & Solenoid',
+          siteName: d.siteName,
+          status: d.status,
+          lastHeartbeatAt: d.lastHeartbeatAt ?? null,
+          healthScore: d.healthScore ?? null,
+          firmwareVersion: d.firmwareVersion ?? undefined,
+          signalRssi: d.signalRssi ?? undefined
+        }));
+        setHardwareDevices(mapped);
+      }
+    } catch (err: any) {
+      showToast(`Cihazlar getirilirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  // FE-806: SystemHealthPage'in eskiden tamamen SABİT (uydurma "%99.98
+  // uptime", "24/100 connection" vb.) olan verisini, OPS-1107'nin zaten var
+  // olan Prometheus registry'sinden (GET /admin/system-metrics) gerçek bir
+  // özetle değiştirir.
+  const fetchSystemMetrics = async () => {
+    try {
+      const response = await apiFetch('/admin/system-metrics');
+      if (response.success && response.data) {
+        setSystemMetrics(response.data);
+      }
+    } catch (err: any) {
+      showToast(`Sistem metrikleri getirilirken hata: ${err.message}`, 'error');
+    }
+  };
+
+  const addCompany = async (comp: Omit<Company, 'id' | 'code' | 'sites' | 'totalFuelThisMonth' | 'activeVehiclesCount' | 'licenseExpiry' | 'licenseStatus' | 'modules' | 'lastActivityAt'>) => {
+    try {
+      const response = await apiFetch('/companies', {
+        method: 'POST',
+        body: JSON.stringify({ name: comp.name, city: comp.city, taxNumber: comp.taxNumber })
+      });
+      await fetchCompanies();
+      showToast(`Yeni firma sisteme tanımlandı: ${comp.name}`);
+      // FE-805 AC: "parola tek seferlik gösterilmelidir" — ARCH-105'in
+      // ürettiği geçici parola API yanıtında yalnızca BU çağrıda döner;
+      // yeniden üretilemez, bu yüzden çağırana (sihirbaz) taşınıyor.
+      const { ownerUsername, temporaryPassword, passwordExpiresAt } = response.data ?? {};
+      if (ownerUsername && temporaryPassword && passwordExpiresAt) {
+        return { ownerUsername, temporaryPassword, passwordExpiresAt } as TenantProvisioningResult;
+      }
+      return null;
+    } catch (err: any) {
+      showToast(`Firma eklenirken hata: ${err.message}`, 'error');
+      return null;
+    }
   };
 
   return (
@@ -889,17 +1835,23 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         loginCompany,
         loginSiteOperator,
         logoutCompany,
+        completePasswordChange,
         currentCompany,
         selectedSiteFilter,
         setSelectedSiteFilter,
         companies,
+        fetchCompanies,
+        fetchHardwareDevices,
         vehicles,
         drivers,
         tanks,
         transactions,
         crossSitePermissions,
+        fetchCrossSitePermissions,
         hardwareDevices,
         hardwareLogs,
+        systemMetrics,
+        fetchSystemMetrics,
         tankRefreshKey,
         triggerTankRefresh,
         simulatedLatencyMs,
@@ -913,6 +1865,42 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         addVehicle,
         updateVehicle,
         deleteVehicle,
+        unmatchedRfidAlerts,
+        dismissRfidAlert,
+        rfidDenylist,
+        fetchRfidDenylist,
+        reportRfidCardLost,
+        unblockRfidCardByUid,
+        replaceRfidCardByUid,
+        tenantHardwareDevices,
+        fetchTenantHardwareDevices,
+        assignDeviceTank,
+        deviceClaimCodes,
+        fetchDeviceClaimCodes,
+        generateDeviceClaimCode,
+        uploadTankStrappingTable,
+        siteEmergencyStatus,
+        fetchSiteEmergencyStatus,
+        emergencyStopSite,
+        emergencyResumeSite,
+        fuelQuotas,
+        fetchFuelQuotas,
+        createFuelQuota,
+        setFuelQuotaStatus,
+        quotaBalances,
+        fetchQuotaBalance,
+        quotaExhaustedAlerts,
+        dismissQuotaExhaustedAlert,
+        unreadAlarmCount,
+        clearUnreadAlarmCount,
+        isLoadingInitialData,
+        initialLoadError,
+        retryInitialDataLoad,
+        crossSiteSettlementSummary,
+        fetchCrossSiteSettlementSummary,
+        isSocketConnected,
+        lastTelemetryAt,
+        deviceOnlineStatus,
         fetchDrivers,
         addDriver,
         updateDriver,
@@ -920,9 +1908,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         fetchTanks,
         sites,
         fetchSites,
+        siteDetails,
+        fetchSiteDetails,
         addSite,
         deleteSite,
+        fetchTransactions,
         addFuelTransaction,
+        fetchTransactionDespatchStatus,
         addHardwareLog,
         clearHardwareLogs,
         toggleCrossSiteStatus,

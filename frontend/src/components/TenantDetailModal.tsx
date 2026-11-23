@@ -1,9 +1,26 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { usePermissions } from '../hooks/usePermissions';
 import { CompanyModule } from '../types';
 
 export const TenantDetailModal: React.FC = () => {
   const { selectedTenantForDetail, setSelectedTenantForDetail, toggleCompanyModule, updateCompanyStatus } = useApp();
+  // FE-805 AC: "Tenant dondurma işlemi onay gerektirmelidir." + Teknik Not:
+  // "Modül kapatma yıkıcı bir işlemdir; onay diyaloğu ... gösterilmelidir."
+  // Tek bir "bekleyen onay" durumu — ya bir lisans durumu ya da bir modül
+  // kapatma isteği (aynı anda yalnızca biri açık olabilir).
+  const [pendingAction, setPendingAction] = useState<
+    | { type: 'SUSPEND' }
+    | { type: 'DISABLE_MODULE'; moduleKey: keyof CompanyModule; title: string }
+    | null
+  >(null);
+  // FE-803: "Modül Aç/Kapa" ve lisans durumu değişimi yalnızca SUPER_ADMIN'e
+  // açıktır (backend PATCH /companies/:id). Bu modal zaten yalnızca /admin
+  // altında render ediliyor (route guard'lı) — buradaki kontrol defense-in-depth
+  // ve yetkisiz durumda butonlar DOM'a hiç basılmaz, salt-okunur rozet gösterilir.
+  const { can } = usePermissions();
+  const canManageModules = can('TOGGLE_COMPANY_MODULE');
+  const canManageLicense = can('SET_COMPANY_LICENSE');
 
   if (!selectedTenantForDetail) return null;
 
@@ -49,7 +66,7 @@ export const TenantDetailModal: React.FC = () => {
   ];
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex justify-end animate-fadeIn">
+    <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex justify-end animate-fadeIn">
       <div 
         className="fixed inset-0"
         onClick={() => setSelectedTenantForDetail(null)}
@@ -101,10 +118,23 @@ export const TenantDetailModal: React.FC = () => {
                   if (status === 'ASKIDA') colorClass = 'border-[#ff5f56] bg-[#ff5f56]/20 text-[#ff5f56] font-black';
                   if (status === 'DENEME') colorClass = 'border-[#ffdca1] bg-[#ffdca1]/20 text-[#ffdca1] font-black';
                 }
+                // FE-803: yetkisizse buton yok — yalnızca aktif durum salt-okunur gösterilir.
+                if (!canManageLicense) {
+                  if (!isActive) return null;
+                  return (
+                    <span
+                      key={status}
+                      className={`py-2 px-3 rounded-xl border text-xs font-mono text-center col-span-3 ${colorClass}`}
+                    >
+                      {status}
+                    </span>
+                  );
+                }
                 return (
                   <button
                     key={status}
-                    onClick={() => updateCompanyStatus(tenant.id, status)}
+                    data-testid={`license-status-${status}`}
+                    onClick={() => status === 'ASKIDA' ? setPendingAction({ type: 'SUSPEND' }) : updateCompanyStatus(tenant.id, status)}
                     className={`py-2 px-3 rounded-xl border text-xs font-mono text-center transition-all cursor-pointer ${colorClass}`}
                   >
                     {status}
@@ -144,16 +174,31 @@ export const TenantDetailModal: React.FC = () => {
                       </div>
                     </div>
 
-                    <button
-                      onClick={() => toggleCompanyModule(tenant.id, mod.key)}
-                      className={`px-3.5 py-1.5 rounded-xl text-xs font-mono font-bold transition-all cursor-pointer shrink-0 ${
-                        isEnabled
-                          ? 'bg-[#a1e8a2] text-[#412d00] shadow-sm'
-                          : 'bg-[#131313] text-[#d5c4ab] border border-[#353535] hover:border-[#ffb77f]/50'
-                      }`}
-                    >
-                      {isEnabled ? 'AÇIK' : 'KAPALI'}
-                    </button>
+                    {canManageModules ? (
+                      <button
+                        data-testid={`module-toggle-${mod.key}`}
+                        data-enabled={isEnabled ? 'true' : 'false'}
+                        onClick={() => isEnabled
+                          ? setPendingAction({ type: 'DISABLE_MODULE', moduleKey: mod.key, title: mod.title })
+                          : toggleCompanyModule(tenant.id, mod.key)}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-mono font-bold transition-all cursor-pointer shrink-0 ${
+                          isEnabled
+                            ? 'bg-[#a1e8a2] text-[#412d00] shadow-sm'
+                            : 'bg-[#131313] text-[#d5c4ab] border border-[#353535] hover:border-[#ffb77f]/50'
+                        }`}
+                      >
+                        {isEnabled ? 'AÇIK' : 'KAPALI'}
+                      </button>
+                    ) : (
+                      // FE-803: yetkisizse tıklanabilir buton yerine salt-okunur rozet.
+                      <span
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-mono font-bold shrink-0 select-none ${
+                          isEnabled ? 'bg-[#a1e8a2]/20 text-[#a1e8a2]' : 'bg-[#131313] text-[#d5c4ab] border border-[#353535]'
+                        }`}
+                      >
+                        {isEnabled ? 'AÇIK' : 'KAPALI'}
+                      </span>
+                    )}
                   </div>
                 );
               })}
@@ -210,6 +255,56 @@ export const TenantDetailModal: React.FC = () => {
         </div>
 
       </div>
+
+      {/* Yıkıcı işlem onay diyaloğu (dondurma / modül kapatma) */}
+      {pendingAction && (
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#1c1b1b] border border-[#ff5f56]/50 rounded-2xl max-w-md w-full p-6 space-y-5 shadow-2xl">
+            <div className="flex items-center space-x-3 text-[#ff5f56]">
+              <div className="w-10 h-10 rounded-xl bg-[#ff5f56]/10 border border-[#ff5f56]/30 flex items-center justify-center shrink-0">
+                <span className="material-symbols-outlined text-2xl">warning</span>
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm text-[#e5e2e1] uppercase font-mono tracking-wide">
+                  {pendingAction.type === 'SUSPEND' ? 'FİRMAYI DONDURMA UYARISI' : 'MODÜL KAPATMA UYARISI'}
+                </h3>
+                <span className="text-[10px] text-[#ffdca1] font-mono">{tenant.name}</span>
+              </div>
+            </div>
+
+            <div className="bg-[#141313] border border-[#353535] rounded-xl p-4 text-xs text-[#d5c4ab] font-mono leading-relaxed">
+              {pendingAction.type === 'SUSPEND' ? (
+                <p>Bu firma <strong className="text-[#ff5f56]">ASKIDA</strong> durumuna alınacak. Firmanın TÜM kullanıcıları (COMPANY_OWNER, SITE_MANAGER, operatörler) oturum açamayacak ve API erişimi kesilecektir.</p>
+              ) : (
+                <p><strong className="text-[#ff5f56]">{pendingAction.title}</strong> modülü kapatılacak. Bu modüle bağlı ekranlar/menüler firmanın tüm kullanıcılarından ANINDA kaybolacak ve modülün ürettiği veriler artık görüntülenemeyecek.</p>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end space-x-3 pt-1">
+              <button
+                type="button"
+                onClick={() => setPendingAction(null)}
+                className="px-4 py-2.5 bg-[#20201f] hover:bg-[#353535] border border-[#514532]/40 text-[#e5e2e1] font-mono text-xs rounded-xl transition-colors cursor-pointer font-bold"
+              >
+                İptal / Vazgeç
+              </button>
+              <button
+                type="button"
+                data-testid="destructive-action-confirm"
+                onClick={() => {
+                  if (pendingAction.type === 'SUSPEND') updateCompanyStatus(tenant.id, 'ASKIDA');
+                  else toggleCompanyModule(tenant.id, pendingAction.moduleKey);
+                  setPendingAction(null);
+                }}
+                className="px-5 py-2.5 bg-gradient-to-r from-[#ff5f56] to-[#c73a32] hover:from-[#ff8a83] hover:to-[#ff5f56] text-[#2b0705] font-black rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer shadow-lg flex items-center space-x-1.5"
+              >
+                <span className="material-symbols-outlined text-base">check_circle</span>
+                <span>{pendingAction.type === 'SUSPEND' ? 'Evet, Dondur' : 'Evet, Kapat'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

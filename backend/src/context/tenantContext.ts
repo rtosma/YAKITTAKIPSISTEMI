@@ -3,6 +3,10 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 export interface TenantStore {
   tenantId: string;
   userId?: string;
+  // AUTH-203: audit_logs kayıtlarının trace_id/ip_address alanları için —
+  // authMiddleware.ts store'u kurarken doldurur (bkz. utils/auditLog.ts).
+  traceId?: string;
+  ipAddress?: string;
 }
 
 /**

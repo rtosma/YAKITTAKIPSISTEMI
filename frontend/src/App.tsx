@@ -1,26 +1,55 @@
 import React from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AppProvider } from './context/AppContext';
 import { Toast } from './components/Toast';
+import { RfidUnmatchedAlerts } from './components/RfidUnmatchedAlerts';
+import { QuotaExhaustedAlerts } from './components/QuotaExhaustedAlerts';
+
+// FE-802 — TransactionsPage'in sunucu taraflı sayfalı/filtreli sorguları
+// için tek bir global QueryClient. staleTime > 0: aynı filtre/sayfa
+// kombinasyonuna kısa sürede geri dönüldüğünde (ör. sayfalar arası ileri-geri)
+// gereksiz tekrar istek atılmaz; refetchOnWindowFocus kapalı çünkü bu liste
+// zaten Socket.io ile dispense:completed olayında AppContext tarafında ayrıca
+// canlı güncelleniyor (bkz. AppContext.tsx socket effect'i).
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      refetchOnWindowFocus: false,
+      retry: 1
+    }
+  }
+});
 
 // Pages & Layouts
 import { LoginPage } from './pages/LoginPage';
 import { SiteLoginPage } from './pages/SiteLoginPage';
+import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
+import { ResetPasswordPage } from './pages/ResetPasswordPage';
+import { ForcedPasswordChangePage } from './pages/ForcedPasswordChangePage';
 import { WelcomeScreen } from './pages/WelcomeScreen';
 import { NotFoundPage } from './pages/NotFoundPage';
+import { ForbiddenPage } from './pages/ForbiddenPage';
 import { CustomerLayout } from './layouts/CustomerLayout';
 import { DeveloperLayout } from './layouts/DeveloperLayout';
+import { SiteOperatorPanel } from './pages/santiye/SiteOperatorPanel';
+import { RoleRoute } from './components/RoleRoute';
+import { ROLE_GROUPS } from './utils/permissions';
 
 // Customer Pages
 import { OverviewPage } from './pages/customer/OverviewPage';
 import { SitesPage } from './pages/customer/SitesPage';
 import { VehiclesPage } from './pages/customer/VehiclesPage';
+import { MeterReadingsPage } from './pages/customer/MeterReadingsPage';
 import { DriversPage } from './pages/customer/DriversPage';
 import { VehiclesDriversPage } from './pages/customer/VehiclesDriversPage';
 import { TransactionsPage } from './pages/customer/TransactionsPage';
 import { TankStatusPage } from './pages/customer/TankStatusPage';
+import { DeviceManagementPage } from './pages/customer/DeviceManagementPage';
 import { ArchivePage } from './pages/customer/ArchivePage';
 import { NotificationsPage } from './pages/customer/NotificationsPage';
+import { ReportsPage } from './pages/customer/ReportsPage';
 import { SettingsPage } from './pages/customer/SettingsPage';
 import { CrossSitePage } from './pages/customer/CrossSitePage';
 import { ModulesPage } from './pages/customer/ModulesPage';
@@ -32,27 +61,82 @@ import { DevicesPage } from './pages/developer/DevicesPage';
 import { LiveLogsPage } from './pages/developer/LiveLogsPage';
 import { SystemHealthPage } from './pages/developer/SystemHealthPage';
 
+/**
+ * FE-817 — test seam for the error boundary (frontend/e2e/error-states.spec.ts).
+ * A genuine render crash can't be forced generically from outside the app
+ * in Playwright, so this component does nothing in normal use and throws
+ * ONLY when the URL explicitly carries `?__e2e_throw=1` — zero risk in
+ * production since nothing sets that param during real use.
+ *
+ * MUST stay a PURE function of the URL (no side-effecting "throw once"
+ * flag): an earlier sessionStorage-flag version made it behave differently
+ * across React's two invocations of the same render (it double-invokes a
+ * component that just threw, to tell a genuine render bug apart from a
+ * one-off fluke) — because the flag changed BETWEEN those two calls, React
+ * got an inconsistent result and errored internally ("Should not already be
+ * working", minified error #520) instead of reaching this boundary at all.
+ * The test clears the query param itself (history.replaceState) before
+ * retrying, which is also the more honest test: "Tekrar Dene" can only
+ * recover once the triggering condition is actually gone, same as a real
+ * transient-data crash.
+ */
+function DevErrorTrigger() {
+  if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('__e2e_throw') === '1') {
+    throw new Error('FE-817 E2E test tetikleyicisi: kasıtlı render hatası.');
+  }
+  return null;
+}
+
 export function App() {
   return (
+    <QueryClientProvider client={queryClient}>
     <AppProvider>
       <BrowserRouter>
         <Toast />
+        <DevErrorTrigger />
+        <RfidUnmatchedAlerts />
+        <QuotaExhaustedAlerts />
         <Routes>
           {/* Home Login Page */}
           <Route path="/" element={<LoginPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/santiye-login" element={<SiteLoginPage />} />
-          <Route path="/santiye-panel" element={<Navigate to="/panel" replace />} />
+          {/* FE-804: parola sıfırlama — token'sız (talep formu) ve token'lı (yeni parola) ekranlar. */}
+          <Route path="/parola-unuttum" element={<ForgotPasswordPage />} />
+          <Route path="/parola-sifirla/:token" element={<ResetPasswordPage />} />
+          {/* FE-803: Saha paneli — SITE_MANAGER / PUMP_OPERATOR (+ üst roller).
+              DRIVER gibi yetkisiz bir rol doğrudan URL yazsa /403'e düşer. */}
+          <Route
+            path="/santiye-panel"
+            element={
+              <RoleRoute allow={ROLE_GROUPS.SITE_PANEL}>
+                <SiteOperatorPanel />
+              </RoleRoute>
+            }
+          />
+          <Route path="/parola-degistir" element={<ForcedPasswordChangePage />} />
           <Route path="/welcome" element={<WelcomeScreen />} />
+          <Route path="/403" element={<ForbiddenPage />} />
 
-          {/* Customer Panel Routes (/panel/*) */}
-          <Route path="/panel" element={<CustomerLayout />}>
+          {/* Customer Panel Routes (/panel/*) — FE-803: yalnızca COMPANY_OWNER /
+              SUPER_ADMIN. SITE_MANAGER'ın yeri /santiye-panel; buraya doğrudan
+              URL ile gelmeye çalışırsa /403. */}
+          <Route
+            path="/panel"
+            element={
+              <RoleRoute allow={ROLE_GROUPS.PANEL}>
+                <CustomerLayout />
+              </RoleRoute>
+            }
+          >
             <Route index element={<OverviewPage />} />
             <Route path="overview" element={<OverviewPage />} />
             <Route path="sites" element={<SitesPage />} />
             <Route path="santiye-yonetimi" element={<SitesPage />} />
             <Route path="vehicles" element={<VehiclesPage />} />
             <Route path="arac-yonetimi" element={<VehiclesPage />} />
+            <Route path="meter-readings" element={<MeterReadingsPage />} />
+            <Route path="sayac-girisi" element={<MeterReadingsPage />} />
             <Route path="drivers" element={<DriversPage />} />
             <Route path="sofor-yonetimi" element={<DriversPage />} />
             <Route path="vehicles-drivers" element={<VehiclesDriversPage />} />
@@ -60,10 +144,13 @@ export function App() {
             <Route path="yakit-hareketleri" element={<TransactionsPage />} />
             <Route path="tanks" element={<TankStatusPage />} />
             <Route path="tank-durumu" element={<TankStatusPage />} />
+            <Route path="devices" element={<DeviceManagementPage />} />
             <Route path="archive" element={<ArchivePage />} />
             <Route path="arsiv" element={<ArchivePage />} />
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="bildirimler" element={<NotificationsPage />} />
+            <Route path="reports" element={<ReportsPage />} />
+            <Route path="raporlar" element={<ReportsPage />} />
             <Route path="settings" element={<SettingsPage />} />
             <Route path="ayarlar" element={<SettingsPage />} />
             <Route path="cross-site" element={<CrossSitePage />} />
@@ -72,8 +159,16 @@ export function App() {
             <Route path="*" element={<NotFoundPage />} />
           </Route>
 
-          {/* Developer Super Admin Panel Routes (/admin/*) */}
-          <Route path="/admin" element={<DeveloperLayout />}>
+          {/* Developer Super Admin Panel Routes (/admin/*) — FE-803: SUPER_ADMIN only.
+              DeveloperLayout içinde de aynı kontrol var (defense-in-depth). */}
+          <Route
+            path="/admin"
+            element={
+              <RoleRoute allow={ROLE_GROUPS.ADMIN}>
+                <DeveloperLayout />
+              </RoleRoute>
+            }
+          >
             <Route index element={<DeveloperOverviewPage />} />
             <Route path="overview" element={<DeveloperOverviewPage />} />
             <Route path="tenants" element={<TenantsPage />} />
@@ -90,6 +185,7 @@ export function App() {
         </Routes>
       </BrowserRouter>
     </AppProvider>
+    </QueryClientProvider>
   );
 }
 

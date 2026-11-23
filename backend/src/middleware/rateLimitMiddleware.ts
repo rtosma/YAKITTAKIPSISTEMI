@@ -1,0 +1,226 @@
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
+import { RedisStore } from 'rate-limit-redis';
+import { Request, Response } from 'express';
+import { redisPool } from '../db/redisPool';
+
+/**
+ * RES-901/AUTH-201 hardening: `/auth/login` had NO rate limiting at all —
+ * an attacker could brute-force Argon2id-hashed passwords with unlimited
+ * requests. Backed by Redis (not an in-memory Map) so the limit is shared
+ * across every backend instance behind a load balancer and survives restarts,
+ * for the same reason the refresh-token store was moved to Redis.
+ *
+ * Keyed by IP address: 10 attempts per 15-minute window is generous enough
+ * for a genuine user who mistypes a password a few times, while making
+ * brute-forcing an Argon2id hash impractical over the network.
+ */
+export const loginRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 dakika
+  limit: 10,
+  standardHeaders: true, // RateLimit-* yanıt başlıkları
+  legacyHeaders: false,
+  // RES-905: kütüphanenin varsayılanı passOnStoreError=false — yani Redis'e
+  // erişilemediğinde store.increment() fırlatır ve bu istisna YAKALANMADAN
+  // /auth/login'e gelen HER isteği 500'e düşürür (bir Redis kesintisi TÜM
+  // girişleri durdurur). true ile Redis kesintisinde limitleme devre dışı
+  // kalır ama uç ÇALIŞMAYA devam eder — Argon2id + accountLockoutService
+  // (o da fail-open, bkz. o dosyadaki RES-905 notu) hâlâ devrede.
+  passOnStoreError: true,
+  store: new RedisStore({
+    prefix: 'rl:auth-login:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      error: 'TOO_MANY_REQUESTS',
+      message: 'Çok fazla başarısız giriş denemesi. Lütfen 15 dakika sonra tekrar deneyin.'
+    });
+  }
+});
+
+/**
+ * AUTH-209 — `/auth/refresh` login ile aynı IP-bazlı istismar riskini taşır
+ * (rate limitsiz bir uç, brute-force veya kaynak tüketim saldırısı için
+ * açık kapı) ama login'den daha sık meşru kullanım görür (her erişim
+ * token'ı süresi dolduğunda tetiklenir) — bu yüzden limiti daha gevşek.
+ */
+export const refreshRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
+  store: new RedisStore({
+    prefix: 'rl:auth-refresh:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      error: 'TOO_MANY_REQUESTS',
+      message: 'Çok fazla token yenileme denemesi. Lütfen bir süre sonra tekrar deneyin.'
+    });
+  }
+});
+
+/**
+ * AUTH-209 — "Cihaz uçları için ayrı, daha yüksek limitler (telemetri
+ * saniyede yüzlerce istek üretir)". Login'deki gibi IP bazlı DEĞİL, cihaz
+ * kimliği bazlı: sahadaki cihazlar genelde tek bir 4G IP'si arkasında
+ * kümelenir (bkz. loginRateLimiter'ın aynı sorunu), IP bazlı bir limit tüm
+ * şantiyenin telemetrisini birbirine karıştırıp tek limite tıkardı. Cihaz
+ * kimliği henüz hardwareAuthMiddleware tarafından doğrulanmamış olabilir —
+ * buradaki amaç kimlik doğrulaması değil, iddia edilen kimlik başına adil
+ * bir üst sınır koymak (hardwareAuthMiddleware zaten ayrıca HMAC + nonce ile
+ * gerçek doğrulamayı yapıyor).
+ */
+export const hardwareRateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 dakika
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  // req.ip fallback'i IPv6 için ipKeyGenerator() helper'ından GEÇMELİ —
+  // aksi halde bir IPv6 adresinin /64 bloğundaki farklı istemciler
+  // (aynı kullanıcının farklı IPv6 adresleri) ayrı ayrı limit kazanıp
+  // limiti fiilen bypass edebilir (bkz. ERR_ERL_KEY_GEN_IPV6).
+  keyGenerator: (req: Request) => (req.headers['x-device-id'] as string) || ipKeyGenerator(req.ip || 'unknown-device'),
+  passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
+  store: new RedisStore({
+    prefix: 'rl:hardware:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      error: 'TOO_MANY_REQUESTS',
+      message: 'Cihaz için istek limiti aşıldı. Lütfen bir süre sonra tekrar deneyin.'
+    });
+  }
+});
+
+/**
+ * IOT-302.1 — POST /api/v1/lorawan/uplink için IP bazlı limit. Bir filonun
+ * TÜM LoRaWAN uplink'leri tek bir ağ sunucusu (ChirpStack/TTN) IP'sinden
+ * geleceği için limit cömert: cihaz başına saatte birkaç uplink × yüzlerce
+ * cihaz = dakikada birkaç yüz. 1200/dk, hem gerçek yükü karşılar hem de
+ * ele geçirilmiş/yanlış yapılandırılmış bir kaynağın seli önlenir. Kimlik
+ * doğrulaması ayrıca lorawanWebhookAuth ile yapılır — bu yalnızca adil bir
+ * üst sınır.
+ */
+export const lorawanWebhookRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
+  keyGenerator: (req: Request) => ipKeyGenerator(req.ip || 'unknown-lns'),
+  store: new RedisStore({
+    prefix: 'rl:lorawan-webhook:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      error: 'TOO_MANY_REQUESTS',
+      message: 'LoRaWAN webhook istek limiti aşıldı.'
+    });
+  }
+});
+
+/**
+ * AUTH-206 — POST /auth/forgot-password. Ticket: "kullanıcı başına en fazla
+ * dakikada 1, saatte 5". İKİ ayrı limiter (ikisi de aynı uca uygulanır),
+ * IP değil KULLANICI ADI ile anahtarlanır (bir kullanıcının sıfırlama
+ * talebi, aynı 4G IP'sindeki başka bir kullanıcıyı etkilemesin). username
+ * gövdede yoksa IP'ye düşer.
+ */
+function usernameKey(req: Request): string {
+  const u = (req.body?.username as string | undefined)?.trim().toLowerCase();
+  return u && u.length >= 3 ? `u:${u}` : ipKeyGenerator(req.ip || 'unknown');
+}
+
+export const passwordResetPerMinuteLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1,
+  standardHeaders: true,
+  legacyHeaders: false,
+  passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
+  keyGenerator: usernameKey,
+  store: new RedisStore({
+    prefix: 'rl:pwreset-min:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      error: 'TOO_MANY_REQUESTS',
+      message: 'Çok sık şifre sıfırlama talebi. Lütfen bir dakika sonra tekrar deneyin.'
+    });
+  }
+});
+
+export const passwordResetPerHourLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
+  keyGenerator: usernameKey,
+  store: new RedisStore({
+    prefix: 'rl:pwreset-hour:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      error: 'TOO_MANY_REQUESTS',
+      message: 'Saatlik şifre sıfırlama talebi limiti aşıldı. Lütfen daha sonra tekrar deneyin.'
+    });
+  }
+});
+
+/**
+ * AUTH-206 — POST /auth/reset-password. Token 256 bit entropiye sahip
+ * (kaba kuvvet zaten imkânsız) ama IP başına mütevazı bir üst sınır yine de
+ * hijyen: 30/saat.
+ */
+export const passwordResetSubmitLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
+  keyGenerator: (req: Request) => ipKeyGenerator(req.ip || 'unknown'),
+  store: new RedisStore({
+    prefix: 'rl:pwreset-submit:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({
+      success: false,
+      error: 'TOO_MANY_REQUESTS',
+      message: 'Çok fazla şifre sıfırlama denemesi. Lütfen daha sonra tekrar deneyin.'
+    });
+  }
+});
+
+/**
+ * RES-907 — POST /api/v1/monitoring/sentry-tunnel (kimliksiz; tarayıcı hatası oturum öncesinde de olabilir). IP başına dakikada 120:
+ * bir hata döngüsündeki tarayıcı sayfası sunucuyu/Sentry kotasını boğmasın (SDK ayrıca kendi içinde tekrarları eler).
+ */
+export const sentryTunnelRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
+  keyGenerator: (req: Request) => ipKeyGenerator(req.ip || 'unknown-browser'),
+  store: new RedisStore({
+    prefix: 'rl:sentry-tunnel:',
+    sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
+  }),
+  handler: (_req: Request, res: Response) => {
+    res.status(429).json({ success: false, error: 'TOO_MANY_REQUESTS', message: 'Hata bildirimi limiti aşıldı.' });
+  }
+});

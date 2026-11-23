@@ -1,0 +1,271 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Library:           OASIS Universal Business Language (UBL) 2.1 OS
+                     http://docs.oasis-open.org/ubl/os-UBL-2.1/
+  Release Date:      04 November 2013
+  Module:            UBL-UnqualifiedDataTypes-2.1.xsd
+  Generated on:      2013-04-20 18:40(UTC)
+  Copyright (c) OASIS Open 2013. All Rights Reserved.
+
+  This schema fragment implements UBL unqualified datatypes using core
+  component types with all supplementary components as described in
+  CCTS 2.01 http://www.unece.org/cefact/ebxml/CCTS_V2-01_Final.pdf tables
+  8-1, 8-2 and 8-3.
+
+  Per table 8-3, the graphic, picture, sound and video types are based on
+  "Binary Object. Type" as they are secondary representation terms.
+
+  Per table 8-3, the value, rate and percentage types are based on
+  "Numeric. Type" as they are secondary representation terms.
+
+  Per table 8-3, the name type is based on "Text. Type" as it is a 
+  secondary representation term.
+
+  Per XSD lexical constraints, the following unqualified data types 
+  corresponding to core component types and secondary representation terms 
+  are based on XSD types (accordingly, the supplementary component "format" 
+  is not made available for these types):
+
+        Date Time. Type  on  xsd:dateTime
+        Date. Type       on  xsd:date
+        Time. Type       on  xsd:time
+        Indicator. Type  on  xsd:boolean
+
+  Per UBL 2.0 the following supplementary components are restricted to be
+  required rather than optional:
+
+   Amount. Currency. Identifier  as  (AmountType)/@currencyID
+   Binary Object. Mime. Code     as  (BinaryObjectType)/@mimeCode
+   Graphic. Mime. Code           as  (GraphicType)/@mimeCode
+   Picture. Mime. Code           as  (PictureType)/@mimeCode
+   Sound. Mime. Code             as  (SoundType)/@mimeCode
+   Video. Mime. Code             as  (VideoType)/@mimeCode
+   Measure. Unit. Code           as  (MeasureType)/@unitCode
+
+  All other unqualified data types inherit the core component types complete
+  with their supplementary components.
+-->
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="urn:oasis:names:specification:ubl:schema:xsd:UnqualifiedDataTypes-2" 
+xmlns:ccts-cct="urn:un:unece:uncefact:data:specification:CoreComponentTypeSchemaModule:2"
+            xmlns:ccts="urn:un:unece:uncefact:documentation:2" 
+            elementFormDefault="qualified" 
+            attributeFormDefault="unqualified"
+            version="2.1">
+<!-- ===== Imports ===== -->
+  <xsd:import schemaLocation="CCTS_CCT_SchemaModule-2.1.xsd"
+namespace="urn:un:unece:uncefact:data:specification:CoreComponentTypeSchemaModule:2"/>
+<!-- ===== Type Definitions ===== -->
+  <xsd:complexType name="AmountType">
+    
+    <xsd:simpleContent>
+      <xsd:restriction base="ccts-cct:AmountType">
+        <xsd:attribute name="currencyID" type="xsd:normalizedString" use="required">
+           
+        </xsd:attribute>
+      </xsd:restriction>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="BinaryObjectType">
+    
+    <xsd:simpleContent>
+      <xsd:restriction base="ccts-cct:BinaryObjectType">
+        <xsd:attribute name="mimeCode" type="xsd:normalizedString" use="required">
+           
+        </xsd:attribute>
+      </xsd:restriction>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="GraphicType">
+    
+    <xsd:simpleContent>
+      <xsd:restriction base="ccts-cct:BinaryObjectType">
+        <xsd:attribute name="mimeCode" type="xsd:normalizedString" use="required">
+           
+        </xsd:attribute>
+      </xsd:restriction>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="PictureType">
+    
+    <xsd:simpleContent>
+      <xsd:restriction base="ccts-cct:BinaryObjectType">
+        <xsd:attribute name="mimeCode" type="xsd:normalizedString" use="required">
+           
+        </xsd:attribute>
+      </xsd:restriction>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="SoundType">
+    
+    <xsd:simpleContent>
+      <xsd:restriction base="ccts-cct:BinaryObjectType">
+        <xsd:attribute name="mimeCode" type="xsd:normalizedString" use="required">
+           
+        </xsd:attribute>
+      </xsd:restriction>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="VideoType">
+    
+    <xsd:simpleContent>
+      <xsd:restriction base="ccts-cct:BinaryObjectType">
+        <xsd:attribute name="mimeCode" type="xsd:normalizedString" use="required">
+           
+        </xsd:attribute>
+      </xsd:restriction>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="CodeType">
+    
+    <xsd:simpleContent>
+      <xsd:extension base="ccts-cct:CodeType"/>
+    </xsd:simpleContent>
+  </xsd:complexType>
+  
+  <xsd:complexType name="DateTimeType">
+    
+    <xsd:simpleContent>
+      <xsd:extension base="xsd:dateTime"/>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="DateType">
+    
+    <xsd:simpleContent>
+      <xsd:extension base="xsd:date"/>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="TimeType">
+    
+    <xsd:simpleContent>
+      <xsd:extension base="xsd:time"/>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="IdentifierType">
+    
+    <xsd:simpleContent>
+      <xsd:extension base="ccts-cct:IdentifierType"/>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="IndicatorType">
+    
+    <xsd:simpleContent>
+      <xsd:extension base="xsd:boolean"/>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="MeasureType">
+    
+    <xsd:simpleContent>
+      <xsd:restriction base="ccts-cct:MeasureType">
+        <xsd:attribute name="unitCode" type="xsd:normalizedString" use="required">
+           
+        </xsd:attribute>
+      </xsd:restriction>
+    </xsd:simpleContent>
+  </xsd:complexType>
+  
+  <xsd:complexType name="NumericType">
+    
+    <xsd:simpleContent>
+      <xsd:extension base="ccts-cct:NumericType"/>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="ValueType">
+    
+    <xsd:simpleContent>
+      <xsd:extension base="ccts-cct:NumericType"/>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="PercentType">
+    
+    <xsd:simpleContent>
+      <xsd:extension base="ccts-cct:NumericType"/>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="RateType">
+    
+    <xsd:simpleContent>
+      <xsd:extension base="ccts-cct:NumericType"/>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="QuantityType">
+    
+    <xsd:simpleContent>
+      <xsd:extension base="ccts-cct:QuantityType"/>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="TextType">
+    
+    <xsd:simpleContent>
+      <xsd:extension base="ccts-cct:TextType"/>
+    </xsd:simpleContent>
+  </xsd:complexType>
+
+  <xsd:complexType name="NameType">
+    
+    <xsd:simpleContent>
+      <xsd:extension base="ccts-cct:TextType"/>
+    </xsd:simpleContent>
+  </xsd:complexType>
+</xsd:schema><!-- ===== Copyright Notice ===== --><!--
+  OASIS takes no position regarding the validity or scope of any 
+  intellectual property or other rights that might be claimed to pertain 
+  to the implementation or use of the technology described in this 
+  document or the extent to which any license under such rights 
+  might or might not be available; neither does it represent that it has 
+  made any effort to identify any such rights. Information on OASIS's 
+  procedures with respect to rights in OASIS specifications can be 
+  found at the OASIS website. Copies of claims of rights made 
+  available for publication and any assurances of licenses to be made 
+  available, or the result of an attempt made to obtain a general 
+  license or permission for the use of such proprietary rights by 
+  implementors or users of this specification, can be obtained from 
+  the OASIS Executive Director.
+
+  OASIS invites any interested party to bring to its attention any 
+  copyrights, patents or patent applications, or other proprietary 
+  rights which may cover technology that may be required to 
+  implement this specification. Please address the information to the 
+  OASIS Executive Director.
+  
+  This document and translations of it may be copied and furnished to 
+  others, and derivative works that comment on or otherwise explain 
+  it or assist in its implementation may be prepared, copied, 
+  published and distributed, in whole or in part, without restriction of 
+  any kind, provided that the above copyright notice and this 
+  paragraph are included on all such copies and derivative works. 
+  However, this document itself may not be modified in any way, 
+  such as by removing the copyright notice or references to OASIS, 
+  except as needed for the purpose of developing OASIS 
+  specifications, in which case the procedures for copyrights defined 
+  in the OASIS Intellectual Property Rights document must be 
+  followed, or as required to translate it into languages other than 
+  English. 
+
+  The limited permissions granted above are perpetual and will not be 
+  revoked by OASIS or its successors or assigns. 
+
+  This document and the information contained herein is provided on 
+  an "AS IS" basis and OASIS DISCLAIMS ALL WARRANTIES, 
+  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY 
+  WARRANTY THAT THE USE OF THE INFORMATION HEREIN 
+  WILL NOT INFRINGE ANY RIGHTS OR ANY IMPLIED 
+  WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A 
+  PARTICULAR PURPOSE.
+-->

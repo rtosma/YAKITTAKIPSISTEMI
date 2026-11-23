@@ -19,12 +19,6 @@ export class BadRequestError extends AppError {
   }
 }
 
-export class ValidationError extends AppError {
-  constructor(message: string = 'Girdi doğrulama hatası', details?: any) {
-    super(message, 400, true, details);
-  }
-}
-
 export class UnauthorizedError extends AppError {
   constructor(message: string = 'Kimlik doğrulaması başarısız', details?: any) {
     super(message, 401, true, details);
@@ -49,8 +43,38 @@ export class ConflictError extends AppError {
   }
 }
 
-export class InternalServerError extends AppError {
-  constructor(message: string = 'Sunucu hatası oluştu', details?: any) {
+/**
+ * AI-502 — GEMINI_API_KEY yapılandırılmamışsa VEYA model çağrısı/çıktısı
+ * başarısız olursa (ağ hatası, geçersiz/şema dışı JSON) bu fırlatılır.
+ * 500 DEĞİL 503: bu bir sunucu hatası değil, isteğe bağlı bir dış bağımlılığın
+ * şu an kullanılamadığını belirtir — isOperational: true (beklenen,
+ * loglanması gereken ama alarm/500 sayılmaması gereken bir durum).
+ */
+export class ServiceUnavailableError extends AppError {
+  constructor(message: string = 'Servis şu anda kullanılamıyor', details?: any) {
+    super(message, 503, true, details);
+  }
+}
+
+/**
+ * ARCH-101.1 AC — "Context olmadan repository çağrısı yapılırsa
+ * MissingTenantContextException fırlatılmalıdır". withTenant() (bkz.
+ * db/withTenant.ts) dışında hiç fırlatılmamalıdır; bu her zaman bir
+ * programlama hatasını gösterir (örn. authenticateJWT'den geçmeyen bir
+ * route'tan tenant'a özel bir repository fonksiyonunun çağrılması) — bu
+ * yüzden isOperational: false ve 500 (kullanıcı hatası değil, bir bug).
+ */
+export class MissingTenantContextException extends AppError {
+  constructor(message: string = 'DB işlemi için aktif tenant context bulunamadı.', details?: any) {
     super(message, 500, false, details);
   }
+}
+
+/**
+ * Zod'un sürümler arası issue alanı adı değişmiş olabilir (`issues` günceli,
+ * `errors` eski/uyumluluk takma adı) — errorHandler.ts ve validateMiddleware.ts
+ * bu `err.issues || err.errors` düşüşünü birbirinden bağımsız tekrarlıyordu.
+ */
+export function getZodIssues(err: any): any[] {
+  return err?.issues || err?.errors || [];
 }

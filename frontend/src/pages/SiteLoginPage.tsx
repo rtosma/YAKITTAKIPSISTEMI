@@ -7,15 +7,18 @@ export const SiteLoginPage: React.FC = () => {
   const navigate = useNavigate();
   const { loginSiteOperator, isAuthenticated } = useApp();
 
-  if (isAuthenticated) {
-    return <Navigate to="/panel" replace />;
-  }
-
-  const [username, setUsername] = useState<string>('gebze-santiye');
-  const [password, setPassword] = useState<string>('123456');
+  const [username, setUsername] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+
+  // Hook kuralı: erken return TÜM hook'lardan sonra olmalı — önceden
+  // useState'lerden ÖNCEydi; giriş sonrası isAuthenticated değişince React
+  // "Rendered fewer hooks than expected" hatası verebilirdi.
+  if (isAuthenticated) {
+    return <Navigate to="/santiye-panel" replace />;
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,7 +41,7 @@ export const SiteLoginPage: React.FC = () => {
       setIsLoading(false);
 
       if (result.success) {
-        navigate('/panel');
+        navigate('/santiye-panel');
       } else {
         setErrorMessage(result.error || 'Şantiye girişi yapılırken bir hata oluştu.');
       }
@@ -101,6 +104,7 @@ export const SiteLoginPage: React.FC = () => {
           {/* Error Alert Box */}
           {errorMessage && (
             <motion.div
+              data-testid="login-error"
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               className="bg-[#ffb4ab]/10 border border-[#ffb4ab]/30 p-3.5 rounded-xl flex items-start space-x-3 text-xs text-[#ffb4ab]"
@@ -124,6 +128,7 @@ export const SiteLoginPage: React.FC = () => {
                 </span>
                 <input
                   type="text"
+                  data-testid="login-username"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="Şantiye Adı"
@@ -151,6 +156,7 @@ export const SiteLoginPage: React.FC = () => {
                   key
                 </span>
                 <input
+                  data-testid="login-password"
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -167,11 +173,21 @@ export const SiteLoginPage: React.FC = () => {
                   </span>
                 </button>
               </div>
+              <div className="text-right">
+                <button
+                  type="button"
+                  onClick={() => navigate('/parola-unuttum')}
+                  className="text-[11px] font-semibold text-[#d5c4ab] hover:text-[#a1e8a2] hover:underline cursor-pointer"
+                >
+                  Parolamı Unuttum
+                </button>
+              </div>
             </div>
 
             {/* Submit Button */}
             <button
               type="submit"
+              data-testid="login-submit"
               disabled={isLoading}
               className="w-full py-3.5 px-4 bg-[#a1e8a2] hover:bg-[#bbf4bd] active:scale-[0.99] text-[#0d3811] font-extrabold rounded-xl text-xs flex items-center justify-center space-x-2 transition-all shadow-lg cursor-pointer disabled:opacity-50"
             >

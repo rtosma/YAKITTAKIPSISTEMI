@@ -1,0 +1,51 @@
+# OPS-1108 — Altyapı uyarıları (disk, bellek, CPU). Etiket `mountpoint` bağlama noktası sayısıyla sınırlıdır (kardinalite güvenli).
+groups:
+  - name: infra
+    rules:
+      - alert: DiskSpace
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}) < 0.15
+        for: 10m
+        labels: { severity: warning, domain: infra }
+        annotations:
+          summary: "Disk %85 doldu ({{ $labels.mountpoint }})"
+          description: "{{ $labels.mountpoint }} boş oranı {{ $value | printf \"%.2f\" }} (eşik 0.15)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/infrastructure.md#diskspace"
+      - alert: DiskSpace
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}) < 0.05
+        for: 5m
+        labels: { severity: critical, domain: infra }
+        annotations:
+          summary: "Disk %95 doldu ({{ $labels.mountpoint }}) — yazma hataları/veritabanı durması yakın"
+          description: "{{ $labels.mountpoint }} boş oranı {{ $value | printf \"%.2f\" }} (eşik 0.05)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/infrastructure.md#diskspace"
+
+      - alert: DiskWillFillSoon
+        expr: |
+          predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}[2h], 4 * 3600) < 0
+          and (node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}) < 0.4
+        for: 30m
+        labels: { severity: warning, domain: infra }
+        annotations:
+          summary: "Disk bu hızla ~4 saat içinde dolacak ({{ $labels.mountpoint }})"
+          description: "Son 2 saatlik eğilim 4 saat sonra boş alanı sıfırın altına düşürüyor (boş oran şu an < 0.40)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/infrastructure.md#diskwillfillsoon"
+
+      - alert: HostMemoryLow
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.10
+        for: 10m
+        labels: { severity: warning, domain: infra }
+        annotations:
+          summary: "Host kullanılabilir belleği %10'un altında"
+          description: "Kullanılabilir bellek oranı {{ $value | printf \"%.2f\" }}."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/infrastructure.md#hostmemorylow"
+
+      - alert: HostCpuHigh
+        expr: (100 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+        for: 15m
+        labels: { severity: warning, domain: infra }
+        annotations:
+          summary: "Host CPU kullanımı 15 dk'dır %90'ın üzerinde"
+          description: "CPU kullanımı %{{ $value | printf \"%.0f\" }}."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/infrastructure.md#hostcpuhigh"

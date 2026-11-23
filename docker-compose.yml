@@ -21,12 +21,26 @@ services:
       - pgdata:/var/lib/postgresql/data
       # Auto-initialize schema on first startup
       - ./backend/src/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      # OPS-1103 AC: "Migration ve seed otomatik çalışmalıdır" — önceden
+      # yalnızca şema otomatik uygulanıyordu, demo giriş bilgilerini
+      # (kullanıcılar/firmalar/araçlar) içeren seed_mock_data.sql'i yeni bir
+      # geliştirici İLK `docker compose up`'tan sonra ELLE (docker exec ile)
+      # çalıştırmak zorundaydı — bu olmadan sisteme giriş yapacak hiçbir
+      # kullanıcı yoktu. docker-entrypoint-initdb.d dosyaları ADI SIRASINA
+      # göre çalıştırır, bu yüzden 02- öneki şemadan SONRA çalışmasını garanti eder.
+      - ./backend/src/db/seed_mock_data.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-yakittakip_db}"]
-      interval: 10s
+      # -h 127.0.0.1: ilk kurulumda imaj initdb.d betiklerini YALNIZCA unix
+      # soketinden dinleyen geçici bir sunucuyla çalıştırır; soket üzerinden
+      # pg_isready o sırada "hazır" der ve backend şema/seed bitmeden
+      # başlatılır. TCP yalnızca init bitip gerçek sunucu açılınca yanıt verir.
+      # Bu yüzden init süresi artık sağlık kontrolüne dahil: start_period 60s,
+      # boş volume'de şema + seed'in uygulanmasına yetecek pay.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-yakittakip_db}"]
+      interval: 5s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 60s
     networks:
       - yakit_network
 
@@ -37,6 +51,21 @@ services:
     image: redis:7-alpine
     container_name: yakittakip_redis
     restart: unless-stopped
+    # AOF (Append Only File) etkin: refresh token store + IoT cihaz durumu
+    # Redis'te tutulduğu için, bir crash'te yalnızca RDB snapshot'ına güvenmek
+    # (varsayılan: 60 sn'de 10000 / 300 sn'de 100 / 1 saatte 1 yazım) son
+    # ~1 saate kadar yazımı kaybettirebilir → tüm kullanıcılar toplu logout.
+    # everysec fsync ile kayıp en fazla ~1 sn'ye iner.
+    #
+    # Bellek: önceden maxmemory=0 (sınırsız) — Redis konteyner/host OOM ile
+    # öldürülene kadar büyürdü. Tavan konuldu; politika BİLEREK noeviction:
+    # Redis oturum deny-list'i, hesap kilitleri ve rate-limit sayaçlarını
+    # tutuyor — allkeys-lru gibi bir tahliye, iptal edilmiş token'ı geri
+    # açabilir ya da brute-force kilidini silebilirdi. Tavana ulaşınca yazmalar
+    # reddedilir: /auth/login parola doğrulamadan 503 döner (fail-closed, bkz.
+    # accountLockoutService.checkLockout + test_redis_memory_pressure.ts).
+    # Mevcut kullanım ~2-3 MB, anahtarların neredeyse tamamı TTL'li.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
     volumes:
       - redisdata:/data
     healthcheck:
@@ -51,7 +80,8 @@ services:
   # EMQX - High Performance MQTT v5 Broker
   # --------------------------------------------------------------------------
   emqx:
-    image: emqx:5.8.0
+    build:
+      context: ./docker/emqx
     container_name: yakittakip_emqx
     restart: unless-stopped
     ports:
@@ -59,9 +89,32 @@ services:
       - "8083:8083"     # MQTT/WebSocket
       - "18083:18083"   # Dashboard
     environment:
+      # Sabit düğüm adı: verilmezse imaj adı container IP'sinden türetir
+      # (emqx@172.18.0.X) ve dahili veritabanını (data/mnesia/<düğüm adı>) o
+      # ada göre ayrı dizinde tutar. Container yeniden oluşturulup farklı IP
+      # alınca BAŞKA bir dizin açılıyor — eski bir IP'ye denk gelirse eski
+      # MQTT kullanıcısı/parolası geri yükleniyor ve backend "Bad User Name or
+      # Password" ile bağlanamıyordu (parola rotasyonu da sessizce geri
+      # alınabiliyordu). Tek düğüm, küme yok: 127.0.0.1 kararlı ve geçerli.
+      # Not: ilk geçişte EMQX boş bir veritabanıyla açılır; MQTT kullanıcısı
+      # entrypoint'in bootstrap dosyasından (.env) yeniden oluşturulur.
+      EMQX_NODE__NAME: emqx@127.0.0.1
       EMQX_DASHBOARD__DEFAULT_USERNAME: ${EMQX_DASHBOARD_USER:-admin}
       EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASS:-public}
-      EMQX_ALLOW_ANONYMOUS: "true" # For dev environments, allow anonymous MQTT clients
+      # Anonymous MQTT access is intentionally NOT allowed: without it, anyone
+      # on the network could publish fake pump/tank telemetry or subscribe to
+      # every tenant's live data with zero credentials. Instead, a single
+      # username/password is seeded from .env by docker/emqx/entrypoint.sh —
+      # see that file for why. The backend connects with these same values
+      # (MQTT_USERNAME/MQTT_PASSWORD, wired into mqttClient.ts).
+      MQTT_USERNAME: ${MQTT_USERNAME:?MQTT_USERNAME .env dosyasında tanımlanmalıdır}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?MQTT_PASSWORD .env dosyasında tanımlanmalıdır}
+      EMQX_AUTHENTICATION__1__MECHANISM: password_based
+      EMQX_AUTHENTICATION__1__BACKEND: built_in_database
+      EMQX_AUTHENTICATION__1__USER_ID_TYPE: username
+      EMQX_AUTHENTICATION__1__PASSWORD_HASH_ALGORITHM__NAME: plain
+      EMQX_AUTHENTICATION__1__BOOTSTRAP_FILE: /opt/emqx/data/authn_bootstrap.csv
+      EMQX_AUTHENTICATION__1__BOOTSTRAP_TYPE: plain
     healthcheck:
       test: ["CMD", "/opt/emqx/bin/emqx", "ctl", "status"]
       interval: 10s
@@ -79,7 +132,23 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: yakittakip_backend
+      # OPS-1110: sürüm etiketi imaja gömülür (Dockerfile ENV APP_VERSION; runtime env'i bilerek YOK —
+      # sürümün tek kaynağı imajdır, böylece geri alınan imaj kendi etiketini taşır).
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    # OPS-1110: SIGTERM ile SIGKILL arası süre. Uygulamanın kendi kapanış zaman aşımı 30 sn
+    # (backend/src/index.ts); bu değer ondan BÜYÜK olmalı ki uygulama kendi çıkışını yapsın,
+    # Docker onu kesmesin (docker stop -t varsayılanı 10 sn idi → devam eden istekler kesilirdi).
+    stop_grace_period: 45s
+    # OPS-1102: kasıtlı olarak sabit bir container_name YOK. Docker Compose,
+    # container_name sabitlenmiş bir servisi 1'in üzerinde ölçeklendirmeyi
+    # reddeder ("cannot scale service to more than 1"); scripts/zero-downtime-deploy.sh
+    # ise tam olarak bunu yapıyor — eski konteyner ayakta ve trafik alırken
+    # yeni imajla ikinci bir backend konteyneri başlatıp (scale=2, --no-recreate)
+    # sağlıklı olduğunu doğruladıktan sonra eskisini kaldırıyor. Compose bu
+    # servisi kendi ürettiği adla (ör. yakittakipsistemi-backend-1) izliyor;
+    # günlük `docker exec`/`docker logs` için `docker compose ps -q backend`
+    # kullanın.
     restart: unless-stopped
     environment:
       NODE_ENV: production
@@ -89,16 +158,58 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-yakittakip_db}
-      # No default on purpose: this service runs with NODE_ENV=production, where a
-      # fallback secret would let anyone who can read the repo mint a token for any
-      # tenant and role. Compose refuses to start until these are supplied.
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET tanimli degil. Kok dizinde .env olusturun (bkz. .env.example).}
-      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET tanimli degil. Kok dizinde .env olusturun (bkz. .env.example).}
+      # No insecure default here on purpose: the backend now fails fast at
+      # startup if these are missing (ARCH-110 — see backend/src/config/env.ts).
+      # Set real, random values in your .env — copy .env.example and edit it.
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET .env dosyasında tanımlanmalıdır}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET .env dosyasında tanımlanmalıdır}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       MQTT_URL: mqtt://emqx:1883
-    ports:
-      - "5000:5000"
+      MQTT_USERNAME: ${MQTT_USERNAME:?MQTT_USERNAME .env dosyasında tanımlanmalıdır}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?MQTT_PASSWORD .env dosyasında tanımlanmalıdır}
+      # OPS-1105: önceden hardwareAuthMiddleware.ts'te düz metin sabit kodluydu.
+      HW_SECRET_ESP32_PUMP_01: ${HW_SECRET_ESP32_PUMP_01:?HW_SECRET_ESP32_PUMP_01 .env dosyasında tanımlanmalıdır}
+      HW_SECRET_ESP32_TANK_01: ${HW_SECRET_ESP32_TANK_01:?HW_SECRET_ESP32_TANK_01 .env dosyasında tanımlanmalıdır}
+      HW_SECRET_ESP32_FLOW_ISR: ${HW_SECRET_ESP32_FLOW_ISR:?HW_SECRET_ESP32_FLOW_ISR .env dosyasında tanımlanmalıdır}
+      # FUEL-401.4: finalize edilen ikmal kayıtlarının değişmezlik mührü sırrı.
+      TRANSACTION_HASH_SECRET: ${TRANSACTION_HASH_SECRET:?TRANSACTION_HASH_SECRET .env dosyasında tanımlanmalıdır}
+      # AUTH-202.3: hardware_devices.encrypted_secret AES-256-GCM anahtarı.
+      HW_SECRET_ENCRYPTION_KEY: ${HW_SECRET_ENCRYPTION_KEY:?HW_SECRET_ENCRYPTION_KEY .env dosyasında tanımlanmalıdır}
+      # ARCH-108: tenant veri dışa aktarım arşivi AES-256-GCM anahtarı.
+      TENANT_EXPORT_ENCRYPTION_KEY: ${TENANT_EXPORT_ENCRYPTION_KEY:?TENANT_EXPORT_ENCRYPTION_KEY .env dosyasında tanımlanmalıdır}
+      # NOTIF-1604: Telegram bot token'ı/webhook HMAC sırrı AES-256-GCM anahtarı.
+      NOTIFICATION_CHANNEL_ENCRYPTION_KEY: ${NOTIFICATION_CHANNEL_ENCRYPTION_KEY:?NOTIFICATION_CHANNEL_ENCRYPTION_KEY .env dosyasında tanımlanmalıdır}
+      # AI-502: yukarıdakilerin AKSİNE zorunlu DEĞİL (`:-` boş varsayılan) —
+      # tanımsızsa özellik nazikçe 503 döner, uygulamanın geri kalanı normal
+      # çalışır (bkz. config/env.ts, consumptionAnomalyService.ts).
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # IOT-302.1: LoRaWAN uplink webhook token'ı — opsiyonel ama FAIL-CLOSED
+      # (tanımsızsa POST /lorawan/uplink tüm çağrıları 503 ile reddeder).
+      LORAWAN_WEBHOOK_TOKEN: ${LORAWAN_WEBHOOK_TOKEN:-}
+      TOTP_ENFORCED: ${TOTP_ENFORCED:-false}
+      # OPS-1107: /metrics için opsiyonel Bearer token (boş = yalnızca iç ağ; bkz. config/env.ts).
+      METRICS_TOKEN: ${METRICS_TOKEN:-}
+      # RES-907: Sentry (boş DSN = kapalı). Sürüm etiketi APP_VERSION imajdan gelir.
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      SENTRY_ERROR_SAMPLE_RATE: ${SENTRY_ERROR_SAMPLE_RATE:-1}
+      SENTRY_TRACES_SAMPLE_RATE: ${SENTRY_TRACES_SAMPLE_RATE:-0}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT:-}
+      # TEST_PLAN §5.2: CORS allowlist. BOŞ = CORS tamamen kapalı
+      # (same-origin) — nginx SPA'yı ve /api'yi aynı origin'den sunduğu için
+      # normal kurulumda boş kalır; yalnızca API'ye BAŞKA bir origin'den
+      # erişilecekse doldurulur.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+    # OPS-1102: host'a sabit "5000:5000" port yayını kasıtlı olarak KALDIRILDI.
+    # 1) frontend/nginx.conf zaten backend'e dahili yakit_network üzerinden
+    #    hostname ile (http://backend:5000) erişiyor — dışarıdan doğrudan
+    #    erişime gerek yok, tüm trafik nginx üzerinden geçmeli.
+    # 2) Sabit bir host portu, aynı anda YALNIZCA bir konteyner tarafından
+    #    bağlanabilir — scripts/zero-downtime-deploy.sh'nin gerektirdiği
+    #    "eski + yeni replika aynı anda ayakta" durumunu (scale=2) bu port
+    #    engeller ("port is already allocated" hatası). Doğrudan host'tan API
+    #    testi gerekiyorsa nginx üzerinden http://localhost:3000/api/v1/...
+    #    kullanın (frontend zaten 3000:80 ile host'a açık).
     depends_on:
       postgres:
         condition: service_healthy
@@ -118,10 +229,28 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_BASE_URL: /api/v1
+        # RES-907: Sentry (boş DSN = tarayıcı hata izleme kapalı). Sürüm etiketi backend `release` ile AYNI (APP_VERSION).
+        VITE_SENTRY_DSN: ${SENTRY_DSN:-}
+        VITE_SENTRY_SAMPLE_RATE: ${SENTRY_ERROR_SAMPLE_RATE:-1}
+        VITE_APP_VERSION: ${APP_VERSION:-dev}
+        SENTRY_ORG: ${SENTRY_ORG:-}
+        SENTRY_PROJECT: ${SENTRY_PROJECT:-}
+        SENTRY_URL: ${SENTRY_URL:-}
+      # Source map yükleme token'ı derleme SIRRI olarak geçer (ARG değil): SENTRY_AUTH_TOKEN ortam değişkeninden okunur; tanımsızsa boş dosya.
+      secrets:
+        - sentry_auth_token
     container_name: yakittakip_frontend
     restart: unless-stopped
     ports:
       - "3000:80"
+    # OPS-1102: backend'in tek yönlendirme hedefi host'tan bind-mount edilen
+    # bu dosyada tutuluyor (nginx.conf'taki `upstream backend_pool` bloğu
+    # bunu include ediyor) — böylece scripts/zero-downtime-deploy.sh, frontend
+    # imajını YENİDEN DERLEMEDEN sadece bu dosyayı yazıp `nginx -s reload`
+    # tetikleyerek trafiği atomik olarak eski/yeni backend repliği arasında
+    # geçirebiliyor.
+    volumes:
+      - ./nginx/backend_upstream.conf:/etc/nginx/backend_upstream.conf:ro
     depends_on:
       - backend
     networks:
@@ -130,6 +259,10 @@ services:
 # ==============================================================================
 # Docker Volumes & Networks
 # ==============================================================================
+secrets:
+  sentry_auth_token:
+    environment: SENTRY_AUTH_TOKEN
+
 volumes:
   pgdata:
     driver: local

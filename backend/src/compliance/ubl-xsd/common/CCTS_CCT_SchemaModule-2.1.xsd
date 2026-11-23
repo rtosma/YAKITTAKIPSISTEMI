@@ -1,0 +1,239 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ====================================================================== -->
+<!-- ===== CCTS Core Component Type Schema Module ===== -->
+<!-- ====================================================================== -->
+<!--
+   Module of Core Component Type
+   Agency: UN/CEFACT
+   VersionID: 1.1
+   Last change: 14 January 2005
+   
+   
+   
+   Copyright (C) UN/CEFACT (2006). All Rights Reserved.
+   This document and translations of it may be copied and furnished to others,
+   and derivative works that comment on or otherwise explain it or assist
+   in its implementation may be prepared, copied, published and distributed,
+   in whole or in part, without restriction of any kind, provided that the
+   above copyright notice and this paragraph are included on all such copies
+   and derivative works. However, this document itself may not be modified in
+   any way, such as by removing the copyright notice or references to
+   UN/CEFACT, except as needed for the purpose of developing UN/CEFACT
+   specifications, in which case the procedures for copyrights defined in the
+   UN/CEFACT Intellectual Property Rights document must be followed, or as
+   
+   
+   required to translate it into languages other than English.
+   The limited permissions granted above are perpetual and will not be revoked
+   
+   
+   
+   by UN/CEFACT or its successors or assigns.
+   This document and the information contained herein is provided on an "AS IS"
+   basis and UN/CEFACT DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING
+   BUT NOT LIMITED TO ANY WARRANTY THAT THE USE OF THE INFORMATION HEREIN WILL
+   NOT INFRINGE ANY RIGHTS OR ANY IMPLIED WARRANTIES OF MERCHANTABILITY OR
+   FITNESS FOR A PARTICULAR PURPOSE.
+-->
+<xsd:schema targetNamespace="urn:un:unece:uncefact:data:specification:CoreComponentTypeSchemaModule:2"
+xmlns:ccts="urn:un:unece:uncefact:documentation:2"
+xmlns:cct="urn:un:unece:uncefact:data:specification:CoreComponentTypeSchemaModule:2"
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified" attributeFormDefault="unqualified">
+   <!-- ===== Type Definitions ===== -->
+   <!-- =================================================================== -->
+   <!-- ===== CCT: AmountType ===== -->
+   <!-- =================================================================== -->
+   <xsd:complexType name="AmountType">
+      
+      <xsd:simpleContent>
+         <xsd:extension base="xsd:decimal">
+            <xsd:attribute name="currencyID" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="currencyCodeListVersionID" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+         </xsd:extension>
+      </xsd:simpleContent>
+   </xsd:complexType>
+   <!-- ===== CCT: BinaryObjectType ===== -->
+   <!-- =================================================================== -->
+   <xsd:complexType name="BinaryObjectType">
+      
+      <xsd:simpleContent>
+         <xsd:extension base="xsd:base64Binary">
+            <xsd:attribute name="format" type="xsd:string" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="mimeCode" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="encodingCode" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="characterSetCode" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="uri" type="xsd:anyURI" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="filename" type="xsd:string" use="optional">
+               
+            </xsd:attribute>
+         </xsd:extension>
+      </xsd:simpleContent>
+   </xsd:complexType>
+   <!-- ===== CCT: CodeType ===== -->
+   <!-- =================================================================== -->
+   <xsd:complexType name="CodeType">
+      
+      <xsd:simpleContent>
+         <xsd:extension base="xsd:normalizedString">
+            <xsd:attribute name="listID" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="listAgencyID" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="listAgencyName" type="xsd:string" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="listName" type="xsd:string" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="listVersionID" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="name" type="xsd:string" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="languageID" type="xsd:language" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="listURI" type="xsd:anyURI" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="listSchemeURI" type="xsd:anyURI" use="optional">
+               
+            </xsd:attribute>
+         </xsd:extension>
+      </xsd:simpleContent>
+   </xsd:complexType>
+   <!-- ===== CCT: DateTimeType ===== -->
+   <!-- =================================================================== -->
+   <xsd:complexType name="DateTimeType">
+      
+      <xsd:simpleContent>
+         <xsd:extension base="xsd:string">
+            <xsd:attribute name="format" type="xsd:string" use="optional">
+               
+            </xsd:attribute>
+         </xsd:extension>
+      </xsd:simpleContent>
+   </xsd:complexType>
+   <!-- ===== CCT: IdentifierType ===== -->
+   <!-- =================================================================== -->
+   <xsd:complexType name="IdentifierType">
+      
+      <xsd:simpleContent>
+         <xsd:extension base="xsd:normalizedString">
+            <xsd:attribute name="schemeID" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="schemeName" type="xsd:string" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="schemeAgencyID" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="schemeAgencyName" type="xsd:string" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="schemeVersionID" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="schemeDataURI" type="xsd:anyURI" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="schemeURI" type="xsd:anyURI" use="optional">
+               
+            </xsd:attribute>
+         </xsd:extension>
+      </xsd:simpleContent>
+   </xsd:complexType>
+   <!-- ===== CCT: IndicatorType ===== -->
+   <!-- =================================================================== -->
+   <xsd:complexType name="IndicatorType">
+      
+      <xsd:simpleContent>
+         <xsd:extension base="xsd:string">
+            <xsd:attribute name="format" type="xsd:string" use="optional">
+               
+            </xsd:attribute>
+         </xsd:extension>
+      </xsd:simpleContent>
+   </xsd:complexType>
+   <!-- ===== CCT: MeasureType ===== -->
+   <!-- =================================================================== -->
+   <xsd:complexType name="MeasureType">
+      
+      <xsd:simpleContent>
+         <xsd:extension base="xsd:decimal">
+            <xsd:attribute name="unitCode" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="unitCodeListVersionID" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+         </xsd:extension>
+      </xsd:simpleContent>
+   </xsd:complexType>
+   <!-- ===== CCT: NumericType ===== -->
+   <!-- =================================================================== -->
+   <xsd:complexType name="NumericType">
+      
+      <xsd:simpleContent>
+         <xsd:extension base="xsd:decimal">
+            <xsd:attribute name="format" type="xsd:string" use="optional">
+               
+            </xsd:attribute>
+         </xsd:extension>
+      </xsd:simpleContent>
+   </xsd:complexType>
+   <!-- ===== CCT: QuantityType ===== -->
+   <!-- =================================================================== -->
+   <xsd:complexType name="QuantityType">
+      
+      <xsd:simpleContent>
+         <xsd:extension base="xsd:decimal">
+            <xsd:attribute name="unitCode" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="unitCodeListID" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="unitCodeListAgencyID" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="unitCodeListAgencyName" type="xsd:string" use="optional">
+               
+            </xsd:attribute>
+         </xsd:extension>
+      </xsd:simpleContent>
+   </xsd:complexType>
+   <!-- ===== CCT: TextType ===== -->
+   <!-- =================================================================== -->
+   <xsd:complexType name="TextType">
+      
+      <xsd:simpleContent>
+         <xsd:extension base="xsd:string">
+            <xsd:attribute name="languageID" type="xsd:language" use="optional">
+               
+            </xsd:attribute>
+            <xsd:attribute name="languageLocaleID" type="xsd:normalizedString" use="optional">
+               
+            </xsd:attribute>
+         </xsd:extension>
+      </xsd:simpleContent>
+   </xsd:complexType>
+</xsd:schema>

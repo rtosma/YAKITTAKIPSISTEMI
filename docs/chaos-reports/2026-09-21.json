@@ -1,0 +1,115 @@
+{
+  "date": "2026-09-21",
+  "version": "dev",
+  "ok": true,
+  "scenarios": [
+    {
+      "name": "A-baseline",
+      "records": 40,
+      "durationMs": 898,
+      "attempts": 2,
+      "failures": 0,
+      "ambiguousObserved": 0,
+      "dupSkipped": 0,
+      "exact": true
+    },
+    {
+      "name": "B-72h-outage",
+      "records": 216,
+      "durationMs": 4746,
+      "attempts": 17,
+      "failures": 12,
+      "ambiguousObserved": 0,
+      "dupSkipped": 0,
+      "exact": true,
+      "extra": {
+        "totalLiters": 1725,
+        "spanHours": 71.7
+      }
+    },
+    {
+      "name": "C-degraded-link",
+      "records": 150,
+      "durationMs": 13088,
+      "attempts": 15,
+      "failures": 9,
+      "ambiguousObserved": 3,
+      "dupSkipped": 75,
+      "exact": true,
+      "extra": {
+        "resetBefore": 6,
+        "latencyMs": 250,
+        "lossRate": 0.35,
+        "bytesPerSec": 12000
+      }
+    },
+    {
+      "name": "D-second-outage-mid-sync",
+      "records": 100,
+      "durationMs": 2178,
+      "attempts": 9,
+      "failures": 4,
+      "ambiguousObserved": 1,
+      "dupSkipped": 20,
+      "exact": true
+    },
+    {
+      "name": "E-backend-crash-mid-sync",
+      "records": 60,
+      "durationMs": 3118,
+      "attempts": 3,
+      "failures": 1,
+      "ambiguousObserved": 0,
+      "dupSkipped": 16,
+      "exact": true,
+      "extra": {
+        "recoveryMs": 924,
+        "restartedByPolicy": true,
+        "manualStartNeeded": false,
+        "nginxReloadNeeded": false
+      }
+    },
+    {
+      "name": "F1-redis-down",
+      "records": 3,
+      "durationMs": 2421,
+      "attempts": 2,
+      "failures": 1,
+      "ambiguousObserved": 0,
+      "dupSkipped": 0,
+      "exact": true,
+      "extra": {
+        "syncStatusDuringOutage": 503,
+        "readiness": 503
+      }
+    },
+    {
+      "name": "F2-mqtt-down",
+      "records": 3,
+      "durationMs": 94,
+      "attempts": 1,
+      "failures": 0,
+      "ambiguousObserved": 0,
+      "dupSkipped": 0,
+      "exact": true,
+      "extra": {
+        "readinessFlipMs": 1011,
+        "reconnectMs": 8550
+      }
+    },
+    {
+      "name": "F3-postgres-down",
+      "records": 3,
+      "durationMs": 5010,
+      "attempts": 2,
+      "failures": 1,
+      "ambiguousObserved": 0,
+      "dupSkipped": 0,
+      "exact": true,
+      "extra": {
+        "syncStatusDuringOutage": 503,
+        "recoveryMs": 3046
+      }
+    }
+  ]
+}

@@ -1,0 +1,131 @@
+# ==============================================================================
+# OPS-1108 — API / uygulama uyarıları. Her alarm: severity (critical|warning|info), domain, summary, description, runbook_url.
+# EŞİK FELSEFESİ (uyarı yorgunluğu): (1) her kural `for` ile GEÇİCİ dalgalanmayı eler, (2) oran kuralları asgari trafik korumalıdır
+# (düşük trafikte tek 500 = %100 hata oranı olmasın), (3) aynı alertname iki şiddetle tanımlanır (warning erken, critical kalıcı/ağır) ve
+# Alertmanager critical geldiğinde aynı alertname'in warning'ini bastırır (inhibit) — ekip tek olay için iki bildirim almaz.
+# Eşik değişikliği: kural + scripts/monitoring/alert-scenarios.mjs senaryosu + runbook birlikte güncellenir (docs/ALERTING.md §7).
+# ==============================================================================
+groups:
+  - name: api
+    rules:
+      - alert: ApiErrorRate
+        expr: |
+          (sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) > 0.02
+          and sum(rate(http_requests_total[5m])) > 0.2
+        for: 10m
+        labels: { severity: warning, domain: api }
+        annotations:
+          summary: "API 5xx hata oranı %2'yi aştı"
+          description: "Son 5 dk 5xx oranı {{ $value | printf \"%.3f\" }} (eşik 0.02, ≥0.2 istek/sn trafikte)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#apierrorrate"
+      - alert: ApiErrorRate
+        expr: |
+          (sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))) > 0.10
+          and sum(rate(http_requests_total[5m])) > 0.2
+        for: 5m
+        labels: { severity: critical, domain: api }
+        annotations:
+          summary: "API 5xx hata oranı %10'u aştı — kullanıcılar etkileniyor"
+          description: "Son 5 dk 5xx oranı {{ $value | printf \"%.3f\" }} (eşik 0.10)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#apierrorrate"
+
+      - alert: ApiLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) > 1
+          and sum(rate(http_requests_total[5m])) > 0.2
+        for: 10m
+        labels: { severity: warning, domain: api }
+        annotations:
+          summary: "API p95 gecikmesi 1 sn'yi aştı"
+          description: "Son 5 dk p95 = {{ $value | printf \"%.2f\" }} sn (eşik 1)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#apilatencyp95"
+      - alert: ApiLatencyP95
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket[5m]))) > 3
+          and sum(rate(http_requests_total[5m])) > 0.2
+        for: 5m
+        labels: { severity: critical, domain: api }
+        annotations:
+          summary: "API p95 gecikmesi 3 sn'yi aştı — sistem fiilen yanıt vermiyor"
+          description: "Son 5 dk p95 = {{ $value | printf \"%.2f\" }} sn (eşik 3)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#apilatencyp95"
+
+      - alert: EventLoopLag
+        expr: max(nodejs_eventloop_lag_p99_seconds) > 0.5
+        for: 5m
+        labels: { severity: warning, domain: api }
+        annotations:
+          summary: "Node.js event loop gecikmesi p99 > 500 ms"
+          description: "Event loop p99 gecikmesi {{ $value | printf \"%.2f\" }} sn — senkron/CPU-yoğun iş tüm istekleri geciktiriyor."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#eventlooplag"
+
+      - alert: BackendDown
+        expr: up{job="backend"} == 0
+        for: 2m
+        labels: { severity: critical, domain: api }
+        annotations:
+          summary: "Backend örneği kazınamıyor (uptime)"
+          description: "{{ $labels.instance }} 2 dk'dır /metrics'e yanıt vermiyor: süreç çökmüş, yeniden başlıyor veya ağ kopuk."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#backenddown"
+      - alert: BackendMissing
+        expr: absent(up{job="backend"})
+        for: 5m
+        labels: { severity: critical, domain: api }
+        annotations:
+          summary: "Backend hedefi Prometheus'tan tamamen kayboldu"
+          description: "up{job=\"backend\"} serisi 5 dk'dır yok: servis keşfi (DNS) boş — tüm replikalar kapalı olabilir. (up==0 bu durumda ateşlemez.)"
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#backendmissing"
+
+      - alert: BackendMemoryHigh
+        expr: max(process_resident_memory_bytes{job="backend"}) > 1.5e9
+        for: 15m
+        labels: { severity: warning, domain: api }
+        annotations:
+          summary: "Backend RSS belleği 1.5 GB'ı aştı (sızıntı şüphesi)"
+          description: "RSS {{ $value | printf \"%.0f\" }} bayt; kalıcı artış OOM-kill riskidir."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/api.md#backendmemoryhigh"
+
+  - name: database
+    rules:
+      - alert: DbPoolSaturated
+        expr: max(yakit_db_pool_connections{state="waiting"}) > 0
+        for: 2m
+        labels: { severity: warning, domain: database }
+        annotations:
+          summary: "Uygulama DB havuzunda bağlantı bekleyen istek var"
+          description: "{{ $value | printf \"%.0f\" }} istek havuzdan bağlantı bekliyor (havuz 10 bağlantı)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/database.md#dbpoolsaturated"
+      - alert: DbPoolSaturated
+        expr: max(yakit_db_pool_connections{state="waiting"}) > 5
+        for: 2m
+        labels: { severity: critical, domain: database }
+        annotations:
+          summary: "DB bağlantı havuzu doygun — istekler zaman aşımına düşüyor"
+          description: "{{ $value | printf \"%.0f\" }} istek bekliyor; connectionTimeout (10 sn) sonrası 503 üretilir."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/database.md#dbpoolsaturated"
+
+      - alert: PostgresConnectionsHigh
+        expr: sum(pg_stat_activity_count) / max(pg_settings_max_connections) > 0.8
+        for: 5m
+        labels: { severity: warning, domain: database }
+        annotations:
+          summary: "PostgreSQL bağlantıları max_connections'ın %80'ini aştı"
+          description: "Kullanım oranı {{ $value | printf \"%.2f\" }} (eşik 0.80)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/database.md#postgresconnectionshigh"
+      - alert: PostgresConnectionsHigh
+        expr: sum(pg_stat_activity_count) / max(pg_settings_max_connections) > 0.9
+        for: 5m
+        labels: { severity: critical, domain: database }
+        annotations:
+          summary: "PostgreSQL bağlantıları max_connections'ın %90'ını aştı — yeni bağlantılar reddedilecek"
+          description: "Kullanım oranı {{ $value | printf \"%.2f\" }} (eşik 0.90)."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/database.md#postgresconnectionshigh"
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 2m
+        labels: { severity: critical, domain: database }
+        annotations:
+          summary: "PostgreSQL'e ulaşılamıyor"
+          description: "postgres-exporter veritabanına bağlanamıyor (pg_up=0) — DB durmuş veya erişim/kimlik hatası."
+          runbook_url: "https://github.com/rtosma/YAKITTAKIPSISTEMI/blob/main/docs/runbooks/database.md#postgresdown"

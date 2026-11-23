@@ -3,17 +3,48 @@ name: Yakıttakip Enterprise CI/CD Pipeline
 on:
   push:
     branches: [ main, master ]
+    # OPS-1104: vX.Y.Z etiketi = ÜRETİM dağıtım talebi (bkz. deploy-production ve docs/ENVIRONMENTS.md).
+    tags: [ 'v[0-9]+.[0-9]+.[0-9]+' ]
   pull_request:
     branches: [ main, master ]
+  # TEST-1002: k6 yük/stres testi ~90 saniyelik gerçek yük üretir (100
+  # eşzamanlı "pompa" @ 1000 istek/sn) — her push/PR'da otomatik çalışmak
+  # yerine (CI süresini gereksiz uzatır, ölçüm gürültüsü paylaşımlı runner'a
+  # bağlı olur) manuel/elle tetiklemeli tutuluyor.
+  workflow_dispatch:
 
 jobs:
   quality-and-tests:
     name: 🧪 Quality Check & Integration Tests
     runs-on: ubuntu-latest
+    # OPS-1106/1107/1108 testleri gerçek Postgres/Prometheus/Alertmanager konteynerleri çalıştırır (yedek+PITR ≈ 2 dk, canlı uyarı tatbikatı ≈ 3 dk).
+    timeout-minutes: 30
+    # ARCH-110: backend/src/config/env.ts artık JWT_SECRET/JWT_REFRESH_SECRET/
+    # MQTT_USERNAME/MQTT_PASSWORD'ü HER modül import zincirinde (test_res902.ts
+    # ve test_ops1101.ts dahil — logger.ts üzerinden transitif olarak) zorunlu
+    # kılıyor. Bu job gerçek bir Postgres/Redis/EMQX'e hiç bağlanmıyor — bu
+    # yüzden bu 4 değişken yalnızca config doğrulamasını geçmek için var,
+    # gerçek bir kimlik bilgisi değil (auth-integration-test job'ındaki
+    # ci_only_* desenle aynı).
+    env:
+      JWT_SECRET: ci_only_quality_job_access_secret_${{ github.run_id }}
+      JWT_REFRESH_SECRET: ci_only_quality_job_refresh_secret_${{ github.run_id }}
+      MQTT_USERNAME: ci_only_unused
+      MQTT_PASSWORD: ci_only_unused
+      HW_SECRET_ESP32_PUMP_01: ci_only_unused
+      HW_SECRET_ESP32_TANK_01: ci_only_unused
+      HW_SECRET_ESP32_FLOW_ISR: ci_only_unused
+      TRANSACTION_HASH_SECRET: ci_only_unused
+      HW_SECRET_ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      TENANT_EXPORT_ENCRYPTION_KEY: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      NOTIFICATION_CHANNEL_ENCRYPTION_KEY: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          # OPS-1104: migration güvenlik denetimi taban şema sürümünü git geçmişinden okur.
+          fetch-depth: 0
 
       - name: Setup Node.js 20.x
         uses: actions/setup-node@v4
@@ -33,6 +64,177 @@ jobs:
       - name: Type Check (TypeScript)
         run: npm run lint
 
+      - name: "ARCH-101.3: Tenant Tablolarında RLS Kapsama Kontrolü"
+        run: node scripts/check-rls-coverage.mjs
+
+      # OPS-1104 AC: "Migration'lar dağıtımın parçası olarak güvenli uygulanmalıdır." — schema.sql
+      # blue/green geçişte eski replikayla birlikte çalışacağından yalnızca EKLEYİCİ (expand) olmalı;
+      # yıkıcı ifade `-- MIGRATION-CONTRACT: <gerekçe>` onayı ister (scripts/lib/migrationSafety.mjs).
+      - name: "OPS-1104: Migration Güvenliği (expand/contract) Denetimi"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_REF: ${{ github.base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then BASE="origin/$PR_BASE_REF"; else BASE="$PUSH_BEFORE"; fi
+          case "$BASE" in ""|0000000*) BASE="HEAD~1" ;; esac
+          node scripts/check-migration-safety.mjs --base "$BASE"
+
+      - name: "OPS-1104: Dağıtım Altyapısı Testleri (migration/duman/changelog/workflow)"
+        run: node scripts/test-ops1104.mjs
+
+      # OPS-1106: GERÇEK Postgres konteynerleriyle yedek → WAL gönderimi → geri yükleme (dump + PITR) → tatbikat; şifreleme/kurcalama/retansiyon.
+      - name: "OPS-1106: Yedekleme ve Geri Yükleme Testleri (şifreli yedek, PITR, restore tatbikatı)"
+        run: node scripts/test-ops1106.mjs
+
+      # OPS-1107: dashboard ↔ metrik kayıt defteri, kardinalite politikası, doküman drift'i, promtool/loki/promtail yapılandırma denetimi, compose güvenliği.
+      # (Canlı uçtan uca: node scripts/test-ops1107.mjs --live — çalışan compose yığını gerektirir.)
+      - name: "OPS-1107: Gözlemlenebilirlik Yığını Testleri (dashboard, kardinalite, yapılandırma)"
+        run: node scripts/test-ops1107.mjs
+
+      # OPS-1108: uyarı kuralları (promtool birim testleri GERÇEK `for` süreleriyle), runbook'lar, Alertmanager yapılandırması (amtool) + CANLI bildirim zinciri
+      # tatbikatı (yalıtılmış Prometheus + Alertmanager + sahte alıcı; tüm kritik uyarılar yapay tetiklenir). Yalnızca docker + resmi imajlar gerekir.
+      - name: "OPS-1108: Uyarı Kuralları, Runbook'lar ve Yapılandırma Testleri"
+        run: node scripts/test-ops1108.mjs
+      - name: "OPS-1108: Bildirim Zinciri Tatbikatı (kritik uyarılar yapay tetiklenir)"
+        run: node scripts/test-ops1108.mjs --live
+
+      # OPS-1110: drain/grace-period sözleşmesi, rolling sırası, readiness, sürüm kaydı + GERÇEK rollback.sh/migrasyon kapısı senaryoları (sahte docker).
+      # (Canlı tatbikat: node scripts/test-ops1110.mjs --live — çalışan compose yığını gerekir; sonuç docs/deploy-drills/ altında.)
+      - name: "OPS-1110: Rolling Deploy / Rollback Testleri (drain, readiness, migrasyon kapısı)"
+        run: node scripts/test-ops1110.mjs
+
+      - name: "ARCH-101.2: Ham pool.query Kullanımı Denetimi (RLS Bypass Koruması)"
+        run: node scripts/check-no-raw-pool-query.mjs
+
+      # COMP-606 (#132): "Loglara TC kimlik no ve telefon yazılmamalıdır" — logger çağrılarında kişisel veri anahtarı taraması + statik sözleşme testleri.
+      - name: "COMP-606: Loglarda Kişisel Veri (TCKN/telefon/e-posta) Denetimi"
+        run: node scripts/check-no-pii-logging.mjs
+      - name: "COMP-606: KVKK Statik Testleri (envanter belgesi, guard fixture, bağlantılar)"
+        run: node scripts/test-comp606.mjs
+
+      # RES-907 (#192): Sentry — statik sözleşme + frontend derlemesi (source map üretimi ve orijinal kaynağa geri çözme). Backend davranış testi API job'unda.
+      - name: "RES-907: Sentry Statik Sözleşme Testleri"
+        run: node scripts/test-res907.mjs
+      - name: "RES-907: Frontend Source Map Derleme Testi (okunabilir stack)"
+        run: node scripts/test-res907.mjs --build
+
+      # TEST-1007 (#198): kaos paketi sözleşmesi (docker gerektiren kaos koşusu CI dışı: docs/CHAOS_TESTING.md).
+      - name: "TEST-1007: Kaos Paketi Sözleşme Testleri"
+        run: node scripts/test-test1007.mjs
+
+      # DOC-1206 (#188): saha kurulum prosedürü kodla çelişemez — API uçları, eşikler (±30 sn, %20, TTL, limit), form ↔ belge kriterleri.
+      - name: "DOC-1206: Saha Kurulum Belgesi ve Devreye Alma Formu Tutarlılık Testi"
+        run: node scripts/test-doc1206.mjs
+
+      # DOC-1207 (#189): operatör el kitabı ↔ cihaz ekran mesajı kataloğu birebir (kataloğdan üretilir), her hata kodunun karşılığı, tek sayfalık özet kart.
+      - name: "DOC-1207: El Kitabı ↔ Cihaz Mesaj Kataloğu Uyumu (üretilmiş belge güncel mi?)"
+        run: node scripts/generate-operator-manual.mjs --check
+      - name: "DOC-1207: Operatör El Kitabı ve Özet Kart Testleri"
+        run: node scripts/test-doc1207.mjs
+
+      # DOC-1203 (#40): proje rehberinin üretilen bölümleri (şema, rol matrisi, uçlar, rapor kataloğu) koddan güncel mi + kurulum betiği gerçekten çalışıyor mu.
+      - name: "DOC-1203: Proje Rehberi Güncel mi? (koddan üretilen bölümler)"
+        run: node scripts/generate-project-guide.mjs --check
+      - name: "DOC-1203: Proje Rehberi Sözleşme Testleri (kurulum, modül haritası, diyagramlar, roller)"
+        run: node scripts/test-doc1203.mjs
+
+      # TEST-1004 (#196): tarayıcı E2E sözleşmesi — yalnızca data-testid seçici, determinizm kuralları, testid'lerin arayüzde var olması, kanıt yapılandırması, CI/nightly.
+      - name: "TEST-1004: Playwright E2E Sözleşme Testleri"
+        run: node scripts/test-test1004.mjs
+
+      # TEST-1001 (#193): E2E altyapısının sözleşmesi — orkestratör bütçesi, izolasyon kuralı (tohum tenant'ına dokunma), CI işi ve deploy geçidi.
+      - name: "TEST-1001: E2E Altyapı Sözleşmesi Testleri"
+        run: node scripts/test-test1001.mjs
+
+      # DOC-1204 (#41): sunum rehberi — 12-15 slayt + konuşma metni, ≥ 8 SSS, 60 sn özet, teknik terim/uydurma oran yok, fiyat/menü/eşikler kodla aynı.
+      - name: "DOC-1204: Sunum Rehberi Testleri"
+        run: node scripts/test-doc1204.mjs
+
+      # DOC-1205 (#42): sözlük — ≥ 30 terim, TR–EN karşılıklar, "projede nerede" yolları gerçek, sayısal iddialar kodla aynı, rehberde ilk geçişte bağlı.
+      - name: "DOC-1205: Terim Sözlüğü Testleri"
+        run: node scripts/test-doc1205.mjs
+
+      - name: "ARCH-110: Ham process.env Kullanımı Denetimi (Tipli Config Zorunluluğu)"
+        run: node scripts/check-no-direct-process-env.mjs
+
+      - name: "ARCH-110: .env.example ↔ Config Şeması Senkron Kontrolü"
+        run: node scripts/check-env-example-sync.mjs
+
+      # TEST_PLAN.md §6 — geçersiz bir workflow dosyası CI'ı "kırmızı" değil
+      # "yok" yapar (GitHub hiçbir job çalıştırmaz, hiçbir uyarı görünmez).
+      # Bu gerçekten yaşandı: 151881b ile giren tırnaksız "OPS-1105:" başlığı
+      # dosyayı geçersiz YAML yaptı. Bir daha sessizce olmasın diye kilitli.
+      - name: "GÜVENLİK: Workflow YAML Geçerlilik Denetimi"
+        run: node scripts/check-workflow-yaml.mjs
+
+      # TEST_PLAN.md §0.2 — YAML sözdizimi geçerli olup ANLAMSAL olarak geçersiz
+      # bir workflow da hiç çalışmaz (gerçek olay: job-level if içinde secrets).
+      # actionlint GitHub Actions ifadelerini, bağlam kullanımını ve run
+      # bloklarını (shellcheck) denetler. İmaj sürümü sabitlendi (latest değil).
+      - name: "GÜVENLİK: Workflow Anlamsal Denetimi (actionlint)"
+        run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12 -color
+
+      # TEST_PLAN.md §3.4 — frontend'de ESLint yok; XSS/kod-enjeksiyon sink'leri
+      # ve xlsx'in (bilinen HIGH zafiyetli) parse yolu mekanik olarak yasak.
+      - name: "GÜVENLİK: Frontend XSS / Tehlikeli Desen Denetimi"
+        run: node scripts/check-frontend-security.mjs
+
+      # TEST_PLAN.md §2.2 — Trivy YALNIZCA imaj/OS paketlerini tarıyor;
+      # node_modules içindeki JS bağımlılık zafiyetleri bu adımla kapsanır.
+      # GHSA bazlı allowlist: bilinmeyen HER yeni advisory build'i kırar.
+      - name: "GÜVENLİK: Bağımlılık Zafiyet Denetimi (npm audit, GHSA allowlist)"
+        run: node scripts/check-dependency-audit.mjs
+
+      # TEST_PLAN.md §5.1 — CSP + diğer güvenlik başlıkları. Statik denetim:
+      # CI'da nginx YOK (backend çıplak çalışıyor), bu yüzden canlı curl
+      # testi burada çalışamaz; yapılandırmanın kendisi denetleniyor.
+      - name: "GÜVENLİK: Güvenlik Yanıt Başlıkları (CSP) Denetimi"
+        run: node scripts/check-security-headers.mjs
+
+      # TEST_PLAN.md §0.3 — login rate-limit (10/15dk, IP bazlı) test paketi
+      # içinde tükenince SONRAKİ testler 429 alıp yanlışlıkla kırılıyor.
+      # Bu guard, giriş yapan her testin temizlik yapmasını zorunlu kılar.
+      - name: "TEST HİJYENİ: Login Rate-Limit Temizliği Denetimi"
+        run: node scripts/check-test-rate-limit-hygiene.mjs
+
+      # TEST_PLAN.md §3 — frontend'in ilk otomatik testleri. Kapsam bilinçli
+      # olarak dar: oturum zinciri (401 → sessiz token yenileme → otomatik
+      # çıkış). Backend'den farklı olarak bunlar gerçek servis GEREKTİRMEZ
+      # (jsdom + mock fetch), bu yüzden hızlı `quality-and-tests` işinde.
+      - name: "TEST_PLAN §3 + TEST-1006: Birim Testleri + Coverage Eşiği (backend + frontend, vitest)"
+        # TEST-1006 (#47): `npm test` kökten iki paketin birim testlerini koşturur; `test:coverage` ayrıca v8 coverage ölçer ve EŞİK ALTINDA
+        # sıfır olmayan çıkış koduyla build'i KIRAR (backend hesap motorları %90, kapsamdaki tüm dosyalar %70; frontend genel %20 taban, mantık
+        # modülleri %70). Bu testler DB/Redis/ağ gerektirmez → hızlı quality-and-tests işinde.
+        run: npm run test:coverage
+
+      - name: "TEST-1006: Birim Testleri Tip Denetimi (backend/unit + test-support)"
+        run: npm run test:unit:typecheck
+
+      - name: "TEST-1006: Coverage Eşiği Davranış Testi + Altyapı Sözleşmesi"
+        run: node scripts/test-test1006.mjs
+
+      - name: "TEST-1006: Coverage Özeti (iş özeti + artifact)"
+        if: always()
+        run: |
+          {
+            echo "### Birim test coverage (TEST-1006)"
+            for pkg in backend frontend; do
+              f="$pkg/coverage/coverage-summary.json"
+              [ -f "$f" ] && node -e "const t=require('./$f').total;console.log('- **$pkg**: satır %'+t.lines.pct+' · dal %'+t.branches.pct+' · fonksiyon %'+t.functions.pct+' · ifade %'+t.statements.pct)"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "TEST-1006: Coverage Raporları (lcov)"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-coverage
+          path: |
+            backend/coverage/lcov.info
+            frontend/coverage/lcov.info
+          if-no-files-found: ignore
+
       - name: Run RES-902 Exception Filter & Logging Tests
         run: cd backend && npx tsx test/test_res902.ts
 
@@ -43,10 +245,733 @@ jobs:
 #__CI_SKIP__ değişkeni SIGTERM testinde sunucu başlatılırken gerçek bir PostgreSQL'e bağlanma denemesini önlemek için
 
 
+  auth-integration-test:
+    name: 🔐 AUTH-201 Integration Test (Login, Refresh Rotation, RBAC)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # test_auth201.ts makes real HTTP calls against a running server backed by
+    # a real PostgreSQL + Redis — the other two test files never actually
+    # exercised login/refresh-rotation/RBAC end-to-end. Previously not run in
+    # CI at all; it would have failed on the pompa-op-01 PUMP_OPERATOR fixture
+    # user, which is now part of seed_mock_data.sql.
+    # Job seviyesinde (adım seviyesinde değil): testHardwareAuth.ts (ayrı bir
+    # adımda çalışır) sunucuyla AYNI HW_SECRET_ESP32_PUMP_01 değerini
+    # görmeli, aksi halde hesapladığı HMAC imzası sunucununkiyle eşleşmez.
+    env:
+      HW_SECRET_ESP32_PUMP_01: ci_only_hw_secret_pump_${{ github.run_id }}
+      HW_SECRET_ESP32_TANK_01: ci_only_hw_secret_tank_${{ github.run_id }}
+      HW_SECRET_ESP32_FLOW_ISR: ci_only_hw_secret_flow_${{ github.run_id }}
+      TRANSACTION_HASH_SECRET: ci_only_tx_hash_secret_${{ github.run_id }}
+      # AUTH-202.3: tam 64 hex karakter olmak ZORUNDA (AES-256-GCM anahtarı,
+      # bkz. config/env.ts'in regex doğrulaması) — diğer ci_only_* değerleri
+      # gibi rastgele bir metin OLAMAZ.
+      HW_SECRET_ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      TENANT_EXPORT_ENCRYPTION_KEY: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      NOTIFICATION_CHANNEL_ENCRYPTION_KEY: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      # IOT-302.1: sunucu ve test_iot302_1 AYNI token'ı görmeli (test webhook'a
+      # bu token'la POST atıyor). Job seviyesinde tanımlı → hem "Start Backend
+      # Server" hem test adımları görür.
+      LORAWAN_WEBHOOK_TOKEN: ci_only_lorawan_webhook_token_${{ github.run_id }}
+      # Bağlantı + JWT/MQTT değişkenleri de JOB seviyesinde: test dosyalarının
+      # bir kısmı backend modüllerini süreç içinde import ediyor (servis/rapor
+      # fonksiyonlarını doğrudan çağırıyor) ve config/env.ts bunları import
+      # anında zorunlu kılıyor. Yalnızca "Start Backend Server" adımında
+      # tanımlıyken bu testlerin hepsi ARCH-110 doğrulamasında düşüyordu.
+      # Süreç içinde token imzalayan testlerin sunucuyla AYNI sırrı görmesi
+      # için de tek yerde tanımlı olmaları gerekiyor.
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: yakittakip_db
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      # CI-only throwaway secrets — never reused outside this ephemeral job run.
+      JWT_SECRET: ci_only_access_secret_${{ github.run_id }}_${{ github.run_attempt }}
+      JWT_REFRESH_SECRET: ci_only_refresh_secret_${{ github.run_id }}_${{ github.run_attempt }}
+      # ARCH-110: MQTT_URL=__CI_SKIP__ yalnızca mqttService.connect()'in
+      # ÇAĞRILMASINI atlar (bkz. index.ts) — config/env.ts şeması
+      # MQTT_USERNAME/MQTT_PASSWORD'ü bundan bağımsız, her zaman zorunlu
+      # kılıyor; bu job gerçek bir EMQX'e hiç bağlanmadığından bunlar da
+      # yalnızca doğrulamayı geçmek için birer placeholder.
+      MQTT_URL: __CI_SKIP__
+      MQTT_USERNAME: ci_only_unused
+      MQTT_PASSWORD: ci_only_unused
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: yakittakip_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Backend Dependencies
+        run: cd backend && npm ci
+
+      - name: Apply Database Schema & Seed Data
+        run: |
+          # TEST_PLAN.md §4 — ON_ERROR_STOP=1 ŞART: olmadan psql bozuk bir SQL
+          # ifadesinde bile exit 0 döner (canlı doğrulandı). Yani schema.sql'deki
+          # bir CREATE POLICY/REVOKE hata verse CI YEŞİL kalırdı; statik RLS
+          # guard'ı (check-rls-coverage.mjs) dosya METNİNE baktığı için bunu da
+          # göremezdi — politika dosyada var, veritabanında yok.
+          PGPASSWORD=postgres psql -h localhost -U postgres -d yakittakip_db -v ON_ERROR_STOP=1 -f backend/src/db/schema.sql
+          PGPASSWORD=postgres psql -h localhost -U postgres -d yakittakip_db -v ON_ERROR_STOP=1 -f backend/src/db/seed_mock_data.sql
+
+      # TEST_PLAN.md §4 — projede migration aracı YOK: schema.sql yalnızca boş bir
+      # veritabanında (docker-entrypoint-initdb.d) uygulanıyor. Mevcut bir DB'ye
+      # (production) bir şema/güvenlik düzeltmesi ulaştırmanın tek güvenli yolu
+      # schema.sql'i YENİDEN çalıştırmak — bu da ancak dosya idempotent kaldıkça
+      # güvenli. Bu adım onu kilitliyor: dolu DB'ye ikinci kez uygulanamayan bir
+      # ifade (IF NOT EXISTS unutulmuş CREATE, korumasız CREATE POLICY...) CI'ı kırar.
+      - name: "TEST_PLAN §4: schema.sql + seed İdempotentlik (ikinci uygulama)"
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d yakittakip_db -v ON_ERROR_STOP=1 -q -f backend/src/db/schema.sql
+          PGPASSWORD=postgres psql -h localhost -U postgres -d yakittakip_db -v ON_ERROR_STOP=1 -q -f backend/src/db/seed_mock_data.sql
+          echo "schema.sql ve seed dolu bir veritabanına hatasız yeniden uygulandı."
+
+      - name: Start Backend Server (background)
+        run: |
+          nohup npx tsx src/bootstrap.ts > /tmp/backend-ci.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:5000/api/v1/health > /dev/null && echo "Backend healthy after ${i}s" && exit 0
+            sleep 1
+          done
+          echo "Backend did not become healthy in time — server log follows:"
+          cat /tmp/backend-ci.log
+          exit 1
+        working-directory: backend
+        env:
+          PORT: 5000
+          # Bağlantı/JWT/MQTT değişkenleri job seviyesinde (bkz. job env).
+
+      - name: Run AUTH-201 Integration Tests
+        run: cd backend && npx tsx test/test_auth201.ts
+
+      # #212: /auth/refresh kimliği DB'den okumalı (çapraz-kiracı yükseltme yok)
+      # ve eşzamanlı rotasyonda tek kullanım korunmalı (atomik Redis script).
+      - name: Run AUTH-201 Refresh Identity + Concurrency Regression Tests
+        run: cd backend && npx tsx test/test_auth201_refresh_identity.ts
+
+      # HTTP testi yarışı yerelde yakalayamıyor (istekler aralanıyor); bu test
+      # rotateRefreshToken'ı aynı tick'te N kez doğrudan çağırır.
+      - name: Run AUTH-201 Refresh Rotation Race Test (code level)
+        run: cd backend && npx tsx test/test_auth201_refresh_race.ts
+
+      - name: Run AUTH-202.2 Hardware HMAC + Replay/Nonce Tests
+        run: cd backend && npx tsx test/testHardwareAuth.ts
+
+      - name: Run AUTH-209 Account Lockout Tests
+        run: cd backend && npx tsx test/test_auth209.ts
+
+      - name: Run AUTH-204 Site Provisioning + Forced Password Change Tests
+        run: cd backend && npx tsx test/test_auth204.ts
+
+      - name: Run AUTH-203 Append-Only Audit Trail Tests
+        run: cd backend && npx tsx test/test_auth203.ts
+
+      - name: Run AUTH-201.4 RBAC Matrix + Site-Scoping Tests
+        run: cd backend && npx tsx test/test_auth201_4_rbac_matrix.ts
+
+      - name: Run TEST-1003 Tenant Isolation Leak Tests
+        run: cd backend && npx tsx test/test_195_tenant_isolation.ts
+
+      # TEST_PLAN.md §0.1 — route/test kapsama taraması sonucu hiç test
+      # edilmediği bulunan 2 uç (offline-ratio-alerts RBAC + tenant izolasyonu,
+      # tenant-info kimlik doğrulaması). Bu adım CI'daki çıplak backend'e
+      # (port 5000) bağlanır — nginx YOK, bu yüzden API_URL override YOK.
+      - name: "TEST_PLAN §0.1: Test Edilmemiş Uç Kapsama Testleri (GAP-1/GAP-2)"
+        run: cd backend && npx tsx test/test_gap_untested_endpoints.ts
+
+      # TEST_PLAN.md §2.2 — mevcut 59 testin HEPSİ istekleri sırayla atıyordu;
+      # sıralı bir test, FOR UPDATE kilitlerini tamamen kaldırsanız bile geçer.
+      # Bu test eşzamanlı yük üretip kaybolan güncelleme (lost update) ve stok
+      # aşımı oluşup oluşmadığını sınar. Doğrulandı: kilitler kaldırıldığında
+      # 10 testten 5'i kırılıyor.
+      - name: "TEST_PLAN §2.2: Eşzamanlılık / Race Condition Testleri"
+        run: cd backend && npx tsx test/test_race_conditions.ts
+
+      # TEST_PLAN.md §5.1/§5.2 — çalışan sunucunun GERÇEKTEN ne döndürdüğü
+      # (X-Powered-By sızıntısı, CORS'un yabancı origin'e kapalı olması).
+      # nginx'e bağlı 4 test CI'da otomatik ATLANIR (burada nginx yok);
+      # o katman scripts/check-security-headers.mjs ile statik denetleniyor.
+      - name: "TEST_PLAN §5.1/§5.2: Güvenlik Başlıkları + CORS Davranışı"
+        run: cd backend && npx tsx test/test_security_headers_cors.ts
+
+      # TEST_PLAN.md §4 — RLS'i BİLİNÇLİ olarak olmayan 2 tablonun
+      # (companies, platform_audit_log) tek savunması app_user yetkileri.
+      # Bu test şemadaki REVOKE satırına bakmakla yetinmez; app_user rolüne
+      # geçip yazmayı DENER ve reddedildiğini doğrular.
+      - name: "TEST_PLAN §4: RLS'siz Tabloların DB Yetki Korumaları"
+        run: cd backend && npx tsx test/test_db_privileges.ts
+
+      # TEST_PLAN.md §2.2 — sınır/kötü niyetli girdi taraması: devasa sayfa
+      # boyutu (DoS yüzeyi), negatif/tip uyumsuz sayfalama, takvimde olmayan
+      # tarihler (500 üretiyordu — düzeltildi) ve SQL enjeksiyon denemeleri.
+      - name: "TEST_PLAN §2.2: Sayfalama Sınırları + Girdi Güvenliği"
+        run: cd backend && npx tsx test/test_input_boundaries.ts
+
+      # TEST_PLAN.md §2.2 — aynı irsaliye aynı tanka iki kez girildiğinde stok
+      # iki kez artıyordu (hayali stok, hırsızlığı örtebilir). Eşzamanlı çift
+      # gönderim ve meşru bölünmüş teslimat senaryoları dahil.
+      - name: "TEST_PLAN §2.2: Idempotency — Mükerrer Yakıt Alım İrsaliyesi"
+        run: cd backend && npx tsx test/test_idempotency_fuel_intake.ts
+
+      # TEST_PLAN.md §5 — `trust proxy` yokken nginx arkasındaki tüm istemciler
+      # tek IP görünüyor, login rate limiter platform geneli tek kova oluyordu
+      # (10 istekle herkesin girişi kilitlenebiliyordu). CI'da nginx yok; test
+      # X-Forwarded-For ile proxy'nin eklediği istemci IP'sini simüle eder.
+      - name: "TEST_PLAN §5: Proxy Arkasında Kişi Başı Login Rate Limit"
+        run: cd backend && npx tsx test/test_trust_proxy_rate_limit.ts
+
+      # TEST_PLAN.md §2.2 — kalıcı tenant silme onayı kilitsizdi: iptal ile onay
+      # yarışınca iptal "başarılı" dönüp firma TÜM verisiyle silinebiliyordu
+      # (15 turun 14'ünde kanıtlandı). Çapraz şantiye kotası eşzamanlılığı dahil.
+      - name: "TEST_PLAN §2.2: Eşzamanlılık — Tenant Silme Onayı + Çapraz Şantiye Kotası"
+        run: cd backend && npx tsx test/test_race_tenant_lifecycle_and_quota.ts
+
+      # TEST_PLAN §4 — canlı pg_catalog'dan FK CASCADE/RLS doğrulaması, 46 tabloda
+      # app_user olarak dinamik okuma/yazma-kaçışı taraması ve kalıcı silme
+      # sonrası: sıfır artık satır + silinen tenant'ın token'larının reddi.
+      - name: "TEST_PLAN §4: Canlı DB Bütünlüğü + Kalıcı Tenant Silme Sonrası"
+        run: cd backend && npx tsx test/test_db_integrity_tenant_deletion.ts
+
+      # TEST_PLAN §2.2 — plaka aracın iş anahtarı (işlemler, çapraz şantiye
+      # yetkisi, tüketim); kopya plaka (boşluk/harf varyantı + eşzamanlı kayıt dahil) 409.
+      - name: "TEST_PLAN §2.2: Araç Plakası Tenant İçinde Tekil"
+        run: cd backend && npx tsx test/test_vehicle_plate_uniqueness.ts
+
+      # FLEET-1401 (#77) — plakasız iş makinesi tanım kodu, şantiye atama
+      # geçmişi, ve GERÇEK bir bug düzeltmesi: manuel/operatör-tetiklemeli
+      # ikmal (POST /dispense) önceden aracın status'unu HİÇ kontrol
+      # etmiyordu (yalnızca RFID/cihaz-tetiklemeli otomatik akış kontrol
+      # ediyordu) — PASİF/BLOKE bir araç manuel ikmalle hâlâ yakıt alabiliyordu.
+      - name: Run FLEET-1401 Vehicle Lifecycle Tests
+        run: cd backend && npx tsx test/test_fleet1401_vehicle_lifecycle.ts
+
+      # TEST_PLAN §7 — Redis yazmaları reddettiğinde (noeviction + maxmemory
+      # dolu) login fail-closed 503: kilit/IP limiti düşmüşken parola kâhini yok.
+      - name: "TEST_PLAN §7: Redis Bellek Baskısı — Giriş Korumaları"
+        run: cd backend && npx tsx test/test_redis_memory_pressure.ts
+
+      # TEST_PLAN §7 — tek tenant'ın kilit beklemeleri havuzu doldurunca diğer
+      # tenant'lar süresiz beklemez (lock_timeout + havuz bekleme sınırı → 503).
+      - name: "TEST_PLAN §7: Postgres Havuz Doygunluğu"
+        run: cd backend && npx tsx test/test_db_pool_saturation.ts
+
+      - name: Run FUEL-401 RFID Dispense Session State Machine Tests
+        run: cd backend && npx tsx test/test_fuel401_dispense_session.ts
+
+      # DOC-1204 (#41): sunum demo senaryosunun GERÇEK sistemde provası (kart reddi, ikmal, panelde görünme, çevrimdışı kuyruk, rapor, firma yalıtımı).
+      - name: Run DOC-1204 Demo Rehearsal (Sunum Senaryosu Gerçek Sistemde)
+        run: cd backend && npx tsx test/test_doc1204_demo_rehearsal.ts
+
+      - name: Run AUTH-202.3 Hardware Device Secret Lifecycle Tests
+        run: cd backend && npx tsx test/test_auth2023_hardware_device_lifecycle.ts
+
+      - name: Run FE-811 Site Emergency Stop Tests
+        run: cd backend && npx tsx test/test_fe811_emergency_stop.ts
+
+      - name: Run IOT-302 Binary LoRaWAN Payload Decoder Tests
+        run: cd backend && npx tsx test/test_iot302_lorawan_decoder.ts
+
+      - name: Run IOT-302.1 LoRaWAN Uplink Webhook Tests
+        run: cd backend && npx tsx test/test_iot302_1_lorawan_webhook.ts
+
+      - name: Run IOT-304 Device Claim/Provisioning Flow Tests
+        run: cd backend && npx tsx test/test_iot304_device_claim_flow.ts
+
+      - name: Run IOT-303.1 Offline Sync Batch Tests
+        run: cd backend && npx tsx test/test_iot303_sync_batch.ts
+
+      - name: Run IOT-303.2 Negative Stock Alarm Tests
+        run: cd backend && npx tsx test/test_iot303_2_negative_stock_alarm.ts
+
+      - name: Run FUEL-404.1 K-Factor Remote Calibration Tests
+        run: cd backend && npx tsx test/test_fuel404_1_calibration.ts
+
+      - name: Run FUEL-404.2 Calibration Test Intake Wizard Tests
+        run: cd backend && npx tsx test/test_fuel404_2_test_intake.ts
+
+      - name: Run FUEL-410 Hybrid Fail-Open Policy Tests
+        run: cd backend && npx tsx test/test_fuel410_fail_open_policy.ts
+
+      # IOT-307 (#110): saat sapması tespiti + senkron komutu + kalıcı sapma alarmı + device_reported_at/
+      # server_received_at. Bu iş gerçek bir EMQX'e bağlanmadığından (MQTT_URL=__CI_SKIP__, yukarıdaki not)
+      # yalnızca MQTT'ye GERÇEKTEN yayınlandığının gözlemi (T1b/T3) atlanır — geri kalan tüm doğrulamalar
+      # (drift kaydı, kalıcı alarm, response alanları, DB sütunları) burada da tam çalışır.
+      - name: "IOT-307: Saat Sapması Tespiti ve Senkron Komutu Testleri"
+        run: cd backend && npx tsx test/test_iot307_clock_drift.ts
+
+      - name: Run REP-701 Stream Excel Export Tests
+        run: cd backend && npx tsx test/test_rep701_transaction_export.ts
+
+      # REP-703 (#166) — ortak rapor çatısı: rol bazlı katalog, filtre
+      # whitelist'i (SQL injection dahil), sayfalama, tenant izolasyonu,
+      # CSV/PDF export ve PDF satır sınırı.
+      - name: Run REP-703 Common Report Framework Tests
+        run: cd backend && npx tsx test/test_rep703_report_framework.ts
+
+      # REP-711 (#168): rapora özgü davranış (birim fiyat/tutar GENEL TOPLAM'ı,
+      # yetki tipine göre ayrışma+filtreleme, tank/yakıt tipi filtreleri, site
+      # scoping) — ortak motor test_rep703_report_framework.ts'te ayrıca sınanıyor.
+      - name: Run REP-711 Dispense Movement Report Tests
+        run: cd backend && npx tsx test/test_rep711_dispense_movement.ts
+
+      # REP-712 (#169): FLEET-1405 JS motorunun SQL'de yeniden ifadesi — Test 2
+      # rapor satırlarını getFleetConsumptionReport ile karşılaştıran PARİTE testidir.
+      - name: Run REP-712 Vehicle Consumption Report Tests
+        run: cd backend && npx tsx test/test_rep712_vehicle_consumption.ts
+
+      # REP-713 (#170): FUEL-409 mutabakat satırlarını okuyan şantiye/tank stok raporu —
+      # elle hesaplı fixture (2021-03 penceresi), fire/kritik tank/özet=detay tutarlılığı.
+      - name: Run REP-713 Site Stock Report Tests
+        run: cd backend && npx tsx test/test_rep713_site_stock.ts
+
+      # REP-714 (#171): mutabakat kayıtlarından tank/fire raporu — elle hesaplı fark,
+      # tolerans vurgusu, LAG trend, litre-vs-% filtreleri, fire sınıfı kırılımı.
+      - name: Run REP-714 Tank Reconciliation Report Tests
+        run: cd backend && npx tsx test/test_rep714_tank_reconciliation.ts
+
+      # REP-715 (#172): çapraz alım/mahsuplaşma + reddedilen deneme izi (cross_site_denials).
+      # Cihaz yolu kaydı test_fuel402_2_quota_concurrency.ts Test 5'te.
+      - name: Run REP-715 Cross-Site Settlement Report Tests
+        run: cd backend && npx tsx test/test_rep715_cross_site.ts
+
+      # REP-716 (#173): AI-507 alarmlarından rapor — elle hesaplı YP oranı/çözüm süresi,
+      # gerçek raiseAlarm ile tekrar gruplaması, gruplamadan ÖNCE tarih filtresi.
+      - name: Run REP-716 Alarm Report Tests
+        run: cd backend && npx tsx test/test_rep716_alarm_report.ts
+
+      # REP-717 (#174): presence olaylarından online %/kesinti — elle hesaplı sentetik veri,
+      # IOT-308 getDeviceOnlineSla ile PARİTE, parametre jetonlu pencere.
+      - name: Run REP-717 Device Health Report Tests
+        run: cd backend && npx tsx test/test_rep717_device_health.ts
+
+      # REP-718 (#175): calibration_commands'tan K-factor geçmişi — elle hesaplı değişim %,
+      # kayan 30 günlük sık kalibrasyon (filtreden ÖNCE), en son doğrulama alımı sapması.
+      - name: Run REP-718 Calibration History Report Tests
+        run: cd backend && npx tsx test/test_rep718_calibration_history.ts
+
+      # REP-719 (#176): maliyet/bütçe — /fuel-budgets CRUD + elle hesaplı sapma/aşım/fiyat trendi
+      # + GERÇEK ikmal akışıyla "ikmal anı fiyatı" (INV-1503 dondurma) doğrulaması.
+      - name: Run REP-719 Cost and Budget Report Tests
+        run: cd backend && npx tsx test/test_rep719_cost_budget.ts
+
+      # REP-720 (#177): sürücü raporu — PII maskesi (rol bazlı), orakül koruması, audit'li indirme (fail-closed), AI-506 skor bileşenleri
+      - name: Run REP-720 Driver Report Tests
+        run: cd backend && npx tsx test/test_rep720_driver_report.ts
+
+      # REP-721 (#178): e-İrsaliye durum raporu — gerçek COMP-601..603 akışları, numara boşluğu tespiti, audit'li XML/PDF indirme
+      - name: Run REP-721 Despatch Advice Status Report Tests
+        run: cd backend && npx tsx test/test_rep721_despatch_status.ts
+
+      # REP-722 (#179): denetim raporu — gerçek kritik işlemler, sütun/özet/tam kapsam, değiştirilemezlik, rapor erişim audit'i (fail-closed)
+      - name: Run REP-722 Audit Report Tests
+        run: cd backend && npx tsx test/test_rep722_audit_report.ts
+
+      # REP-723 (#180): yönetici özet dashboard'u — KPI ↔ detay raporu tutarlılığı (drilldown), trend/ilk-10/tank özeti, rol kapsamı, < 1 sn
+      - name: Run REP-723 Executive Dashboard Tests
+        run: cd backend && npx tsx test/test_rep723_executive_dashboard.ts
+
+      # OPS-1107 (#184): /metrics — HTTP/DB/iş metrikleri, kardinalite (250 yeni URL → seri sayısı değişmez), arka plan iş metriği yenileyicisi,
+      # METRICS_TOKEN. Bu iş gerçek bir EMQX'e bağlanmaz → MQTT sayaç adımları (MQTT_URL_TEST tanımsız) atlanır.
+      - name: Run OPS-1107 Prometheus Metrics Tests
+        run: cd backend && npx tsx test/test_ops1107_metrics.ts
+
+      # REP-703 devamı: sıralama (sortBy/sortDir) çalışan ana test dosyasına
+      # eklendi. PDF export regresyonları (Türkçe font gömme, aynı süreçte
+      # ardışık istekler, sayfa sayısı) BİLEREK ayrı bir dosyada — o dosyanın
+      # başındaki not, bu üçünün test_rep703_report_framework.ts'in İÇİNDE
+      # (17 test sonrasına eklenince) sessizce yanlış geçtiğini, KENDİ
+      # dosyalarında ise güvenilir olduğunu açıklıyor.
+      - name: Run REP-703 PDF Export Regression Tests
+        run: cd backend && npx tsx test/test_rep703_pdf_regression.ts
+
+      # REP-702 (#165) — periyodik/manuel şifreli ZIP arşivleme + presigned
+      # indirme: ayar CRUD'u, RBAC, tenant izolasyonu, presigned bağlantının
+      # şekli + süre kontrolü. GERÇEK AES-256 şifreleme/parola doğrulaması ve
+      # manifest bütünlük kontrolü BİLEREK burada YOK (test_res905/test_iot305
+      # /test_fuel406 ile AYNI gerekçe — `docker` CLI ile bir p7zip
+      # konteyneri gerektirir, GH Actions'ın `services:` modeli bunu
+      # desteklemez) — bkz. test_rep702_archive_encryption.ts'in kendi üst
+      # yorumu; o dosya CI'a EKLENMEDİ, host'ta ayrı çalıştırılır.
+      - name: Run REP-702 Encrypted Archive Framework Tests
+        run: cd backend && npx tsx test/test_rep702_archive_framework.ts
+
+      # REP-705 (#167): NOTIF-1602 ile AYNI gerekçe — mock SMTP dinleyicisi
+      # (smtp-server) 2525 portunda AYNI süreç içinde başlatılır.
+      - name: Run REP-705 Scheduled Report Delivery Tests
+        run: cd backend && npx tsx test/test_rep705_scheduled_report_delivery.ts
+        env:
+          SMTP_HOST: localhost
+          SMTP_PORT: 2525
+          SMTP_FROM: ci-test@yakittakip.local
+
+      # REP-724 (#210): AI destekli aylık yönetim raporu. GEMINI_API_KEY SET EDİLMEZ (model test çiftidir; "anahtarsız → yorumsuz üretim" yolu da bu sayede
+      # gerçek kod yolunda sınanır). E-posta: REP-705 ile AYNI mock SMTP dinleyicisi (2525).
+      - name: Run REP-724 Monthly Management Report Tests
+        run: cd backend && npx tsx test/test_rep724_monthly_management_report.ts
+        env:
+          SMTP_HOST: localhost
+          SMTP_PORT: 2525
+          SMTP_FROM: ci-test@yakittakip.local
+
+      # AI-502: bu job'ta GEMINI_API_KEY kasıtlı olarak SET EDİLMİYOR — test
+      # dosyası bunun (bu sandbox'ta da gerçek olan) "yapılandırılmamış"
+      # durumunu doğruluyor; asıl AI çıktı-doğrulama mantığı ise Gemini'ye
+      # hiç gitmeden enjekte edilmiş bir sahte model ile (bkz. testin kendi
+      # üst yorumu) egzersiz ediliyor.
+      - name: Run AI-502 Consumption Anomaly Analysis Tests
+        run: cd backend && npx tsx test/test_ai502_consumption_anomaly.ts
+
+      - name: Run COMP-601 UBL DespatchAdvice (e-İrsaliye) Tests
+        run: cd backend && npx tsx test/test_comp601_despatch_advice.ts
+
+      - name: Run FUEL-403 Strapping Table + Volume Math Tests
+        run: cd backend && npx tsx test/test_fuel403_strapping_table.ts
+
+      - name: Run AUTH-206 Password Reset Flow Tests
+        run: cd backend && npx tsx test/test_auth206_password_reset.ts
+
+      - name: Run AUTH-210 RFID Card Blacklist Tests
+        run: cd backend && npx tsx test/test_auth210_rfid_blacklist.ts
+
+      # FLEET-1402 (#78) — RFID etiket eşleştirme: UID tekilliği (create/update
+      # VE replaceRfidCard'ın hedef UID kontrolü — üçü de önceden YOKTU),
+      # etiket değişiminin audit_logs'a yazılması, ve eşleşmemiş kart
+      # okutulduğunda panele Socket.io ile ANLIK düşen 'rfid:unmatched' olayı
+      # (önceden yalnızca cihaza 403 dönüyordu, panel hiçbir şey görmüyordu).
+      - name: Run FLEET-1402 RFID Matching Tests
+        run: cd backend && npx tsx test/test_fleet1402_rfid_matching.ts
+
+      # FLEET-1403 (#79) — TC kimlik no'nun COMP-605'in GERÇEK algoritmasıyla
+      # doğrulanması (önceden yalnızca biçim kontrolü vardı), işten ayrılan
+      # (PASİF) bir şoförün RFID kartının AUTH-210 kara listesine otomatik
+      # düşmesi (önceden hiç yapılmıyordu), ve TC No'nun PUMP_OPERATOR'a
+      # maskelenmiş gösterilmesi (KVKK/COMP-606).
+      - name: Run FLEET-1403 Driver Management Tests
+        run: cd backend && npx tsx test/test_fleet1403_driver_management.ts
+
+      - name: Run RES-906 Health/Readiness Tests
+        run: cd backend && npx tsx test/test_res906_health_readiness.ts
+
+      - name: Run FUEL-402.1 Fuel Quota + Periodic Reset Tests
+        run: cd backend && npx tsx test/test_fuel402_1_quota.ts
+
+      - name: Run FUEL-402.2 Redlock Cross-Site Quota Concurrency Tests
+        run: cd backend && npx tsx test/test_fuel402_2_quota_concurrency.ts
+
+      - name: Run FUEL-408 Tank Intake Receipt + Stock Increase Tests
+        run: cd backend && npx tsx test/test_fuel408_tank_intake.ts
+
+      - name: Run INV-1502 Supplier Definition + Fuel Purchase Waybill Tests
+        run: cd backend && npx tsx test/test_inv1502_supplier_waybill.ts
+
+      - name: Run INV-1503 Unit Price History and Fuel Cost Tests
+        run: cd backend && npx tsx test/test_inv1503_fuel_cost.ts
+
+      - name: Run INV-1504 Tank Low-Stock Forecast + Reorder Alert Tests
+        run: cd backend && npx tsx test/test_inv1504_tank_stock_forecast.ts
+
+      - name: Run INV-1501 Tank Definition, Dead Volume + Sensor Mapping Tests
+        run: cd backend && npx tsx test/test_inv1501_tank_definition.ts
+
+      - name: Run FUEL-409 Theoretical vs Physical Stock Reconciliation Tests
+        run: cd backend && npx tsx test/test_fuel409_stock_reconciliation.ts
+
+      - name: Run INV-1505 Fire/Loss Record Classification + Dual Approval Tests
+        run: cd backend && npx tsx test/test_inv1505_fire_records.ts
+
+      - name: Run NOTIF-1601 Notification Core (Event/Template/Channel) Tests
+        run: cd backend && npx tsx test/test_notif1601_notification_core.ts
+
+      # NOTIF-1602: gerçek bir SMTP sunucusu bağlanmaz — test kendi mock
+      # SMTP dinleyicisini (smtp-server) 2525 portunda AYNI süreç içinde
+      # başlatır; SMTP_HOST/SMTP_PORT config/env.ts'in bunu okuması için.
+      - name: Run NOTIF-1602 Email Channel + Delivery Tracking Tests
+        run: cd backend && npx tsx test/test_notif1602_email_channel.ts
+        env:
+          SMTP_HOST: localhost
+          SMTP_PORT: 2525
+          SMTP_FROM: ci-test@yakittakip.local
+
+      # NOTIF-1603: NOTIF-1602 ile AYNI gerekçe — mock sağlayıcı Node'un
+      # yerleşik `http` modülüyle AYNI süreç içinde başlatılır (3999 portu).
+      - name: Run NOTIF-1603 SMS Channel + Monthly Limit Tests
+        run: cd backend && npx tsx test/test_notif1603_sms_channel.ts
+        env:
+          SMS_PROVIDER_URL: http://localhost:3999/send
+
+      # NOTIF-1604: NOTIF-1602/1603 ile AYNI gerekçe — mock Telegram/webhook
+      # uçları Node'un yerleşik `http` modülüyle AYNI süreç içinde başlatılır
+      # (4001/4002 portları). TELEGRAM_API_BASE_URL gerçek api.telegram.org'a
+      # HİÇ gitmemesi için bu mock'a yönlendirir.
+      - name: Run NOTIF-1604 Telegram + Webhook Channel Tests
+        run: cd backend && npx tsx test/test_notif1604_telegram_webhook.ts
+        env:
+          TELEGRAM_API_BASE_URL: http://localhost:4001
+
+      - name: Run NOTIF-1605 User Subscription Preferences + Mute Tests
+        run: cd backend && npx tsx test/test_notif1605_user_preferences_mute.ts
+
+      - name: Run NOTIF-1606 Alarm Escalation Rules Tests
+        run: cd backend && npx tsx test/test_notif1606_alarm_escalation.ts
+
+      - name: Run FUEL-405 Manual Dispense Entry + Dual Approval Tests
+        run: cd backend && npx tsx test/test_fuel405_manual_dispense.ts
+
+      - name: Run AUTH-208 Active Sessions + Remote Logout Tests
+        run: cd backend && npx tsx test/test_auth208_sessions.ts
+
+      - name: Run AI-504 Off-Hours + Rapid-Repeat Anomaly Detection Tests
+        run: cd backend && npx tsx test/test_ai504_anomaly_detection.ts
+
+      - name: Run AI-506 Driver Behavior Scoring Tests
+        run: cd backend && npx tsx test/test_ai506_driver_behavior_score.ts
+
+      - name: Run IOT-308 Device Health Score Tests
+        run: cd backend && npx tsx test/test_iot308_device_health_score.ts
+
+      - name: Run AUTH-207 TOTP 2FA Tests
+        run: cd backend && npx tsx test/test_auth207_totp_2fa.ts
+
+      - name: Run AI-507 Unified Alarm Lifecycle Tests
+        run: cd backend && npx tsx test/test_ai507_alarm_lifecycle.ts
+
+      - name: Run COMP-605 Taxpayer (VKN/TCKN) Validation Tests
+        run: cd backend && npx tsx test/test_comp605_taxpayer_validation.ts
+
+      - name: Run FUEL-407 Multi Fuel-Type + Wrong-Fuel Rejection Tests
+        run: cd backend && npx tsx test/test_fuel407_multi_fuel_type.ts
+
+      - name: Run FLEET-1404 + RES-903 Meter Reading Entry + Validation Tests
+        run: cd backend && npx tsx test/test_fleet1404_meter_readings.ts
+
+      - name: Run FLEET-1405 L/100km + L/Hour Consumption Engine Tests
+        run: cd backend && npx tsx test/test_fleet1405_consumption_engine.ts
+
+      - name: Run AI-503 Km/Engine-Hour Consumption Anomaly Tests
+        run: cd backend && npx tsx test/test_ai503_consumption_anomaly_fleet.ts
+
+      - name: Run FLEET-1406 Vehicle Fuel Limit/Quota Tests
+        run: cd backend && npx tsx test/test_fleet1406_vehicle_fuel_limit.ts
+
+      - name: Run COMP-602.1 e-Invoice Integrator Adapter + Transmission Queue Tests
+        run: cd backend && npx tsx test/test_comp602_1_einvoice_integrator_queue.ts
+
+      - name: Run COMP-602.2 Integrator Circuit Breaker + Backoff + GİB Status Poll Tests
+        run: cd backend && npx tsx test/test_comp602_2_circuit_breaker.ts
+
+      - name: Run COMP-603 e-Invoice Rejection/Cancellation/Resubmission Lifecycle Tests
+        run: cd backend && npx tsx test/test_comp603_despatch_advice_lifecycle.ts
+
+      - name: Run COMP-604 Transmission Dashboard Bulk Resend + Stuck Detection Tests
+        run: cd backend && npx tsx test/test_comp604_transmission_dashboard.ts
+
+      - name: Run FLEET-1407 Maintenance Records + Fuel Cost Correlation Tests
+        run: cd backend && npx tsx test/test_fleet1407_maintenance_records.ts
+
+      - name: Run ARCH-105 Tenant Onboarding/Provisioning Tests
+        run: cd backend && npx tsx test/test_arch105_tenant_provisioning.ts
+
+      - name: Run FE-805 Developer Panel (Company List Last Activity) Tests
+        run: cd backend && npx tsx test/test_fe805_developer_panel.ts
+
+      - name: Run FE-806 Developer Panel (Device Health + System Metrics) Tests
+        run: cd backend && npx tsx test/test_fe806_developer_panel.ts
+
+      - name: Run BILL-1701 Company Packages + License Model Tests
+        run: cd backend && npx tsx test/test_bill1701_packages_license.ts
+
+      - name: Run BILL-1702 Package Limits + License Expiry Warning Tests
+        run: cd backend && npx tsx test/test_bill1702_package_limits_and_expiry_warnings.ts
+
+      - name: Run BILL-1703 Module Add-on Sales + Controlled Package Reapply Tests
+        run: cd backend && npx tsx test/test_bill1703_module_addons_and_reapply.ts
+
+      - name: Run FLEET-1408 Inspection/Exhaust/Insurance Deadlines + Tire Tracking Tests
+        run: cd backend && npx tsx test/test_fleet1408_inspection_tire_tracking.ts
+
+      - name: Run FLEET-1409 Vehicle Document Archive + Expiry Warning Tests
+        run: cd backend && npx tsx test/test_fleet1409_vehicle_documents.ts
+
+      - name: Run INV-1506 Spare Parts Inventory + Critical Stock Alert Tests
+        run: cd backend && npx tsx test/test_inv1506_spare_parts_inventory.ts
+
+      - name: Run INV-1507 Lab Sample + Test Result Tracking Tests
+        run: cd backend && npx tsx test/test_inv1507_lab_sample_tracking.ts
+
+      # ARCH-108: bu job backend'i nginx'siz, DOĞRUDAN bootstrap.ts ile 5000
+      # portunda başlatıyor — tüm testlerin varsayılan API_URL'i de 5000
+      # (önceden 6 test 3000'e bakıp adım bazında override gerektiriyordu).
+      # Redis rate-limit sıfırlaması `docker exec yakittakip_redis` DENER
+      # ama bu job'ta o container YOK (services: bloğu kullanıyor) — bu
+      # yüzden CI'da sessizce no-op olur; test'in kendi login çağrı sayısı
+      # (~9) tek başına 10/15dk limitinin altında kalacak şekilde tasarlandı.
+      - name: Run ARCH-108 Tenant Freeze/Delete/Export Lifecycle Tests
+        run: cd backend && npx tsx test/test_arch108_tenant_lifecycle.ts
+
+      # ARCH-107 (#123): saklama politikası (RBAC/doğrulama/audit), şema-katalog sınıflandırma denetimi ve arşivleyerek parti parti
+      # purge (mali kayıt koruması, arşiv-başarısızsa-iptal, advisory lock) — bu teste özel geçici tenant'larda çalışır.
+      - name: Run ARCH-107 Data Retention Policy and Purge Tests
+        run: cd backend && npx tsx test/test_arch107_retention.ts
+
+      # COMP-606 (#132): KVKK — envanter↔şema drift, rol bazlı maskeleme, log çıktısı taraması, Gemini takma adı, veri sahibi başvurusu
+      # (erişim/silme/ret/gecikme), anonimleştirme (mali bütünlük), süre dolumu, soğuk arşiv ömrü.
+      - name: Run COMP-606 KVKK Personal Data Tests
+        run: cd backend && npx tsx test/test_comp606_kvkk.ts
+
+      # RES-907 (#192): GERÇEK @sentry/node SDK'sı → yerel sahte alıcı: backend olayı (trace_id/release/PII), tarayıcı tüneli (açık röle yok, PII sunucuda
+      # temizlenir), örnekleme, uçtan uca trace_id korelasyonu. Canlı Sentry'ye HİÇBİR şey gitmez.
+      - name: Run RES-907 Sentry Error Tracking Tests
+        run: cd backend && npx tsx test/test_res907_sentry.ts
+
+      # TEST-1007 (#198): DB erişilemezken 503 DB_UNAVAILABLE sınıflandırması (kaos testinde bulunan boşluk).
+      - name: Run TEST-1007 DB Unavailable Error Mapping Tests
+        run: cd backend && npx tsx test/test_test1007_error_mapping.ts
+
+      - name: Run HR-1801 Personnel Leave Tracking Tests
+        run: cd backend && npx tsx test/test_hr1801_personnel_leave.ts
+
+      - name: Dump Backend Log on Failure
+        if: failure()
+        run: cat /tmp/backend-ci.log || true
+
+  # TEST-1001 (#193): uçtan uca ikmal döngüsü — GERÇEK PostgreSQL + Redis + EMQX + backend, dosyalar PARALEL, ayrı iş (yukarıdaki uzun sıralı işle
+  # eşzamanlı koşar → toplam CI süresine eklenmez). timeout-minutes AC'nin "10 dakikanın altında" bütçesidir; orkestratör ayrıca --budget-sec ile
+  # kendi süresini denetler ve aşarsa BAŞARISIZ olur. Testcontainers yerine docker CLI orkestratörü (bkz. scripts/e2e/run-e2e.mjs başlığı: KAPSAM UYARLAMASI).
+  e2e-fuel-cycle:
+    name: 🔄 TEST-1001 E2E İkmal Döngüsü (Postgres + Redis + EMQX, paralel, < 10 dk)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run E2E suite (izole konteynerler, paralel dosyalar, süre bütçesi)
+        run: node scripts/e2e/run-e2e.mjs --budget-sec 540
+
+  # TEST-1004 (#196): 3 panelin (geliştirici / yönetici / şantiye) + kimlik akışlarının GERÇEK tarayıcıda (headless Chromium) uçtan uca doğrulanması.
+  # Orkestratör aynı izole yığını (Postgres+Redis+EMQX+backend) kurar, frontend'i üretim derlemesiyle nginx'te sunar, Playwright'ı koşturur.
+  # HATA KANITI (AC): başarısız testin ekran görüntüsü + VİDEO + trace `frontend/test-results` altında; `if: always()` ile artifact olarak yüklenir.
+  # Merge öncesi (push/PR → main) burada, nightly + tekrarlı flake avı .github/workflows/e2e-nightly.yml'de (süre yönetimi).
+  e2e-browser:
+    name: 🌐 TEST-1004 Playwright — 3 Panel Kritik Akışları (headless Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Frontend Dependencies (Playwright)
+        run: cd frontend && npm ci
+
+      - name: Install Chromium (Playwright)
+        run: cd frontend && npx playwright install --with-deps chromium
+
+      - name: Run Playwright critical flows (izole yığın, süre bütçesi)
+        run: node scripts/e2e/run-e2e.mjs --browser --budget-sec 900
+
+      - name: Upload failure evidence (screenshot + video + trace + HTML report)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-evidence
+          path: |
+            frontend/test-results/
+            frontend/playwright-report/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  secret-scan:
+    # DİKKAT: bu satırdaki iki nokta üst üste ("OPS-1105:") YAML'da bir mapping
+    # ayırıcısı olarak yorumlanır — tırnaksız bırakılırsa TÜM workflow dosyası
+    # geçersiz hale gelir ve GitHub Actions hiçbir job'ı çalıştırmaz (sessiz
+    # başarısızlık). Bkz. scripts/check-workflow-yaml.mjs.
+    name: "🔑 OPS-1105: Gitleaks Secret Taraması"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Diğer job'lardan bağımsız — build/test beklemeden hemen çalışabilir.
+    # AC: "Repoda hiçbir gerçek secret bulunmamalı ve tarama CI'da çalışmalıdır."
+    # Şu an checkout edilen ağaç taranır (git geçmişi değil) — .gitleaks.toml'a
+    # bakın: bu, bu commit'te kaynak kodundan env değişkenlerine taşınan
+    # (bkz. hardwareAuthMiddleware.ts) donanım cihaz sırlarını YAKALADIĞI için
+    # eklendi. Geçmiş commit'lerdeki eski değerler git log'da hâlâ görülebilir
+    # — tam geçmiş temizliği (BFG/filter-repo + force-push + rotasyon) ayrı,
+    # kasıtlı bir onay gerektiren bir iş.
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # TEST_PLAN.md §5.1 — ikili dosya checksum doğrulaması OLMADAN indiriliyordu:
+      # güvenlik tarayıcısının kendisi supply-chain saldırısına açıktı. SHA-256,
+      # gitleaks'in resmi v8.30.1 checksums dosyasıyla çapraz doğrulandı.
+      - name: Install gitleaks
+        run: |
+          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      # TEST_PLAN.md §5.1 — .env'in commit'lenmesi en yaygın gerçek sızıntı
+      # senaryosu; gitleaks bir kurala uymayan bir değeri kaçırabilir, bu kontrol
+      # ise DOSYANIN KENDİSİNİN takip edilmesini yasaklar (.env.example serbest).
+      - name: Takip Edilen .env Dosyası Yasağı
+        run: |
+          if git ls-files | grep -E '(^|/)\.env(\.[^/]*)?$' | grep -v '\.env\.example$'; then
+            echo "HATA: yukarıdaki .env dosyası(ları) git tarafından takip ediliyor — gerçek sırlar içerebilir." >&2
+            exit 1
+          fi
+          echo "Takip edilen .env dosyası yok."
+
+      - name: Scan checked-out tree for secrets
+        run: gitleaks detect --source . --no-git --config .gitleaks.toml --verbose
+
   build-bundle:
     name: 📦 Build Standalone Bundles
     needs: quality-and-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Repository
@@ -73,32 +998,378 @@ jobs:
       - name: Verify Frontend Bundle Output
         run: test -f frontend/dist/index.html && echo "frontend/dist/index.html built successfully"
 
+      # TEST_PLAN.md §3.4 — tarayıcıya giden GERÇEK çıktıda kimlik bilgisi /
+      # sır / kaynak haritası sızıntısı (kaynak guard'ı bunları göremez: mock
+      # verisi ve VITE_ değişkenleri ancak build sonrası bundle'da belirir).
+      - name: Frontend Bundle Leak Guard
+        run: node scripts/check-frontend-bundle.mjs frontend/dist
+
   docker-security-scan:
     name: 🔒 Docker Multi-Stage Build & Trivy Security Scan
     needs: quality-and-tests
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build Local Backend Docker Image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: ./backend
           file: ./backend/Dockerfile
           load: true
           tags: yakittakip-backend:ci-${{ github.sha }}
 
+      - name: "OPS-1101: Üretim İmajı Boyut Kontrolü"
+        # AC'nin kendi hedefi <150MB — ama node:20-alpine BAZ imajının
+        # KENDİSİ (yarn + full alpine build toolchain kalıntıları) zaten
+        # ~194MB, bu hedefi tek başına bile karşılamıyor. Bu yüzden 150MB
+        # yerine, imajın gerçek katman analiziyle (bkz. Dockerfile'daki
+        # OPS-1101 yorumları — chown copy-up + apk add/del ayrı katman
+        # sorunları düzeltildikten SONRA) ulaşılabilir olduğu doğrulanmış
+        # 450MB'lık bir tavan kullanılıyor; bunun ÜZERİNE çıkan bir
+        # regresyon (örn. yanlışlıkla geri gelen bir devDependency) build'i
+        # kırar.
+        run: |
+          # `docker image inspect .Size` ile `docker images` SIZE kolonu bazı
+          # Docker sürümlerinde (containerd image store) farklı sayılar
+          # verebiliyor — `docker images`'in insan-okunur çıktısı burada daha
+          # güvenilir, bu yüzden onu ayrıştırıyoruz.
+          SIZE_STR=$(docker images yakittakip-backend:ci-${{ github.sha }} --format "{{.Size}}")
+          echo "Üretim imajı boyutu: ${SIZE_STR}"
+          # GB'a gelmiş olması zaten başlı başına anormal bir regresyon
+          # göstergesidir (hedef 450MB) — bu yüzden GB durumunda ayrıca
+          # kesirli çarpım yapmaya çalışmadan doğrudan eşiği aştığını
+          # işaretliyoruz (999999).
+          SIZE_MB_INT=$(echo "$SIZE_STR" | awk '
+            /GB/ { print 999999; exit }
+            /MB/ { gsub("MB",""); printf "%d", $1; exit }
+            /kB/ { print 0; exit }
+            { print 999999 }
+          ')
+          echo "Hesaplanan: ${SIZE_MB_INT}MB"
+          if [ "$SIZE_MB_INT" -gt 450 ]; then
+            echo "HATA: imaj ${SIZE_MB_INT}MB — 450MB tavanını aşıyor (bkz. Dockerfile'daki OPS-1101 notu)."
+            exit 1
+          fi
+
       - name: Run Trivy Vulnerability Scanner (Critical & High CVEs)
-        uses: aquasecurity/trivy-action@master
+        # exit-code was previously hardcoded to '0' (never fails the build) to
+        # work around CVEs in the base image's bundled npm CLI (tar, minimatch,
+        # cross-spawn...) and stale OpenSSL packages. Both are now fixed at the
+        # source instead of muted here: backend/Dockerfile removes the unused
+        # bundled npm CLI from the runtime image and runs `apk upgrade` for
+        # patched OS packages — a fresh scan comes back with zero CRITICAL/HIGH
+        # findings. exit-code is back to '1' so a real new CVE actually fails CI.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 (önceden kayan @master)
         with:
           image-ref: 'yakittakip-backend:ci-${{ github.sha }}'
           format: 'table'
-          exit-code: '0'
+          exit-code: '1'
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL,HIGH'
+
+      # Frontend (nginx) imajı internete bakan tek bileşen olduğu hâlde HİÇ
+      # taranmıyordu; yerel Trivy tatbikatında düzeltmesi yayımlanmış 36
+      # HIGH/CRITICAL bulundu (OpenSSL CRITICAL dahil). Aynı eşik, aynı action.
+      - name: Build Frontend Image for Scanning
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          load: true
+          tags: yakittakip-frontend:ci-${{ github.sha }}
+
+      - name: Run Trivy Vulnerability Scanner on Frontend Image (Critical & High CVEs)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: 'yakittakip-frontend:ci-${{ github.sha }}'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+
+  # ----------------------------------------------------------------------------
+  # OPS-1102 — Sıfır Kesintili Otomatik Dağıtım
+  # ----------------------------------------------------------------------------
+  # OPS-1104 — ÜÇ ORTAM, İKİ DAĞITIM YOLU (ayrıntı: docs/ENVIRONMENTS.md)
+  #
+  #   development : geliştiricinin makinesi (docker compose) — bu workflow dokunmaz.
+  #   staging     : main/master'a HER push → tüm kalite kapıları geçince OTOMATİK dağıtım + duman testi.
+  #   production  : vX.Y.Z ETİKETİ → aynı kapılar + GitHub `production` environment'ının ONAYI
+  #                 (Required reviewers) → dağıtım → duman testi → başarısızsa önceki etikete otomatik geri alma.
+  #
+  # Ortam farkları GitHub Environments'ta tutulur: aynı isimli secret'lar (DEPLOY_HOST, DEPLOY_USER,
+  # DEPLOY_SSH_KEY, DEPLOY_PORT, SMOKE_USERNAME, SMOKE_PASSWORD) ve değişkenler (STAGING_URL / PRODUCTION_URL)
+  # her environment'ta FARKLI değerlerle tanımlanır — staging sırları üretim sunucusuna erişemez
+  # (erişim kısıtı). DEPLOY_HOST tanımsızsa dağıtım adımı atlanır (CI kırılmaz; hedef sunucu hazır olunca
+  # yalnızca secret'lar eklenir). Sunucu hazırlığı: repo klonu + kök dizinde gerçek .env + `docker compose up -d`.
+  # Şema dağıtımın PARÇASIDIR: scripts/zero-downtime-deploy.sh adım 2b schema.sql'i tek transaction'da
+  # uygular (hata → hiçbir konteynere dokunulmaz).
+  # ----------------------------------------------------------------------------
+  deploy-staging:
+    name: 🚀 Staging Dağıtımı (otomatik, main/master push) + duman testi
+    needs: [quality-and-tests, auth-integration-test, e2e-fuel-cycle, e2e-browser, build-bundle, docker-security-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # TEST_PLAN.md §0.2 — `secrets` bağlamı job seviyesindeki `if:` içinde KULLANILAMAZ (yalnızca github,
+    # inputs, needs, vars); secret job env'ine alınır, koşul ADIM seviyesinde env ile kontrol edilir.
+    if: >-
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    environment:
+      name: staging
+      url: ${{ vars.STAGING_URL }}
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      SMOKE_BASE_URL: ${{ vars.STAGING_URL != '' && format('{0}/api/v1', vars.STAGING_URL) || '' }}
+      SMOKE_USERNAME: ${{ secrets.SMOKE_USERNAME }}
+      SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+    steps:
+      - name: Checkout Repository (duman testi scripti için)
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH (git pull + zero-downtime-deploy.sh)
+        if: env.DEPLOY_HOST != ''
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${DEPLOY_PATH:-~/YAKITTAKIPSISTEMI}"
+            git fetch origin
+            git reset --hard "origin/${{ github.ref_name }}"
+            chmod +x scripts/zero-downtime-deploy.sh
+            ./scripts/zero-downtime-deploy.sh
+            # Frontend (nginx statik dosyaları) zero-downtime gerektirmediği için normal bir 'up -d --build' ile.
+            # Şema, zero-downtime-deploy.sh adım 2b'de zaten uygulandı (idempotent, tek transaction).
+            APP_VERSION="$(git describe --tags --always --dirty=-dirty | tr -c 'A-Za-z0-9._+-' '-' | cut -c1-64)" docker compose up -d --build frontend
+
+      # OPS-1104 AC: "Dağıtım sonrası duman testleri otomatik çalışmalıdır." Başarısız duman testi
+      # dağıtım adımını başarısız yapar (job kırmızı) — bozuk staging fark edilmeden kalmaz.
+      - name: Smoke Test (dağıtım sonrası)
+        if: env.DEPLOY_HOST != '' && env.SMOKE_BASE_URL != ''
+        env:
+          SMOKE_CHECK_FRONTEND: '1'
+          SMOKE_CHECK_HEADERS: '1'
+        run: node scripts/smoke-test.mjs
+
+  deploy-production:
+    name: 🏭 Üretim Dağıtımı (vX.Y.Z etiketi + ONAY) + duman testi + otomatik geri alma
+    needs: [quality-and-tests, auth-integration-test, e2e-fuel-cycle, e2e-browser, build-bundle, docker-security-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: >-
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # OPS-1104 AC: "Staging otomatik, üretim onaylı dağıtılmalıdır." Bu environment'ta Settings →
+    # Environments → production → "Required reviewers" TANIMLI olmalıdır; job onay gelene kadar başlamaz.
+    # Onaylayan, aşağıdaki "Onay kaydı" adımıyla iş özetine yazılır ve doğrulanır (yoksa dağıtım DURUR).
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    permissions:
+      contents: write   # GitHub Release (değişiklik günlüğü) oluşturmak için
+      actions: read     # onay kayıtlarını okumak için
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      SMOKE_BASE_URL: ${{ vars.PRODUCTION_URL != '' && format('{0}/api/v1', vars.PRODUCTION_URL) || '' }}
+      SMOKE_USERNAME: ${{ secrets.SMOKE_USERNAME }}
+      SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Checkout Repository (tam geçmiş — etiket/changelog için)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Yalnızca main geçmişindeki bir commit üretime çıkabilir (dal/PR commit'i etiketlenip yanlışlıkla dağıtılmasın).
+      - name: Etiket main geçmişinde mi?
+        run: |
+          git fetch origin main --quiet || git fetch origin master --quiet
+          MAIN_REF=$(git rev-parse --verify --quiet origin/main || git rev-parse --verify origin/master)
+          git merge-base --is-ancestor "$GITHUB_SHA" "$MAIN_REF" || { echo "::error::$TAG main/master geçmişinde değil — üretime yalnızca ana daldan sürüm çıkarılır."; exit 1; }
+
+      # Ticket Teknik Notu: "Üretim dağıtımı onay gerektirmeli ve kim onayladı kaydedilmelidir."
+      # Onay kaydı GitHub'ın run-approvals kaydından okunur (değiştirilemez, GitHub tarafında tutulur) ve
+      # iş özetine + GitHub Release notuna yazılır. Onay yoksa (environment'ta reviewer tanımsız) dağıtım DURUR.
+      - name: Onay kaydı (kim onayladı)
+        id: approvals
+        run: |
+          APPROVERS=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/approvals" --jq '[.[] | select(.state=="approved") | .user.login] | unique | join(", ")')
+          if [ -z "$APPROVERS" ]; then
+            echo "::error::Bu çalıştırma için onay kaydı yok. Settings → Environments → production → Required reviewers tanımlayın (OPS-1104)."
+            exit 1
+          fi
+          echo "approvers=$APPROVERS" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Üretim dağıtımı — onay kaydı"
+            echo "- Sürüm: \`$TAG\` (\`${GITHUB_SHA::12}\`)"
+            echo "- Etiketi atan / dağıtımı tetikleyen: @${GITHUB_ACTOR}"
+            echo "- Onaylayan(lar): $APPROVERS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy via SSH (etiketli commit + zero-downtime-deploy.sh)
+        if: env.DEPLOY_HOST != ''
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${DEPLOY_PATH:-~/YAKITTAKIPSISTEMI}"
+            git fetch origin --tags
+            git reset --hard "${{ github.sha }}"
+            chmod +x scripts/zero-downtime-deploy.sh
+            ./scripts/zero-downtime-deploy.sh
+            APP_VERSION="$(git describe --tags --always --dirty=-dirty | tr -c 'A-Za-z0-9._+-' '-' | cut -c1-64)" docker compose up -d --build frontend
+
+      - name: Smoke Test (dağıtım sonrası)
+        id: smoke
+        if: env.DEPLOY_HOST != '' && env.SMOKE_BASE_URL != ''
+        env:
+          SMOKE_CHECK_FRONTEND: '1'
+          SMOKE_CHECK_HEADERS: '1'
+        run: node scripts/smoke-test.mjs
+
+      # Duman testi başarısızsa bir önceki etikete GERİ AL. Şema yalnızca EKLEYİCİ (expand) olduğu için
+      # (check-migration-safety) eski kod yeni şemayla çalışır — geri alma veri kaybettirmez. Job yine KIRMIZI biter.
+      - name: Otomatik geri alma (duman testi başarısızsa)
+        if: failure() && steps.smoke.conclusion == 'failure'
+        run: |
+          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "${TAG}^" 2>/dev/null || true)
+          if [ -z "$PREV" ]; then
+            echo "::error::Duman testi başarısız ve geri alınacak önceki sürüm etiketi yok — MANUEL müdahale gerekli."
+            exit 0
+          fi
+          echo "PREV_TAG=$PREV" >> "$GITHUB_ENV"
+          echo "::warning::Duman testi başarısız — $PREV sürümüne geri alınıyor."
+
+      - name: Geri alma dağıtımı (SSH)
+        if: failure() && steps.smoke.conclusion == 'failure' && env.PREV_TAG != '' && env.DEPLOY_HOST != ''
+        uses: appleboy/ssh-action@029f5b4aeeeb58fdfe1410a5d17f967dacf36262 # v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${DEPLOY_PATH:-~/YAKITTAKIPSISTEMI}"
+            git fetch origin --tags
+            # OPS-1110: önce TEK KOMUTLA imaj-tabanlı geri alma (yeniden derleme yok, sıfır kesinti, migrasyon kapısı).
+            # Çıkış 3 = migrasyon kapısı reddetti (contract adımı var) → yanlış sürümü zorlamayız, iş KIRMIZI kalır (MANUEL: hotfix/yedek).
+            # Çıkış 1 = bu sunucuda kayıt/imaj yok (ilk kurulum, imaj temizlenmiş) → eski yol: etiketi çekip yeniden derleyerek dağıt.
+            chmod +x scripts/rollback.sh scripts/zero-downtime-deploy.sh
+            rc=0
+            ./scripts/rollback.sh "${{ env.PREV_TAG }}" || rc=$?
+            if [ "$rc" = "0" ]; then
+              git checkout "${{ env.PREV_TAG }}" -- frontend nginx
+            elif [ "$rc" = "1" ]; then
+              echo "rollback.sh kayıt/imaj bulamadı — etiketten yeniden dağıtılıyor."
+              git reset --hard "${{ env.PREV_TAG }}"
+              chmod +x scripts/zero-downtime-deploy.sh
+              ./scripts/zero-downtime-deploy.sh
+            else
+              echo "rollback.sh reddetti (çıkış $rc) — MANUEL müdahale: docs/DEPLOY_ROLLBACK.md §5"
+              exit "$rc"
+            fi
+            # RES-907: frontend sürüm etiketi = geri alınan sürüm (backend release ile aynı)
+            APP_VERSION="${{ env.PREV_TAG }}" docker compose up -d --build frontend
+
+      # Başarılı dağıtımın değişiklik günlüğü: önceki etiket → bu etiket arası conventional commit'ler.
+      - name: GitHub Release (değişiklik günlüğü + onaylayan)
+        if: success()
+        env:
+          APPROVERS: ${{ steps.approvals.outputs.approvers }}
+        run: |
+          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "${TAG}^" 2>/dev/null || true)
+          FROM_ARG=""; [ -n "$PREV" ] && FROM_ARG="--from $PREV"
+          # shellcheck disable=SC2086
+          node scripts/generate-changelog.mjs $FROM_ARG --to "$TAG" --version "$TAG" > release-notes.md
+          printf '\n---\nOnaylayan(lar): %s — dağıtımı tetikleyen: @%s\n' "$APPROVERS" "$GITHUB_ACTOR" >> release-notes.md
+          gh release create "$TAG" --title "$TAG" --notes-file release-notes.md --verify-tag
+
+  load-test:
+    name: 🔥 TEST-1002 k6 Yük ve Stres Testi (yalnızca manuel tetikleme)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # scripts/load-test/README.md'nin belgelediği gibi tamamen compose ağında
+    # container-to-container çalışır (host firewall/NFS bind-mount kısıtları
+    # bu makineye özgüydü, GitHub Actions runner'ında geçerli değil ama aynı
+    # script değişmeden burada da çalışıyor) — repo kökünde bir .env ve ayakta
+    # bir docker compose yığını gerektirir, ikisini de bu job kendisi kurar.
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Build minimal .env for docker compose
+        run: |
+          cat > .env << EOF
+          POSTGRES_USER=postgres
+          POSTGRES_PASSWORD=postgres
+          POSTGRES_DB=yakittakip_db
+          JWT_SECRET=ci_only_loadtest_access_${{ github.run_id }}
+          JWT_REFRESH_SECRET=ci_only_loadtest_refresh_${{ github.run_id }}
+          MQTT_USERNAME=ci_only_loadtest_mqtt
+          MQTT_PASSWORD=ci_only_loadtest_mqtt_pass
+          HW_SECRET_ESP32_PUMP_01=ci_only_hw_secret_pump_${{ github.run_id }}
+          HW_SECRET_ESP32_TANK_01=ci_only_hw_secret_tank_${{ github.run_id }}
+          HW_SECRET_ESP32_FLOW_ISR=ci_only_hw_secret_flow_${{ github.run_id }}
+          TRANSACTION_HASH_SECRET=ci_only_tx_hash_${{ github.run_id }}
+          HW_SECRET_ENCRYPTION_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          TENANT_EXPORT_ENCRYPTION_KEY=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+          NOTIFICATION_CHANNEL_ENCRYPTION_KEY=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+          EOF
+
+      - name: Start Full Docker Compose Stack
+        run: |
+          docker compose up -d --build
+          echo "postgres/redis/emqx/backend sağlıklı olana kadar bekleniyor..."
+          for i in $(seq 1 60); do
+            docker compose ps backend | grep -q "healthy" && echo "Backend healthy after ${i}0s" && exit 0
+            sleep 10
+          done
+          docker compose logs backend --tail 100
+          exit 1
+
+      - name: Apply Database Schema & Seed Data
+        run: |
+          # ON_ERROR_STOP=1: olmadan bozuk SQL'de de exit 0 döner (TEST_PLAN §4).
+          docker compose exec -T postgres psql -U postgres -d yakittakip_db -v ON_ERROR_STOP=1 < backend/src/db/schema.sql
+          docker compose exec -T postgres psql -U postgres -d yakittakip_db -v ON_ERROR_STOP=1 < backend/src/db/seed_mock_data.sql
+
+      - name: Run TEST-1002 Full AC Load Test (100 pompa @ 1000 rps, 90s)
+        run: |
+          chmod +x scripts/load-test/run.sh
+          TARGET_RPS=1000 DEVICE_COUNT=300 DURATION=90s VUS=200 scripts/load-test/run.sh
+
+      - name: Upload Load Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-1002-load-test-results
+          path: scripts/load-test/results/
+          retention-days: 14

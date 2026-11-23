@@ -1,122 +1,316 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
+import { redisPool } from '../db/redisPool';
+import { getHardwareDeviceByDeviceId, recordHardwareClockDrift, type HardwareDeviceRecord } from '../db/adminDb';
+import { decryptDeviceSecret } from '../utils/hardwareSecretCrypto';
+import { logger } from '../utils/logger';
+import { ServiceUnavailableError } from '../utils/errors';
+import { mqttService } from '../iot/mqttClient';
+import { runWithTenant } from '../context/tenantContext';
+import { withTenant } from '../db/withTenant';
+import { raiseAlarm } from '../db/tenantDb';
 
-// Registered Hardware Secrets (In production, stored encrypted in database)
-export const REGISTERED_HARDWARE_DEVICES: Record<string, { secret: string; name: string; siteName: string }> = {
-  'ESP32-PUMP-01': {
-    secret: 'secret_gebze_pump_8849',
-    name: 'Gebze Pompa Otomasyonu #1',
-    siteName: 'Gebze Ana Şantiye'
-  },
-  'ESP32-TANK-01': {
-    secret: 'secret_gebze_tank_3910',
-    name: 'Gebze Ultrasonik Tank Probu #1',
-    siteName: 'Gebze Ana Şantiye'
-  },
-  'ESP32-FLOW-ISR': {
-    secret: 'secret_flow_isr_7721',
-    name: 'Debimetre Kesme Sensörü',
-    siteName: 'Sistem Kalibrasyonu'
+// AUTH-202.2 — 30sn'lik timestamp penceresinden BÜYÜK olmalı (ticket notu):
+// bir nonce, kabul edilebilir en eski paketten bile daha uzun süre Redis'te
+// tutulmalı ki pencerenin sınırındaki bir paket tekrar gönderildiğinde de
+// reddedilsin.
+const NONCE_TTL_MS = 120_000;
+const MAX_ALLOWED_TIME_WINDOW_MS = 30_000;
+
+// ── IOT-307: saat sapması tespiti + senkron komutu ────────────────────────────
+// Ticket AC: "5 saniyeden fazla sapma tespit edildiğinde senkron komutu üretilmelidir."
+// Bu, AUTH-202.2'nin 30sn'lik SERT reddiyle KARIŞTIRILMAMALI: 5sn eşiği İSTEK HÂLÂ
+// KABUL EDİLİRKEN (30sn'nin altında) cihazı ERKENDEN uyarıp kendini düzeltmesini sağlar —
+// amaç, cihazın hiç 30sn sınırına ULAŞMAMASI.
+const SYNC_THRESHOLD_MS = 5_000;
+// Aynı cihaza her istekte yeniden TIME_SYNC komutu BASILMAZ (MQTT broker'ı gereksiz
+// yere doldurur) — FORCE_CUTOFF'un aksine bu komut acil değil, birikmeli de değil.
+const DRIFT_COMMAND_COOLDOWN_SECONDS = 60;
+// "Kalıcı" (persistent) sapma: TEK bir isteğin 5sn'yi aşması değil, KISA bir pencerede
+// TEKRARLANMASI — ağ gecikmesi kaynaklı tek seferlik bir sapma alarme değmez, RTC pil
+// arızası şüphesi ancak SÜREKLİLİK gösterirse anlamlıdır.
+const DRIFT_PERSISTENT_WINDOW_SECONDS = 5 * 60;
+const DRIFT_PERSISTENT_THRESHOLD = 3;
+// raiseAlarm() zaten (tenant_id, alarm_key) BENZERSİZLİĞİYLE dedup ediyor (event_count
+// artırır) — bu cooldown, her kabul edilen istekte YENİDEN bir DB transaction'ı AÇMAMAK
+// içindir (alarm zaten "canlı", event eklemeye gerek yok — 10 dakikada bir yeter).
+const DRIFT_ALARM_COOLDOWN_SECONDS = 10 * 60;
+// AC: "Kalıcı sapma" — 15sn'yi aşan sapma RTC'nin gerçekten durduğu/pil bittiği
+// ihtimalini CRITICAL'e yükseltir (5-15sn arası ağ/işlemci gecikmesiyle de açıklanabilir).
+const CRITICAL_DRIFT_MS = 15_000;
+
+/**
+ * IOT-307 — bir HMAC isteği (30sn penceresi İÇİNDE, yani KABUL EDİLMİŞ) ölçülen saat
+ * sapmasının yan etkilerini işler: (1) "son bilinen sapma"yı kalıcı hale getirir (AC:
+ * IOT-308'in ZATEN kullandığı last_clock_drift_ms artık YALNIZCA cihazın opsiyonel MQTT
+ * vitals'ına değil, HER isteğin ZORUNLU X-Timestamp'ine dayanır); (2) eşik aşılırsa
+ * cihaza TIME_SYNC komutu yayınlar (MQTT — mevcut command/v1/{deviceId} kanalı, FORCE_CUTOFF
+ * ile AYNI mekanizma); (3) sapma KALICIYSA (kısa pencerede tekrar tekrar) bir alarm
+ * yükseltir. Fire-and-forget: donanım isteğinin yanıtını ASLA bloklamaz/başarısız kılmaz.
+ */
+async function handleAcceptedClockDrift(device: HardwareDeviceRecord, driftMs: number): Promise<void> {
+  void recordHardwareClockDrift(device.device_id, driftMs);
+
+  const absDrift = Math.abs(driftMs);
+  if (absDrift <= SYNC_THRESHOLD_MS) return;
+
+  try {
+    const commandLock = await redisPool.client.set(
+      `hw-timesync-cmd:${device.device_id}`, '1', 'EX', DRIFT_COMMAND_COOLDOWN_SECONDS, 'NX'
+    );
+    if (commandLock === 'OK') {
+      mqttService.publishCommand(device.device_id, 'TIME_SYNC', {
+        serverTime: new Date().toISOString(),
+        driftMs
+      });
+    }
+  } catch (err) {
+    logger.warn({ err, deviceId: device.device_id }, '⚠️ [IOT-307] TIME_SYNC komut kilidi/yayını başarısız (Redis/MQTT).');
   }
-};
+
+  try {
+    const countKey = `hw-drift-count:${device.device_id}`;
+    const count = await redisPool.client.incr(countKey);
+    if (count === 1) await redisPool.client.expire(countKey, DRIFT_PERSISTENT_WINDOW_SECONDS);
+    if (count < DRIFT_PERSISTENT_THRESHOLD) return;
+
+    const alarmLock = await redisPool.client.set(
+      `hw-drift-alarm-cooldown:${device.device_id}`, '1', 'EX', DRIFT_ALARM_COOLDOWN_SECONDS, 'NX'
+    );
+    if (alarmLock !== 'OK') return;
+
+    await runWithTenant({ tenantId: device.tenant_id }, () =>
+      withTenant((client, tenantId) =>
+        raiseAlarm(client, tenantId, {
+          alarmKey: `DEVICE_CLOCK_DRIFT:${device.device_id}`,
+          category: 'DEVICE_CLOCK_DRIFT',
+          severity: absDrift > CRITICAL_DRIFT_MS ? 'CRITICAL' : 'WARNING',
+          title: `Cihaz saati kalıcı olarak sapıyor: ${device.device_id} (${Math.round(absDrift / 1000)} sn) — RTC pil arızası şüphesi`,
+          siteName: device.site_name,
+          subjectType: 'DEVICE',
+          subjectId: device.device_id,
+          detail: { driftMs, occurrencesInWindow: count, windowSeconds: DRIFT_PERSISTENT_WINDOW_SECONDS }
+        })
+      )
+    );
+  } catch (err) {
+    logger.error({ err, deviceId: device.device_id }, '🚨 [IOT-307] Kalıcı saat sapması alarmı yükseltilemedi.');
+  }
+}
+
+// Reddedilen paket sayacı: cihaz başına, kayan bir pencerede tutulur; eşik
+// aşılırsa alarm seviyesinde loglanır (Prometheus bu projede hiçbir yerde
+// kurulu değil — ticket'ın "Prometheus sayaçları" önerisi yerine kod
+// tabanının zaten kullandığı Redis + yapısal Pino logu deseni tercih edildi).
+const REJECTION_WINDOW_SECONDS = 5 * 60;
+const REJECTION_ALERT_THRESHOLD = 5;
+
+/**
+ * Bir donanım isteği reddedildiğinde çağrılır: Redis'te cihaz başına kayan
+ * pencereli bir sayaç tutar, eşik aşılınca alarm seviyesinde loglar. Redis
+ * erişilemez olsa bile isteğin reddi engellenmemeli — bu yüzden hata
+ * yutuluyor, yalnızca loglanıyor.
+ */
+async function recordRejection(deviceId: string, reason: string): Promise<void> {
+  try {
+    const key = `hw-reject-count:${deviceId}`;
+    const count = await redisPool.client.incr(key);
+    if (count === 1) {
+      await redisPool.client.expire(key, REJECTION_WINDOW_SECONDS);
+    }
+
+    if (count >= REJECTION_ALERT_THRESHOLD) {
+      logger.error(
+        { deviceId, reason, count, windowSeconds: REJECTION_WINDOW_SECONDS },
+        `🚨 [AUTH-202.2] ALARM: '${deviceId}' cihazından son ${REJECTION_WINDOW_SECONDS}sn içinde ${count} reddedilen paket (son sebep: ${reason}).`
+      );
+    } else {
+      logger.warn({ deviceId, reason, count }, `⚠️ [AUTH-202.2] Donanım paketi reddedildi: ${reason}`);
+    }
+  } catch (err) {
+    logger.error({ err, deviceId }, '🚨 [AUTH-202.2] Reddedilen paket sayaçlanamadı (Redis hatası).');
+  }
+}
+
+function reject(res: Response, status: number, error: string, message: string): void {
+  res.status(status).json({ success: false, error, message });
+}
+
+/**
+ * Bir secret'ın, alınan imzayla eşleşip eşleşmediğini timing-attack'e
+ * dayanıklı şekilde kontrol eder. AUTH-202.3'ün "rotasyon sırasında iki
+ * secret de geçerli" AC'si için hem güncel hem önceki secret'a karşı
+ * (varsa) çağrılır.
+ */
+function signatureMatches(secret: string, payloadToSign: string, receivedBuf: Buffer): boolean {
+  const expectedBuf = Buffer.from(
+    crypto.createHmac('sha256', secret).update(payloadToSign).digest('hex'),
+    'hex'
+  );
+  return expectedBuf.length === receivedBuf.length && crypto.timingSafeEqual(expectedBuf, receivedBuf);
+}
 
 /**
  * AUTH-202 Hardware Authentication Middleware
  * Validates HMAC-SHA256 signatures from ESP32 & IoT hardware devices.
- * Protects against Data Tampering, Timing Attacks, and Replay Attacks (30s window).
+ * Protects against Data Tampering, Timing Attacks, and Replay Attacks
+ * (AUTH-202.2: 30sn timestamp penceresi + Redis'te TTL'li tek-kullanımlık
+ * nonce — bkz. issue #32).
+ *
+ * AUTH-202.3: cihaz kaydı artık statik bir sabit (REGISTERED_HARDWARE_DEVICES)
+ * değil, hardware_devices tablosunda — secret'lar AES-256-GCM ile şifreli
+ * saklanır, uzaktan rotasyon ve bloke etme desteklenir (bkz. adminDb.ts
+ * getHardwareDeviceByDeviceId, tenantDb.ts createHardwareDevice/
+ * rotateHardwareDeviceSecret/blockHardwareDevice).
  */
-export const hardwareAuthMiddleware = (req: Request, res: Response, next: NextFunction): void => {
-  const deviceId = req.headers['x-device-id'] as string;
-  const timestampHeader = req.headers['x-timestamp'] as string;
-  const receivedSignature = req.headers['x-hardware-signature'] as string;
-
-  // 1. Mandatory Headers Check
-  if (!deviceId || !timestampHeader || !receivedSignature) {
-    res.status(401).json({
-      success: false,
-      error: 'MISSING_HARDWARE_HEADERS',
-      message: 'Donanım doğrulaması başarısız. X-Device-ID, X-Timestamp ve X-Hardware-Signature başlıkları zorunludur.'
-    });
-    return;
-  }
-
-  // 2. Replay Attack Protection (30-second sliding time window)
-  const timestampMs = isNaN(Number(timestampHeader))
-    ? new Date(timestampHeader).getTime()
-    : Number(timestampHeader);
-
-  if (isNaN(timestampMs)) {
-    res.status(400).json({
-      success: false,
-      error: 'INVALID_TIMESTAMP_FORMAT',
-      message: 'X-Timestamp geçerli bir milisaniye zaman damgası veya ISO tarihi olmalıdır.'
-    });
-    return;
-  }
-
-  const timeDifferenceMs = Math.abs(Date.now() - timestampMs);
-  const MAX_ALLOWED_TIME_WINDOW_MS = 30000; // 30 seconds
-
-  if (timeDifferenceMs > MAX_ALLOWED_TIME_WINDOW_MS) {
-    res.status(401).json({
-      success: false,
-      error: 'REPLAY_ATTACK_DETECTED',
-      message: `İstek zaman aşımına uğradı veya paket 30 saniyeden eski (${Math.round(timeDifferenceMs / 1000)}sn fark). Replay Saldırısı Engellendi.`
-    });
-    return;
-  }
-
-  // 3. Device Secret Retrieval
-  const deviceConfig = REGISTERED_HARDWARE_DEVICES[deviceId];
-  if (!deviceConfig) {
-    res.status(401).json({
-      success: false,
-      error: 'UNAUTHORIZED_DEVICE',
-      message: `Cihaz ('${deviceId}') yetkilendirilmemiş veya sisteme kayıtlı değil.`
-    });
-    return;
-  }
-
-  // 4. Raw Body Extraction & HMAC-SHA256 Calculation
-  const rawBodyBuf: Buffer = (req as any).rawBody || Buffer.from(JSON.stringify(req.body || {}));
-  const payloadToSign = `${timestampHeader}.${rawBodyBuf.toString('utf8')}`;
-
-  const computedHmacHex = crypto
-    .createHmac('sha256', deviceConfig.secret)
-    .update(payloadToSign)
-    .digest('hex');
-
-  // 5. Timing Attack Prevention (crypto.timingSafeEqual)
-  const expectedBuf = Buffer.from(computedHmacHex, 'hex');
-  let receivedBuf: Buffer;
-
+export const hardwareAuthMiddleware = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   try {
-    receivedBuf = Buffer.from(receivedSignature, 'hex');
-  } catch {
-    res.status(401).json({
-      success: false,
-      error: 'INVALID_SIGNATURE_FORMAT',
-      message: 'X-Hardware-Signature geçerli bir hex dizisi olmalıdır.'
-    });
-    return;
+    const deviceId = req.headers['x-device-id'] as string;
+    const timestampHeader = req.headers['x-timestamp'] as string;
+    const nonceHeader = req.headers['x-nonce'] as string;
+    const receivedSignature = req.headers['x-hardware-signature'] as string;
+
+    // 1. Mandatory Headers Check
+    if (!deviceId || !timestampHeader || !nonceHeader || !receivedSignature) {
+      if (deviceId) await recordRejection(deviceId, 'MISSING_HARDWARE_HEADERS');
+      return reject(
+        res, 401, 'MISSING_HARDWARE_HEADERS',
+        'Donanım doğrulaması başarısız. X-Device-ID, X-Timestamp, X-Nonce ve X-Hardware-Signature başlıkları zorunludur.'
+      );
+    }
+
+    // 2. Device Lookup (nonce/timestamp reddi de bu cihaza karşı
+    // sayaçlanacağı için önce cihazın gerçekten kayıtlı olduğunu doğrula)
+    const device = await getHardwareDeviceByDeviceId(deviceId);
+    if (!device) {
+      await recordRejection(deviceId, 'UNAUTHORIZED_DEVICE');
+      return reject(res, 401, 'UNAUTHORIZED_DEVICE', `Cihaz ('${deviceId}') yetkilendirilmemiş veya sisteme kayıtlı değil.`);
+    }
+
+    // AC: "Sızıntı şüphesinde cihazın anında bloke edilmesi" — bloke edilen
+    // cihazın paketleri, imza doğru olsa bile, HİÇBİR kontrole geçmeden
+    // reddedilir.
+    if (device.status === 'BLOKE') {
+      await recordRejection(deviceId, 'DEVICE_BLOCKED');
+      return reject(res, 403, 'DEVICE_BLOCKED', `Cihaz ('${deviceId}') bloke edilmiş.`);
+    }
+
+    // 3. Replay Attack Protection (30-second sliding time window, ileri/geri sapma)
+    const timestampMs = isNaN(Number(timestampHeader))
+      ? new Date(timestampHeader).getTime()
+      : Number(timestampHeader);
+
+    if (isNaN(timestampMs)) {
+      await recordRejection(deviceId, 'INVALID_TIMESTAMP_FORMAT');
+      return reject(res, 400, 'INVALID_TIMESTAMP_FORMAT', 'X-Timestamp geçerli bir milisaniye zaman damgası veya ISO tarihi olmalıdır.');
+    }
+
+    // IOT-307: İŞARETLİ tutulur (+ = cihaz GERİDE/geçmişte, - = cihaz İLERİDE) —
+    // mqttClient.ts'in opsiyonel vitals'tan hesapladığı last_clock_drift_ms İLE
+    // AYNI kural (Date.now() - cihazınZamanı), iki kaynağın anlamı tutarlı olsun.
+    const signedDriftMs = Date.now() - timestampMs;
+    const timeDifferenceMs = Math.abs(signedDriftMs);
+
+    if (timeDifferenceMs > MAX_ALLOWED_TIME_WINDOW_MS) {
+      // Cihaz saati kaymışsa (RTC drift) TÜM paketleri reddedilir ve saha
+      // durur — bu yüzden sessizce 401 dönmek yerine ayrıca CLOCK_DRIFT
+      // olarak loglanır. Bu SERT reddiye (30sn) henüz ULAŞMAMIŞ, ama küçük
+      // bir sapma gösteren istekler için asıl senkron komutu aşağıda,
+      // handleAcceptedClockDrift() içinde üretilir (IOT-307) — cihaz
+      // BURADA kara listeye alınmaz, yalnızca bu paket reddedilir.
+      logger.warn(
+        { deviceId, driftMs: timeDifferenceMs },
+        `⏱️ [AUTH-202.2] CLOCK_DRIFT: '${deviceId}' cihazının saati ${Math.round(timeDifferenceMs / 1000)}sn sapmış.`
+      );
+      await recordRejection(deviceId, 'CLOCK_DRIFT');
+      return reject(
+        res, 401, 'REPLAY_ATTACK_DETECTED',
+        `İstek zaman aşımına uğradı veya paket 30 saniyeden eski (${Math.round(timeDifferenceMs / 1000)}sn fark). Replay Saldırısı Engellendi.`
+      );
+    }
+
+    // 4. Raw Body Extraction & HMAC-SHA256 Calculation — nonce da imzaya
+    // dahil edilir, aksi halde bir saldırgan yakaladığı geçerli bir paketin
+    // nonce'unu değiştirip imzayı bozmadan tekrar gönderebilirdi.
+    const rawBodyBuf: Buffer = (req as any).rawBody || Buffer.from(JSON.stringify(req.body || {}));
+    const payloadToSign = `${timestampHeader}.${nonceHeader}.${rawBodyBuf.toString('utf8')}`;
+
+    // 5. Timing Attack Prevention (crypto.timingSafeEqual) — önce güncel
+    // secret, eşleşmezse (ve rotasyon geçiş penceresi hâlâ açıksa) önceki
+    // secret denenir (AUTH-202.3 AC: "rotasyon sırasında iki secret de
+    // geçerli olmalı").
+    let receivedBuf: Buffer;
+    try {
+      receivedBuf = Buffer.from(receivedSignature, 'hex');
+    } catch {
+      await recordRejection(deviceId, 'INVALID_SIGNATURE_FORMAT');
+      return reject(res, 401, 'INVALID_SIGNATURE_FORMAT', 'X-Hardware-Signature geçerli bir hex dizisi olmalıdır.');
+    }
+
+    let matched = signatureMatches(decryptDeviceSecret(device.encrypted_secret), payloadToSign, receivedBuf);
+    let usedPreviousSecret = false;
+
+    if (!matched && device.encrypted_secret_previous && device.previous_secret_expires_at &&
+      new Date(device.previous_secret_expires_at).getTime() > Date.now()) {
+      matched = signatureMatches(decryptDeviceSecret(device.encrypted_secret_previous), payloadToSign, receivedBuf);
+      usedPreviousSecret = true;
+    }
+
+    if (!matched) {
+      await recordRejection(deviceId, 'INVALID_HARDWARE_SIGNATURE');
+      return reject(res, 401, 'INVALID_HARDWARE_SIGNATURE', 'Kriptografik imza doğrulaması başarısız. Veri manipüle edilmiş veya anahtar hatalı.');
+    }
+
+    if (usedPreviousSecret) {
+      // Cihaz rotasyon komutunu henüz almamış — sahada kesinti yaşanmadı
+      // (istek kabul edildi) ama operasyon ekibinin bunu görmesi gerekiyor.
+      logger.warn({ deviceId }, `⚠️ [AUTH-202.3] '${deviceId}' hâlâ ROTASYONDAN ÖNCEKİ secret'ı kullanıyor (geçiş penceresi içinde kabul edildi).`);
+    }
+
+    // 6. Nonce Reuse Check — yalnızca imza doğrulandıktan SONRA Redis'e
+    // yazılır: sahte/imzasız isteklerin bir cihazın nonce alanını
+    // tüketmesini (ve gerçek cihazın sıradaki paketini "zaten kullanılmış"
+    // gibi göstermesini) önler. SET ... NX atomik olduğundan iki eşzamanlı
+    // istek aynı nonce'u asla ikisi de "yeni" olarak kazanamaz.
+    const nonceKey = `hw-nonce:${deviceId}:${nonceHeader}`;
+    let nonceSetResult: string | null;
+    try {
+      nonceSetResult = await redisPool.client.set(nonceKey, '1', 'PX', NONCE_TTL_MS, 'NX');
+    } catch (redisErr) {
+      // RES-905: nonce/replay koruması BİLİNÇLİ olarak fail-CLOSED kalır —
+      // Redis erişilemiyor diye bu kontrolü atlarsak yakalanmış geçerli bir
+      // paketin tekrar oynatılmasına (replay attack) kapı açmış oluruz, ki bu
+      // rateLimiter/accountLockout'taki fail-open kararlarından TAMAMEN
+      // farklı bir risk sınıfı (kimlik doğrulama bypass'ı, DoS değil). Tek
+      // iyileştirme: cihaza/operatöre "kalıcı imza hatası" değil, ayırt
+      // edilebilir bir "şu an geçici olarak kullanılamıyor, tekrar dene"
+      // sinyali (503) döndürmek — mevcut kod bunu ayrım yapmadan genel
+      // globalErrorHandler'ın opak 500'üne düşürüyordu.
+      await recordRejection(deviceId, 'NONCE_STORE_UNAVAILABLE');
+      throw new ServiceUnavailableError(
+        'Donanım kimlik doğrulama servisi (nonce deposu) şu anda geçici olarak kullanılamıyor. Lütfen kısa süre sonra tekrar deneyin.'
+      );
+    }
+    if (nonceSetResult !== 'OK') {
+      await recordRejection(deviceId, 'NONCE_REUSED');
+      return reject(res, 401, 'NONCE_REUSED', 'Bu nonce bu cihaz için daha önce kullanılmış. Replay Saldırısı Engellendi.');
+    }
+
+    // 7. Attach Authenticated Hardware Info to Request Context
+    (req as any).authenticatedHardware = {
+      deviceId,
+      name: device.name,
+      siteName: device.site_name,
+      tenantId: device.tenant_id,
+      timestampMs
+    };
+
+    // IOT-307: yalnızca İMZASI DOĞRULANMIŞ istekler için (spoofed/garbage istekler bu
+    // sinyali kirletmesin) — yanıtı ASLA bloklamaz, next() öncesi başlatılıp devam edilir.
+    void handleAcceptedClockDrift(device, signedDriftMs);
+
+    next();
+  } catch (err) {
+    next(err);
   }
-
-  if (expectedBuf.length !== receivedBuf.length || !crypto.timingSafeEqual(expectedBuf, receivedBuf)) {
-    res.status(401).json({
-      success: false,
-      error: 'INVALID_HARDWARE_SIGNATURE',
-      message: 'Kriptografik imza doğrulaması başarısız. Veri manipüle edilmiş veya anahtar hatalı.'
-    });
-    return;
-  }
-
-  // 6. Attach Authenticated Hardware Info to Request Context
-  (req as any).authenticatedHardware = {
-    deviceId,
-    name: deviceConfig.name,
-    siteName: deviceConfig.siteName,
-    timestampMs
-  };
-
-  next();
 };

@@ -1,23 +1,32 @@
 import React, { useState } from 'react';
 import { Outlet, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
+import { ListSkeleton } from '../components/ListSkeleton';
+import { ErrorState } from '../components/ErrorState';
 
 export const CustomerLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { 
-    currentCompany, 
-    selectedSiteFilter, 
-    setSelectedSiteFilter, 
-    logoutCompany, 
+  const {
+    currentCompany,
+    selectedSiteFilter,
+    setSelectedSiteFilter,
+    logoutCompany,
     currentUser,
     isManagerMode,
     isAuthenticated,
-    sites
+    sites,
+    unreadAlarmCount,
+    isLoadingInitialData,
+    initialLoadError,
+    retryInitialDataLoad
   } = useApp();
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
+  }
+  if (currentUser?.mustChangePassword) {
+    return <Navigate to="/parola-degistir" replace />;
   }
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -30,10 +39,13 @@ export const CustomerLayout: React.FC = () => {
     { label: 'Genel Bakış', path: '/panel', icon: 'dashboard', id: 'overview' },
     { label: 'Şantiye Yönetimi', path: '/panel/sites', icon: 'location_city', id: 'sites' },
     { label: 'Araç Yönetimi', path: '/panel/vehicles', icon: 'local_shipping', id: 'vehicles' },
+    { label: 'Km/Motor-Saat Girişi', path: '/panel/meter-readings', icon: 'speed', id: 'meter-readings' },
     { label: 'Şoför Yönetimi', path: '/panel/drivers', icon: 'badge', id: 'drivers' },
     { label: 'Yakıt Hareketleri', path: '/panel/transactions', icon: 'receipt_long', id: 'transactions' },
     { label: 'Tank Durumu', path: '/panel/tanks', icon: 'oil_barrel', id: 'tanks' },
+    { label: 'Cihaz Yönetimi', path: '/panel/devices', icon: 'developer_board', id: 'devices' },
     { label: 'Veri Arşivleme', path: '/panel/archive', icon: 'folder_zip', id: 'archive' },
+    { label: 'Rapor Merkezi', path: '/panel/reports', icon: 'summarize', id: 'reports' },
     { label: 'Bildirimler', path: '/panel/notifications', icon: 'notifications', id: 'notifications' },
     { label: 'Sistem Ayarları', path: '/panel/settings', icon: 'settings', id: 'settings' },
     { label: 'Yetkilendirme (Çapraz)', path: '/panel/cross-site', icon: 'verified', id: 'cross-site' },
@@ -42,7 +54,7 @@ export const CustomerLayout: React.FC = () => {
 
   // Restricted list for Şantiye Girişi (Şantiye Modu):
   // Araç Yönetimi, Şoför Yönetimi, Yakıt Hareketleri, Tank Durumu, Bildirimler, Sistem Ayarları
-  const santiyeAllowedIds = ['vehicles', 'drivers', 'transactions', 'tanks', 'notifications', 'settings'];
+  const santiyeAllowedIds = ['vehicles', 'meter-readings', 'drivers', 'transactions', 'tanks', 'reports', 'notifications', 'settings'];
 
   const navItems = isManagerMode
     ? allNavItems
@@ -89,7 +101,7 @@ export const CustomerLayout: React.FC = () => {
                 MÜŞTERİ FİRMASI
               </span>
               <h2 className="text-xs font-bold text-[#e5e2e1] truncate mt-0.5">
-                {currentCompany.name}
+                {isLoadingInitialData ? 'Yükleniyor…' : currentCompany.name}
               </h2>
             </div>
           </div>
@@ -133,7 +145,12 @@ export const CustomerLayout: React.FC = () => {
                   }`}
                 >
                   <span className="material-symbols-outlined text-lg shrink-0">{item.icon}</span>
-                  <span className="truncate">{item.label}</span>
+                  <span className="truncate flex-1 text-left">{item.label}</span>
+                  {item.id === 'notifications' && unreadAlarmCount > 0 && (
+                    <span data-testid="unread-alarm-badge" className="bg-[#ffb4ab] text-[#412d00] text-[10px] font-black rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1 shrink-0">
+                      {unreadAlarmCount > 99 ? '99+' : unreadAlarmCount}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -148,9 +165,9 @@ export const CustomerLayout: React.FC = () => {
               logoutCompany();
               navigate('/');
             }}
-            className="w-full flex items-center justify-center space-x-2 bg-[#ffb4ab]/10 hover:bg-[#ffb4ab]/20 border border-[#ffb4ab]/30 text-[#ffb4ab] py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+            className="w-full flex items-center justify-center space-x-2 bg-[#ffb4ab]/10 hover:bg-[#ffb4ab]/20 border border-[#ffb4ab]/30 text-[#ffb4ab] py-3.5 rounded-xl text-xs font-bold transition-colors cursor-pointer"
           >
-            <span className="material-symbols-outlined text-base">logout</span>
+            <span className="material-symbols-outlined text-base" aria-hidden="true">logout</span>
             <span>Çıkış Yap</span>
           </button>
         </div>
@@ -164,10 +181,13 @@ export const CustomerLayout: React.FC = () => {
           
           <div className="flex items-center space-x-4">
             <button
+              type="button"
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-              className="md:hidden p-2 text-[#e5e2e1] hover:bg-[#20201f] rounded-lg"
+              aria-label={isMobileMenuOpen ? 'Menüyü kapat' : 'Menüyü aç'}
+              aria-expanded={isMobileMenuOpen}
+              className="md:hidden p-2.5 text-[#e5e2e1] hover:bg-[#20201f] rounded-lg"
             >
-              <span className="material-symbols-outlined text-2xl">menu</span>
+              <span className="material-symbols-outlined text-2xl" aria-hidden="true">menu</span>
             </button>
 
             {/* "SİSTEM ÇEVRİMİÇİ" Green Live Badge */}
@@ -197,9 +217,10 @@ export const CustomerLayout: React.FC = () => {
             {/* Şantiye Filtresi: Firma Yöneticisi için Seçilebilir Dropdown, Şantiye Operatörü için Kilitli Rozet */}
             {isManagerMode ? (
               <div className="hidden lg:flex items-center space-x-2 bg-[#1c1b1b] border border-[#353535] px-3 py-1.5 rounded-xl">
-                <span className="material-symbols-outlined text-sm text-[#ffdca1]">location_on</span>
-                <span className="text-xs font-mono text-[#d5c4ab]">Şantiye:</span>
+                <span className="material-symbols-outlined text-sm text-[#ffdca1]" aria-hidden="true">location_on</span>
+                <span className="text-xs font-mono text-[#d5c4ab]" id="site-filter-label">Şantiye:</span>
                 <select
+                  aria-labelledby="site-filter-label"
                   value={selectedSiteFilter}
                   onChange={(e) => setSelectedSiteFilter(e.target.value)}
                   className="bg-transparent text-xs font-bold text-[#e5e2e1] focus:outline-none cursor-pointer"
@@ -245,7 +266,13 @@ export const CustomerLayout: React.FC = () => {
 
         {/* PAGE CONTENT ROUTER OUTLET */}
         <main className="flex-1 p-6 md:p-8 space-y-8 overflow-y-auto">
-          <Outlet />
+          {initialLoadError ? (
+            <ErrorState error={{ message: initialLoadError }} onRetry={retryInitialDataLoad} testId="panel-initial-load-error" />
+          ) : isLoadingInitialData ? (
+            <ListSkeleton rows={6} testId="panel-initial-load-skeleton" />
+          ) : (
+            <Outlet />
+          )}
         </main>
 
       </div>

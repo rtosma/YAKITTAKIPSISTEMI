@@ -1,0 +1,50 @@
+# OPS-1105 — gitleaks yapılandırması.
+#
+# gitleaks'in yerleşik kural setini (config/gitleaks.toml varsayılanı) kullan,
+# yalnızca bilinen, gerçek OLMAYAN false-positive'ler için bir allowlist ekle.
+# Yeni bir kural EKLEMİYORUZ — amaç gerçek sızıntıları YAKALAMAK, bu dosya
+# yalnızca zaten incelenmiş, zararsız eşleşmeleri susturuyor.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Bilinen, gerçek secret OLMAYAN eşleşmeler"
+regexes = [
+  # backend/.env.example ve .env.example — placeholder metinler, gerçek
+  # sırlar değil (bkz. "asla bu placeholder'ları kullanmayın" yorumu).
+  '''__CHANGE_ME_RUN_openssl_rand_-hex_(32|64)__''',
+  # Test dosyalarındaki, yalnızca o test sürecinde kullanılan, kasıtlı olarak
+  # sahte/tanımlayıcı isimli sırlar (gerçek bir sisteme asla bağlanmazlar).
+  '''ci_only_[A-Za-z0-9_]*''',
+  '''test_only_ops1101_(access|refresh)_secret_do_not_reuse''',
+  '''local_test_(access|refresh)''',
+  # test_auth204.ts: yalnızca o test sürecinde oluşturulup test bitince
+  # anlamsızlaşan (kullanıcının kendisi ephemeral bir test fixture'ı) sabit
+  # bir test parolası — gerçek bir hesaba asla karşılık gelmez.
+  '''YeniGucluParola123''',
+  # Aynı gerekçe: parola sıfırlama birim testi (PasswordResetPages.test.tsx)
+  # ve e2e testinin (e2e/password-reset.spec.ts) sahte, test-içi parolaları.
+  '''yeniParola123''',
+  '''e2eYeniParola456''',
+  # REP-718 rapor tanımındaki SÜTUN ANAHTARI ("key: 'calibrations_30d'") —
+  # generic-api-key kuralı `key:` + rastgele görünen değer kalıbına takılıyor.
+  '''calibrations_30d'''
+]
+paths = [
+  # Derleme çıktıları — gitignored, git tarafından hiç takip edilmiyor;
+  # yine de bir güvenlik ağı olarak burada da hariç tutuluyor.
+  '''dist/.*''',
+  '''backend/dist/.*''',
+  # TEST_PLAN.md §5.1 — `.env` dosyaları BİLİNÇLİ OLARAK hariç TUTULMUYOR.
+  # Önceden burada `(^|/)\.env$` vardı; gerekçe, yerel `gitleaks detect --no-git`
+  # çalıştıran geliştiricinin kendi takip dışı .env'inin alarm vermemesiydi.
+  # Ama bu, tarayıcıyı EN YAYGIN gerçek sızıntı senaryosuna (yanlışlıkla
+  # commit'lenen bir .env) karşı kör ediyordu — canlı doğrulandı: gerçek bir
+  # token deseni .env ve backend/.env içindeyken hem CI komutu hem de
+  # `gitleaks git --pre-commit --staged` HİÇBİR ŞEY bulmadı; istisna
+  # kaldırılınca üçü de yakalandı.
+  # Yerel kullanım: takip dışı dosyaları hiç görmeyen modu kullanın —
+  #   gitleaks git --pre-commit --staged      (commit öncesi)
+  # CI checkout'unda .env yalnızca COMMIT'LENMİŞSE bulunur, o durumda da
+  # yakalanması tam olarak istenen şeydir.
+]

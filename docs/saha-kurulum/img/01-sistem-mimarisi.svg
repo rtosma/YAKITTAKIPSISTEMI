@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 380" font-family="Arial, sans-serif" font-size="13" role="img" aria-label="Saha sistem mimarisi">
+  <title>Saha sistem mimarisi</title>
+  <rect width="900" height="380" fill="#ffffff"/>
+  <g stroke="#222" stroke-width="1.5" fill="#f4f6f8">
+    <rect x="20" y="40" width="250" height="300" rx="8"/>
+    <rect x="330" y="120" width="170" height="120" rx="8" fill="#e8f0ff"/>
+    <rect x="560" y="60" width="320" height="260" rx="8"/>
+  </g>
+  <text x="145" y="30" text-anchor="middle" font-weight="bold">Şantiye — pompa kabini</text>
+  <text x="715" y="50" text-anchor="middle" font-weight="bold">Sunucu (Yakıttakip yığını)</text>
+  <g stroke="#222" fill="#fff">
+    <rect x="40" y="70" width="210" height="46" rx="4"/><rect x="40" y="130" width="210" height="46" rx="4"/>
+    <rect x="40" y="190" width="210" height="46" rx="4"/><rect x="40" y="250" width="210" height="46" rx="4"/>
+    <rect x="580" y="80" width="130" height="50" rx="4"/><rect x="730" y="80" width="130" height="50" rx="4"/>
+    <rect x="580" y="150" width="130" height="50" rx="4"/><rect x="730" y="150" width="130" height="50" rx="4"/>
+    <rect x="580" y="220" width="280" height="50" rx="4"/>
+  </g>
+  <g text-anchor="middle">
+    <text x="145" y="98">ESP32 pompa kontrol ünitesi</text><text x="145" y="158">RFID okuyucu + akışmetre (pals)</text>
+    <text x="145" y="218">Röle / kontaktör (pompa kesme)</text><text x="145" y="278">Tank probu (ultrasonik) — opsiyonel</text>
+    <text x="415" y="165" font-weight="bold">4G / WiFi</text><text x="415" y="185">yönlendirici</text><text x="415" y="205" font-size="11">UPS + 12/24 V besleme</text>
+    <text x="645" y="110">nginx (HTTPS)</text><text x="795" y="110">Backend API</text>
+    <text x="645" y="180">EMQX (MQTT)</text><text x="795" y="180">PostgreSQL + Redis</text>
+    <text x="720" y="250">Portal (Yönetici / Şantiye / Geliştirici)</text>
+  </g>
+  <g stroke="#0a5" stroke-width="2" fill="none"><line x1="270" y1="180" x2="330" y2="180"/><line x1="500" y1="180" x2="560" y2="180"/></g>
+  <text x="300" y="170" text-anchor="middle" font-size="11">Ethernet/UART</text>
+  <text x="530" y="170" text-anchor="middle" font-size="11">İnternet</text>
+  <text x="450" y="360" text-anchor="middle" font-size="12">Yeşil hat: HMAC-imzalı HTTPS (ikmal, senkron) + MQTT (telemetri/presence). Çevrimdışıyken ikmaller cihazda kuyruklanır.</text>
+</svg>

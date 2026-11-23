@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pompa Özet Kartı</title>
+<style>
+  @page { size: A4 portrait; margin: 7mm; }
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; margin: 0; font-size: 11.5pt; line-height: 1.18; }
+  .card { max-width: 194mm; margin: 0 auto; }
+  h1 { font-size: 20pt; margin: 0 0 2mm; text-align: center; border-bottom: 3px solid #000; padding-bottom: 2mm; }
+  h2 { font-size: 13pt; margin: 3mm 0 1.2mm; padding: 1mm 2mm; color: #fff; background: #000; }
+  h2.red { background: #b00000; }
+  ol { margin: 0; padding-left: 8mm; } ol li { margin: 1mm 0; font-weight: bold; } ol li span { font-weight: normal; }
+  table { width: 100%; border-collapse: collapse; }
+  td { border: 1.5px solid #000; padding: 1mm 2mm; vertical-align: top; }
+  td.scr { width: 42mm; font-family: "Courier New", monospace; font-weight: bold; background: #111; color: #fff; font-size: 10.5pt; }
+  .stop { border: 4px solid #b00000; padding: 2mm 3mm; font-weight: bold; font-size: 12pt; }
+  .stop ul { margin: 1mm 0 0; padding-left: 6mm; }
+  .tel { display: grid; grid-template-columns: 1fr 1fr; gap: 2mm 6mm; margin-top: 1mm; font-weight: bold; }
+  .tel div { border-bottom: 1.5px solid #000; height: 6mm; }
+  .foot { font-size: 8.5pt; text-align: center; margin-top: 3mm; color: #333; }
+  ul.no { margin: 1mm 0 0; padding-left: 6mm; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>POMPA ÖZET KARTI</h1>
+
+  <h2>İKMAL: 5 ADIM</h2>
+  <ol>
+    <li>KARTINIZI OKUTUN <span>(düz, yavaş, 1 sn)</span></li>
+    <li>BEKLEYİN <span>— "Yetki kontrol ediliyor"</span></li>
+    <li>EKRANI OKUYUN <span>— "Yetki verildi": plaka sizin araç mı? En çok kaç litre?</span></li>
+    <li>İKMAL YAPIN <span>— tabancayı bırakmayın; litre ve debi ekranda</span></li>
+    <li>BİTİRİN <span>— tabancayı yerine asın; ekrandaki litreyi kontrol edin</span></li>
+  </ol>
+  <ul class="no">
+    <li><b>Kırmızı/hata yazısı varsa İKMAL YAPMAYIN.</b> Başkasının kartını kullanmayın.</li>
+    <li><b>"Yakıt türü uyumsuz" → asla ikmal yapmayın.</b></li>
+  </ul>
+
+  <h2>EKRANDA BUNU GÖRÜRSENİZ</h2>
+  <table>
+<!-- KART-MESAJLAR:BAŞLA -->
+<tr><td class="scr">Kart tanımsız<br>Yöneticiye<br>başvurun</td><td>Başka bir pompaya gitmeyin. Kartı şantiye şefine gösterin; kart kaydı yönetici tarafından yapılır.</td></tr>
+<tr><td class="scr">Kart bloke<br>Kayıp/çalıntı<br>Şefe bildirin</td><td>Kartı kullanmaya çalışmayın. Şantiye şefine haber verin; yeni kart yönetici tarafından verilir.</td></tr>
+<tr><td class="scr">Kota doldu<br>Çapraz şantiye<br>kotası bitti</td><td>Kendi şantiyenizin pompasını kullanın veya şantiye şefine haber verin.</td></tr>
+<tr><td class="scr">Araç limiti<br>doldu<br>Şefe bildirin</td><td>Şantiye şefine haber verin; gerekirse yönetici geçici artış verir. Zorlamayın.</td></tr>
+<tr><td class="scr">Yakıt türü<br>uyumsuz<br>İkmal yapmayın</td><td>İKMAL YAPMAYIN (yanlış yakıt araca zarar verir). Şantiye şefine haber verin.</td></tr>
+<tr><td class="scr">ÇEVRİMDIŞI MOD<br>Sınırlı yetki<br>Limit: {litre} L</td><td>İkmal yapabilirsiniz ama limiti aşmayın. Bağlantı gelince kayıtlar otomatik gönderilir; cihazı kapatmayın.</td></tr>
+<tr><td class="scr">Akış yok<br>Pompa durdu<br>Hortumu kontrol</td><td>Tabancayı kapatın. Hortum/vana ve tank durumunu kontrol edin; çözülmezse şantiye şefine ve teknik servise haber verin.</td></tr>
+<tr><td class="scr">Sunucu meşgul<br>Tekrar deneyin</td><td>Bir dakika bekleyip kartı tekrar okutun. Sürerse çevrimdışı moda bakın.</td></tr>
+<!-- KART-MESAJLAR:BİTİŞ -->
+  </table>
+
+  <h2 class="red">ACİL DURUM</h2>
+  <div class="stop">
+    KIRMIZI ACİL DURDURMA DÜĞMESİNE BASIN
+    <ul>
+      <li>Tabancayı bırakın, <u>uzaklaşın</u>. Sigara / kıvılcım yok.</li>
+      <li>Yangın, sızıntı: 112 ve şantiye şefi.</li>
+      <li>Hırsızlık şüphesi: kimseyle tartışmayın, şefe bildirin, kayıtlara dokunmayın.</li>
+      <li>Cihaz arızası ("Cihaz arızası"): pompayı kullanmayın, teknik servisi arayın.</li>
+    </ul>
+  </div>
+
+  <h2>TELEFONLAR</h2>
+  <div class="tel"><span>Şantiye şefi:</span><span>Yönetici:</span><div></div><div></div><span>Teknik servis:</span><span>Acil: 112</span><div></div><div></div></div>
+  <p class="foot">Ayrıntılar: Operatör El Kitabı (DOC-1207). Ekran yazıları cihazla birebir aynıdır. {litre} yerine ekrandaki sayı gelir.</p>
+</div>
+</body>
+</html>

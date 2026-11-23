@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Driver } from '../../types';
+import { RfidCardStatusModal } from '../../components/RfidCardStatusModal';
+import { EmptyState } from '../../components/EmptyState';
 
 export const DriversPage: React.FC = () => {
-  const { drivers, selectedSiteFilter, addDriver, updateDriver, deleteDriver, currentCompany, vehicles, isManagerMode, currentUser, sites } = useApp();
+  const { drivers, selectedSiteFilter, addDriver, updateDriver, deleteDriver, currentCompany, vehicles, isManagerMode, currentUser, sites, rfidDenylist } = useApp();
 
   const availableSites = Array.from(new Set([...sites, ...currentCompany.sites.map(s => s.name)])).filter(Boolean);
 
@@ -11,6 +13,9 @@ export const DriversPage: React.FC = () => {
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [editingDriver, setEditingDriver] = useState<Driver | null>(null);
   const [deletingDriver, setDeletingDriver] = useState<Driver | null>(null);
+  // FE-808: AUTH-210 kart kayıp/blokaj/değiştirme akışı.
+  const [rfidCardDriver, setRfidCardDriver] = useState<Driver | null>(null);
+  const isCardBlocked = (cardUid: string) => rfidDenylist.some((r) => r.card_uid === cardUid && r.status !== 'REPLACED');
 
   // Form Fields
   const [name, setName] = useState('');
@@ -112,6 +117,7 @@ export const DriversPage: React.FC = () => {
         </div>
 
         <button
+          data-testid="driver-add-open"
           onClick={handleOpenAdd}
           className="px-5 py-3 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] hover:from-[#ffdca1] hover:to-[#ffb77f] text-[#412d00] font-black rounded-md text-xs flex items-center space-x-2 transition-all cursor-pointer shadow-sm shrink-0"
         >
@@ -158,13 +164,20 @@ export const DriversPage: React.FC = () => {
           </thead>
           <tbody className="divide-y divide-[#514532]/20 font-mono">
             {filteredDrivers.map(d => (
-              <tr key={d.id} className="hover:bg-[#20201f] transition-colors">
+              <tr key={d.id} data-testid="driver-row" data-driver-name={d.name} className="hover:bg-[#20201f] transition-colors">
                 <td className="py-3.5 px-4 font-bold text-[#e5e2e1]">{d.name}</td>
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{d.phone}</td>
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{d.siteName}</td>
                 <td className="py-3.5 px-4 font-black text-[#ffdca1] text-sm">{d.assignedVehiclePlate}</td>
                 <td className="py-3.5 px-4 text-[#d5c4ab]">{d.licenseType}</td>
-                <td className="py-3.5 px-4 text-[#ffb77f]">{d.rfidCardId}</td>
+                <td className="py-3.5 px-4 text-[#ffb77f]">
+                  {d.rfidCardId}
+                  {isCardBlocked(d.rfidCardId) && (
+                    <span data-testid="rfid-card-blocked-badge" className="ml-2 text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#ffb4ab]/20 text-[#ffb4ab] border border-[#ffb4ab]/40 align-middle">
+                      KART BLOKE
+                    </span>
+                  )}
+                </td>
                 <td className="py-3.5 px-4">
                   <span className="font-bold text-[#a1e8a2]">{d.performanceScore} / 100</span>
                 </td>
@@ -187,6 +200,14 @@ export const DriversPage: React.FC = () => {
                       <span className="material-symbols-outlined text-base">edit</span>
                     </button>
                     <button
+                      data-testid="rfid-card-status-open"
+                      onClick={() => setRfidCardDriver(d)}
+                      title="RFID Kart Durumu"
+                      className="p-1.5 text-[#d5c4ab] hover:text-[#ffb77f] hover:bg-[#353535] rounded transition-colors cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-base">contactless</span>
+                    </button>
+                    <button
                       onClick={() => setDeletingDriver(d)}
                       title="Sil"
                       className="p-1.5 text-[#d5c4ab] hover:text-[#ffb4ab] hover:bg-[#93000a]/30 rounded transition-colors cursor-pointer"
@@ -200,8 +221,15 @@ export const DriversPage: React.FC = () => {
 
             {filteredDrivers.length === 0 && (
               <tr>
-                <td colSpan={9} className="py-12 text-center text-[#d5c4ab]">
-                  Kayıtlı şoför bulunamadı.
+                <td colSpan={9} className="py-6">
+                  <EmptyState
+                    icon="badge"
+                    title={drivers.length === 0 ? 'Henüz şoför eklenmedi.' : 'Filtre kriterlerine uygun şoför bulunamadı.'}
+                    description={drivers.length === 0 ? 'İlk şoförünüzü ekleyerek başlayın.' : undefined}
+                    actionLabel={drivers.length === 0 ? 'İlk Şoförünüzü Ekleyin' : undefined}
+                    onAction={drivers.length === 0 ? handleOpenAdd : undefined}
+                    testId="drivers-empty"
+                  />
                 </td>
               </tr>
             )}
@@ -211,7 +239,7 @@ export const DriversPage: React.FC = () => {
 
       {/* MODAL 1: ADD DRIVER */}
       {isAddOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-md w-full space-y-6">
             <div className="flex items-center justify-between border-b border-[#514532]/20 pb-4">
               <h3 className="text-base font-bold text-[#e5e2e1] uppercase flex items-center space-x-2">
@@ -230,6 +258,7 @@ export const DriversPage: React.FC = () => {
                   type="text"
                   value={name}
                   onChange={(e) => setName(e.target.value)}
+                  data-testid="driver-name-input"
                   placeholder="örn. Mustafa Demir"
                   className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                   required
@@ -243,6 +272,7 @@ export const DriversPage: React.FC = () => {
                     type="text"
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
+                    data-testid="driver-phone-input"
                     placeholder="0532 000 00 00"
                     className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] font-mono text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                   />
@@ -253,6 +283,7 @@ export const DriversPage: React.FC = () => {
                     type="text"
                     value={tcNo}
                     onChange={(e) => setTcNo(e.target.value)}
+                    data-testid="driver-tc-input"
                     placeholder="11 haneli TC"
                     className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] font-mono text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
                   />
@@ -279,6 +310,7 @@ export const DriversPage: React.FC = () => {
                   <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Bağlı Şantiye</label>
                   {isManagerMode ? (
                     <select
+                      data-testid="driver-site-select"
                       value={siteName}
                       onChange={(e) => setSiteName(e.target.value)}
                       className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
@@ -301,6 +333,7 @@ export const DriversPage: React.FC = () => {
               <div>
                 <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Atanmış Araç Plakası</label>
                 <select
+                  data-testid="driver-vehicle-select"
                   value={assignedVehiclePlate}
                   onChange={(e) => setAssignedVehiclePlate(e.target.value)}
                   className="w-full bg-[#0e0e0e] border border-[#514532]/30 text-[#e5e2e1] text-xs font-mono rounded-md p-3 focus:outline-none focus:border-[#ffdca1]"
@@ -326,6 +359,7 @@ export const DriversPage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
+                  data-testid="driver-save"
                   className="px-5 py-2 bg-gradient-to-r from-[#ffb800] to-[#ff8a00] text-[#412d00] rounded-md text-xs font-black"
                 >
                   Şoförü Kaydet
@@ -338,7 +372,7 @@ export const DriversPage: React.FC = () => {
 
       {/* MODAL 2: EDIT DRIVER */}
       {editingDriver && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-md w-full space-y-6">
             <div className="flex items-center justify-between border-b border-[#514532]/20 pb-4">
               <h3 className="text-base font-bold text-[#e5e2e1] uppercase flex items-center space-x-2">
@@ -447,7 +481,7 @@ export const DriversPage: React.FC = () => {
 
       {/* MODAL 3: DELETE CONFIRMATION */}
       {deletingDriver && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+        <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-[#1c1b1b] border border-[#514532]/30 rounded-xl p-6 max-w-sm w-full space-y-4 text-center">
             <div className="w-12 h-12 bg-[#93000a]/20 border border-[#93000a] text-[#ffb4ab] rounded-full flex items-center justify-center mx-auto">
               <span className="material-symbols-outlined text-2xl">warning</span>
@@ -480,6 +514,10 @@ export const DriversPage: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {rfidCardDriver && (
+        <RfidCardStatusModal cardUid={rfidCardDriver.rfidCardId} entityLabel={rfidCardDriver.name} onClose={() => setRfidCardDriver(null)} />
       )}
 
     </div>

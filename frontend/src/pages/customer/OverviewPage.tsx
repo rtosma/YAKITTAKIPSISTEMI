@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
-import { HOURLY_CONSUMPTION_DATA } from '../../mock';
 import { TankGauge } from '../../components/TankGauge';
+import { FleetComplianceWidget } from '../../components/FleetComplianceWidget';
+import { useEscapeToClose } from '../../hooks/useEscapeToClose';
 
 export const OverviewPage: React.FC = () => {
   const { 
@@ -19,11 +20,20 @@ export const OverviewPage: React.FC = () => {
 
   // Modal State for Quick Fuel Log
   const [isRefuelModalOpen, setIsRefuelModalOpen] = useState(false);
+  useEscapeToClose(() => setIsRefuelModalOpen(false), isRefuelModalOpen);
   const [refuelPlate, setRefuelPlate] = useState(vehicles[0]?.plate || '34 CTP 82');
   const [refuelDriver, setRefuelDriver] = useState('Ahmet Yılmaz');
   const [refuelSite, setRefuelSite] = useState(currentCompany.sites[0]?.name || 'Gebze Ana Şantiye');
   const [refuelTank, setRefuelTank] = useState(tanks[0]?.name || 'Gebze Ana Tank (T-1)');
   const [refuelLiters, setRefuelLiters] = useState<number>(250);
+  // TEST_PLAN §2.2 — POST /dispense'in sunucuda doğal bir tekrar anahtarı yok
+  // (aynı araca art arda iki meşru ikmal olabilir); bu yüzden çift tıklama
+  // İKİ ikmal ve tanktan İKİ KEZ düşüm demekti (E2E ile kanıtlandı:
+  // e2e/double-submit.spec.ts). İstek sürerken form kilitlenir.
+  const [isSubmittingRefuel, setIsSubmittingRefuel] = useState(false);
+  // State closure'dan okunur ve aynı render içindeki ikinci olayda hâlâ false
+  // görünür; ref ise SENKRON güncellenir — asıl tekrar kilidi bu.
+  const refuelInFlightRef = useRef(false);
 
   // Filter transactions by site filter
   const filteredTransactions = selectedSiteFilter === 'TÜMÜ'
@@ -40,28 +50,60 @@ export const OverviewPage: React.FC = () => {
   const currentTankTotal = filteredTanks.reduce((acc, t) => acc + t.currentLevelLiters, 0);
   const tankPercentage = totalTankCapacity > 0 ? Math.round((currentTankTotal / totalTankCapacity) * 100) : 0;
 
+  // Saatlik tüketim grafiği: mock veri yerine gerçek işlem kayıtlarından 2 saatlik
+  // dilimlere göre türetilir. Kayıt yoksa grafik düz sıfır çizgisi gösterir.
+  const hourlyConsumptionData = useMemo(() => {
+    const buckets = Array.from({ length: 12 }, (_, i) => ({
+      hour: `${String(i * 2).padStart(2, '0')}:00`,
+      Total: 0
+    }));
+    filteredTransactions.forEach(tx => {
+      // timestamp yerelleştirilmiş bir görüntü metni ('03.09.2026 10:30:00');
+      // sabit karakter pozisyonuna güvenmeden HH:MM içinden saati çekiyoruz.
+      const hourMatch = tx.timestamp?.match(/(\d{1,2}):\d{2}/);
+      if (!hourMatch) return;
+      const hourPart = Number(hourMatch[1]);
+      if (Number.isNaN(hourPart) || hourPart > 23) return;
+      const slot = Math.min(11, Math.floor(hourPart / 2));
+      buckets[slot].Total += tx.amountLiters;
+    });
+    return buckets;
+  }, [filteredTransactions]);
+
   const todayOutputLiters = filteredTransactions.reduce((acc, t) => acc + t.amountLiters, 0);
   const activeVehiclesCount = selectedSiteFilter === 'TÜMÜ'
     ? vehicles.length
     : vehicles.filter(v => v.siteName === selectedSiteFilter).length;
 
-  const handleCreateRefuel = (e: React.FormEvent) => {
+  const handleCreateRefuel = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!refuelLiters || refuelLiters <= 0) return;
+    // `disabled` bir sonraki render'da yansır; o render'dan ÖNCE gelen ikinci
+    // submit'i senkron ref ile durduruyoruz.
+    if (refuelInFlightRef.current) return;
+    refuelInFlightRef.current = true;
+    setIsSubmittingRefuel(true);
 
-    addFuelTransaction({
-      siteName: refuelSite,
-      vehiclePlate: refuelPlate,
-      driverName: refuelDriver,
-      tankName: refuelTank,
-      amountLiters: Number(refuelLiters),
-      flowRateLpm: 52.0,
-      pumpStatus: 'TAMAMLANTI',
-      type: 'Otomatik',
-      rfidAuth: true
-    });
-
-    setIsRefuelModalOpen(false);
+    try {
+      await addFuelTransaction({
+        siteName: refuelSite,
+        vehiclePlate: refuelPlate,
+        driverName: refuelDriver,
+        tankName: refuelTank,
+        amountLiters: Number(refuelLiters),
+        flowRateLpm: 52.0,
+        pumpStatus: 'TAMAMLANTI',
+        type: 'Otomatik',
+        rfidAuth: true
+      });
+      setIsRefuelModalOpen(false);
+    } catch {
+      // addFuelTransaction zaten hata toast'ını gösterdi — kullanıcı tekrar
+      // deneyebilsin diye modal açık kalır.
+    } finally {
+      refuelInFlightRef.current = false;
+      setIsSubmittingRefuel(false);
+    }
   };
 
   return (
@@ -152,6 +194,9 @@ export const OverviewPage: React.FC = () => {
 
       </div>
 
+      {/* FLEET-1408 AC: "Geçmiş yükümlülükler dashboard'da kritik olarak gösterilmelidir." */}
+      <FleetComplianceWidget />
+
       {/* CHART & VERTICAL CAPSULE TANKS GRID */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
@@ -173,7 +218,7 @@ export const OverviewPage: React.FC = () => {
 
           <div className="h-64 w-full pt-2">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={HOURLY_CONSUMPTION_DATA} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+              <AreaChart data={hourlyConsumptionData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                 <defs>
                   <linearGradient id="amberGlow" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#ffdca1" stopOpacity={0.3}/>
@@ -276,48 +321,57 @@ export const OverviewPage: React.FC = () => {
 
       {/* QUICK REFUEL MODAL */}
       {isRefuelModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="refuel-modal-title"
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+        >
           <div className="bg-[#1c1b1b] border border-[#353535] rounded-2xl p-6 max-w-md w-full space-y-6">
             <div className="flex items-center justify-between border-b border-[#353535] pb-4">
-              <h3 className="text-base font-extrabold text-[#e5e2e1] uppercase tracking-wider flex items-center space-x-2">
+              <h3 id="refuel-modal-title" className="text-base font-extrabold text-[#e5e2e1] uppercase tracking-wider flex items-center space-x-2">
                 <span className="material-symbols-outlined text-[#ffdca1]">local_gas_station</span>
                 <span>Hızlı İkmal Kaydı</span>
               </h3>
               <button
+                type="button"
                 onClick={() => setIsRefuelModalOpen(false)}
-                className="text-[#d5c4ab] hover:text-[#e5e2e1]"
+                aria-label="Kapat"
+                className="text-[#d5c4ab] hover:text-[#e5e2e1] p-2.5 -m-2.5"
               >
-                <span className="material-symbols-outlined">close</span>
+                <span className="material-symbols-outlined" aria-hidden="true">close</span>
               </button>
             </div>
 
             <form onSubmit={handleCreateRefuel} className="space-y-4">
               <div>
-                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Şantiye</label>
+                <label htmlFor="refuel-site" className="text-xs font-mono text-[#d5c4ab] block mb-1">Şantiye</label>
                 {isManagerMode ? (
                   <select
+                    id="refuel-site"
                     value={refuelSite}
                     onChange={(e) => setRefuelSite(e.target.value)}
-                    className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                    className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3.5 focus:outline-none focus:border-[#ffdca1]"
                   >
                     {currentCompany.sites.map(s => (
                       <option key={s.id} value={s.name}>{s.name}</option>
                     ))}
                   </select>
                 ) : (
-                  <div className="w-full bg-[#131313] border border-[#a1e8a2]/30 text-[#a1e8a2] text-xs rounded-xl p-3 font-bold flex items-center space-x-1.5 select-none">
-                    <span className="material-symbols-outlined text-sm">lock</span>
+                  <div id="refuel-site" className="w-full bg-[#131313] border border-[#a1e8a2]/30 text-[#a1e8a2] text-xs rounded-xl p-3.5 font-bold flex items-center space-x-1.5 select-none">
+                    <span className="material-symbols-outlined text-sm" aria-hidden="true">lock</span>
                     <span>{currentUser?.siteName || selectedSiteFilter}</span>
                   </div>
                 )}
               </div>
 
               <div>
-                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Araç Plakası</label>
+                <label htmlFor="refuel-plate" className="text-xs font-mono text-[#d5c4ab] block mb-1">Araç Plakası</label>
                 <select
+                  id="refuel-plate"
                   value={refuelPlate}
                   onChange={(e) => setRefuelPlate(e.target.value)}
-                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3.5 focus:outline-none focus:border-[#ffdca1]"
                 >
                   {vehicles
                     .filter(v => isManagerMode || v.siteName === (currentUser?.siteName || refuelSite))
@@ -328,25 +382,27 @@ export const OverviewPage: React.FC = () => {
               </div>
 
               <div>
-                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Şoför Adı</label>
+                <label htmlFor="refuel-driver" className="text-xs font-mono text-[#d5c4ab] block mb-1">Şoför Adı</label>
                 <input
+                  id="refuel-driver"
                   type="text"
                   value={refuelDriver}
                   onChange={(e) => setRefuelDriver(e.target.value)}
-                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] text-xs rounded-xl p-3.5 focus:outline-none focus:border-[#ffdca1]"
                   required
                 />
               </div>
 
               <div>
-                <label className="text-xs font-mono text-[#d5c4ab] block mb-1">Verilen Yakıt Miktarı (Litre)</label>
+                <label htmlFor="refuel-liters" className="text-xs font-mono text-[#d5c4ab] block mb-1">Verilen Yakıt Miktarı (Litre)</label>
                 <input
+                  id="refuel-liters"
                   type="number"
                   value={refuelLiters}
                   onChange={(e) => setRefuelLiters(Number(e.target.value))}
                   min={1}
                   max={2000}
-                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] font-mono font-bold text-sm rounded-xl p-3 focus:outline-none focus:border-[#ffdca1]"
+                  className="w-full bg-[#131313] border border-[#353535] text-[#e5e2e1] font-mono font-bold text-sm rounded-xl p-3.5 focus:outline-none focus:border-[#ffdca1]"
                   required
                 />
               </div>
@@ -355,15 +411,17 @@ export const OverviewPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsRefuelModalOpen(false)}
-                  className="px-4 py-2.5 bg-[#20201f] text-[#d5c4ab] rounded-xl text-xs font-bold hover:text-[#e5e2e1]"
+                  className="px-4 py-3.5 bg-[#20201f] text-[#d5c4ab] rounded-xl text-xs font-bold hover:text-[#e5e2e1]"
                 >
                   İptal
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2.5 bg-[#ffdca1] text-[#412d00] rounded-xl text-xs font-black hover:bg-[#ffe5b9]"
+                  disabled={isSubmittingRefuel}
+                  aria-busy={isSubmittingRefuel}
+                  className="px-5 py-3.5 bg-[#ffdca1] text-[#412d00] rounded-xl text-xs font-black hover:bg-[#ffe5b9] disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  İkmalı Kaydet
+                  {isSubmittingRefuel ? 'Kaydediliyor…' : 'İkmalı Kaydet'}
                 </button>
               </div>
             </form>

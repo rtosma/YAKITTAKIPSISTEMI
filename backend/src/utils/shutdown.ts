@@ -3,6 +3,14 @@ import { logger } from './logger';
 
 export interface GracefulShutdownOptions {
   timeoutMs?: number;
+  /**
+   * OPS-1110: `server.close()` ile AYNI ANDA (bekletilmeden) başlar — uzun ömürlü
+   * bağlantıları (WebSocket) kademeli boşaltmak için. `server.close()` açık bir
+   * WebSocket bağlantısı kaldığı sürece ASLA tamamlanmaz; bu kanca olmadan her
+   * dağıtım 30 sn'lik zorla-çıkış zamanlayıcısına takılır ve tüm istemciler aynı
+   * anda düşerdi. Hata fırlatırsa kapanma yine devam eder.
+   */
+  onShutdownStart?: () => Promise<void> | void;
   onShutdown?: () => Promise<void> | void;
 }
 
@@ -25,6 +33,7 @@ export function setupGracefulShutdown(server: Server, options: GracefulShutdownO
     }
 
     isShuttingDown = true;
+    let idleSweep: NodeJS.Timeout | undefined;
     logger.info({ signal, timeoutMs }, `🛑 [Graceful Shutdown] ${signal} sinyali alındı. Sunucu güvenli bir şekilde kapatılıyor...`);
 
     // Set a hard timeout to force exit if active connections do not close within timeout
@@ -38,8 +47,16 @@ export function setupGracefulShutdown(server: Server, options: GracefulShutdownO
       forceExitTimer.unref();
     }
 
+    // OPS-1110: kademeli soket boşaltma, server.close()'un tamamlanmasını beklemeden başlar.
+    if (options.onShutdownStart) {
+      Promise.resolve()
+        .then(() => options.onShutdownStart!())
+        .catch((startErr) => logger.error({ err: startErr }, `❌ [Shutdown] onShutdownStart hatası (kapanma sürüyor).`));
+    }
+
     // Step 1: Stop accepting new HTTP connections
     server.close(async (err) => {
+      clearInterval(idleSweep);
       if (err) {
         logger.error({ err }, `❌ [Shutdown] HTTP sunucusu kapatılırken hata oluştu.`);
       } else {
@@ -61,6 +78,14 @@ export function setupGracefulShutdown(server: Server, options: GracefulShutdownO
         process.exit(0);
       }
     });
+
+    // OPS-1110: server.close() yalnızca YENİ bağlantıları keser; nginx'in canlı tuttuğu
+    // (keep-alive) BOŞTA bağlantılar açık kalır ve close callback'i geciktirir. Boşta
+    // olanları periyodik kapat (istek işleyen bağlantılara DOKUNMAZ — devam eden
+    // istekler tamamlanır).
+    server.closeIdleConnections();
+    idleSweep = setInterval(() => server.closeIdleConnections(), 1000);
+    idleSweep.unref();
   };
 
   // Register signal listeners

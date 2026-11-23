@@ -1,4 +1,5 @@
 import http from 'http';
+import { resetLoginRateLimit } from './helpers/loginRateLimit';
 
 /**
  * AUTH-201 regression suite for POST /auth/refresh.
@@ -11,14 +12,17 @@ import http from 'http';
  *     route, so ANY tenant's user got a comp-camsa COMPANY_OWNER token.
  *     test_auth201.ts could not catch it because it only ever logs in as camsa.
  *
- *  B) SINGLE USE UNDER CONCURRENCY. Rotation must burn the token inside one
- *     synchronous turn. If a future refactor moves the DB read between the
- *     reuse check and the used/isRevoked assignment, N concurrent requests all
- *     pass the check and all mint tokens - disabling theft detection entirely.
- *     Only a parallel test catches that; a sequential one always passes.
+ *  B) SINGLE USE UNDER CONCURRENCY. Rotation must burn the token atomically.
+ *     The token store lives in Redis; a GET -> check -> SET sequence with an
+ *     await in between lets N concurrent requests all see used=false and all
+ *     mint tokens - disabling theft detection entirely. tokenService does the
+ *     check-and-burn in one Redis script. Over HTTP the requests get spaced
+ *     out by nginx/middleware, so this check can pass even with the race
+ *     present; test_auth201_refresh_race.ts is the deterministic version.
  *
- * Run against a server whose process has NOT restarted since login: the token
- * store is an in-process Map, so a restart makes every refresh look like reuse.
+ * BURST is kept at 10: /auth/refresh is rate limited to 30 per IP per 15 min
+ * (refreshRateLimiter) and the CI job runs other refresh-heavy suites against
+ * the same server.
  */
 
 const HOST = process.env.TEST_HOST || 'localhost';
@@ -75,6 +79,7 @@ async function run(): Promise<void> {
   console.log('\n📋 [AUTH-201] REFRESH KİMLİK & EŞZAMANLILIK REGRESYON TESTİ\n');
 
   // --- A) Identity is preserved across rotation, for a NON-camsa tenant -------
+  await resetLoginRateLimit();
   const login = await postJson('/api/v1/auth/login', { username: 'kusak', password: '123456' });
   if (login.status !== 200 || !login.data?.refreshToken) {
     console.error('❌ Ön koşul: kusak girişi başarısız. Seed uygulanmış mı?', login.status, login.data);
@@ -111,13 +116,14 @@ async function run(): Promise<void> {
   );
 
   // --- B) Single use holds under concurrency ---------------------------------
+  await resetLoginRateLimit();
   const fresh = await postJson('/api/v1/auth/login', { username: 'gebze-santiye', password: '123456' });
   if (fresh.status !== 200 || !fresh.data?.refreshToken) {
     console.error('❌ Ön koşul: gebze-santiye girişi başarısız.', fresh.status, fresh.data);
     process.exit(1);
   }
 
-  const BURST = 20;
+  const BURST = 10;
   const results = await Promise.all(
     Array.from({ length: BURST }, () => postJson('/api/v1/auth/refresh', { refreshToken: fresh.data.refreshToken }))
   );

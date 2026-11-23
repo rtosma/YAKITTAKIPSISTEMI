@@ -1,0 +1,15 @@
+# ==============================================================================
+# OPS-1106 — Yedekleme zamanlaması (/etc/cron.d/yakittakip-backup olarak kurun; kullanıcı = dağıtım kullanıcısı)
+# Ayrıntı: docs/BACKUP_RESTORE.md. BACKUP_ENV dosyası (chmod 600) BACKUP_DEST_DIR ve BACKUP_ENCRYPTION_KEY[_FILE] içerir.
+# ==============================================================================
+SHELL=/bin/bash
+BACKUP_ENV=/etc/yakittakip/backup.env
+
+# Sürekli WAL arşivi → şifrele + AYRI konuma taşı (RPO = archive_timeout 300 sn + bu aralık 5 dk ≈ 10 dk ≤ 15 dk)
+*/5 * * * * deploy cd /opt/yakittakip && scripts/backup/wal-ship.sh >> /var/log/yakittakip-backup.log 2>&1
+
+# Günlük TAM yedek (pg_basebackup + pg_dump + roller + manifest; şifreli) — 02:15
+15 2 * * * deploy cd /opt/yakittakip && scripts/backup/backup.sh >> /var/log/yakittakip-backup.log 2>&1
+
+# ÇEYREKLİK restore tatbikatı (Ocak/Nisan/Temmuz/Ekim ayının 1'i 04:00) — rapor docs/restore-drills/ altına yazılır; başarısızsa cron e-postası/alarm (OPS-1108)
+0 4 1 1,4,7,10 * deploy cd /opt/yakittakip && DRILL_ENV=production scripts/backup/restore-drill.sh >> /var/log/yakittakip-backup.log 2>&1
