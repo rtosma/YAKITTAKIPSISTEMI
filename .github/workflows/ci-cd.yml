@@ -37,7 +37,7 @@ jobs:
       TRANSACTION_HASH_SECRET: ci_only_unused
       HW_SECRET_ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       TENANT_EXPORT_ENCRYPTION_KEY: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-      NOTIFICATION_CHANNEL_ENCRYPTION_KEY: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      NOTIFICATION_CHANNEL_ENCRYPTION_KEY: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 
     steps:
       - name: Checkout Repository
@@ -267,11 +267,36 @@ jobs:
       # gibi rastgele bir metin OLAMAZ.
       HW_SECRET_ENCRYPTION_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
       TENANT_EXPORT_ENCRYPTION_KEY: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-      NOTIFICATION_CHANNEL_ENCRYPTION_KEY: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      NOTIFICATION_CHANNEL_ENCRYPTION_KEY: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
       # IOT-302.1: sunucu ve test_iot302_1 AYNI token'ı görmeli (test webhook'a
       # bu token'la POST atıyor). Job seviyesinde tanımlı → hem "Start Backend
       # Server" hem test adımları görür.
       LORAWAN_WEBHOOK_TOKEN: ci_only_lorawan_webhook_token_${{ github.run_id }}
+      # Bağlantı + JWT/MQTT değişkenleri de JOB seviyesinde: test dosyalarının
+      # bir kısmı backend modüllerini süreç içinde import ediyor (servis/rapor
+      # fonksiyonlarını doğrudan çağırıyor) ve config/env.ts bunları import
+      # anında zorunlu kılıyor. Yalnızca "Start Backend Server" adımında
+      # tanımlıyken bu testlerin hepsi ARCH-110 doğrulamasında düşüyordu.
+      # Süreç içinde token imzalayan testlerin sunucuyla AYNI sırrı görmesi
+      # için de tek yerde tanımlı olmaları gerekiyor.
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: yakittakip_db
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+      # CI-only throwaway secrets — never reused outside this ephemeral job run.
+      JWT_SECRET: ci_only_access_secret_${{ github.run_id }}_${{ github.run_attempt }}
+      JWT_REFRESH_SECRET: ci_only_refresh_secret_${{ github.run_id }}_${{ github.run_attempt }}
+      # ARCH-110: MQTT_URL=__CI_SKIP__ yalnızca mqttService.connect()'in
+      # ÇAĞRILMASINI atlar (bkz. index.ts) — config/env.ts şeması
+      # MQTT_USERNAME/MQTT_PASSWORD'ü bundan bağımsız, her zaman zorunlu
+      # kılıyor; bu job gerçek bir EMQX'e hiç bağlanmadığından bunlar da
+      # yalnızca doğrulamayı geçmek için birer placeholder.
+      MQTT_URL: __CI_SKIP__
+      MQTT_USERNAME: ci_only_unused
+      MQTT_PASSWORD: ci_only_unused
     services:
       postgres:
         image: postgres:16-alpine
@@ -344,24 +369,7 @@ jobs:
         working-directory: backend
         env:
           PORT: 5000
-          POSTGRES_HOST: localhost
-          POSTGRES_PORT: 5432
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: yakittakip_db
-          REDIS_HOST: localhost
-          REDIS_PORT: 6379
-          # CI-only throwaway secrets — never reused outside this ephemeral job run.
-          JWT_SECRET: ci_only_access_secret_${{ github.run_id }}_${{ github.run_attempt }}
-          JWT_REFRESH_SECRET: ci_only_refresh_secret_${{ github.run_id }}_${{ github.run_attempt }}
-          MQTT_URL: __CI_SKIP__
-          # ARCH-110: MQTT_URL=__CI_SKIP__ yalnızca mqttService.connect()'in
-          # ÇAĞRILMASINI atlar (bkz. index.ts) — config/env.ts şeması
-          # MQTT_USERNAME/MQTT_PASSWORD'ü bundan bağımsız, her zaman zorunlu
-          # kılıyor; bu job gerçek bir EMQX'e hiç bağlanmadığından bunlar da
-          # yalnızca doğrulamayı geçmek için birer placeholder.
-          MQTT_USERNAME: ci_only_unused
-          MQTT_PASSWORD: ci_only_unused
+          # Bağlantı/JWT/MQTT değişkenleri job seviyesinde (bkz. job env).
 
       - name: Run AUTH-201 Integration Tests
         run: cd backend && npx tsx test/test_auth201.ts
@@ -372,18 +380,9 @@ jobs:
         run: cd backend && npx tsx test/test_auth201_refresh_identity.ts
 
       # HTTP testi yarışı yerelde yakalayamıyor (istekler aralanıyor); bu test
-      # rotateRefreshToken'ı aynı tick'te N kez doğrudan çağırır. Servisi
-      # süreç içinde import ettiği için config/env'in zorunlu değişkenleri bu
-      # adımda da gerekli (HW_*/şifreleme anahtarları job seviyesinde).
+      # rotateRefreshToken'ı aynı tick'te N kez doğrudan çağırır.
       - name: Run AUTH-201 Refresh Rotation Race Test (code level)
         run: cd backend && npx tsx test/test_auth201_refresh_race.ts
-        env:
-          REDIS_HOST: localhost
-          REDIS_PORT: 6379
-          JWT_SECRET: ci_only_race_access_secret_${{ github.run_id }}_${{ github.run_attempt }}
-          JWT_REFRESH_SECRET: ci_only_race_refresh_secret_${{ github.run_id }}_${{ github.run_attempt }}
-          MQTT_USERNAME: ci_only_unused
-          MQTT_PASSWORD: ci_only_unused
 
       - name: Run AUTH-202.2 Hardware HMAC + Replay/Nonce Tests
         run: cd backend && npx tsx test/testHardwareAuth.ts
@@ -1342,7 +1341,7 @@ jobs:
           TRANSACTION_HASH_SECRET=ci_only_tx_hash_${{ github.run_id }}
           HW_SECRET_ENCRYPTION_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           TENANT_EXPORT_ENCRYPTION_KEY=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
-          NOTIFICATION_CHANNEL_ENCRYPTION_KEY=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+          NOTIFICATION_CHANNEL_ENCRYPTION_KEY=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
           EOF
 
       - name: Start Full Docker Compose Stack
