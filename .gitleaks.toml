@@ -21,7 +21,14 @@ regexes = [
   # test_auth204.ts: yalnızca o test sürecinde oluşturulup test bitince
   # anlamsızlaşan (kullanıcının kendisi ephemeral bir test fixture'ı) sabit
   # bir test parolası — gerçek bir hesaba asla karşılık gelmez.
-  '''YeniGucluParola123'''
+  '''YeniGucluParola123''',
+  # Aynı gerekçe: parola sıfırlama birim testi (PasswordResetPages.test.tsx)
+  # ve e2e testinin (e2e/password-reset.spec.ts) sahte, test-içi parolaları.
+  '''yeniParola123''',
+  '''e2eYeniParola456''',
+  # REP-718 rapor tanımındaki SÜTUN ANAHTARI ("key: 'calibrations_30d'") —
+  # generic-api-key kuralı `key:` + rastgele görünen değer kalıbına takılıyor.
+  '''calibrations_30d'''
 ]
 paths = [
   # Derleme çıktıları — gitignored, git tarafından hiç takip edilmiyor;
