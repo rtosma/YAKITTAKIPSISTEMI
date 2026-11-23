@@ -408,7 +408,7 @@ router.post(
  * POST /api/v1/auth/refresh
  * Single-use JWT Refresh Token Rotation with Token Reuse Detection
  */
-router.post('/auth/refresh', refreshRateLimiter, async (req: Request, res: Response) => {
+router.post('/auth/refresh', refreshRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
   const { refreshToken } = req.body;
 
   if (!refreshToken) {
@@ -463,11 +463,19 @@ router.post('/auth/refresh', refreshRateLimiter, async (req: Request, res: Respo
       expiresInSeconds: 900
     });
   } catch (err: any) {
-    const isReuse = err.message.includes('TOKEN_REUSE_DETECTED');
+    const message: string = err?.message || '';
+    const isReuse = message.includes('TOKEN_REUSE_DETECTED');
+    const isTokenError = isReuse || message.includes('INVALID_REFRESH_TOKEN') || message.includes('SESSION_REVOKED');
+    // #212'den: yalnızca token'a ait bilinen hatalar 401. Postgres/Redis
+    // kesintisi gibi beklenmeyen bir hata 401'e çevrilirse (a) istemci
+    // oturumu geçersiz sanıp kullanıcıyı çıkarır, (b) ham sürücü mesajı
+    // yanıta sızar. Onları global hata yakalayıcıya bırak (traceId + genel
+    // mesaj; havuz zaman aşımı → yeniden denenebilir 503).
+    if (!isTokenError) return next(err);
     res.status(401).json({
       success: false,
       error: isReuse ? 'TOKEN_REUSE_DETECTED' : 'INVALID_REFRESH_TOKEN',
-      message: err.message
+      message
     });
   }
 });

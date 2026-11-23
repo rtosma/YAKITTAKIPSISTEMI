@@ -204,6 +204,50 @@ export async function generateRefreshToken(
 }
 
 /**
+ * Tek kullanımlık refresh token'ı ATOMİK olarak harca: oku → durumu kontrol
+ * et → used/isRevoked işaretle, Redis'te TEK bir script olarak (bölünmeden).
+ *
+ * Neden script: önceki GET → kontrol → SET dizisinde iki `await` arasında
+ * aynı token'la gelen N eşzamanlı isteğin HEPSİ "used=false" görüp hepsi yeni
+ * token basabiliyordu — bu hem tek-kullanımı hem hırsızlık tespitini sessizce
+ * devre dışı bırakır (#212'nin önlediği yarışın Redis karşılığı). Redis
+ * script'leri sırayla çalıştırdığından burada yalnızca BİR istek CONSUMED alır;
+ * diğerleri ALREADY_USED görür. Çoklu backend örneğinde de geçerlidir.
+ *
+ * cjson yeniden kodlarken alan sırasını değiştirebilir ve "/"yi "\/" olarak
+ * kaçırır — ikisi de JSON.parse için anlamsız, kayıt aynı kalır.
+ */
+const CONSUME_REFRESH_TOKEN_SCRIPT = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return {'MISSING'} end
+local rec = cjson.decode(raw)
+if rec.used then return {'ALREADY_USED', raw} end
+if rec.isRevoked then return {'REVOKED', raw} end
+rec.used = true
+rec.isRevoked = true
+redis.call('SET', KEYS[1], cjson.encode(rec), 'KEEPTTL')
+return {'CONSUMED', raw}
+`;
+
+type ConsumeResult =
+  | { outcome: 'MISSING' }
+  | { outcome: 'ALREADY_USED' | 'REVOKED' | 'CONSUMED'; record: RefreshTokenRecord };
+
+async function consumeRefreshTokenRecord(jti: string): Promise<ConsumeResult> {
+  const [outcome, raw] = (await redisPool.client.eval(
+    CONSUME_REFRESH_TOKEN_SCRIPT,
+    1,
+    refreshTokenKey(jti)
+  )) as [string, string | undefined];
+
+  if (outcome === 'MISSING' || !raw) return { outcome: 'MISSING' };
+  if (outcome !== 'ALREADY_USED' && outcome !== 'REVOKED' && outcome !== 'CONSUMED') {
+    throw new Error(`Beklenmeyen refresh token script sonucu: ${outcome}`);
+  }
+  return { outcome, record: JSON.parse(raw) as RefreshTokenRecord };
+}
+
+/**
  * Rotate Refresh Token with Single-Use Enforcement & Theft Reuse Detection
  *
  * SECURITY: the caller MUST NOT be able to dictate whose identity the new tokens
@@ -224,13 +268,12 @@ export async function rotateRefreshToken(
   }
 
   const tokenId = decoded.jti;
-  const raw = await redisPool.client.get(refreshTokenKey(tokenId));
-  const tokenRecord: RefreshTokenRecord | null = raw ? JSON.parse(raw) : null;
+  const consumed = await consumeRefreshTokenRecord(tokenId);
 
   // Theft Detection: token kaybolmuş (süresi dolmuş/hiç olmamış) VEYA daha önce
-  // KULLANILMIŞ (harcanmış bir token'ın tekrar oynatılması) → gerçek şüphe:
-  // kullanıcının TÜM oturumları kapatılır.
-  if (!tokenRecord || tokenRecord.used) {
+  // KULLANILMIŞ (harcanmış bir token'ın tekrar oynatılması — eşzamanlı ikinci
+  // istek dahil) → gerçek şüphe: kullanıcının TÜM oturumları kapatılır.
+  if (consumed.outcome === 'MISSING' || consumed.outcome === 'ALREADY_USED') {
     await revokeAllUserTokens(decoded.userId);
     throw new Error('TOKEN_REUSE_DETECTED: Şüpheli çoklu token kullanımı tespit edildi! Tüm aktif oturumlarınız güvenlik nedeniyle kapatıldı.');
   }
@@ -238,20 +281,32 @@ export async function rotateRefreshToken(
   // AUTH-208: token harcanmamış ama AÇIKÇA iptal edilmiş (uzaktan oturum
   // kapatma veya logout) → bu bir hırsızlık göstergesi DEĞİL; yalnızca BU
   // oturum reddedilir, kullanıcının diğer oturumları etkilenmez.
-  if (tokenRecord.isRevoked) {
+  if (consumed.outcome === 'REVOKED') {
     throw new Error('SESSION_REVOKED: Bu oturum sonlandırıldı. Lütfen tekrar giriş yapınız.');
   }
 
-  // Mark current token as used and revoked (single-use constraint).
-  // KEEPTTL preserves the key's remaining expiry instead of resetting it.
-  tokenRecord.used = true;
-  tokenRecord.isRevoked = true;
-  await redisPool.client.set(refreshTokenKey(tokenId), JSON.stringify(tokenRecord), 'KEEPTTL');
+  const tokenRecord = consumed.record;
+
+  // Savunma derinliği (#212'den): imzalı claim'ler sunucunun yazdığı kayıtla
+  // uyuşmalı. Bugün ulaşılamaz (claim'ler imzalı, kaydı biz yazıyoruz);
+  // yalnızca bozulmuş bir Redis kaydı veya sızmış JWT_REFRESH_SECRET bunu
+  // tetikleyebilir — iki durumda da token basmaktansa oturumları öldürmek
+  // doğru. Kurbanın hangisi olduğu bilinmediğinden iki kimlik de iptal edilir.
+  if (decoded.userId !== tokenRecord.userId || decoded.tenantId !== tokenRecord.tenantId) {
+    await revokeAllUserTokens(tokenRecord.userId);
+    if (decoded.userId && decoded.userId !== tokenRecord.userId) {
+      await revokeAllUserTokens(decoded.userId);
+    }
+    throw new Error('TOKEN_REUSE_DETECTED: Şüpheli çoklu token kullanımı tespit edildi! Tüm aktif oturumlarınız güvenlik nedeniyle kapatıldı.');
+  }
 
   // Re-resolve the REAL, current identity from the database using the token
   // record's own userId/tenantId — never trust a caller-supplied payload.
+  // Token yukarıda zaten harcandı; kullanıcı bulunamazsa bilerek GERİ
+  // AÇILMIYOR (fail-closed) — açmak, kapatılan yarışı yeniden açardı.
   const userPayload = await fetchUserPayload(tokenRecord.userId, tokenRecord.tenantId);
   if (!userPayload) {
+    await revokeAllUserTokens(tokenRecord.userId);
     throw new Error('INVALID_REFRESH_TOKEN: Kullanıcı artık mevcut değil veya devre dışı bırakılmış.');
   }
 

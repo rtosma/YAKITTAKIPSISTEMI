@@ -366,6 +366,25 @@ jobs:
       - name: Run AUTH-201 Integration Tests
         run: cd backend && npx tsx test/test_auth201.ts
 
+      # #212: /auth/refresh kimliği DB'den okumalı (çapraz-kiracı yükseltme yok)
+      # ve eşzamanlı rotasyonda tek kullanım korunmalı (atomik Redis script).
+      - name: Run AUTH-201 Refresh Identity + Concurrency Regression Tests
+        run: cd backend && npx tsx test/test_auth201_refresh_identity.ts
+
+      # HTTP testi yarışı yerelde yakalayamıyor (istekler aralanıyor); bu test
+      # rotateRefreshToken'ı aynı tick'te N kez doğrudan çağırır. Servisi
+      # süreç içinde import ettiği için config/env'in zorunlu değişkenleri bu
+      # adımda da gerekli (HW_*/şifreleme anahtarları job seviyesinde).
+      - name: Run AUTH-201 Refresh Rotation Race Test (code level)
+        run: cd backend && npx tsx test/test_auth201_refresh_race.ts
+        env:
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          JWT_SECRET: ci_only_race_access_secret_${{ github.run_id }}_${{ github.run_attempt }}
+          JWT_REFRESH_SECRET: ci_only_race_refresh_secret_${{ github.run_id }}_${{ github.run_attempt }}
+          MQTT_USERNAME: ci_only_unused
+          MQTT_PASSWORD: ci_only_unused
+
       - name: Run AUTH-202.2 Hardware HMAC + Replay/Nonce Tests
         run: cd backend && npx tsx test/testHardwareAuth.ts
 
