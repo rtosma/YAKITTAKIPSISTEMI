@@ -30,6 +30,8 @@ const KNOWN_PLACEHOLDER_VALUES = new Set([
 // her değer "doldurulmamış şablon" sayılır (KNOWN_PLACEHOLDER_VALUES'un üst kümesi).
 const isPlaceholderValue = (v: string): boolean => KNOWN_PLACEHOLDER_VALUES.has(v) || v.startsWith('__CHANGE_ME');
 
+const JWT_SECRET_MIN_LENGTH = 32;
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().int().positive().default(5000),
@@ -64,8 +66,17 @@ const envSchema = z.object({
   // durumunu aynı anlaşılır Türkçe mesajla kapsar — yalnızca .min(1, msg)
   // kullanmak undefined durumunda Zod'un jenerik "expected string, received
   // undefined" mesajına düşerdi.
-  JWT_SECRET: z.string({ message: 'JWT_SECRET tanımlı değil. .env dosyanızda ayarlayın (öneri: openssl rand -hex 64).' }).min(1, 'JWT_SECRET boş olamaz.'),
-  JWT_REFRESH_SECRET: z.string({ message: 'JWT_REFRESH_SECRET tanımlı değil. .env dosyanızda ayarlayın (öneri: openssl rand -hex 64).' }).min(1, 'JWT_REFRESH_SECRET boş olamaz.'),
+  //
+  // En az 32 karakter (#213): HS256 anahtarı bundan kısaysa çevrimdışı kaba
+  // kuvvetle kırılabilir ve jsonwebtoken boş olmayan HER stringi şikâyetsiz
+  // kabul eder — taban bizim olmak zorunda. İkisinin FARKLI olması kuralı
+  // aşağıda loadConfig()'te (alanlar arası kontrol).
+  JWT_SECRET: z.string({ message: 'JWT_SECRET tanımlı değil. .env dosyanızda ayarlayın (öneri: openssl rand -hex 64).' })
+    .min(1, 'JWT_SECRET boş olamaz.')
+    .min(JWT_SECRET_MIN_LENGTH, `JWT_SECRET en az ${JWT_SECRET_MIN_LENGTH} karakter olmalıdır (öneri: openssl rand -hex 64).`),
+  JWT_REFRESH_SECRET: z.string({ message: 'JWT_REFRESH_SECRET tanımlı değil. .env dosyanızda ayarlayın (öneri: openssl rand -hex 64).' })
+    .min(1, 'JWT_REFRESH_SECRET boş olamaz.')
+    .min(JWT_SECRET_MIN_LENGTH, `JWT_REFRESH_SECRET en az ${JWT_SECRET_MIN_LENGTH} karakter olmalıdır (öneri: openssl rand -hex 64).`),
 
   MQTT_URL: z.string().min(1).default('mqtt://localhost:1883'),
   // EMQX artık anonim bağlantı kabul etmiyor (bkz. docker/emqx/entrypoint.sh)
@@ -246,6 +257,16 @@ function loadConfig(): AppConfig {
         `Bunları gerçek, rastgele üretilmiş sırlarla değiştirin (öneri: openssl rand -hex 64).`
       );
     }
+  }
+
+  // #213: iki anahtarın farklı olması kozmetik değil. Tek bir ortak anahtarla
+  // refresh token access token olarak da doğrulanır: authenticateJWT onu kabul
+  // edip RLS tenant bağlamını ondan kurar ve taşıyıcısı hiç giriş yapmadan
+  // JWT korumalı uçlara erişir. Her ortamda zorunlu. Üretimdeki placeholder
+  // kontrolünden SONRA: doldurulmamış şablonda (iki placeholder aynı) önce o
+  // daha açıklayıcı mesaj görünsün.
+  if (data.JWT_SECRET === data.JWT_REFRESH_SECRET) {
+    failFast('  - JWT_SECRET ve JWT_REFRESH_SECRET aynı değere sahip olamaz. İkisi için ayrı ayrı üretin (öneri: openssl rand -hex 64).');
   }
 
   return { ...data, isProduction };
