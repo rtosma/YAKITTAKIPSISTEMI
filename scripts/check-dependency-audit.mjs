@@ -20,6 +20,7 @@
 // ==============================================================================
 
 import { execFileSync } from 'node:child_process';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -60,27 +61,6 @@ const ACCEPTED = {
     guard: 'scripts/check-frontend-security.mjs → no-xlsx-parse kuralı',
     note: 'Bkz. GHSA-4r6h-8v6p-xvw6 notu.'
   },
-  'GHSA-x5fp-wj9c-mxmx': {
-    package: 'qs',
-    severity: 'moderate',
-    why:
-      'Express 4.x\'in query-parser bağımlılığı (transitive, fixAvailable: ' +
-      'false — düzeltme Express 5 gerektirir). array-limit bypass, aşırı ' +
-      'sayıda query parametresiyle bellek tüketimine yol açabilir; ' +
-      'uygulamanın TÜM uçları rate-limit arkasında (rateLimitMiddleware.ts) ' +
-      've nginx body/istek sınırları devrede.',
-    guard: 'rateLimitMiddleware.ts (7 limiter) + nginx client_max_body_size',
-    note: 'Express 5 geçişi ayrı bir teknik borç kalemi olarak izlenmelidir.'
-  },
-  'GHSA-4mjr-xmp4-gh2g': {
-    package: 'qs',
-    severity: 'moderate',
-    why:
-      'DoS via attacker-controlled isBuffer — GHSA-x5fp-wj9c-mxmx ile aynı ' +
-      'transitive Express 4.x bağımlılığı, aynı azaltıcı önlemler.',
-    guard: 'rateLimitMiddleware.ts (7 limiter) + nginx client_max_body_size',
-    note: 'Bkz. GHSA-x5fp-wj9c-mxmx notu.'
-  },
   'GHSA-w5hq-g745-h8pq': {
     package: 'uuid',
     severity: 'moderate',
@@ -94,8 +74,57 @@ const ACCEPTED = {
       'ExcelJS yalnızca sunucu tarafı .xlsx YAZMA için kullanılıyor ' +
       '(transactionExportService.ts).',
     note: 'exceljs yeni bir uuid sürümüne geçerse bu girdi stale olarak raporlanır.'
+  },
+  'GHSA-3g3m-2fjr-6pw4': {
+    package: 'glob',
+    severity: 'moderate',
+    why:
+      'AbortSignal ile iptal edilen bir glob taramasının zaman aşımından ' +
+      'sonra dosya sistemini gezmeye devam etmesi. glob yalnızca transitive: ' +
+      'swagger-jsdoc (index.ts\'teki SABİT route desenleri, AbortSignal yok), ' +
+      'archiver-utils (kod archive.glob/archive.directory kullanmıyor, ' +
+      'dosyalar tek tek eklenir) ve cacache (yalnızca node-gyp derleme anı). ' +
+      'Uygulama kodu glob\'a ne desen ne de signal geçiriyor.',
+    guard: 'Bu betikteki backendGlobUsage(): backend/src\'de glob/minimatch import\'u veya archive.glob/directory çağrısı bulunursa bu kabul düşer.',
+    note: 'Düzeltme swagger-jsdoc/archiver/libxmljs2\'nin yeni glob\'a geçmesine bağlı (npm\'in önerdiği "fix" sürüm GERİ gidişi).'
+  },
+  'GHSA-g3hv-75wg-m249': {
+    package: 'minimatch',
+    severity: 'moderate',
+    why:
+      'Saldırganın kontrol ettiği bir glob DESENİYLE CPU tüketimi (DoS). ' +
+      'minimatch yalnızca glob üzerinden transitive; desenler kodda sabit, ' +
+      'istekten gelen hiçbir değer desene dönüşmüyor (bkz. GHSA-3g3m-2fjr-6pw4).',
+    guard: 'Bu betikteki backendGlobUsage() — GHSA-3g3m-2fjr-6pw4 ile aynı koşul.',
+    note: 'Bkz. GHSA-3g3m-2fjr-6pw4 notu.'
   }
 };
+
+// GHSA-3g3m-2fjr-6pw4 / GHSA-g3hv-75wg-m249 kabulünün mekanik koşulu:
+// backend kaynağı glob/minimatch'i ya da archiver'ın glob tabanlı
+// archive.glob()/archive.directory()'sini doğrudan çağırmamalı. Çağırırsa
+// desen/sinyal artık kod tabanının kontrolünde olmayabilir → kabul geçersiz.
+function backendGlobUsage() {
+  const hits = [];
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const f = path.join(dir, e.name);
+      if (e.isDirectory()) walk(f);
+      else if (/\.(ts|js|mjs|cjs)$/.test(e.name)) {
+        const src = readFileSync(f, 'utf-8');
+        if (/from ['"](glob|minimatch)['"]|require\(['"](glob|minimatch)['"]\)|\barchive\.(glob|directory)\(/.test(src)) hits.push(path.relative(REPO_ROOT, f));
+      }
+    }
+  };
+  walk(path.join(REPO_ROOT, 'backend', 'src'));
+  return hits;
+}
+const globHits = backendGlobUsage();
+if (globHits.length > 0) {
+  console.error(`[check-dependency-audit] glob/minimatch kabulü GEÇERSİZ — doğrudan kullanım bulundu: ${globHits.join(', ')}`);
+  delete ACCEPTED['GHSA-3g3m-2fjr-6pw4'];
+  delete ACCEPTED['GHSA-g3hv-75wg-m249'];
+}
 
 function runAudit(workspace) {
   const cwd = path.join(REPO_ROOT, workspace);
