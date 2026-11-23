@@ -49,11 +49,18 @@ ENV PORT=5000
 # Copy package files for production dependency installation
 COPY package.json package-lock.json* ./
 
+# Aynı gerekçeyle (tek katman) native derlemenin artıkları da burada silinir:
+# libxmljs2'nin node-gyp derlemesi Node başlık dosyalarını /root/.cache/node-gyp
+# altına indiriyor (~54MB) ve imajda kalıyordu; `apk update` indeksi de öyle.
+# node_modules içindeki kaynak haritaları (*.map, ~7MB) çalışma zamanında
+# kullanılmıyor (Sentry'ye giden yalnızca bizim bundle'ımızın haritası).
 RUN apk update && apk upgrade --no-cache \
     && apk add --no-cache tini wget python3 make g++ \
     && npm ci --omit=dev \
     && npm cache clean --force \
-    && apk del python3 make g++
+    && apk del python3 make g++ \
+    && rm -rf /root/.cache /root/.npm /var/cache/apk/* /tmp/* \
+    && find node_modules -type f -name '*.map' -delete
 
 # Remove the bundled global npm CLI itself — it drags in its own large tree of
 # transitive dependencies (tar, minimatch, cross-spawn, sigstore, pacote...)
