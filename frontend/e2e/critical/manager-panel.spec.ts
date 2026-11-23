@@ -10,19 +10,26 @@ test('yönetici: şantiye → sürücü → araç → çapraz alım yetkisi', as
   const siteB = `E2E Şantiye B ${uniq()}`;
   const driverName = `E2E Sürücü ${uniq()}`;
   const plate = '06 ABC 1234';
-  await uiLogin(page, 'company', t.ownerUsername);
+  await uiLogin(page, 'company', t.ownerUsername, t.ownerPassword);
   await expect(page).toHaveURL(/\/panel/);
 
   // ── 1) İki şantiye ──
   await page.goto('/panel/sites');
+  // FE-807: şantiye oluşturma çok adımlı sihirbaz (ad → konum → özet/kaydet); sonunda şantiye
+  // yöneticisinin tek seferlik geçici parolası BİR KEZ gösterilir ve pencere kapatılır.
   for (const site of [siteA, siteB]) {
     await page.getByTestId('site-add-open').click();
     await page.getByTestId('site-name-input').fill(site);
+    await page.getByTestId('site-wizard-next').click();
+    await page.getByTestId('site-location-input').fill('Gebze / Kocaeli');
+    await page.getByTestId('site-wizard-next').click();
     const [res] = await Promise.all([
       page.waitForResponse((r) => r.url().endsWith('/api/v1/sites') && r.request().method() === 'POST'),
       page.getByTestId('site-save').click()
     ]);
     expect(res.status()).toBe(200);
+    await expect(page.getByTestId('site-manager-temp-password')).not.toBeEmpty();
+    await page.getByTestId('site-credentials-done').click();
     await expect(page.locator(`[data-testid="site-card"][data-site-name="${site}"]`)).toBeVisible();
   }
 

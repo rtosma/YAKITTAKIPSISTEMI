@@ -67,7 +67,7 @@ test('yetkisiz erişim: oturumsuz, şantiye yöneticisi ve firma sahibi rol sın
 
   // Firma sahibi: admin paneli YASAK; kendi paneli açık
   await page.evaluate(() => localStorage.clear());
-  await uiLogin(page, 'company', t.ownerUsername, undefined, /\/panel/);
+  await uiLogin(page, 'company', t.ownerUsername, t.ownerPassword, /\/panel/);
   await page.goto('/admin/tenants');
   await expect(page.getByTestId('forbidden-page')).toBeVisible();
   await expect(page.getByTestId('tenant-add-open')).toHaveCount(0);

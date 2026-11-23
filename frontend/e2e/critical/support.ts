@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { expect, type Page } from '@playwright/test';
+import { validVkn } from '../../../test-support/factories';
 
 /**
  * TEST-1004 — 3 panelin kritik akış testleri için ortak destek.
@@ -61,15 +62,26 @@ export async function login(username: string, password = PASSWORD): Promise<stri
 
 const slugify = (name: string): string => name.toLowerCase().replace(/ç/g, 'c').replace(/ğ/g, 'g').replace(/ı/g, 'i').replace(/ö/g, 'o').replace(/ş/g, 's').replace(/ü/g, 'u').replace(/[^a-z0-9]+/g, '').slice(0, 32) || 'firma';
 
-export interface Tenant { id: string; name: string; ownerUsername: string; ownerToken: string }
-/** Taze firma (KURUMSAL paket: tüm modüller açık) + sahibi; parola varsayılan 123456. */
+/**
+ * Benzersiz ve GİB sağlamasından geçen VKN. ARCH-105'ten beri VKN firmalar
+ * arasında tekil; sabit '1234567890' ilk firmadan sonra 409 alıyordu.
+ */
+export const uniqueVkn = (): string => validVkn(100_000_000 + crypto.randomInt(0, 900_000_000));
+
+export interface Tenant { id: string; name: string; ownerUsername: string; ownerPassword: string; ownerToken: string }
+/**
+ * Taze firma (KURUMSAL paket: tüm modüller açık) + sahibi. ARCH-105'ten beri
+ * sahibin ilk parolası rastgele, tek seferlik ve değiştirilmesi zorunlu; testler
+ * doğrudan panele girebilsin diye API ile kalıcı parolaya (NEW_PASSWORD) geçilir.
+ */
 export async function createTenant(label: string): Promise<Tenant> {
   const name = `E2E ${label} ${uniq()}`;
   const admin = await login('admin');
-  const r = await api('POST', '/companies', { token: admin, body: { name, city: 'Kocaeli', taxNumber: '1234567890', package: 'KURUMSAL' } });
+  const r = await api('POST', '/companies', { token: admin, body: { name, city: 'Kocaeli', taxNumber: uniqueVkn(), package: 'KURUMSAL' } });
   if (r.status !== 200) throw new Error(`firma oluşturulamadı: ${r.status} ${JSON.stringify(r.body)}`);
-  const ownerUsername = slugify(name);
-  return { id: r.body.data.id, name, ownerUsername, ownerToken: await login(ownerUsername) };
+  const ownerUsername: string = r.body.data.ownerUsername ?? slugify(name);
+  await activateManager(ownerUsername, r.body.data.temporaryPassword);
+  return { id: r.body.data.id, name, ownerUsername, ownerPassword: NEW_PASSWORD, ownerToken: await login(ownerUsername, NEW_PASSWORD) };
 }
 
 export async function provisionSite(t: Tenant, siteName: string): Promise<{ managerUsername: string; temporaryPassword: string }> {

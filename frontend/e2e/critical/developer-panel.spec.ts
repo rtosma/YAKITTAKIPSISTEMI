@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { api, createTenant, login, publishMqtt, seedFuel, uiLogin, uniq } from './support';
+import { api, createTenant, login, publishMqtt, seedFuel, uiLogin, uniq, uniqueVkn } from './support';
 
 /**
  * TEST-1004 — GELİŞTİRİCİ (SUPER_ADMIN) paneli: firma oluşturma → modül aç/kapa → cihaz sağlığı görüntüleme.
@@ -14,13 +14,17 @@ test('geliştirici: firma oluştur → modül aç/kapa + lisans → cihaz sağl�
   await page.getByTestId('tenant-add-open').click();
   await page.getByTestId('tenant-name-input').fill(name);
   await page.getByTestId('tenant-city-input').fill('Ankara');
-  await page.getByTestId('tenant-tax-input').fill('1234567890');
+  await page.getByTestId('tenant-tax-input').fill(uniqueVkn());
   const [created] = await Promise.all([
     page.waitForResponse((r) => r.url().endsWith('/api/v1/companies') && r.request().method() === 'POST'),
     page.getByTestId('tenant-save').click()
   ]);
   expect(created.status()).toBe(200);
   const tenantId: string = (await created.json()).data.id;
+  // FE-805/ARCH-105: sahibin tek seferlik geçici parolası bir pencerede BİR KEZ gösterilir;
+  // pencere açıkken arkadaki tabloya tıklanamaz.
+  await expect(page.getByTestId('tenant-temp-password')).not.toBeEmpty();
+  await page.getByTestId('tenant-credentials-done').click();
   const row = page.locator(`[data-testid="tenant-row"][data-tenant-name="${name}"]`);
   await expect(row).toBeVisible();
 
@@ -34,15 +38,22 @@ test('geliştirici: firma oluştur → modül aç/kapa + lisans → cihaz sağl�
     return !!list.body.data.find((c: any) => c.id === tenantId)?.modules?.aiAnomaly;
   };
   expect(await moduleOnServer()).toBe(before);
-  await toggle.click();
+  // FE-805: yıkıcı işlemler (modül KAPATMA, lisansı askıya alma) bir onay penceresi açar;
+  // modül AÇMA doğrudan uygulanır.
+  const flip = async (enable: boolean): Promise<void> => {
+    await toggle.click();
+    if (!enable) await page.getByTestId('destructive-action-confirm').click();
+  };
+  await flip(!before);
   await expect(toggle).toHaveAttribute('data-enabled', String(!before));
   await expect.poll(moduleOnServer).toBe(!before);
-  await toggle.click(); // geri al: iki yönlü çalıştığını göster
+  await flip(before); // geri al: iki yönlü çalıştığını göster
   await expect(toggle).toHaveAttribute('data-enabled', String(before));
   await expect.poll(moduleOnServer).toBe(before);
 
-  // Lisans durumu
+  // Lisans durumu (askıya alma da onay ister)
   await page.getByTestId('license-status-ASKIDA').click();
+  await page.getByTestId('destructive-action-confirm').click();
   await expect.poll(async () => (await api('GET', '/companies', { token: admin })).body.data.find((c: any) => c.id === tenantId)?.licenseStatus).toBe('ASKIDA');
 
   // ── 3) Cihaz sağlığı: kayıtlı cihaz, MQTT ile ONLINE olur → panelde görünür ──
