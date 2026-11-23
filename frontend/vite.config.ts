@@ -7,6 +7,8 @@ import {sentryVitePlugin} from '@sentry/vite-plugin';
 // RES-907 (#192): source map'ler `hidden` üretilir — pakette `sourceMappingURL` yorumu YOKTUR, tarayıcı/son kullanıcı kaynak kodu görmez.
 // Sentry'ye yüklenir (SENTRY_AUTH_TOKEN + SENTRY_ORG + SENTRY_PROJECT varsa; release adı = VITE_APP_VERSION = backend `release`) ve
 // yüklemeden sonra silinir. Token yoksa yükleme yapılmaz; .map dosyaları Dockerfile'da imaja alınmadan silinir (kaynak sızmasın).
+// `npm run build` de derlemeden sonra dist/'teki .map'leri siler: CI'daki build-bundle sızıntı kontrolü (check-frontend-bundle)
+// ve elle dağıtım, sunulacak çıktıyı görür. Haritaları isteyen test (test-res907 --build) `vite build`'i doğrudan çağırır.
 const sentryUpload = Boolean(process.env.SENTRY_AUTH_TOKEN && process.env.SENTRY_ORG && process.env.SENTRY_PROJECT);
 
 export default defineConfig(() => {

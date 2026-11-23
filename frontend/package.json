@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
-    "build": "vite build",
+    "build": "vite build && node -e \"const fs=require('node:fs');for(const f of fs.readdirSync('dist',{recursive:true}))if(String(f).endsWith('.map'))fs.rmSync('dist/'+f)\"",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
     "test": "vitest run",
