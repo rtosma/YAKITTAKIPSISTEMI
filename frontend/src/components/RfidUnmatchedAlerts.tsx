@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { formatTime } from '../utils/format';
 
 /**
  * FLEET-1402 AC: "Eşleşmemiş kart okutulduğunda uyarı ve hızlı tanımlama
@@ -58,7 +59,7 @@ export const RfidUnmatchedAlerts: React.FC = () => {
                   <p className="font-bold text-[#ffb4ab]">Tanımsız RFID Kartı</p>
                   <p className="text-[#d5c4ab] mt-0.5 truncate">{alert.cardUid}</p>
                   <p className="text-[#d5c4ab]/70 text-[10px] mt-0.5">
-                    {alert.siteName} — {new Date(alert.detectedAt).toLocaleTimeString('tr-TR')}
+                    {alert.siteName} — {formatTime(alert.detectedAt, { seconds: true })}
                   </p>
                 </div>
               </div>

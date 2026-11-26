@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { usePermissions } from '../hooks/usePermissions';
 import { CompanyModule } from '../types';
+import { formatLiters } from '../utils/format';
 
 export const TenantDetailModal: React.FC = () => {
   const { selectedTenantForDetail, setSelectedTenantForDetail, toggleCompanyModule, updateCompanyStatus } = useApp();
@@ -237,7 +238,7 @@ export const TenantDetailModal: React.FC = () => {
             <div className="bg-[#20201f] border border-[#353535] p-3.5 rounded-xl space-y-1">
               <span className="text-[10px] text-[#d5c4ab] font-bold uppercase block">Aylık İkmal Hacmi</span>
               <span className="text-lg font-black text-[#a1e8a2]">
-                {tenant.totalFuelThisMonth.toLocaleString('tr-TR')} LT
+                {formatLiters(tenant.totalFuelThisMonth)}
               </span>
             </div>
           </div>

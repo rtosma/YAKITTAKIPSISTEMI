@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { TenantHardwareDevice, CalibrationCommand, CalibrationTestIntake } from '../types';
 import { recordTestIntake, requestCalibration, RecordTestIntakeInput } from '../hooks/useCalibration';
 import { useApp } from '../context/AppContext';
+import { formatNumber } from '../utils/format';
 
 type WizardStep = 'REFERENCE' | 'DRAIN' | 'MEASURED' | 'DEVIATION' | 'CONFIRM' | 'DONE';
 
@@ -209,11 +210,11 @@ export const CalibrationWizard: React.FC<Props> = ({ device, verifiesCommand, on
               <div className="flex justify-between">
                 <span className="text-[#d5c4ab]">Sapma</span>
                 <span data-testid="wizard-deviation-pct" className={intakeResult.intake.deviationRatio > 0.05 ? 'text-[#ffb4ab] font-bold' : 'text-[#a1e8a2] font-bold'}>
-                  %{(intakeResult.intake.deviationRatio * 100).toFixed(2)}
+                  %{formatNumber(intakeResult.intake.deviationRatio * 100, { digits: 2 })}
                 </span>
               </div>
-              <div className="flex justify-between"><span className="text-[#d5c4ab]">Şu anki K-factor</span><span className="text-[#e5e2e1]">{intakeResult.intake.kFactorAtTest.toFixed(4)}</span></div>
-              <div className="flex justify-between border-t border-[#514532]/20 pt-2"><span className="text-[#ffdca1] font-bold">Önerilen K-factor</span><span data-testid="wizard-recommended-k" className="text-[#ffdca1] font-bold">{intakeResult.recommendedKFactor.toFixed(4)}</span></div>
+              <div className="flex justify-between"><span className="text-[#d5c4ab]">Şu anki K-factor</span><span className="text-[#e5e2e1]">{formatNumber(intakeResult.intake.kFactorAtTest, { digits: 4 })}</span></div>
+              <div className="flex justify-between border-t border-[#514532]/20 pt-2"><span className="text-[#ffdca1] font-bold">Önerilen K-factor</span><span data-testid="wizard-recommended-k" className="text-[#ffdca1] font-bold">{formatNumber(intakeResult.recommendedKFactor, { digits: 4 })}</span></div>
             </div>
             {intakeResult.basedOnSingleMeasurement && (
               <p data-testid="wizard-single-measurement-warning" className="text-[10px] text-[#ffb77f] bg-[#2a1f10] border border-[#ffb800]/30 rounded-md p-2">

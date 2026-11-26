@@ -1,17 +1,13 @@
 import React from 'react';
 import { useApp } from '../../context/AppContext';
+import { formatRelative } from '../../utils/format';
 
 // FE-806 AC: "Cihaz sağlık tablosu canlı güncellenmelidir." — göreli/okunur
 // Türkçe biçim (TenantsPage.tsx'teki formatLastActivity İLE AYNI ilke, farklı
 // dosya — iki çağrı yeri için ayrı bir paylaşılan yardımcı modül eklemeye değmez).
 function formatRelativeTime(iso: string | null): string {
   if (!iso) return 'Hiç görülmedi';
-  const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
-  if (diffMin < 1) return 'Az önce';
-  if (diffMin < 60) return `${diffMin} dk önce`;
-  const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) return `${diffHour} sa önce`;
-  return `${Math.floor(diffHour / 24)} gün önce`;
+  return formatRelative(iso);
 }
 
 export const DevicesPage: React.FC = () => {

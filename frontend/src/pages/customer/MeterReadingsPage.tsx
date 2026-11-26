@@ -13,6 +13,7 @@ import {
   formatSuspicionDetail,
   BulkMeterReadingItem
 } from '../../hooks/useMeterReadings';
+import { formatNumber, formatDateTime } from '../../utils/format';
 
 const REASON_LABELS: Record<string, string> = {
   BACKWARD: 'Geri giden değer',
@@ -399,10 +400,10 @@ export const MeterReadingsPage: React.FC = () => {
                 {historyRecords.map(r => (
                   <div key={r.id} data-testid="meter-history-row" className="bg-[#0e0e0e] border border-[#514532]/20 rounded-lg p-3 text-xs">
                     <div className="flex items-center justify-between">
-                      <span className="font-bold text-[#ffdca1]">{r.value.toLocaleString('tr-TR')} {r.meterType === 'KM' ? 'km' : 'saat'}</span>
+                      <span className="font-bold text-[#ffdca1]">{formatNumber(r.value)} {r.meterType === 'KM' ? 'km' : 'saat'}</span>
                       <span className="text-[#d5c4ab] font-mono">{r.periodLabel}</span>
                     </div>
-                    <p className="text-[#d5c4ab]/70 mt-1">{new Date(r.readingAt).toLocaleString('tr-TR')} — {r.source}</p>
+                    <p className="text-[#d5c4ab]/70 mt-1">{formatDateTime(r.readingAt)} — {r.source}</p>
                     {r.isSuspicious && (
                       <p className="text-[#ffb4ab] mt-1">
                         Şüpheli ({r.suspicionReasons.map(x => REASON_LABELS[x] || x).join(', ')}) — onaylı: {r.overrideReason}

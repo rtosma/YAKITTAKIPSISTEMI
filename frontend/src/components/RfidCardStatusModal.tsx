@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { formatDateTime } from '../utils/format';
 
 /**
  * FE-808 Kapsam: "Araç/sürücü bloke etme ve kart kayıp bildirimi." AUTH-210
@@ -78,7 +79,7 @@ export const RfidCardStatusModal: React.FC<Props> = ({ cardUid, entityLabel, onC
             </p>
             {blacklistEntry.reason && <p className="text-[#d5c4ab]">Gerekçe: {blacklistEntry.reason}</p>}
             <p className="text-[#d5c4ab]/70">
-              {new Date(blacklistEntry.updated_at).toLocaleString('tr-TR')}
+              {formatDateTime(blacklistEntry.updated_at)}
             </p>
           </div>
         )}

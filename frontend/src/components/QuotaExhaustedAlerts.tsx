@@ -1,5 +1,6 @@
 import React from 'react';
 import { useApp } from '../context/AppContext';
+import { formatTime } from '../utils/format';
 
 /**
  * FE-810 AC: "Kota tükendiğinde ekrana anlık uyarı düşmelidir (FUEL-402.2)."
@@ -37,7 +38,7 @@ export const QuotaExhaustedAlerts: React.FC = () => {
                   {alert.vehiclePlate} — {alert.homeSite || 'Bilinmeyen'} → {alert.targetSite}
                 </p>
                 <p className="text-[#d5c4ab]/70 text-[10px] mt-0.5">
-                  {alert.usedLiters ?? '-'} / {alert.allowedLiters ?? '-'} L — {new Date(alert.occurredAt).toLocaleTimeString('tr-TR')}
+                  {alert.usedLiters ?? '-'} / {alert.allowedLiters ?? '-'} L — {formatTime(alert.occurredAt, { seconds: true })}
                 </p>
               </div>
             </div>

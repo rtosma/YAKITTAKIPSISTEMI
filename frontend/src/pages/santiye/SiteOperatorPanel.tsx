@@ -9,6 +9,7 @@ import { ListSkeleton } from '../../components/ListSkeleton';
 import { ErrorState } from '../../components/ErrorState';
 import { EmptyState } from '../../components/EmptyState';
 import { useEscapeToClose } from '../../hooks/useEscapeToClose';
+import { formatLiters } from '../../utils/format';
 
 export const SiteOperatorPanel: React.FC = () => {
   const navigate = useNavigate();
@@ -371,8 +372,8 @@ export const SiteOperatorPanel: React.FC = () => {
                     {/* Progress Bar */}
                     <div className="space-y-1">
                       <div className="flex justify-between text-xs font-mono font-bold">
-                        <span className="text-[#e5e2e1]">{tank.currentLevelLiters.toLocaleString()} Litre</span>
-                        <span className="text-[#d5c4ab]">{tank.capacityLiters.toLocaleString()} L</span>
+                        <span className="text-[#e5e2e1]">{formatLiters(tank.currentLevelLiters, 0)}</span>
+                        <span className="text-[#d5c4ab]">{formatLiters(tank.capacityLiters, 0)}</span>
                       </div>
                       <div className="w-full h-3 bg-[#20201f] border border-[#353535] rounded-full overflow-hidden p-0.5">
                         <div

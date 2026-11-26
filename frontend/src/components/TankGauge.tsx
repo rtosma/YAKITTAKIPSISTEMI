@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Tank } from '../types';
+import { formatNumber, formatLiters } from '../utils/format';
 
 interface TankGaugeProps {
   tank: Tank;
@@ -122,7 +123,7 @@ export const TankGauge: React.FC<TankGaugeProps> = ({
             {tank.name}
           </p>
           <p className="text-[10px] text-[#d5c4ab] font-mono">
-            {displayLiters.toLocaleString('tr-TR')} / {tank.capacityLiters.toLocaleString('tr-TR')} L
+            {formatNumber(displayLiters, { digits: 0 })} / {formatLiters(tank.capacityLiters, 0)}
           </p>
           <div className="h-5 flex items-center justify-center">
             <span className={`text-[9px] font-bold font-mono px-2 py-0.5 rounded ${
@@ -248,7 +249,7 @@ export const TankGauge: React.FC<TankGaugeProps> = ({
               MEVCUT MİKTAR
             </span>
             <span className="text-base font-black text-[#e5e2e1] group-hover:text-[#ffdca1] transition-colors">
-              {displayLiters.toLocaleString('tr-TR')} L
+              {formatLiters(displayLiters, 0)}
             </span>
           </div>
           <div>
@@ -268,7 +269,7 @@ export const TankGauge: React.FC<TankGaugeProps> = ({
               KAPASİTE
             </span>
             <span className="text-base font-black text-[#e5e2e1]">
-              {tank.capacityLiters.toLocaleString('tr-TR')} L
+              {formatLiters(tank.capacityLiters, 0)}
             </span>
           </div>
           <div>

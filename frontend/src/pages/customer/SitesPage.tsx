@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { SiteProvisioningResult } from '../../types';
 import { EmptyState } from '../../components/EmptyState';
+import { formatDateTime } from '../../utils/format';
 
 // FE-807 Kapsam: "Çok adımlı sihirbaz: şantiye bilgileri → konum/geofence →
 // sorumlu kullanıcı → özet." "Geofence" adımı BİLİNÇLİ OLARAK atlandı:
@@ -359,7 +360,7 @@ export const SitesPage: React.FC = () => {
                     <span data-testid="site-manager-temp-password" className="text-[#a1e8a2] font-black text-sm select-all">{provisionResult.temporaryPassword}</span>
                   </div>
                   <p className="text-[10px] text-[#d5c4ab] px-1">
-                    Geçerlilik: {new Date(provisionResult.passwordExpiresAt).toLocaleString('tr-TR')}'e kadar — ilk girişte değiştirilmesi zorunludur.
+                    Geçerlilik: {formatDateTime(provisionResult.passwordExpiresAt)}'e kadar — ilk girişte değiştirilmesi zorunludur.
                   </p>
                 </div>
                 <div className="pt-4 border-t border-[#514532]/20 flex items-center justify-end space-x-3">

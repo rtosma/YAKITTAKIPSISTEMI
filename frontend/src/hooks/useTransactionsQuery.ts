@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import { apiFetch } from '../utils/api';
 import { FuelTransaction } from '../types';
+import { formatDateTime } from '../utils/format';
 
 /**
  * FE-802 — GET /transactions sunucu taraflı sayfalama + filtreleme yapıyor
@@ -42,7 +43,7 @@ export interface PaginatedTransactionsResult {
 function mapTransaction(t: any): FuelTransaction {
   return {
     id: t.id,
-    timestamp: new Date(t.created_at).toLocaleString('tr-TR').replace(',', ''),
+    timestamp: formatDateTime(t.created_at, { seconds: true }),
     siteName: t.site_name,
     vehiclePlate: t.vehicle_plate,
     driverName: t.driver_name || '',

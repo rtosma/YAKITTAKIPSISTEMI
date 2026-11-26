@@ -14,6 +14,7 @@ import {
   ReportCatalogEntry, ReportRunResult, ExecutiveDashboard, DashboardDrilldown, DashboardKpi, ReportSchedule, ReportDelivery,
   ReportSchedulePeriod, TenantUser
 } from '../../types';
+import { formatNumber, formatLiters, formatDateTime } from '../../utils/format';
 
 /**
  * FE-816 — Rapor Merkezi (katalog, filtre, indirme, zamanlama, yönetici özeti).
@@ -49,15 +50,16 @@ const PALETTE = { consumption: '#56B4E9', stock: '#009E73', cost: '#E69F00' };
 
 function formatCell(value: unknown): string {
   if (value === null || value === undefined) return '—';
-  if (typeof value === 'number') return value.toLocaleString('tr-TR', { maximumFractionDigits: 2 });
+  if (typeof value === 'number') return formatNumber(value);
   if (typeof value === 'boolean') return value ? 'Evet' : 'Hayır';
   const s = String(value);
   if (/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2})/.test(s)) {
-    const d = new Date(s);
-    if (!Number.isNaN(d.getTime())) return d.toLocaleString('tr-TR');
+    const formatted = formatDateTime(s); // UTC zaman damgası → İstanbul
+    if (formatted !== '—') return formatted;
   } else if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-    const d = new Date(s);
-    if (!Number.isNaN(d.getTime())) return d.toLocaleDateString('tr-TR');
+    // Yalnız tarih (DATE kolonu): saat dilimi dönüşümü YOK — gün kaymasın.
+    const [y, m, d] = s.split('-');
+    return `${d}.${m}.${y}`;
   }
   return s;
 }
@@ -362,7 +364,7 @@ export const ReportsPage: React.FC = () => {
                   >
                     <span className="text-[10px] text-[#d5c4ab] uppercase tracking-wider font-bold">{kpi.label}</span>
                     <div className="text-xl font-extrabold font-mono text-[#e5e2e1]">
-                      {kpi.value.toLocaleString('tr-TR')} <span className="text-xs text-[#d5c4ab]">{kpi.unit}</span>
+                      {formatNumber(kpi.value)} <span className="text-xs text-[#d5c4ab]">{kpi.unit}</span>
                     </div>
                   </button>
                 ))}
@@ -416,7 +418,7 @@ export const ReportsPage: React.FC = () => {
                       {dashboard.topVehicles.map((v) => (
                         <tr key={v.vehiclePlate} data-testid="top-vehicle-row" className="hover:bg-[#282726] cursor-pointer" onClick={() => openDrilldown(v.drilldown)}>
                           <td className="py-2 font-black text-[#ffdca1]">{v.vehiclePlate}</td>
-                          <td className="py-2 text-right font-mono text-[#e5e2e1]">{v.liters.toLocaleString('tr-TR')} L</td>
+                          <td className="py-2 text-right font-mono text-[#e5e2e1]">{formatLiters(v.liters)}</td>
                           <td className="py-2 text-right font-mono text-[#d5c4ab]">{v.transactions} ikmal</td>
                         </tr>
                       ))}
@@ -430,7 +432,7 @@ export const ReportsPage: React.FC = () => {
                     {dashboard.tanks.map((t) => (
                       <div key={t.id} className="flex items-center justify-between text-xs">
                         <span className={`font-bold ${t.isCritical ? 'text-[#ffb4ab]' : 'text-[#e5e2e1]'}`}>{t.tankName} ({t.siteName})</span>
-                        <span className="font-mono text-[#d5c4ab]">{t.fillPct === null ? '—' : `%${t.fillPct.toFixed(0)}`}</span>
+                        <span className="font-mono text-[#d5c4ab]">{t.fillPct === null ? '—' : `%${formatNumber(t.fillPct, { digits: 0 })}`}</span>
                       </div>
                     ))}
                   </div>
@@ -661,7 +663,7 @@ export const ReportsPage: React.FC = () => {
                         {REPORT_SCHEDULE_PERIOD_LABELS[s.periodType]} · Saat {s.sendHourLocal}:00
                         {s.dayOfWeek !== null ? ` · ${dayOfWeekLabel(s.dayOfWeek)}` : ''}
                         {s.dayOfMonth !== null ? ` · Ayın ${s.dayOfMonth}. günü` : ''}
-                        {' · '}Sonraki: {new Date(s.nextRunAt).toLocaleString('tr-TR')}
+                        {' · '}Sonraki: {formatDateTime(s.nextRunAt)}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -676,7 +678,7 @@ export const ReportsPage: React.FC = () => {
                     <div className="border-t border-[#353535] p-3 space-y-1" data-testid="schedule-deliveries-list">
                       {(deliveriesByScheduleId[s.id] ?? []).map((d) => (
                         <div key={d.id} className="flex items-center justify-between text-[11px] font-mono">
-                          <span className="text-[#d5c4ab]">{new Date(d.createdAt).toLocaleString('tr-TR')}</span>
+                          <span className="text-[#d5c4ab]">{formatDateTime(d.createdAt)}</span>
                           <span className="text-[#e5e2e1]">{REPORT_DELIVERY_STATUS_LABELS[d.status] ?? d.status}</span>
                           <span className="text-[#d5c4ab]">{d.rowCount ?? '—'} satır</span>
                         </div>

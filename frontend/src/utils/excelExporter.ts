@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { formatCurrency } from './format';
 
 export interface ExportColumnConfig<T> {
   header: string;
@@ -58,7 +59,7 @@ export function exportToExcelWithTotals<T>(options: ExportOptions<T>) {
       const roundedSum = Math.round(sum * 100) / 100;
 
       if (col.format === 'currency') {
-        totalsObj[col.header] = `${roundedSum.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₺`;
+        totalsObj[col.header] = formatCurrency(roundedSum);
       } else {
         totalsObj[col.header] = roundedSum;
       }

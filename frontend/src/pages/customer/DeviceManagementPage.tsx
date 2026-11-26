@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import { useApp } from '../../context/AppContext';
 import { TenantHardwareDevice } from '../../types';
 import { DeviceCalibrationModal } from '../../components/DeviceCalibrationModal';
+import { formatNumber, formatDateTime, formatRelative } from '../../utils/format';
 
 // FE-809 Kapsam: "Cihaz eşleştirme (provisioning) akışı ve QR/claim kodu
 // gösterimi" + AC: "Cihaz eşleştirme QR ile tamamlanabilmelidir." IOT-304
@@ -29,12 +30,7 @@ function ClaimQrCode({ code }: { code: string }) {
 
 function formatRelativeTime(iso: string | null): string {
   if (!iso) return 'Hiç görülmedi';
-  const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
-  if (diffMin < 1) return 'Az önce';
-  if (diffMin < 60) return `${diffMin} dk önce`;
-  const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) return `${diffHour} sa önce`;
-  return `${Math.floor(diffHour / 24)} gün önce`;
+  return formatRelative(iso);
 }
 
 export const DeviceManagementPage: React.FC = () => {
@@ -153,7 +149,7 @@ export const DeviceManagementPage: React.FC = () => {
                       ))}
                     </select>
                   </td>
-                  <td className="py-3.5 px-4 text-[#d5c4ab]" data-testid="device-k-factor">{d.kFactor !== null ? d.kFactor.toFixed(4) : '—'}</td>
+                  <td className="py-3.5 px-4 text-[#d5c4ab]" data-testid="device-k-factor">{formatNumber(d.kFactor, { digits: 4 })}</td>
                   <td className="py-3.5 px-4 text-right">
                     <button
                       data-testid="device-calibration-open"
@@ -204,7 +200,7 @@ export const DeviceManagementPage: React.FC = () => {
                     {c.status}
                   </span>
                 </td>
-                <td className="py-2.5 px-4 text-[#d5c4ab]">{new Date(c.expiresAt).toLocaleString('tr-TR')}</td>
+                <td className="py-2.5 px-4 text-[#d5c4ab]">{formatDateTime(c.expiresAt)}</td>
               </tr>
             ))}
             {deviceClaimCodes.length === 0 && (
@@ -274,7 +270,7 @@ export const DeviceManagementPage: React.FC = () => {
                   <p className="text-[10px] text-[#d5c4ab] font-mono">Kod</p>
                   <p data-testid="device-claim-code-text" className="text-lg font-black text-[#ffb77f] font-mono select-all">{generatedCode.code}</p>
                   <p className="text-[10px] text-[#d5c4ab] font-mono mt-1">
-                    Son kullanma: {new Date(generatedCode.expiresAt).toLocaleString('tr-TR')}
+                    Son kullanma: {formatDateTime(generatedCode.expiresAt)}
                   </p>
                 </div>
                 <button

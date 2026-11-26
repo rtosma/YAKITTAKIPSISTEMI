@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Vehicle, VehicleMaintenanceRecord } from '../types';
 import { fetchVehicleMaintenanceRecords, createVehicleMaintenanceRecord } from '../hooks/useVehicleMaintenanceRecords';
 import { useApp } from '../context/AppContext';
+import { formatNumber, formatCurrency } from '../utils/format';
 
 interface Props {
   vehicle: Vehicle;
@@ -120,8 +121,8 @@ export const VehicleMaintenanceModal: React.FC<Props> = ({ vehicle, onClose }) =
                 </div>
                 <p className="text-[#e5e2e1] mt-1.5">{r.operationsDescription}</p>
                 <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-[#d5c4ab] font-mono text-[11px]">
-                  <span>Maliyet: {r.costAmount.toLocaleString('tr-TR')} TL</span>
-                  {r.odometerValue !== null && <span>Sayaç: {r.odometerValue.toLocaleString('tr-TR')}</span>}
+                  <span>Maliyet: {formatCurrency(r.costAmount)}</span>
+                  {r.odometerValue !== null && <span>Sayaç: {formatNumber(r.odometerValue)}</span>}
                   {r.nextDueDate && <span>Sonraki: {r.nextDueDate}</span>}
                 </div>
               </div>

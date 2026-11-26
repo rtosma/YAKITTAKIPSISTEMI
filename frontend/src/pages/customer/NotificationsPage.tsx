@@ -12,6 +12,7 @@ import {
 import { enableAlertSound, isAlertSoundEnabled } from '../../utils/alertSound';
 import { ListSkeleton } from '../../components/ListSkeleton';
 import { EmptyState } from '../../components/EmptyState';
+import { formatDateTime } from '../../utils/format';
 
 const SEVERITY_STYLES: Record<string, string> = {
   INFO: 'bg-[#20201f] text-[#d5c4ab] border border-[#514532]/30',
@@ -359,7 +360,7 @@ export const NotificationsPage: React.FC = () => {
               <ul className="text-[11px] text-[#d5c4ab] mt-1 space-y-0.5">
                 {mutes.map(m => (
                   <li key={m.id} data-testid="active-mute-row">
-                    {m.eventType ? NOTIFICATION_EVENT_TYPE_LABELS[m.eventType] || m.eventType : 'Tüm bildirimler'} — {new Date(m.mutedUntil).toLocaleString('tr-TR')}'e kadar
+                    {m.eventType ? NOTIFICATION_EVENT_TYPE_LABELS[m.eventType] || m.eventType : 'Tüm bildirimler'} — {formatDateTime(m.mutedUntil)}'e kadar
                   </li>
                 ))}
               </ul>
@@ -400,7 +401,7 @@ export const NotificationsPage: React.FC = () => {
 
             <div className="flex items-center gap-2 text-xs">
               <span className={`font-bold px-2 py-0.5 rounded ${STATUS_STYLES[selectedAlarm.status]}`}>{ALARM_STATUS_LABELS[selectedAlarm.status]}</span>
-              <span className="text-[#d5c4ab]">{selectedAlarm.eventCount} olay — ilk görülme: {new Date(selectedAlarm.firstSeenAt).toLocaleString('tr-TR')}</span>
+              <span className="text-[#d5c4ab]">{selectedAlarm.eventCount} olay — ilk görülme: {formatDateTime(selectedAlarm.firstSeenAt)}</span>
             </div>
 
             {/* FE-815 Kapsam: "Delil paketi (telemetri grafiği)." KAPSAM
@@ -417,7 +418,7 @@ export const NotificationsPage: React.FC = () => {
                 <div className="space-y-2 max-h-48 overflow-y-auto">
                   {(selectedAlarm.events || []).map((ev) => (
                     <div key={ev.id} data-testid="alarm-event-row" className="bg-[#0e0e0e] border border-[#514532]/20 rounded-md p-3 text-[11px]">
-                      <p className="text-[#d5c4ab] font-mono">{new Date(ev.occurredAt).toLocaleString('tr-TR')}</p>
+                      <p className="text-[#d5c4ab] font-mono">{formatDateTime(ev.occurredAt)}</p>
                       {Object.keys(ev.detail || {}).length > 0 ? (
                         <dl className="grid grid-cols-2 gap-1 mt-1">
                           {Object.entries(ev.detail).map(([k, v]) => (

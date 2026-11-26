@@ -11,10 +11,10 @@ import { defineConfig } from 'vitest/config';
  *   - Genel (tüm src): %30 — arayüz kodu çoğunlukla Playwright e2e ile sınanır; bu taban yalnızca çöküşü (testlerin silinmesi/bozulması) yakalar.
  *     Taban geliştikçe YÜKSELTİLİR (asla düşürülmez). Geçmiş: %20 (ölçüm ≈%24) → FE-805…818 testsiz eklenince %16.8'e düştü (CI
  *     koşmadığı için görülmedi) → müşteri paneli duman testleriyle (CustomerPages.smoke.test.tsx) ≈%32 → taban %30.
- *   - Mantık modülleri (api istemcisi, yetki matrisi, doğrulama, Sentry): dosya başına %70+ (satır/ifade), dal %70.
+ *   - Mantık modülleri (api istemcisi, yetki matrisi, doğrulama, Sentry, biçimlendiriciler): dosya başına %70+ (satır/ifade), dal %70.
  * Backend eşikleri: backend/vitest.config.ts (hesap motorlarında %90).
  */
-const LOGIC_FILES = ['src/utils/api.ts', 'src/utils/permissions.ts', 'src/utils/validation.ts', 'src/utils/sentry.ts'];
+const LOGIC_FILES = ['src/utils/api.ts', 'src/utils/permissions.ts', 'src/utils/validation.ts', 'src/utils/sentry.ts', 'src/utils/format.ts'];
 
 export default defineConfig({
   plugins: [react()],

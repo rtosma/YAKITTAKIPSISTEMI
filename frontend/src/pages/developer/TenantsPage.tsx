@@ -2,20 +2,12 @@ import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { TenantDetailModal } from '../../components/TenantDetailModal';
 import { TenantProvisioningResult } from '../../types';
+import { formatLiters, formatDateTime, formatRelative } from '../../utils/format';
 
-// FE-805 AC: "son aktivite" — göreli/okunur Türkçe biçim (bu proje boyunca
-// başka bir yerde relative-time yardımcı fonksiyonu yok, bu yüzden yerel).
+// FE-805 AC: "son aktivite" — göreli/okunur Türkçe biçim (FE-819: utils/format).
 function formatLastActivity(iso: string | null): string {
   if (!iso) return 'Hiç ikmal yapılmadı';
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1) return 'Az önce';
-  if (diffMin < 60) return `${diffMin} dk önce`;
-  const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) return `${diffHour} sa önce`;
-  const diffDay = Math.floor(diffHour / 24);
-  if (diffDay < 30) return `${diffDay} gün önce`;
-  return new Date(iso).toLocaleDateString('tr-TR');
+  return formatRelative(iso);
 }
 
 export const TenantsPage: React.FC = () => {
@@ -140,7 +132,7 @@ export const TenantsPage: React.FC = () => {
                 <td className="py-3.5 px-4 text-[#e5e2e1]">{c.sites.length} Şantiye</td>
                 <td className="py-3.5 px-4 text-[#ffdca1] font-bold">{c.activeVehiclesCount} Araç</td>
                 <td className="py-3.5 px-4 text-[#a1e8a2] font-bold">
-                  {c.totalFuelThisMonth.toLocaleString('tr-TR')} Litre
+                  {formatLiters(c.totalFuelThisMonth)}
                 </td>
                 <td className="py-3.5 px-4 text-[#d5c4ab]" data-testid="tenant-last-activity">
                   {formatLastActivity(c.lastActivityAt)}
@@ -206,7 +198,7 @@ export const TenantsPage: React.FC = () => {
                     <span data-testid="tenant-temp-password" className="text-[#a1e8a2] font-black text-sm select-all">{provisionResult.temporaryPassword}</span>
                   </div>
                   <p className="text-[10px] text-[#d5c4ab] px-1">
-                    Geçerlilik: {new Date(provisionResult.passwordExpiresAt).toLocaleString('tr-TR')}'e kadar — ilk girişte değiştirilmesi zorunludur.
+                    Geçerlilik: {formatDateTime(provisionResult.passwordExpiresAt)}'e kadar — ilk girişte değiştirilmesi zorunludur.
                   </p>
                 </div>
                 <div className="pt-4 border-t border-[#353535] flex items-center justify-end space-x-3">

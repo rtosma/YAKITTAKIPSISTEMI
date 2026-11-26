@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { FuelQuota } from '../../types';
 import { ModuleDisabledNotice } from '../../components/ModuleDisabledNotice';
+import { formatNumber, formatLiters, formatCurrency } from '../../utils/format';
 
 const PERIOD_LABELS: Record<FuelQuota['periodType'], string> = {
   DAILY: 'Günlük',
@@ -232,7 +233,7 @@ export const CrossSitePage: React.FC = () => {
                               style={{ width: `${usagePct}%` }}
                             />
                           </div>
-                          <p className="text-[10px] text-[#d5c4ab] mt-1">{balance.remainingLiters.toFixed(0)} / {balance.effectiveLimitLiters.toFixed(0)} L kaldı</p>
+                          <p className="text-[10px] text-[#d5c4ab] mt-1">{formatNumber(balance.remainingLiters, { digits: 0 })} / {formatLiters(balance.effectiveLimitLiters, 0)} kaldı</p>
                         </div>
                       ) : (
                         <span className="text-[#d5c4ab]/50">Yükleniyor...</span>
@@ -289,7 +290,7 @@ export const CrossSitePage: React.FC = () => {
                     <td className="py-2.5 px-4 text-[#e5e2e1]">{r.siteA} ↔ {r.siteB}</td>
                     <td className="py-2.5 px-4 text-[#d5c4ab]">{r.monthLabel}</td>
                     <td className="py-2.5 px-4 text-[#d5c4ab]">{r.movementCount}</td>
-                    <td className="py-2.5 px-4 text-[#e5e2e1] font-bold">{r.netAmount.toFixed(2)} TL</td>
+                    <td className="py-2.5 px-4 text-[#e5e2e1] font-bold">{formatCurrency(r.netAmount)}</td>
                     <td className="py-2.5 px-4 text-[#d5c4ab]">
                       {r.debtor && r.creditor ? <>{r.debtor} <span className="text-[#ffdca1]">→</span> {r.creditor}</> : '-'}
                     </td>
