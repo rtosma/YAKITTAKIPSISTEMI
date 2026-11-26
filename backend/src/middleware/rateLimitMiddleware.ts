@@ -1,5 +1,5 @@
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { RedisStore } from 'rate-limit-redis';
+import { ResilientRedisStore } from './resilientRedisStore';
 import { Request, Response } from 'express';
 import { redisPool } from '../db/redisPool';
 
@@ -26,7 +26,7 @@ export const loginRateLimiter = rateLimit({
   // kalır ama uç ÇALIŞMAYA devam eder — Argon2id + accountLockoutService
   // (o da fail-open, bkz. o dosyadaki RES-905 notu) hâlâ devrede.
   passOnStoreError: true,
-  store: new RedisStore({
+  store: new ResilientRedisStore({
     prefix: 'rl:auth-login:',
     sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
   }),
@@ -51,7 +51,7 @@ export const refreshRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
-  store: new RedisStore({
+  store: new ResilientRedisStore({
     prefix: 'rl:auth-refresh:',
     sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
   }),
@@ -86,7 +86,7 @@ export const hardwareRateLimiter = rateLimit({
   // limiti fiilen bypass edebilir (bkz. ERR_ERL_KEY_GEN_IPV6).
   keyGenerator: (req: Request) => (req.headers['x-device-id'] as string) || ipKeyGenerator(req.ip || 'unknown-device'),
   passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
-  store: new RedisStore({
+  store: new ResilientRedisStore({
     prefix: 'rl:hardware:',
     sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
   }),
@@ -115,7 +115,7 @@ export const lorawanWebhookRateLimiter = rateLimit({
   legacyHeaders: false,
   passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
   keyGenerator: (req: Request) => ipKeyGenerator(req.ip || 'unknown-lns'),
-  store: new RedisStore({
+  store: new ResilientRedisStore({
     prefix: 'rl:lorawan-webhook:',
     sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
   }),
@@ -147,7 +147,7 @@ export const passwordResetPerMinuteLimiter = rateLimit({
   legacyHeaders: false,
   passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
   keyGenerator: usernameKey,
-  store: new RedisStore({
+  store: new ResilientRedisStore({
     prefix: 'rl:pwreset-min:',
     sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
   }),
@@ -167,7 +167,7 @@ export const passwordResetPerHourLimiter = rateLimit({
   legacyHeaders: false,
   passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
   keyGenerator: usernameKey,
-  store: new RedisStore({
+  store: new ResilientRedisStore({
     prefix: 'rl:pwreset-hour:',
     sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
   }),
@@ -192,7 +192,7 @@ export const passwordResetSubmitLimiter = rateLimit({
   legacyHeaders: false,
   passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
   keyGenerator: (req: Request) => ipKeyGenerator(req.ip || 'unknown'),
-  store: new RedisStore({
+  store: new ResilientRedisStore({
     prefix: 'rl:pwreset-submit:',
     sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
   }),
@@ -216,7 +216,7 @@ export const sentryTunnelRateLimiter = rateLimit({
   legacyHeaders: false,
   passOnStoreError: true, // RES-905: bkz. loginRateLimiter'daki not
   keyGenerator: (req: Request) => ipKeyGenerator(req.ip || 'unknown-browser'),
-  store: new RedisStore({
+  store: new ResilientRedisStore({
     prefix: 'rl:sentry-tunnel:',
     sendCommand: (...args: string[]) => (redisPool.client.call as (...a: string[]) => Promise<any>)(...args)
   }),
