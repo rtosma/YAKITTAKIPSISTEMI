@@ -30,6 +30,9 @@ extern "C" {
 #define YT_HEARTBEAT_INTERVAL_MS 5000   /* rehber §9.2: ~5 sn */
 #define YT_NO_FLOW_FINISH_MS 20000      /* akış bu kadar süre durursa ikmal biter (kısa ara verilebilsin) */
 #define YT_AUTH_START_TIMEOUT_MS 60000  /* yetki alındı ama akış hiç başlamadı */
+/* Sunucu 15 sn heartbeat alamazsa oturumu TIMED_OUT yapar (rehber §9.2). Cihaz da son
+ * BAŞARILI yanıttan 15 sn sonra keser: sunucunun artık izlemediği bir ikmal sürmez. */
+#define YT_LINK_LOST_CUTOFF_MS 15000
 
 typedef enum {
     YT_S_IDLE = 0,
@@ -50,6 +53,8 @@ typedef enum {
     YT_END_EMERGENCY_STOP,     /* acil durdurma girişi */
     YT_END_NO_FLOW_STARTED,    /* yetki alındı, akış hiç başlamadı */
     YT_END_ABNORMAL_RESTART,   /* ikmal sürerken cihaz yeniden başladı (FW-1303) */
+    YT_END_LINK_LOST,          /* 15 sn sunucudan yanıt alınamadı */
+    YT_END__COUNT              /* sınır (kalıcı kayıt doğrulaması için) — yeni değerler bunun ÖNÜNE */
 } yt_end_reason_t;
 
 typedef struct {
@@ -64,6 +69,8 @@ typedef struct {
     bool cutoff_latched;              /* bir kez kesildi mi — tekrar açılamaz */
     int64_t state_since_ms;
     int64_t last_heartbeat_ms;
+    int64_t last_ack_ms;              /* sunucudan son başarılı yanıt (yetki veya heartbeat) */
+    int64_t authorized_at_ms;         /* yetkinin alındığı an (akış başlamazsa zaman aşımı buradan) */
     int64_t last_flow_ms;
     int finalize_attempts;
 } yt_session_t;

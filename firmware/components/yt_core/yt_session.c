@@ -65,6 +65,8 @@ bool yt_session_on_auth_granted(yt_session_t *s, const char *session_id, double 
     s->max_allowed_liters = max_allowed_liters;
     s->start_totalizer = totalizer_now;
     s->last_heartbeat_ms = 0;
+    s->last_ack_ms = now_ms;
+    s->authorized_at_ms = now_ms;
     s->last_flow_ms = now_ms;
     enter(s, YT_S_AUTHORIZED, now_ms);
     return true;
@@ -85,6 +87,7 @@ bool yt_session_on_heartbeat_ack(yt_session_t *s, bool force_cutoff, int64_t now
         cut_and_finalize(s, YT_END_FORCE_CUTOFF, now_ms);
         return true;
     }
+    s->last_ack_ms = now_ms;
     /* İlk heartbeat sunucuda AUTHORIZED → PUMPING geçişini yapar (§9.2). */
     if (s->state == YT_S_AUTHORIZED) enter(s, YT_S_PUMPING, now_ms);
     return true;
@@ -160,8 +163,13 @@ void yt_session_tick(yt_session_t *s, double session_liters, bool flowing, int64
         cut_and_finalize(s, YT_END_LIMIT_REACHED, now_ms);
         return;
     }
-    if (s->state == YT_S_AUTHORIZED && session_liters <= 0.0 &&
-        now_ms - s->state_since_ms >= YT_AUTH_START_TIMEOUT_MS) {
+    if (now_ms - s->last_ack_ms >= YT_LINK_LOST_CUTOFF_MS) {
+        cut_and_finalize(s, YT_END_LINK_LOST, now_ms);
+        return;
+    }
+    /* İlk heartbeat oturumu PUMPING'e geçirir (akış olmasa da); bu yüzden kural durumdan
+     * değil, yetki anından ve akan litreden bakar. */
+    if (session_liters <= 0.0 && now_ms - s->authorized_at_ms >= YT_AUTH_START_TIMEOUT_MS) {
         cut_and_finalize(s, YT_END_NO_FLOW_STARTED, now_ms);
         return;
     }
@@ -227,6 +235,8 @@ const char *yt_end_reason_name(yt_end_reason_t r)
     case YT_END_EMERGENCY_STOP: return "EMERGENCY_STOP";
     case YT_END_NO_FLOW_STARTED: return "NO_FLOW_STARTED";
     case YT_END_ABNORMAL_RESTART: return "ABNORMAL_RESTART";
+    case YT_END_LINK_LOST: return "LINK_LOST";
+    case YT_END__COUNT: break;
     }
     return "?";
 }
