@@ -26,6 +26,9 @@ regexes = [
   # ve e2e testinin (e2e/password-reset.spec.ts) sahte, test-içi parolaları.
   '''yeniParola123''',
   '''e2eYeniParola456''',
+  # HARDWARE_INTEGRATION_GUIDE §2.5'te YAYIMLANMIŞ sahte HMAC test vektörü secret'ı;
+  # firmware açılış öz-testi (main/app_main.c) ve host testi bunu birebir kullanır.
+  '''ornek_test_gizli_anahtar_12345''',
   # REP-718 rapor tanımındaki SÜTUN ANAHTARI ("key: 'calibrations_30d'") —
   # generic-api-key kuralı `key:` + rastgele görünen değer kalıbına takılıyor.
   '''calibrations_30d'''

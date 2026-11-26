@@ -1,0 +1,17 @@
+# FW-1301: sdkconfig repoda TUTULMAZ (makineler ayrışmasın); yalnızca bu varsayılanlar.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# FW-1311: yeni imaj kendini doğrulamazsa bir önceki yuvaya geri dön.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# FW-1313: görev watchdog'u panik üretir; brown-out'ta reset (röle donanımsal
+# pull-down ile kapanır — README "Röle güvenliği").
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
+CONFIG_ESP_BROWNOUT_DET=y
+CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
+
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y

@@ -1,0 +1,12 @@
+# FW-1301 — 4 MB flash bölüm tablosu (ESP32-WROOM-32 vb.)
+# A/B OTA (FW-1311) + bootloader rollback; "factory" bölümü 4 MB'a sığmadığı için
+# YOK: geri dönüş A/B yuvalarıyla yapılır. Yuva boyutları baştan yeterli seçildi
+# (OTA ile tablo değiştirilemez): 1.75 MiB/yuva.
+# Name,     Type, SubType,  Offset,   Size
+nvs,        data, nvs,      0x9000,   0x6000
+otadata,    data, ota,      0xF000,   0x2000
+phy_init,   data, phy,      0x11000,  0x1000
+nvs_keys,   data, nvs_keys, 0x12000,  0x1000
+ota_0,      app,  ota_0,    0x20000,  0x1C0000
+ota_1,      app,  ota_1,    0x1E0000, 0x1C0000
+storage,    data, spiffs,   0x3A0000, 0x60000

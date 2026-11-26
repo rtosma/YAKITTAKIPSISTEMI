@@ -1,0 +1,37 @@
+menu "Yakıt Takip pompa ünitesi"
+
+    config YT_DEVICE_TYPE
+        string "MQTT topic'indeki cihaz tipi"
+        default "pump"
+
+    config YT_PIN_RELAY
+        int "Röle (pompa/solenoid) GPIO"
+        default 13
+        help
+            Röle sürücü girişinde fiziksel pull-down direnci ZORUNLUDUR (README "Röle güvenliği").
+
+    config YT_RELAY_ACTIVE_HIGH
+        bool "Röle modülü HIGH ile çeker"
+        default y
+
+    config YT_PIN_FLOW
+        int "Akışmetre pals girişi GPIO (PCNT)"
+        default 14
+
+    config YT_PIN_ESTOP
+        int "Acil durdurma girişi GPIO (normalde kapalı kontak)"
+        default 27
+
+    config YT_PIN_I2C_SDA
+        int "PN532 RFID I2C SDA"
+        default 21
+
+    config YT_PIN_I2C_SCL
+        int "PN532 RFID I2C SCL"
+        default 22
+
+    config YT_DEFAULT_K_FACTOR
+        int "Varsayılan K-faktörü (pals/litre) — NVS'te değer yoksa"
+        default 450
+
+endmenu
