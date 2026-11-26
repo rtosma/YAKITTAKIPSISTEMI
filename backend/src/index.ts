@@ -13,7 +13,7 @@ import { pool } from './db/postgresPool';
 import { redisPool } from './db/redisPool';
 import { mqttService } from './iot/mqttClient';
 import routes from './routes/routes';
-import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing, sweepTimedOutCalibrations, getAllTenantIdsWithAiAnomalyEnabled, getAllTenantIds, listCompaniesDueForPeriodicArchive, sweepExpiredArchives, touchArchiveLastGenerated } from './db/adminDb';
+import { getAllHardwareDevices, seedLegacyHardwareDevicesIfMissing, sweepTimedOutCalibrations, getAllTenantIdsWithAiAnomalyEnabled, getAllTenantIds, getAllTenantIdsWithModuleEnabled, listCompaniesDueForPeriodicArchive, sweepExpiredArchives, touchArchiveLastGenerated } from './db/adminDb';
 import { generateArchiveForTenant } from './services/tenantArchiveService';
 import { sweepTimedOutSessions } from './services/dispenseSessionService';
 import { initSentry, flushSentry } from './observability/sentry';
@@ -425,7 +425,7 @@ async function startServer(): Promise<void> {
   const anomalySweepInterval = setInterval(async () => {
     let tenantIds: string[] = [];
     try {
-      tenantIds = await getAllTenantIds();
+      tenantIds = await getAllTenantIdsWithModuleEnabled('aiAnomaly'); // ARCH-106: modül kapalı firmada çalışmaz
     } catch (err) {
       logger.error({ err }, '🚨 [AI-504] Tenant listesi alınamadı, bu anomali tarama turu atlandı.');
       return;
@@ -482,7 +482,7 @@ async function startServer(): Promise<void> {
   const despatchTransmissionSweepInterval = setInterval(async () => {
     let tenantIds: string[] = [];
     try {
-      tenantIds = await getAllTenantIds();
+      tenantIds = await getAllTenantIdsWithModuleEnabled('eInvoice'); // ARCH-106: modül kapalı firmada çalışmaz
     } catch (err) {
       logger.error({ err }, '🚨 [COMP-602.1] Tenant listesi alınamadı, bu iletim süpürme turu atlandı.');
       return;
@@ -506,7 +506,7 @@ async function startServer(): Promise<void> {
   const despatchStatusPollInterval = setInterval(async () => {
     let tenantIds: string[] = [];
     try {
-      tenantIds = await getAllTenantIds();
+      tenantIds = await getAllTenantIdsWithModuleEnabled('eInvoice'); // ARCH-106: modül kapalı firmada çalışmaz
     } catch (err) {
       logger.error({ err }, '🚨 [COMP-602.2] Tenant listesi alınamadı, bu GİB durum yoklama turu atlandı.');
       return;
@@ -530,7 +530,7 @@ async function startServer(): Promise<void> {
   const despatchStuckDetectionInterval = setInterval(async () => {
     let tenantIds: string[] = [];
     try {
-      tenantIds = await getAllTenantIds();
+      tenantIds = await getAllTenantIdsWithModuleEnabled('eInvoice'); // ARCH-106: modül kapalı firmada çalışmaz
     } catch (err) {
       logger.error({ err }, '🚨 [COMP-604] Tenant listesi alınamadı, bu takılı-belge taraması atlandı.');
       return;
@@ -555,7 +555,7 @@ async function startServer(): Promise<void> {
   const maintenanceReminderSweepInterval = setInterval(async () => {
     let tenantIds: string[] = [];
     try {
-      tenantIds = await getAllTenantIds();
+      tenantIds = await getAllTenantIdsWithModuleEnabled('maintenanceTrack'); // ARCH-106: modül kapalı firmada çalışmaz
     } catch (err) {
       logger.error({ err }, '🚨 [FLEET-1407] Tenant listesi alınamadı, bu bakım hatırlatma turu atlandı.');
       return;
@@ -580,7 +580,7 @@ async function startServer(): Promise<void> {
   const fleetComplianceSweepInterval = setInterval(async () => {
     let tenantIds: string[] = [];
     try {
-      tenantIds = await getAllTenantIds();
+      tenantIds = await getAllTenantIdsWithModuleEnabled('maintenanceTrack'); // ARCH-106: modül kapalı firmada çalışmaz
     } catch (err) {
       logger.error({ err }, '🚨 [FLEET-1408] Tenant listesi alınamadı, bu uygunluk turu atlandı.');
       return;
@@ -605,7 +605,7 @@ async function startServer(): Promise<void> {
   const inventoryCriticalStockSweepInterval = setInterval(async () => {
     let tenantIds: string[] = [];
     try {
-      tenantIds = await getAllTenantIds();
+      tenantIds = await getAllTenantIdsWithModuleEnabled('smartWarehouse'); // ARCH-106: modül kapalı firmada çalışmaz
     } catch (err) {
       logger.error({ err }, '🚨 [INV-1506] Tenant listesi alınamadı, bu kritik stok turu atlandı.');
       return;
@@ -658,7 +658,7 @@ async function startServer(): Promise<void> {
   const driverScoreSweepInterval = setInterval(async () => {
     let tenantIds: string[] = [];
     try {
-      tenantIds = await getAllTenantIds();
+      tenantIds = await getAllTenantIdsWithModuleEnabled('driverScore'); // ARCH-106: modül kapalı firmada çalışmaz
     } catch (err) {
       logger.error({ err }, '🚨 [AI-506] Tenant listesi alınamadı, bu şoför skoru turu atlandı.');
       return;

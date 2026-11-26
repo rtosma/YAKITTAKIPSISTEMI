@@ -2,6 +2,7 @@ import { redisPool } from '../db/redisPool';
 import { logger } from '../utils/logger';
 import { ioTEventBus } from '../iot/mqttClient';
 import { broadcastToTenant } from '../socket/socketServer';
+import { isModuleEnabledForTenantCached } from '../db/adminDb';
 
 /**
  * AI-501 — Pompa Debisi vs. Tank Ultrasonik Düşüş Korelasyonu (Hırsızlık Motoru)
@@ -171,6 +172,10 @@ async function raiseAlert(
  * karşılaştırıp iki AC'yi de değerlendirir.
  */
 async function evaluateTank(evt: TelemetryEvent, now: number): Promise<void> {
+  // ARCH-106: AI-501 "AI Hırsızlık & Anomali Motoru" (aiAnomaly) modülünün
+  // ta kendisi. Kapalı firmada örnekler toplanmaya devam eder (yukarıda) ama
+  // değerlendirme/alarm üretilmez; modül açılınca geçmiş pencere hazırdır.
+  if (!(await isModuleEnabledForTenantCached(evt.tenantId, 'aiAnomaly'))) return;
   const windowStart = now - WINDOW_MS;
 
   const tankSamples = await readSamples(tankSamplesKey(evt.tenantId, evt.siteId, evt.deviceId), windowStart, now);

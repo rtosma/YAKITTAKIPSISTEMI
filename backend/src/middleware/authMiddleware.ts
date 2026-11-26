@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { verifyAccessToken, isSessionDenied, JwtUserPayload, UserRole } from '../services/tokenService';
 import { tenantStorage, TenantStore } from '../context/tenantContext';
 import { getCompanyLicenseSnapshot } from '../db/adminDb';
+import { isModuleOn, moduleDisabledBody, moduleForPath } from '../modules/moduleGate';
 
 export interface AuthenticatedRequest extends Request {
   user?: JwtUserPayload;
@@ -144,6 +145,16 @@ export async function authenticateJWT(req: AuthenticatedRequest, res: Response, 
             message: 'Firmanızın hesabı dondurulmuştur. Erişim için platform yöneticinizle iletişime geçin.'
           });
         }
+      }
+
+      // ARCH-106 AC: "Kapalı modüle ait endpoint çağrısı 403 MODULE_DISABLED
+      // dönmelidir." Lisans kapısıyla AYNI firma satırından (ek sorgu yok) —
+      // panelden açılan/kapatılan modül bir sonraki istekte, tüm sunucu
+      // örneklerinde etkili (AC: "60 saniye içinde"). SUPER_ADMIN bu bloğa
+      // hiç girmez: platform operatörü bir tenant'ın paketine bağlı değil.
+      const gatedModule = moduleForPath(req.path);
+      if (gatedModule && !isModuleOn(license.modules, gatedModule)) {
+        return res.status(403).json(moduleDisabledBody(gatedModule));
       }
     }
 
