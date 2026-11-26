@@ -1,5 +1,6 @@
 import { registerReport } from '../reportRegistry';
 import { ReportDefinition } from '../reportTypes';
+import { formatIstanbulDateTime } from '../../utils/dateFormat';
 
 /**
  * REP-718 (#175) — Kalibrasyon Geçmişi Raporu.
@@ -39,7 +40,7 @@ import { ReportDefinition } from '../reportTypes';
 const FREQUENT_THRESHOLD = 3;
 const FREQUENT_WINDOW_DAYS = 30;
 
-const fmtDate = (v: unknown): string => new Date(v as string).toLocaleString('tr-TR');
+const fmtDate = (v: unknown): string => formatIstanbulDateTime(v);
 const dash = (v: unknown): string => (v === null || v === undefined || v === '' ? '-' : String(v));
 const kf = (v: unknown): string => (v === null || v === undefined ? '-' : Number(v).toFixed(4));
 const STATUS_TEXT: Record<string, string> = {

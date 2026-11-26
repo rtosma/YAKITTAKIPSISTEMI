@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { registerFontsOnDocument, drawLogo } from './pdfExport';
+import { formatIstanbulDateTime } from '../utils/dateFormat';
 
 /**
  * REP-724 — aylık yönetim raporu PDF şablonu (pdfkit; ticket "pdfmake" öneriyor ama REP-703 çatısı pdfkit kullanır ve Türkçe
@@ -103,7 +104,7 @@ export function buildMonthlyReportPdfModel(input: MonthlyReportPdfInput): Monthl
 
   return {
     title: `Aylık Yönetim Raporu — ${facts.month}`,
-    subtitle: `${input.companyName} — Oluşturulma: ${input.generatedAt.toLocaleString('tr-TR')}`,
+    subtitle: `${input.companyName} — Oluşturulma: ${formatIstanbulDateTime(input.generatedAt)}`,
     blocks
   };
 }

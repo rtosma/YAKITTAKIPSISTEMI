@@ -11,6 +11,7 @@ import {
   getTransactionExportAggregate,
   streamTenantTransactionsForExport
 } from '../db/tenantDb';
+import { formatIstanbulDateTime } from '../utils/dateFormat';
 
 /**
  * REP-701 — sunucu belleğini tüketmeden ikmal geçmişini .xlsx olarak dışa
@@ -49,7 +50,7 @@ const EXPORT_COLUMNS: Array<{ header: string; key: string; width: number }> = [
 
 function toExportRow(row: TransactionRecord): Record<string, unknown> {
   return {
-    created_at: new Date(row.created_at).toLocaleString('tr-TR'),
+    created_at: formatIstanbulDateTime(row.created_at),
     site_name: row.site_name,
     vehicle_plate: row.vehicle_plate,
     driver_name: row.driver_name ?? '-',

@@ -1,5 +1,6 @@
 import { registerReport } from '../reportRegistry';
 import { ReportDefinition } from '../reportTypes';
+import { formatIstanbulDateTime } from '../../utils/dateFormat';
 
 /**
  * REP-713 (#170) — Şantiye Bazlı Tüketim ve Stok Raporu.
@@ -53,7 +54,7 @@ const TANK_BASE = `
 `;
 
 const fmt2 = (v: unknown): string => (v === null || v === undefined ? '-' : Number(v).toFixed(2));
-const fmtDate = (v: unknown): string => new Date(v as string).toLocaleString('tr-TR');
+const fmtDate = (v: unknown): string => formatIstanbulDateTime(v);
 
 const COMMON_FILTERS: ReportDefinition['filters'] = [
   { key: 'startDate', column: 'period_start', type: 'dateFrom', label: 'Başlangıç Tarihi' },

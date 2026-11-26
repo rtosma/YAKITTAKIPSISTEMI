@@ -3,6 +3,7 @@ import { withTenant } from '../db/withTenant';
 import { writeAuditLog } from '../utils/auditLog';
 import { BadRequestError, NotFoundError } from '../utils/errors';
 import { drawLogo, registerFontsOnDocument } from '../reports/pdfExport';
+import { formatIstanbulDateTime } from '../utils/dateFormat';
 
 /**
  * REP-721 (#178) AC: "Belge dosyaları rapordan indirilebilmelidir."
@@ -94,7 +95,7 @@ async function buildSummaryPdf(row: any): Promise<Buffer> {
   const y = doc.page.margins.top;
   drawLogo(doc, x, y);
   doc.font('ReportRoboto-Bold').fontSize(16).fillColor('#000').text('e-İrsaliye Belge Özeti', x + 36, y + 2);
-  doc.font('ReportRoboto').fontSize(9).fillColor('#555').text(`Oluşturulma: ${new Date().toLocaleString('tr-TR')}`, x + 36, y + 20);
+  doc.font('ReportRoboto').fontSize(9).fillColor('#555').text(`Oluşturulma: ${formatIstanbulDateTime(new Date())}`, x + 36, y + 20);
   doc.y = y + 50;
   doc.x = x;
 
@@ -105,7 +106,7 @@ async function buildSummaryPdf(row: any): Promise<Buffer> {
   };
   line('Belge No:', row.document_number);
   line('UUID (ETTN):', row.ettn);
-  line('Tarih:', new Date(row.created_at).toLocaleString('tr-TR'));
+  line('Tarih:', formatIstanbulDateTime(row.created_at));
   line('Şantiye:', row.site_name);
   line('Araç Plakası:', row.vehicle_plate);
   line('Alıcı:', row.recipient);

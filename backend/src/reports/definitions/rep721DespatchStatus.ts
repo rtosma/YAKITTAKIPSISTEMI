@@ -1,6 +1,7 @@
 import { registerReport } from '../reportRegistry';
 import { ReportDefinition } from '../reportTypes';
 import { SOURCE_WHERE_MARKER } from '../reportEngine';
+import { formatIstanbulDateTime } from '../../utils/dateFormat';
 
 /**
  * REP-721 (#178) — e-İrsaliye Durum Raporu.
@@ -54,7 +55,7 @@ export const STUCK_MINUTES = 30;
 const ROLES: ReportDefinition['allowedRoles'] = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'];
 const ADMIN_ROLES: ReportDefinition['allowedRoles'] = ['SUPER_ADMIN', 'COMPANY_OWNER'];
 
-const fmtDate = (v: unknown): string => (v === null || v === undefined ? '-' : new Date(v as string).toLocaleString('tr-TR'));
+const fmtDate = (v: unknown): string => formatIstanbulDateTime(v);
 const dash = (v: unknown): string => (v === null || v === undefined || v === '' ? '-' : String(v));
 const num2 = (v: unknown): string => (v === null || v === undefined ? '-' : Number(v).toFixed(2));
 

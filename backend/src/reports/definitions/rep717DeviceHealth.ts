@@ -1,5 +1,6 @@
 import { registerReport } from '../reportRegistry';
 import { ReportDefinition } from '../reportTypes';
+import { formatIstanbulDateTime } from '../../utils/dateFormat';
 
 /**
  * REP-717 (#174) — Cihaz Sağlık ve Kesinti Raporu.
@@ -50,7 +51,7 @@ import { ReportDefinition } from '../reportTypes';
  * Excel çıktısı: REP-711'deki KAPSAM UYARLAMASI geçerli (REP-703 CSV+PDF üretir).
  */
 
-const fmtDate = (v: unknown): string => new Date(v as string).toLocaleString('tr-TR');
+const fmtDate = (v: unknown): string => formatIstanbulDateTime(v);
 const dash = (v: unknown): string => (v === null || v === undefined || v === '' ? '-' : String(v));
 const num2 = (v: unknown): string => (v === null || v === undefined ? '-' : Number(v).toFixed(2));
 const ROLES: ReportDefinition['allowedRoles'] = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'];
