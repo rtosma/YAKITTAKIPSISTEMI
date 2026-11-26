@@ -12,8 +12,12 @@ ESP-IDF v5.3, hedef **ESP32** (4 MB flash, ör. ESP32-WROOM-32). Sunucuyla sözl
 | FW-1314 güç kesintisinde totalizatör ve yarım ikmal | ✅ NVS commit politikası, oturum kaydı, açılışta kurtarma, opsiyonel güç kesintisi girişi |
 | İkmal oturumu durum makinesi (rehber §9) + FW-1303 yazılım kilidi | ✅ çekirdek + röle sürücüsü + acil durdurma girişi |
 | FW-1313 watchdog | ✅ ana döngü TWDT'ye bağlı (5 sn → panik → reset) |
-| FW-1310 fail-open kararı | ✅ çekirdek. Whitelist ve politika önbelleği bekliyor |
-| FW-1302 RFID, FW-1306/1307 ağ ve MQTT/TLS, FW-1309 kuyruk, FW-1312 RTC, FW-1311 OTA, FW-1315, 1316, 1317 | ⏳ sonraki adımlar |
+| FUEL-401 cihaz akışı (kart → yetki → heartbeat → finalize) | ✅ QEMU'da gerçek backend'e karşı uçtan uca test ediliyor |
+| FW-1307 HMAC imzalı HTTPS istemcisi (CA paketiyle sertifika doğrulama) | ✅ — MQTT kanalı sonraki adım |
+| FW-1306 WiFi istasyon + yeniden bağlanma (≤ 30 sn) | ✅ — GSM/PPPoS sonraki adım |
+| FW-1312 saat: SNTP + sunucu `Date`/`serverTime` | ✅ — DS3231 RTC sonraki adım |
+| FW-1310 fail-open kararı | ✅ çekirdek. Whitelist ve politika önbelleği bekliyor; çevrimdışıyken kart şimdilik reddedilir |
+| FW-1302 RFID, MQTT (komut kanalı, FORCE_CUTOFF), FW-1309 kuyruk, FW-1311 OTA, FW-1315, 1316, 1317 | ⏳ sonraki adımlar |
 
 Donanım henüz yok. Donanımdan bağımsız her şey `components/yt_core` altında saf C olarak yazıldı ve bilgisayarda test ediliyor. İmajın kendisi ESP32 QEMU'sunda açılış testinden geçiyor (aşağıda). Sürücüler (PCNT, röle, girişler) şartnameye göre yazıldı; sinyal jeneratörü, referans kap ve güç kesme testleri donanım gelince yapılacak (TEST-1005).
 
@@ -55,6 +59,49 @@ docker run --rm -v "$PWD:/repo" -w /repo/firmware espressif/idf:v5.3.2 bash -c \
 ```
 
 Derlenen imaj, hazırlanmış NVS içerikleriyle ESP32 QEMU'sunda başlatılır: ilk kurulum, ikmal sürerken güç kesilmesi, finalize gitmeden yeniden başlama ve bozuk kayıt senaryoları. Her biri iki kez açılır, böylece NVS'e yazılanların kalıcı olduğu da doğrulanır. CI her PR'da koşturur.
+
+## Uçtan uca test: firmware ↔ backend (QEMU)
+
+Firmware, `sdkconfig.qemu` ile (emüle Ethernet, geliştirme konsolu, yerel düz HTTP) derlenip QEMU'da çalışır ve **gerçek backend'e** gerçek HMAC imzalı isteklerle bağlanır. Kart okutma ve akışmetre palsleri seri konsoldan verilir. Gerisi cihaz kodudur: imza, saat eşitleme, oturum durum makinesi, heartbeat, finalize ve NVS. [`backend/test/test_fw_qemu_e2e.ts`](../backend/test/test_fw_qemu_e2e.ts) iki senaryoyu doğrular:
+
+- **Normal ikmal:** 30 L → `FLOW_STOPPED` → veritabanında tek kayıt, `DOĞRULANDI`.
+- **İkmal ortasında güç kesintisi:** QEMU anında kapatılır. Açılışta oturum kurtarılır ve `DOĞRULAMA_BEKLIYOR` olarak kaydedilir; kayıp ≤ 5 L.
+
+CI'da `auth-integration-test` işinde koşar. Yerelde backend 5000 portunda ayaktayken:
+
+```bash
+# 1) imaj (sunucu, QEMU içinden ana makineye 10.0.2.2 ile ulaşır)
+docker run --rm -v "$PWD:/repo" -v /tmp/fw:/fw -w /repo/firmware \
+  -e E2E_DEVICE_ID=ESP32-PUMP-01 -e E2E_DEVICE_SECRET="$HW_SECRET_ESP32_PUMP_01" \
+  -e E2E_SERVER_URL=http://10.0.2.2:5000/api/v1 -e E2E_TANK_NAME="Gebze Ana Tank (T-1)" \
+  espressif/idf:v5.3.2 bash -c 'Q="-B /tmp/bq -D SDKCONFIG=/tmp/bq/sdkconfig -D SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu"
+    idf.py $Q build && bash test/qemu/make_e2e_image.sh /tmp/bq /fw/fw-e2e.bin'
+# 2) test (QEMU, backend'e ulaşabilen bir ağda: Linux'ta --network host)
+cd backend && FW_E2E_FLASH=/fw/fw-e2e.bin \
+  FW_QEMU_CMD="docker run -i --rm --network host -v /tmp/fw:/fw espressif/idf:v5.3.2 qemu-system-xtensa" \
+  npx tsx test/test_fw_qemu_e2e.ts
+```
+
+Konsol komutları (`CONFIG_YT_DEV_CONSOLE`, yalnızca geliştirme): `kart <uid>`, `akis <litre> <L/dk>` (yalnızca röle açıkken akar), `durum`.
+
+## Saha yapılandırması (NVS)
+
+| Ad alanı / anahtar | İçerik |
+|---|---|
+| `yt_sec` / `dev_id`, `secret` | Claim (rehber §6) ile alınan cihaz kimliği ve HMAC secret'ı |
+| `yt_cfg` / `srv_url` | Sunucu, ör. `https://yakit.example.com/api/v1`. **`https://` zorunlu**: düz `http://` yalnızca geliştirme yapılandırmasında kabul edilir |
+| `yt_cfg` / `tank_name` | Bu pompanın bağlı olduğu tank (sunucudaki adıyla) |
+| `yt_cfg` / `wifi_ssid`, `wifi_pass` | WiFi |
+
+Bugün üretim hattında `nvs_partition_gen.py` ile hazırlanan NVS imajı 0x9000'e yazılır; örnek: `test/qemu/make_e2e_image.sh`. Cihaz üzerinde claim ve kurulum portalı (FW-1317) sonraki adımda. Yapılandırma eksikse cihaz sunucuya bağlanmaz ve kart kabul etmez.
+
+## Sunucuyla akış ve bağlantı kesintileri
+
+- Ağ istekleri ayrı bir görevde yürür, aynı anda tek istek gider (TLS belleği). Röleyi süren 100 ms'lik döngü ağı **hiç beklemez**.
+- Heartbeat 5 sn'de bir gider. Sunucudan 15 sn yanıt alınamazsa cihaz röleyi keser (`LINK_LOST`); sunucu da o oturumu `TIMED_OUT` yapmıştır. Finalize, ağ gelince aynı idempotency anahtarıyla gider. Geri çekilme 2 sn'den başlar, en fazla 60 sn'dir.
+- Sunucu oturumu tanımıyorsa (heartbeat'e 404/409) röle hemen kesilir. `FORCE_CUTOFF` ve tanınmayan komut da kesme demektir.
+- Çevrimdışıyken okutulan kart şimdilik reddedilir (`OFFLINE`). Sınırlı çevrimdışı ikmal FW-1310 ile gelecek.
+- Saat: sunucu ±30 sn dışındaki imzayı reddeder. Cihaz SNTP'nin yanında her sunucu yanıtındaki `Date` başlığından ve heartbeat'teki `serverTime`'dan da eşitlenir. Saat güvenilir olmadan imzalı istek gönderilmez.
 
 ## Varsayılan pinler
 
