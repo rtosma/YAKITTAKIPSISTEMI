@@ -143,7 +143,7 @@ bool yt_marker_decode(const uint8_t *buf, size_t len, yt_session_marker_t *m)
     memcpy(m->idempotency_key, buf + p, key_len);
 
     if (phase != YT_MARKER_ACTIVE && phase != YT_MARKER_FINALIZING) return false;
-    if (reason > YT_END_ABNORMAL_RESTART) return false;
+    if (reason >= YT_END__COUNT) return false;
     if (!isfinite(start) || start < 0) return false;
     if (memchr(m->session_id, '\0', sid_len) || memchr(m->idempotency_key, '\0', key_len)) return false;
 

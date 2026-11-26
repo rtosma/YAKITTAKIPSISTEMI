@@ -146,6 +146,7 @@ void test_persist(void)
     make_active_session(&s);
     yt_session_on_heartbeat_ack(&s, false, 100);
     yt_session_tick(&s, 12.0, true, 1000);
+    yt_session_on_heartbeat_ack(&s, false, 1000 + YT_NO_FLOW_FINISH_MS - 100);
     yt_session_tick(&s, 12.0, false, 1000 + YT_NO_FLOW_FINISH_MS);
     CHECK(s.state == YT_S_FINALIZING && s.end_reason == YT_END_FLOW_STOPPED);
     yt_marker_from_session(&s, &m);

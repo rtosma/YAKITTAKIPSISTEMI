@@ -53,6 +53,7 @@ void test_session(void)
     CHECK(s.state == YT_S_PUMPING);
     yt_session_tick(&s, 12.5, true, 10000);
     CHECK(s.state == YT_S_PUMPING);
+    CHECK(yt_session_on_heartbeat_ack(&s, false, 25000));   /* heartbeat'ler sürüyor */
     yt_session_tick(&s, 12.5, false, 10000 + YT_NO_FLOW_FINISH_MS - 1);
     CHECK(s.state == YT_S_PUMPING);                  /* kısa ara: oturum sürer */
     yt_session_tick(&s, 12.5, false, 10000 + YT_NO_FLOW_FINISH_MS);
@@ -111,12 +112,31 @@ void test_session(void)
     CHECK(yt_session_on_emergency_stop(&s, 10));
     CHECK(s.state == YT_S_ABORTED);
 
-    /* Yetki alındı ama akış hiç başlamadı → zaman aşımında kes. */
+    /* Yetki alındı ama akış hiç başlamadı → zaman aşımında kes. Heartbeat'ler başarılı
+     * olsa da (ilk yanıt oturumu PUMPING'e geçirir) kural geçerli. */
     s = granted(0);
-    yt_session_tick(&s, 0.0, false, YT_AUTH_START_TIMEOUT_MS - 1000);
-    CHECK(s.state == YT_S_AUTHORIZED);
+    for (int64_t t = 5000; t < YT_AUTH_START_TIMEOUT_MS; t += 5000) {
+        CHECK(yt_session_on_heartbeat_ack(&s, false, t));
+        yt_session_tick(&s, 0.0, false, t + 1);
+    }
+    CHECK(s.state == YT_S_PUMPING);
+    yt_session_tick(&s, 0.0, false, YT_AUTH_START_TIMEOUT_MS - 1);
+    CHECK(s.state == YT_S_PUMPING);
     yt_session_tick(&s, 0.0, false, YT_AUTH_START_TIMEOUT_MS + 200);
     CHECK(s.state == YT_S_FINALIZING && s.end_reason == YT_END_NO_FLOW_STARTED);
+    CHECK(!yt_session_relay_allowed(&s));
+
+    /* Sunucuya 15 sn ulaşılamadı → sunucu zaten TIMED_OUT yaptı; cihaz da keser. */
+    {
+        yt_session_t l = granted(0);
+        CHECK(yt_session_on_heartbeat_ack(&l, false, 1000));
+        yt_session_tick(&l, 40.0, true, 1000 + YT_LINK_LOST_CUTOFF_MS - 1);
+        CHECK(l.state == YT_S_PUMPING && yt_session_relay_allowed(&l));
+        yt_session_tick(&l, 41.0, true, 1000 + YT_LINK_LOST_CUTOFF_MS);
+        CHECK(l.state == YT_S_FINALIZING && l.end_reason == YT_END_LINK_LOST);
+        CHECK(!yt_session_relay_allowed(&l));
+        CHECK_STR(yt_end_reason_name(YT_END_LINK_LOST), "LINK_LOST");
+    }
 
     /* Sunucu finalize'ı geçersiz saydı → ABORTED. */
     CHECK(yt_session_on_finalize_rejected(&s, 70000));

@@ -2,17 +2,19 @@
  * Yakıt Takip — ESP32 pompa kontrol ünitesi (FW-1300).
  *
  * Açılış sırası güvenlik önceliklidir: röle KAPALI → sürüm → HMAC öz-testi → NVS
- * (totalizatör, K-faktörü, yarım oturum) → akışmetre → ana döngü.
+ * (totalizatör, K-faktörü, yarım oturum) → girişler ve akışmetre → ağ → denetim döngüsü.
  *
- * Ana döngü 100 ms'de bir (güç kesintisi sinyalinde hemen) döner:
- *   PCNT artışı → yt_flow → oturum kuralları → röle (TEK kapı) → NVS commit politikası
- *   → oturum kaydını durumla eşitle → watchdog besle.
- * Kart (FW-1302) ve ağ (FW-1306/1307) olayları sonraki adımlarda bu döngüye bağlanır;
- * o zamana kadar yeni oturum açılmaz, röle kapalı kalır.
+ * Denetim döngüsü 100 ms'de bir (acil durdurma / güç kesintisi kenarında hemen) döner ve
+ * oturumun TEK sahibidir:
+ *   pals → yt_flow → kart → sunucu yanıtları → oturum kuralları → röle (TEK kapı)
+ *   → sunucuya sıradaki istek → NVS commit → oturum kaydı → watchdog.
+ * Ağ istekleri ayrı görevde (app_link) yürür; döngü onları beklemez.
  */
 #include <inttypes.h>
 #include <string.h>
 
+#include "app_console.h"
+#include "app_link.h"
 #include "driver/gpio.h"
 #include "esp_app_desc.h"
 #include "esp_attr.h"
@@ -20,10 +22,12 @@
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/task.h"
-
+#include "yt_api.h"
 #include "yt_flow.h"
 #include "yt_hmac.h"
+#include "yt_net.h"
 #include "yt_pcnt.h"
 #include "yt_persist.h"
 #include "yt_relay.h"
@@ -33,18 +37,31 @@
 static const char *TAG = "yakittakip";
 
 #define LOOP_PERIOD_MS 100
+#define AUTH_MAX_ATTEMPTS 3
+#define FINALIZE_SETTLE_MS 1000   /* röle kesildikten sonra damlayan yakıt da sayılsın */
+#define FINALIZE_BACKOFF_MAX_MS 60000
+#define RESULT_SHOW_MS 3000       /* sonuç ekranda kalsın, sonra yeni karta hazır */
 
 static yt_flow_t s_flow;
 static yt_session_t s_session;
 static yt_commit_policy_t s_commit;
 static bool s_store_ok;   /* NVS açık ve totalizatör biliniyor */
 static bool s_meter_ok;   /* akışmetre (PCNT) çalışıyor */
+static bool s_link_ok;    /* sunucu yapılandırması tam, ağ başlatıldı */
+
+static yt_net_config_t s_net;
+static char s_tank[64];
 
 /* NVS'teki oturum kaydının bilinen hali (gereksiz yazmayı önler). */
 static yt_marker_phase_t s_marker_phase = YT_MARKER_NONE;
 static char s_marker_session[YT_SESSION_ID_MAX];
 
+/* Sunucu istek zamanlaması (oturum durumu değişince sıfırlanır). */
+static int s_attempts;
+static int64_t s_next_try_ms;
+
 static TaskHandle_t s_main_task;
+static QueueHandle_t s_card_q;
 
 /* docs/HARDWARE_INTEGRATION_GUIDE.md §2.5 — sunucuyla birebir aynı imza üretilmeli. */
 static bool hmac_self_test(void)
@@ -87,7 +104,7 @@ static void inputs_init(void)
     };
     ESP_ERROR_CHECK(gpio_config(&estop));
 
-    /* Kenarlar yalnızca ana döngüyü hemen uyandırır; kararlar döngüde, seviye okunarak verilir. */
+    /* Kenarlar yalnızca denetim döngüsünü hemen uyandırır; kararlar döngüde, seviye okunarak. */
     ESP_ERROR_CHECK(gpio_install_isr_service(0));
     ESP_ERROR_CHECK(gpio_isr_handler_add(CONFIG_YT_PIN_ESTOP, wake_main_isr, NULL));
 
@@ -211,6 +228,191 @@ static void sync_marker(int64_t t)
     }
 }
 
+/* ---------- sunucu (FUEL-401) ---------- */
+
+static void link_init(void)
+{
+    if (!s_store_ok) return;
+    esp_err_t creds = yt_store_load_credentials(s_net.device_id, sizeof s_net.device_id, s_net.secret,
+                                                sizeof s_net.secret);
+    yt_store_get_config("srv_url", s_net.base_url, sizeof s_net.base_url);
+    yt_store_get_config("tank_name", s_tank, sizeof s_tank);
+    yt_store_get_config("wifi_ssid", s_net.wifi_ssid, sizeof s_net.wifi_ssid);
+    yt_store_get_config("wifi_pass", s_net.wifi_pass, sizeof s_net.wifi_pass);
+
+    if (creds != ESP_OK || !s_net.base_url[0] || !s_tank[0]) {
+        ESP_LOGE(TAG, "Yapılandırma eksik (%s%s%s) — sunucuya bağlanılmayacak, ikmal kapalı",
+                 creds != ESP_OK ? "cihaz kimliği/secret " : "", s_net.base_url[0] ? "" : "srv_url ",
+                 s_tank[0] ? "" : "tank_name");
+        return;
+    }
+    ESP_LOGI(TAG, "Cihaz %s, tank \"%s\", sunucu %s", s_net.device_id, s_tank, s_net.base_url);
+    if (yt_net_start(&s_net) != ESP_OK) {
+        ESP_LOGE(TAG, "Ağ başlatılamadı — ikmal kapalı");
+        return;
+    }
+    app_link_start();
+    s_link_ok = true;
+}
+
+static void on_auth(const yt_http_resp_t *r, int64_t t)
+{
+    yt_api_auth_result_t a;
+    switch (yt_api_parse_request_auth(r->status, r->body, &a)) {
+    case YT_API_OK:
+        yt_flow_session_begin(&s_flow);
+        if (yt_session_on_auth_granted(&s_session, a.session_id, a.max_allowed_liters,
+                                       yt_flow_totalizer_liters(&s_flow), s_net.device_id, t)) {
+            ESP_LOGI(TAG, "yetki verildi: oturum %s, %s / %s, en fazla %.0f L", a.session_id, a.vehicle_plate,
+                     a.driver_name, a.max_allowed_liters);
+        } else {
+            yt_flow_session_end(&s_flow);
+        }
+        break;
+    case YT_API_DENIED:
+        ESP_LOGW(TAG, "yetki reddedildi: %s", a.code);
+        yt_session_on_auth_denied(&s_session, a.code, t);
+        break;
+    default:
+        if (++s_attempts >= AUTH_MAX_ATTEMPTS) {
+            ESP_LOGW(TAG, "sunucuya ulaşılamadı (%s) — kart reddedildi", a.code);
+            yt_session_on_auth_denied(&s_session, "SERVER_UNREACHABLE", t);
+        } else {
+            s_next_try_ms = t + 1000;
+        }
+        break;
+    }
+}
+
+static void on_heartbeat(const yt_http_resp_t *r, int64_t t)
+{
+    yt_api_heartbeat_result_t h;
+    switch (yt_api_parse_heartbeat(r->status, r->body, &h)) {
+    case YT_API_OK:
+        if (h.server_time_ms) yt_time_observe_server(h.server_time_ms);
+        if (h.force_cutoff) ESP_LOGW(TAG, "sunucu kesme emri: FORCE_CUTOFF (%s)", h.code);
+        yt_session_on_heartbeat_ack(&s_session, h.force_cutoff, t);
+        break;
+    case YT_API_REJECTED:
+        /* Oturum sunucuda yok/geçersiz: yakıt akmaya devam etmemeli. */
+        ESP_LOGW(TAG, "heartbeat reddedildi (%s) — röle kesiliyor", h.code);
+        yt_session_on_force_cutoff(&s_session, NULL, t);
+        break;
+    default:
+        /* Geçici: sıradaki heartbeat 5 sn sonra; 15 sn yanıtsızlıkta oturum kendisi keser. */
+        break;
+    }
+}
+
+static void on_finalize(const yt_http_resp_t *r, int64_t t)
+{
+    yt_api_finalize_result_t f;
+    switch (yt_api_parse_finalize(r->status, r->body, &f)) {
+    case YT_API_OK:
+        ESP_LOGI(TAG, "ikmal kaydedildi: oturum %s, %.2f L, %s", s_session.session_id, f.amount_liters,
+                 f.verification[0] ? f.verification : "?");
+        yt_session_on_finalize_ok(&s_session, t);
+        break;
+    case YT_API_REJECTED:
+        ESP_LOGE(TAG, "finalize reddedildi (%s) — oturum %s kayda geçemedi, operatör mutabakatı gerekli",
+                 f.code, s_session.session_id);
+        yt_session_on_finalize_rejected(&s_session, t);
+        break;
+    default: {
+        yt_session_on_finalize_failed(&s_session, t);
+        int64_t wait = 2000LL << (s_session.finalize_attempts < 5 ? s_session.finalize_attempts : 5);
+        if (wait > FINALIZE_BACKOFF_MAX_MS) wait = FINALIZE_BACKOFF_MAX_MS;
+        s_next_try_ms = t + wait;
+        ESP_LOGW(TAG, "finalize gönderilemedi (%s), %lld sn sonra yeniden", f.code, (long long)(wait / 1000));
+        break;
+    }
+    }
+}
+
+static void drive_link(int64_t t)
+{
+    if (!s_link_ok) return;
+
+    link_kind_t done;
+    const yt_http_resp_t *resp;
+    if (app_link_poll(&done, &resp)) {
+        if (done == LINK_AUTH && s_session.state == YT_S_REQUESTING) on_auth(resp, t);
+        else if (done == LINK_HEARTBEAT) on_heartbeat(resp, t);
+        else if (done == LINK_FINALIZE && s_session.state == YT_S_FINALIZING) on_finalize(resp, t);
+        app_link_release();
+    }
+    if (app_link_busy() || t < s_next_try_ms) return;
+
+    if (!yt_net_is_up()) {
+        /* Çevrimdışı beklenen bir durum: istek denenmez (deneme hakkı ve geri çekilme harcanmaz).
+         * Bekleyen finalize ağ gelince gider; heartbeat'siz 15 sn'de oturum kendisi keser.
+         * Yeni kart şimdilik reddedilir — sınırlı çevrimdışı ikmal FW-1310 ile gelecek. */
+        if (s_session.state == YT_S_REQUESTING) {
+            ESP_LOGW(TAG, "çevrimdışı — kart reddedildi");
+            yt_session_on_auth_denied(&s_session, "OFFLINE", t);
+        }
+        return;
+    }
+
+    char body[YT_API_BODY_MAX];
+    switch (s_session.state) {
+    case YT_S_REQUESTING:
+        if (yt_api_body_request_auth(body, sizeof body, s_session.card_id, s_tank)) {
+            app_link_submit(LINK_AUTH, "/dispense/request-auth", body);
+        }
+        break;
+    case YT_S_AUTHORIZED:
+    case YT_S_PUMPING:
+        if (yt_session_heartbeat_due(&s_session, t) &&
+            yt_api_body_heartbeat(body, sizeof body, s_session.session_id, yt_flow_totalizer_liters(&s_flow),
+                                  yt_flow_rate_lpm(&s_flow, t))) {
+            yt_session_mark_heartbeat_sent(&s_session, t);
+            app_link_submit(LINK_HEARTBEAT, "/dispense/heartbeat", body);
+        }
+        break;
+    case YT_S_FINALIZING:
+        if (t - s_session.state_since_ms >= FINALIZE_SETTLE_MS &&
+            yt_api_body_finalize(body, sizeof body, &s_session, yt_flow_totalizer_liters(&s_flow))) {
+            app_link_submit(LINK_FINALIZE, "/dispense/finalize", body);
+        }
+        break;
+    default:
+        break;
+    }
+}
+
+/* Oturum durum geçişlerinde bir kez yapılacaklar. */
+static void on_state_change(yt_session_state_t from, int64_t t)
+{
+    s_attempts = 0;
+    s_next_try_ms = 0;
+    switch (s_session.state) {
+    case YT_S_FINALIZING:
+        if (from == YT_S_AUTHORIZED || from == YT_S_PUMPING) {
+            double k_before = s_flow.k_factor;
+            double liters = yt_flow_session_end(&s_flow);
+            ESP_LOGI(TAG, "ikmal bitti (%s), %.3f L — sunucuya bildiriliyor", yt_end_reason_name(s_session.end_reason),
+                     liters);
+            if (s_flow.k_factor != k_before && s_store_ok) yt_store_save_k_factor(s_flow.k_factor);
+        }
+        break;
+    case YT_S_ABORTED:
+        if (from == YT_S_REQUESTING) break; /* sebep zaten loglandı */
+        ESP_LOGW(TAG, "oturum iptal: %s", s_session.session_id);
+        break;
+    case YT_S_IDLE:
+        ESP_LOGI(TAG, "yeni karta hazır");
+        break;
+    default:
+        break;
+    }
+}
+
+static bool can_accept_card(bool estop, bool pf)
+{
+    return s_store_ok && s_meter_ok && s_link_ok && !estop && !pf;
+}
+
 void app_main(void)
 {
     /* 1) Her şeyden önce röle KAPALI (FW-1303). */
@@ -233,21 +435,32 @@ void app_main(void)
     /* 4) Kalıcı durum: K-faktörü, totalizatör, yarım kalmış oturum. */
     store_restore(now_ms());
 
-    /* 5) Girişler ve akışmetre. */
+    /* 5) Girişler, akışmetre, kart kaynağı. */
     s_main_task = xTaskGetCurrentTaskHandle();
     inputs_init();
     s_meter_ok = yt_pcnt_init(CONFIG_YT_PIN_FLOW, CONFIG_YT_FLOW_GLITCH_NS) == ESP_OK;
     if (!s_meter_ok) ESP_LOGE(TAG, "Akışmetre başlatılamadı — ikmal KAPALI (ölçemeyen cihaz ikmal yapmaz)");
+    s_card_q = xQueueCreate(2, YT_CARD_ID_MAX);
+#if CONFIG_YT_DEV_CONSOLE
+    app_console_start(s_card_q);
+#endif
 
-    /* 6) Ana döngü watchdog'a bağlı (FW-1313): takılırsa panik → reset → röle donanımsal
+    /* 6) Sunucu bağlantısı (arka planda kurulur; yarım oturum varsa ağ gelince gönderilir). */
+    link_init();
+
+    /* 7) Denetim döngüsü watchdog'a bağlı (FW-1313): takılırsa panik → reset → röle donanımsal
      *    olarak kapanır, açılışta yarım oturum kurtarılır. */
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
 
     bool was_estop = false, was_pf = false;
+    yt_session_state_t prev_state = s_session.state;
     for (;;) {
         int64_t t = now_ms();
 
         uint32_t pulses = yt_pcnt_take();
+#if CONFIG_YT_DEV_CONSOLE
+        pulses += app_console_sim_pulses(s_flow.k_factor, yt_relay_is_on());
+#endif
         if (pulses) yt_flow_add_pulses(&s_flow, pulses, t);
 
         bool estop = estop_active();
@@ -256,9 +469,29 @@ void app_main(void)
             yt_session_on_emergency_stop(&s_session, t);
         }
         was_estop = estop;
-
         bool pf = power_failing();
+
+        char card[YT_CARD_ID_MAX];
+        if (xQueueReceive(s_card_q, card, 0) == pdTRUE) {
+            if (!can_accept_card(estop, pf)) {
+                ESP_LOGW(TAG, "kart yok sayıldı: cihaz ikmale hazır değil");
+            } else if (yt_session_on_card(&s_session, card, t)) {
+                ESP_LOGI(TAG, "kart okundu: %s — yetki isteniyor", card);
+            } else {
+                ESP_LOGW(TAG, "kart yok sayıldı: önceki işlem sürüyor (%s)", yt_session_state_name(s_session.state));
+            }
+        }
+
+        drive_link(t);
         yt_session_tick(&s_session, yt_flow_session_liters(&s_flow), pulses > 0, t);
+        if ((s_session.state == YT_S_COMPLETED || s_session.state == YT_S_ABORTED) &&
+            t - s_session.state_since_ms >= RESULT_SHOW_MS) {
+            yt_session_reset(&s_session, t);
+        }
+        if (s_session.state != prev_state) {
+            on_state_change(prev_state, t);
+            prev_state = s_session.state;
+        }
 
         /* TEK kapı: oturum izni + acil durdurma + güç kesintisi + ölçüm/kalıcılık sağlıklı. */
         yt_relay_apply(&s_session, estop || pf || !s_store_ok || !s_meter_ok);
@@ -272,6 +505,15 @@ void app_main(void)
 
         commit_totalizer(t, false);
         sync_marker(t);
+
+#if CONFIG_YT_DEV_CONSOLE
+        if (app_console_status_requested()) {
+            ESP_LOGI(TAG, "durum: %s, totalizatör %.3f L, ikmal %.3f L, debi %.1f L/dk, röle %s, ağ %s, saat %s",
+                     yt_session_state_name(s_session.state), yt_flow_totalizer_liters(&s_flow),
+                     yt_flow_session_liters(&s_flow), yt_flow_rate_lpm(&s_flow, t), yt_relay_is_on() ? "AÇIK" : "KAPALI",
+                     yt_net_is_up() ? "var" : "yok", yt_time_trusted() ? "eşit" : "eşit değil");
+        }
+#endif
 
         esp_task_wdt_reset();
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(LOOP_PERIOD_MS));

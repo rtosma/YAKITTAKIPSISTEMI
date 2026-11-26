@@ -1,0 +1,8 @@
+# Donanımsız uçtan uca test (test/qemu): ESP32 QEMU'nun emüle Ethernet'i, seri konsoldan
+# kart/akış simülasyonu ve yerel sunucuya düz HTTP. ÜRETİM İMAJINDA KULLANILMAZ.
+#   idf.py -B build-qemu -D SDKCONFIG=build-qemu/sdkconfig \
+#          -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.qemu" build
+CONFIG_ETH_USE_OPENETH=y
+CONFIG_YT_NET_OPENETH=y
+CONFIG_YT_DEV_CONSOLE=y
+CONFIG_YT_DEV_ALLOW_PLAINTEXT_HTTP=y

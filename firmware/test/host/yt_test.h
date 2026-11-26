@@ -19,3 +19,4 @@ void test_flow(void);
 void test_session(void);
 void test_failopen(void);
 void test_persist(void);
+void test_api(void);

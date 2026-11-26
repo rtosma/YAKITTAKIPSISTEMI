@@ -1,7 +1,7 @@
 # Firmware çekirdeğinin (components/yt_core) bilgisayarda birim testleri.
 #
-# mbedTLS: ESP-IDF içindeyse (CI: espressif/idf imajı, IDF_PATH tanımlı) cihazdaki
-# AYNI mbedTLS kaynağı host için derlenir; değilse sistemdeki libmbedcrypto aranır.
+# mbedTLS ve cJSON: ESP-IDF içindeyse (CI: espressif/idf imajı, IDF_PATH tanımlı) cihazdaki
+# AYNI kaynaklar host için derlenir; değilse sistemdeki libmbedcrypto / libcjson aranır.
 #
 #   cmake -S firmware/test/host -B build/fw-host && cmake --build build/fw-host && ctest --test-dir build/fw-host
 cmake_minimum_required(VERSION 3.16)
@@ -22,6 +22,16 @@ else()
   message(STATUS "mbedTLS: sistem kütüphanesi ${YT_MBEDCRYPTO}")
 endif()
 
+if(DEFINED ENV{IDF_PATH} AND EXISTS "$ENV{IDF_PATH}/components/json/cJSON/cJSON.c")
+  add_library(yt_cjson STATIC $ENV{IDF_PATH}/components/json/cJSON/cJSON.c)
+  target_include_directories(yt_cjson PUBLIC $ENV{IDF_PATH}/components/json/cJSON)
+  set(YT_CJSON yt_cjson)
+else()
+  find_path(YT_CJSON_INC cJSON.h PATH_SUFFIXES cjson REQUIRED)
+  find_library(YT_CJSON cjson REQUIRED)
+  include_directories(${YT_CJSON_INC})
+endif()
+
 set(CORE ${CMAKE_CURRENT_SOURCE_DIR}/../../components/yt_core)
 
 add_executable(yt_core_tests
@@ -31,15 +41,17 @@ add_executable(yt_core_tests
   test_session.c
   test_failopen.c
   test_persist.c
+  test_api.c
   ${CORE}/yt_hmac.c
   ${CORE}/yt_flow.c
   ${CORE}/yt_session.c
   ${CORE}/yt_failopen.c
   ${CORE}/yt_persist.c
+  ${CORE}/yt_api.c
 )
 target_include_directories(yt_core_tests PRIVATE ${CORE}/include)
 target_compile_options(yt_core_tests PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter)
-target_link_libraries(yt_core_tests PRIVATE ${YT_MBEDCRYPTO} m)
+target_link_libraries(yt_core_tests PRIVATE ${YT_MBEDCRYPTO} ${YT_CJSON} m)
 
 enable_testing()
 add_test(NAME yt_core_tests COMMAND yt_core_tests)

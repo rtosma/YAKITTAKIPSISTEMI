@@ -21,6 +21,7 @@ int main(int argc, char **argv)
     yt_session_on_heartbeat_ack(&s, false, 100);
     if (argc > 2 && strcmp(argv[2], "finalizing") == 0) {
         yt_session_tick(&s, 12.0, true, 1000);
+        yt_session_on_heartbeat_ack(&s, false, 1000 + YT_NO_FLOW_FINISH_MS - 100);
         yt_session_tick(&s, 12.0, false, 1000 + YT_NO_FLOW_FINISH_MS);
     }
     yt_session_marker_t m;
