@@ -38,6 +38,7 @@ import { playAlertBeep } from '../utils/alertSound';
 // tenant, SITE_MANAGER için tek şantiye). INITIAL_COMPANIES yalnızca giriş
 // yapılmadan önceki ilk state ve auth'suz /admin (Süper Admin) paneli için durur.
 import { INITIAL_COMPANIES } from '../mock';
+import { formatDateTime, formatNumber, formatTime } from '../utils/format';
 
 interface ToastState {
   id: string;
@@ -379,7 +380,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
     // Hardware log for EEPROM Flash sync & interrupt verification
     const now = new Date();
-    const timeStr = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const timeStr = formatTime(now, { seconds: true });
     setHardwareLogs(prev => [
       ...prev,
       {
@@ -392,7 +393,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       }
     ]);
 
-    showToast(`Yeni K-Faktörü (${newKFactor.toFixed(2)} Pulse/L) EEPROM/Flash hafızaya yazıldı! Cihaz kapansa da saklanır.`, 'success');
+    showToast(`Yeni K-Faktörü (${formatNumber(newKFactor, { digits: 2 })} Pulse/L) EEPROM/Flash hafızaya yazıldı! Cihaz kapansa da saklanır.`, 'success');
   };
 
   const currentCompany = companies[currentCompanyIndex] || companies[0];
@@ -592,7 +593,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       const tx = payload.transaction;
       const newTx: FuelTransaction = {
         id: tx.id,
-        timestamp: new Date(tx.created_at).toLocaleString('tr-TR').replace(',', ''),
+        timestamp: formatDateTime(tx.created_at, { seconds: true }),
         siteName: tx.site_name,
         vehiclePlate: tx.vehicle_plate,
         driverName: tx.driver_name || '',
@@ -1511,7 +1512,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       if (response.success && response.data) {
         const mappedTransactions: FuelTransaction[] = response.data.map((t: any) => ({
           id: t.id,
-          timestamp: new Date(t.created_at).toLocaleString('tr-TR').replace(',', ''),
+          timestamp: formatDateTime(t.created_at, { seconds: true }),
           siteName: t.site_name,
           vehiclePlate: t.vehicle_plate,
           driverName: t.driver_name || '',
@@ -1580,7 +1581,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const hardwareLogSeq = useRef(0);
   const addHardwareLog = (log: Omit<HardwareLog, 'id' | 'timestamp'>) => {
     const now = new Date();
-    const timeStr = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const timeStr = formatTime(now, { seconds: true });
     hardwareLogSeq.current += 1;
     setHardwareLogs(prev => {
       const next = [

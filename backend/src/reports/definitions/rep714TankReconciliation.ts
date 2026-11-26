@@ -1,5 +1,6 @@
 import { registerReport } from '../reportRegistry';
 import { ReportDefinition } from '../reportTypes';
+import { formatIstanbulDateTime } from '../../utils/dateFormat';
 
 /**
  * REP-714 (#171) — Tank Mutabakat ve Fire Raporu.
@@ -38,7 +39,7 @@ import { ReportDefinition } from '../reportTypes';
  */
 
 const fmt2 = (v: unknown): string => (v === null || v === undefined ? '-' : Number(v).toFixed(2));
-const fmtDate = (v: unknown): string => new Date(v as string).toLocaleString('tr-TR');
+const fmtDate = (v: unknown): string => formatIstanbulDateTime(v);
 const STOCK_ROLES: ReportDefinition['allowedRoles'] = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'];
 
 export const rep714TankReconciliation: ReportDefinition = {

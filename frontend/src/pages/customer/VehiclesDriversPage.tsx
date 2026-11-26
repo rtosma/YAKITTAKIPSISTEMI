@@ -3,6 +3,7 @@ import { useApp } from '../../context/AppContext';
 import { exportToExcelWithTotals } from '../../utils/excelExporter';
 import { Vehicle, Driver } from '../../types';
 import { isValidPlate } from '../../utils/validation';
+import { formatLiters } from '../../utils/format';
 
 export const VehiclesDriversPage: React.FC = () => {
   const { vehicles, drivers, selectedSiteFilter, addVehicle, addDriver } = useApp();
@@ -288,7 +289,7 @@ export const VehiclesDriversPage: React.FC = () => {
                     <span className="font-extrabold text-[#a1e8a2]">{d.performanceScore} / 100</span>
                   </td>
                   <td className="py-3.5 px-4 text-[#e5e2e1]">
-                    {d.totalFuelPumpedLiters.toLocaleString('tr-TR')} Litre
+                    {formatLiters(d.totalFuelPumpedLiters)}
                   </td>
                   <td className="py-3.5 px-4">
                     <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-[#a1e8a2]/10 text-[#a1e8a2]">

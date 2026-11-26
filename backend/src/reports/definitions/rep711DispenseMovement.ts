@@ -1,5 +1,6 @@
 import { registerReport } from '../reportRegistry';
 import { ReportDefinition } from '../reportTypes';
+import { formatIstanbulDateTime } from '../../utils/dateFormat';
 
 /**
  * REP-711 (#168) — İkmal Hareket Raporu. REP-703 çatısının İLK kayıtlı
@@ -50,7 +51,7 @@ export const rep711DispenseMovement: ReportDefinition = {
   table: 'transactions',
   columns: [
     { key: 'id', header: 'ID' },
-    { key: 'created_at', header: 'Tarih', width: 20, format: (v) => new Date(v as string).toLocaleString('tr-TR') },
+    { key: 'created_at', header: 'Tarih', width: 20, format: (v) => formatIstanbulDateTime(v) },
     { key: 'site_name', header: 'Şantiye', width: 22 },
     { key: 'tank_name', header: 'Tank', width: 16 },
     { key: 'device_id', header: 'Pompa/Cihaz', width: 18, format: (v) => (v ? String(v) : '-') },
@@ -63,8 +64,8 @@ export const rep711DispenseMovement: ReportDefinition = {
     { key: 'type', header: 'Yetki Tipi', width: 18 },
     // IOT-307 AC: "adli inceleme için ikisi de gerekir" — cihaz zamanı (varsa; manuel/operatör
     // ikmalinde cihaz yok → '-') ile sunucunun kaydı GERÇEKTEN yazdığı an ayrı sütunlarda.
-    { key: 'device_reported_at', header: 'Cihaz Zamanı', width: 20, format: (v) => (v ? new Date(v as string).toLocaleString('tr-TR') : '-') },
-    { key: 'server_received_at', header: 'Sunucu Alış Zamanı', width: 20, format: (v) => new Date(v as string).toLocaleString('tr-TR') }
+    { key: 'device_reported_at', header: 'Cihaz Zamanı', width: 20, format: (v) => formatIstanbulDateTime(v) },
+    { key: 'server_received_at', header: 'Sunucu Alış Zamanı', width: 20, format: (v) => formatIstanbulDateTime(v) }
   ],
   filters: [
     { key: 'startDate', column: 'created_at', type: 'dateFrom', label: 'Başlangıç Tarihi' },

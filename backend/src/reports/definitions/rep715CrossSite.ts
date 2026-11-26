@@ -1,5 +1,6 @@
 import { registerReport } from '../reportRegistry';
 import { ReportDefinition } from '../reportTypes';
+import { formatIstanbulDateTime } from '../../utils/dateFormat';
 
 /**
  * REP-715 (#172) — Çapraz Alım ve Mahsuplaşma Raporu.
@@ -70,7 +71,7 @@ const CROSS_SITE_PULLS = `
 `;
 
 const fmt2 = (v: unknown): string => (v === null || v === undefined ? '-' : Number(v).toFixed(2));
-const fmtDate = (v: unknown): string => new Date(v as string).toLocaleString('tr-TR');
+const fmtDate = (v: unknown): string => formatIstanbulDateTime(v);
 const SIGNED = (v: unknown): string => (v === null || v === undefined ? '-' : `${Number(v) > 0 ? '+' : ''}${Number(v).toFixed(2)}`);
 const ROLES: ReportDefinition['allowedRoles'] = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'];
 

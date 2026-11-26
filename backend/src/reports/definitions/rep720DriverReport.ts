@@ -2,6 +2,7 @@ import { registerReport } from '../reportRegistry';
 import { ReportDefinition } from '../reportTypes';
 import { SOURCE_WHERE_MARKER } from '../reportEngine';
 import { DRIVER_SCORE_WEIGHTS } from '../../db/tenantDb';
+import { formatIstanbulDateTime } from '../../utils/dateFormat';
 
 /**
  * REP-720 (#177) — Sürücü Bazlı Rapor.
@@ -60,7 +61,7 @@ import { DRIVER_SCORE_WEIGHTS } from '../../db/tenantDb';
 
 const ROLES: ReportDefinition['allowedRoles'] = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'];
 const PII_ROLES: ReportDefinition['allowedRoles'] = ['SUPER_ADMIN', 'COMPANY_OWNER'];
-const fmtDate = (v: unknown): string => (v === null || v === undefined ? '-' : new Date(v as string).toLocaleString('tr-TR'));
+const fmtDate = (v: unknown): string => formatIstanbulDateTime(v);
 const dash = (v: unknown): string => (v === null || v === undefined || v === '' ? '-' : String(v));
 const num2 = (v: unknown): string => (v === null || v === undefined ? '-' : Number(v).toFixed(2));
 const W = DRIVER_SCORE_WEIGHTS;

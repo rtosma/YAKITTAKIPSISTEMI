@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { formatDate, formatTime } from '../../utils/format';
 
 interface CustomArchive {
   id: string;
@@ -80,7 +81,7 @@ export const ArchivePage: React.FC = () => {
       const timestampStr = now.toISOString().replace('T', ' ').substring(0, 16);
       const newArc: CustomArchive = {
         id: 'arc-' + Date.now(),
-        name: `Manuel Anlık Arşiv - ${now.toLocaleDateString('tr-TR')} (${now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' })})`,
+        name: `Manuel Anlık Arşiv - ${formatDate(now)} (${formatTime(now)})`,
         type: 'MANUEL',
         date: timestampStr,
         size: '4.8 MB',

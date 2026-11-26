@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
+import { formatNumber } from '../../utils/format';
 
 export const SettingsPage: React.FC = () => {
   const { 
@@ -99,7 +100,7 @@ export const SettingsPage: React.FC = () => {
           <span className="w-2.5 h-2.5 rounded-full bg-[#a1e8a2] animate-pulse"></span>
           <div className="text-left font-mono">
             <span className="text-[10px] text-[#d5c4ab] block uppercase">EEPROM K-FAKTÖRÜ</span>
-            <span className="text-xs font-bold text-[#a1e8a2]">{kFactor.toFixed(2)} Pulse/L (x{calibrationMultiplier})</span>
+            <span className="text-xs font-bold text-[#a1e8a2]">{formatNumber(kFactor, { digits: 2 })} Pulse/L (x{calibrationMultiplier})</span>
           </div>
         </div>
       </div>
@@ -269,7 +270,7 @@ export const SettingsPage: React.FC = () => {
                     </div>
                     <div className="flex justify-between">
                       <span className="text-[#d5c4ab]">Mevcut K-Faktörü:</span>
-                      <span className="text-[#d5c4ab]">{kFactor.toFixed(2)} Pulse/L</span>
+                      <span className="text-[#d5c4ab]">{formatNumber(kFactor, { digits: 2 })} Pulse/L</span>
                     </div>
                     <div className="pt-2 border-t border-[#514532]/30 flex justify-between items-center">
                       <span className="text-[#ffdca1] font-bold">Yeni K-Faktörü:</span>

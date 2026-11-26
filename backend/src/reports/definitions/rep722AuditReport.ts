@@ -1,5 +1,6 @@
 import { registerReport } from '../reportRegistry';
 import { ReportDefinition } from '../reportTypes';
+import { formatIstanbulDateTime } from '../../utils/dateFormat';
 
 /**
  * REP-722 (#179) — Denetim (Audit) Raporu. REP-703 çatısının İKİNCİ kayıtlı
@@ -38,7 +39,7 @@ import { ReportDefinition } from '../reportTypes';
  * Excel çıktısı: REP-711'deki KAPSAM UYARLAMASI geçerli (REP-703 CSV+PDF üretir).
  */
 
-const fmtDate = (v: unknown): string => new Date(v as string).toLocaleString('tr-TR');
+const fmtDate = (v: unknown): string => formatIstanbulDateTime(v);
 const dash = (v: unknown): string => (v === null || v === undefined || v === '' ? '-' : String(v));
 const CATEGORY_TEXT: Record<string, string> = {
   KALIBRASYON: 'KALİBRASYON',

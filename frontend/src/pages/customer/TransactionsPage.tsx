@@ -8,6 +8,7 @@ import { useTransactionsQuery, useDebouncedValue, fetchAllFilteredTransactions, 
 import { ListSkeleton } from '../../components/ListSkeleton';
 import { EmptyState } from '../../components/EmptyState';
 import { ErrorState } from '../../components/ErrorState';
+import { formatLiters } from '../../utils/format';
 
 const DESPATCH_STATUS_VIEW_ROLES = ['SUPER_ADMIN', 'COMPANY_OWNER', 'SITE_MANAGER'];
 
@@ -333,7 +334,7 @@ export const TransactionsPage: React.FC = () => {
             <div>
               <span className="text-[10px] text-[#d5c4ab] font-mono block">FİLTRELENEN TOPLAM HACMİ</span>
               <span className="text-lg font-black font-mono text-[#e5e2e1]">
-                {totalFilteredLiters.toLocaleString('tr-TR')} Litre
+                {formatLiters(totalFilteredLiters)}
               </span>
             </div>
           </div>
@@ -649,7 +650,7 @@ export const TransactionsPage: React.FC = () => {
                         </span>
                       </td>
                       <td className={`${cellPad} text-right font-black text-[#e5e2e1] text-sm`}>
-                        {t.amountLiters.toLocaleString('tr-TR')} Litre
+                        {formatLiters(t.amountLiters)}
                       </td>
                     </tr>
                     {isExpanded && (

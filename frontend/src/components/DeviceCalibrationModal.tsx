@@ -4,6 +4,7 @@ import { fetchCalibrationHistory, approveCalibration, rollbackCalibration, reque
 import { useApp } from '../context/AppContext';
 import { socket } from '../utils/socket';
 import { CalibrationWizard } from './CalibrationWizard';
+import { formatNumber, formatDateTime } from '../utils/format';
 
 interface Props {
   device: TenantHardwareDevice;
@@ -166,7 +167,7 @@ export const DeviceCalibrationModal: React.FC<Props> = ({ device, onClose }) => 
               <div>
                 <span className="text-[10px] font-mono text-[#d5c4ab] block">GÜNCEL K-FACTOR</span>
                 <span data-testid="current-k-factor" className="text-xl font-black text-[#ffdca1] font-mono">
-                  {currentKFactor !== null ? currentKFactor.toFixed(4) : 'Henüz kalibre edilmedi'}
+                  {currentKFactor !== null ? formatNumber(currentKFactor, { digits: 4 }) : 'Henüz kalibre edilmedi'}
                 </span>
               </div>
               {currentKFactor !== null && (
@@ -262,9 +263,9 @@ export const DeviceCalibrationModal: React.FC<Props> = ({ device, onClose }) => 
                   <tbody className="divide-y divide-[#514532]/15 font-mono">
                     {history.map((h) => (
                       <tr key={h.id} data-testid="calibration-history-row" data-status={h.status}>
-                        <td className="py-2.5 px-3 text-[#d5c4ab]">{new Date(h.createdAt).toLocaleString('tr-TR')}</td>
+                        <td className="py-2.5 px-3 text-[#d5c4ab]">{formatDateTime(h.createdAt)}</td>
                         <td className="py-2.5 px-3 text-[#e5e2e1]">
-                          {h.previousKFactor?.toFixed(4) ?? '—'} → {h.newKFactor.toFixed(4)}
+                          {formatNumber(h.previousKFactor, { digits: 4 })} → {formatNumber(h.newKFactor, { digits: 4 })}
                           {h.isRollback && <span className="ml-1 text-[10px] text-[#d5c4ab]">(geri alma)</span>}
                         </td>
                         <td className="py-2.5 px-3 text-[#d5c4ab] max-w-[160px] truncate" title={h.reason}>{h.reason}</td>

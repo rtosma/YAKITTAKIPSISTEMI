@@ -9,6 +9,7 @@ import path from 'path';
 import { Response } from 'express';
 import { ReportDefinition, ReportViewer } from './reportTypes';
 import { streamReportExport, ReportQueryParams, assertPdfRowLimit, runReport } from './reportEngine';
+import { formatIstanbulDateTime } from '../utils/dateFormat';
 
 /**
  * REP-703 — PDF export, TÜM raporlar için ortak.
@@ -78,7 +79,7 @@ function drawHeader(doc: PDFKit.PDFDocument, def: ReportDefinition): void {
   const startY = doc.page.margins.top;
   drawLogo(doc, startX, startY);
   doc.font(FONT_BOLD).fontSize(16).fillColor('#000').text(def.title, startX + LOGO_SIZE + 10, startY + 2);
-  doc.font(FONT_REGULAR).fontSize(9).fillColor('#555').text(`Akıllı Şantiye — Oluşturulma: ${new Date().toLocaleString('tr-TR')}`, startX + LOGO_SIZE + 10, startY + 20);
+  doc.font(FONT_REGULAR).fontSize(9).fillColor('#555').text(`Akıllı Şantiye — Oluşturulma: ${formatIstanbulDateTime(new Date())}`, startX + LOGO_SIZE + 10, startY + 20);
   doc.y = startY + LOGO_SIZE + 8;
   doc.x = startX;
 }
@@ -241,7 +242,7 @@ export async function buildArchiveSummaryPdfBuffer(input: ArchiveSummaryPdfInput
   drawLogo(doc, startX, startY);
   doc.font(FONT_BOLD).fontSize(16).fillColor('#000').text('Dönemsel Arşiv Özeti', startX + LOGO_SIZE + 10, startY + 2);
   doc.font(FONT_REGULAR).fontSize(9).fillColor('#555').text(
-    `${input.companyName} — Oluşturulma: ${input.generatedAt.toLocaleString('tr-TR')}`,
+    `${input.companyName} — Oluşturulma: ${formatIstanbulDateTime(input.generatedAt)}`,
     startX + LOGO_SIZE + 10,
     startY + 20
   );

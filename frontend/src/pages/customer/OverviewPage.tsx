@@ -4,6 +4,7 @@ import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianG
 import { TankGauge } from '../../components/TankGauge';
 import { FleetComplianceWidget } from '../../components/FleetComplianceWidget';
 import { useEscapeToClose } from '../../hooks/useEscapeToClose';
+import { formatNumber, formatLiters } from '../../utils/format';
 
 export const OverviewPage: React.FC = () => {
   const { 
@@ -146,7 +147,7 @@ export const OverviewPage: React.FC = () => {
           <div className="flex items-baseline space-x-2">
             <span className="text-3xl font-extrabold font-mono text-[#e5e2e1]">%{tankPercentage}</span>
             <span className="text-xs text-[#d5c4ab] font-mono">
-              ({currentTankTotal.toLocaleString('tr-TR')} / {totalTankCapacity.toLocaleString('tr-TR')} L)
+              ({formatNumber(currentTankTotal, { digits: 0 })} / {formatLiters(totalTankCapacity, 0)})
             </span>
           </div>
           <div className="w-full h-1.5 bg-[#20201f] rounded-full overflow-hidden">
@@ -169,7 +170,7 @@ export const OverviewPage: React.FC = () => {
           </div>
           <div className="flex items-baseline space-x-2">
             <span className="text-3xl font-extrabold font-mono text-[#e5e2e1]">
-              {todayOutputLiters.toLocaleString('tr-TR')} L
+              {formatLiters(todayOutputLiters)}
             </span>
           </div>
           <p className="text-[11px] text-[#a1e8a2] font-mono flex items-center space-x-1">
