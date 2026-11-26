@@ -33,5 +33,10 @@ export const dispenseFinalizeSchema = z.object({
   sessionId: z.string({ message: 'sessionId zorunludur.' }).min(1),
   endTotalizerLiters: z.coerce.number({ message: 'endTotalizerLiters zorunludur.' }).nonnegative(),
   reportedLiters: z.coerce.number({ message: 'reportedLiters zorunludur.' }).nonnegative(),
-  idempotencyKey: z.string({ message: 'idempotencyKey zorunludur.' }).min(1).max(128)
+  idempotencyKey: z.string({ message: 'idempotencyKey zorunludur.' }).min(1).max(128),
+  // FW-1314 — cihaz ikmal sürerken yeniden başladı (güç kesintisi/brown-out/panik)
+  // ve yarım kalan oturumu açılışta NVS'ten kurtarıp finalize ediyor. Son litreler
+  // (en fazla bir NVS commit aralığı) kaybolmuş olabilir → kayıt her zaman operatör
+  // onayına düşer. Opsiyonel; eski firmware göndermez.
+  recoveredAfterRestart: z.boolean().optional().default(false)
 });

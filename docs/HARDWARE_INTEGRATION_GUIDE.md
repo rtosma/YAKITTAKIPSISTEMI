@@ -557,7 +557,8 @@ tükendiğinde de tetiklenir (INV-1501) — ham `current_level_liters` sıfırı
 ### 9.3 `POST /dispense/finalize` — ikmal bitti
 
 ```
-{ "sessionId": "...", "endTotalizerLiters": <son okuma>, "reportedLiters": <cihazın kendi toplamı>, "idempotencyKey": "<cihaz üretir, sabit>" }
+{ "sessionId": "...", "endTotalizerLiters": <son okuma>, "reportedLiters": <cihazın kendi toplamı>, "idempotencyKey": "<cihaz üretir, sabit>",
+  "recoveredAfterRestart": false }   // opsiyonel, bkz. aşağı (FW-1314)
 → { "success": true, "data": { ...transaction, "verification_status": "DOĞRULANDI" | "DOĞRULAMA_BEKLIYOR" } }
 ```
 
@@ -567,6 +568,12 @@ tükendiğinde de tetiklenir (INV-1501) — ham `current_level_liters` sıfırı
   DOĞRULAMA_BEKLIYOR` (operatör onayına düşer).
 - `idempotencyKey`: cihaz üretir ve ağ kesintisi sonrası **aynı** değerle tekrar
   gönderir — ikinci bir kayıt yaratılmaz, var olan idempotent olarak döner.
+- `recoveredAfterRestart` (FW-1314): cihaz ikmal sürerken yeniden başladıysa
+  (güç kesintisi, brown-out, panik) açılışta yarım oturumu NVS'ten kurtarır ve
+  finalize'ı `true` ile gönderir. `endTotalizerLiters` o durumda son **NVS
+  commit'idir**; arada akan en fazla bir commit aralığı (5 L) eksik olabilir.
+  Sunucu böyle bir kaydı oturum zaman aşımına uğramamış olsa bile her zaman
+  `DOĞRULAMA_BEKLIYOR` işaretler.
 
 ---
 
