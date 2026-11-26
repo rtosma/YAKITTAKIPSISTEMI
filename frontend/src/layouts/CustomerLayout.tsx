@@ -3,6 +3,7 @@ import { Outlet, useNavigate, useLocation, Navigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 import { ListSkeleton } from '../components/ListSkeleton';
 import { ErrorState } from '../components/ErrorState';
+import type { CompanyModule } from '../types';
 
 export const CustomerLayout: React.FC = () => {
   const navigate = useNavigate();
@@ -48,7 +49,7 @@ export const CustomerLayout: React.FC = () => {
     { label: 'Rapor Merkezi', path: '/panel/reports', icon: 'summarize', id: 'reports' },
     { label: 'Bildirimler', path: '/panel/notifications', icon: 'notifications', id: 'notifications' },
     { label: 'Sistem Ayarları', path: '/panel/settings', icon: 'settings', id: 'settings' },
-    { label: 'Yetkilendirme (Çapraz)', path: '/panel/cross-site', icon: 'verified', id: 'cross-site' },
+    { label: 'Yetkilendirme (Çapraz)', path: '/panel/cross-site', icon: 'verified', id: 'cross-site', requiresModule: 'crossSiteAuth' as const },
     { label: 'Modüllerim', path: '/panel/modules', icon: 'extension', id: 'modules' },
   ];
 
@@ -56,9 +57,14 @@ export const CustomerLayout: React.FC = () => {
   // Araç Yönetimi, Şoför Yönetimi, Yakıt Hareketleri, Tank Durumu, Bildirimler, Sistem Ayarları
   const santiyeAllowedIds = ['vehicles', 'meter-readings', 'drivers', 'transactions', 'tanks', 'reports', 'notifications', 'settings'];
 
-  const navItems = isManagerMode
+  // ARCH-106: firmanın paketinde olmayan modülün menü öğesi gösterilmez
+  // (backend o modülün uçlarına zaten 403 MODULE_DISABLED döner).
+  const moduleAllowed = (item: { requiresModule?: keyof CompanyModule }) =>
+    !item.requiresModule || currentCompany?.modules?.[item.requiresModule] !== false;
+  const navItems = (isManagerMode
     ? allNavItems
-    : allNavItems.filter(item => santiyeAllowedIds.includes(item.id));
+    : allNavItems.filter(item => santiyeAllowedIds.includes(item.id))
+  ).filter(moduleAllowed);
 
   const currentPath = location.pathname;
 
