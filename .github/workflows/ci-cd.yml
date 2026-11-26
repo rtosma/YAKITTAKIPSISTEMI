@@ -969,6 +969,12 @@ jobs:
           (cd ../fw-artifact && sha256sum -- *.bin > SHA256SUMS && cat SHA256SUMS)
           idf.py -B /tmp/fw-build size
 
+      - name: QEMU açılış testi (NVS kurtarma, röle, öz-test — donanımsız)
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh" > /dev/null
+          bash firmware/test/qemu/run.sh /tmp/fw-build
+
       - name: Firmware artefaktı
         uses: actions/upload-artifact@v4
         with:

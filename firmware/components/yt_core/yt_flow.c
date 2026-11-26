@@ -92,3 +92,11 @@ double yt_flow_session_end(yt_flow_t *f)
     }
     return liters;
 }
+
+uint32_t yt_flow_counter_delta(int prev_raw, int now_raw, int modulus)
+{
+    if (modulus <= 0) return 0;
+    int d = (now_raw - prev_raw) % modulus;
+    if (d < 0) d += modulus;
+    return (uint32_t)d;
+}

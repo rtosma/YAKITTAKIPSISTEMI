@@ -64,6 +64,15 @@ double yt_flow_rate_lpm(const yt_flow_t *f, int64_t now_ms);
 /** Yeni K-faktörü talebi (uzaktan kalibrasyon). */
 yt_flow_k_result_t yt_flow_set_k_factor(yt_flow_t *f, double k_factor);
 
+/**
+ * PCNT ham sayaç farkı. Donanım sayacı high_limit'e ulaşınca kendiliğinden sıfırlanır
+ * (değerler 0..modulus-1 arasında sarar). İki okuma arasındaki artış modulus'tan küçük
+ * olduğu sürece (100 ms'de 32767 pals = 327 kHz) sarma doğru hesaplanır. Sürücünün
+ * yazılım biriktiricisi (accum_count) bilerek kullanılmaz: kesme gecikmesi sırasında
+ * okunan değer geriye gidip dev bir artış gibi görünebilir.
+ */
+uint32_t yt_flow_counter_delta(int prev_raw, int now_raw, int modulus);
+
 void yt_flow_session_begin(yt_flow_t *f);
 /** Bu ikmalde akan litre (totalizatör farkı). */
 double yt_flow_session_liters(const yt_flow_t *f);

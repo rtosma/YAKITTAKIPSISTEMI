@@ -198,6 +198,11 @@ void yt_session_restore_abnormal(yt_session_t *s, const char *session_id, const 
     enter(s, YT_S_FINALIZING, now_ms);
 }
 
+bool yt_session_recovered_after_restart(const yt_session_t *s)
+{
+    return s->end_reason == YT_END_ABNORMAL_RESTART;
+}
+
 const char *yt_session_state_name(yt_session_state_t st)
 {
     switch (st) {
