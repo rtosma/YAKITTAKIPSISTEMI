@@ -111,6 +111,9 @@ bool yt_session_finalize_pending(const yt_session_t *s);
 void yt_session_restore_abnormal(yt_session_t *s, const char *session_id, const char *idempotency_key,
                                  double start_totalizer, int64_t now_ms);
 
+/** Oturum, ikmal sürerken yeniden başlatmadan kurtarıldı mı (finalize'da recoveredAfterRestart). */
+bool yt_session_recovered_after_restart(const yt_session_t *s);
+
 const char *yt_session_state_name(yt_session_state_t st);
 const char *yt_end_reason_name(yt_end_reason_t r);
 

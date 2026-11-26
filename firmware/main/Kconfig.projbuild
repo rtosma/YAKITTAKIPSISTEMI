@@ -18,9 +18,31 @@ menu "Yakıt Takip pompa ünitesi"
         int "Akışmetre pals girişi GPIO (PCNT)"
         default 14
 
+    config YT_FLOW_GLITCH_NS
+        int "Akışmetre glitch filtresi (ns) — bundan kısa darbeler gürültü"
+        default 10000
+        range 0 12700
+        help
+            ESP32 PCNT donanım filtresi en fazla ~12,7 µs eler. Reed kontaklı sayaçlarda
+            harici RC filtre şarttır (yt_pcnt.h).
+
     config YT_PIN_ESTOP
         int "Acil durdurma girişi GPIO (normalde kapalı kontak)"
         default 27
+        help
+            Kontak GPIO ile GND arasına bağlanır, dahili pull-up açılır. Normalde LOW;
+            basılınca VEYA tel koparsa HIGH → röle kapanır. Kontağı bağlanmamış bir
+            geliştirme kartında pini GND'ye köprüleyin, yoksa röle hiç açılmaz.
+
+    config YT_PIN_POWER_FAIL
+        int "Güç kesintisi erken uyarı girişi GPIO (-1 = yok)"
+        default -1
+        range -1 39
+        help
+            Besleme regülatör öncesinde bir karşılaştırıcıyla izlenir; LOW = besleme
+            düşüyor. Tutma kondansatörü en az 50 ms enerji sağlamalı. Sinyal gelince
+            röle kapatılır ve totalizatör hemen NVS'e yazılır (FW-1314). ESP32'nin dahili
+            brown-out dedektörü çipi doğrudan resetler, yazma fırsatı vermez.
 
     config YT_PIN_I2C_SDA
         int "PN532 RFID I2C SDA"

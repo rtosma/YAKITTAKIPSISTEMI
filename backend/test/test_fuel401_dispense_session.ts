@@ -223,6 +223,24 @@ async function run() {
         finalizeDiscrepancy.data?.data?.verification_status === 'DOĞRULAMA_BEKLIYOR',
       `status=${finalizeDiscrepancy.status}, body=${JSON.stringify(finalizeDiscrepancy.data)}`
     );
+
+    // === Test 15: FW-1314 — cihaz ikmal ortasında yeniden başladı, oturum sunucuda hâlâ
+    // PUMPING (15 sn'lik zaman aşımı dolmadan döndü). Sapma yok ama son litreler
+    // kaybolmuş olabilir → recoveredAfterRestart kaydı operatör onayına düşürmeli. ===
+    const auth4 = await hwPost('/dispense/request-auth', { rfidCardId: 'CARD-881201', tankName: 'Gebze Ana Tank (T-1)' });
+    const sessionId4 = auth4.data?.data?.sessionId;
+    await hwPost('/dispense/heartbeat', { sessionId: sessionId4, totalizerLiters: 7000.0, flowRateLpm: 30 });
+    const finalizeRecovered = await hwPost('/dispense/finalize', {
+      sessionId: sessionId4, endTotalizerLiters: 7030.0, reportedLiters: 30.0,
+      idempotencyKey: `fuel401-test-restart-${Date.now()}`, recoveredAfterRestart: true
+    });
+    check(
+      'Test 15: Yeniden başlatma sonrası kurtarılan yarım ikmal (recoveredAfterRestart) DOĞRULAMA_BEKLIYOR işaretlenir',
+      finalizeRecovered.status === 200 &&
+        Number(finalizeRecovered.data?.data?.amount_liters) === 30 &&
+        finalizeRecovered.data?.data?.verification_status === 'DOĞRULAMA_BEKLIYOR',
+      `status=${finalizeRecovered.status}, body=${JSON.stringify(finalizeRecovered.data)}`
+    );
   } finally {
     // Temizlik
     await db.query(`DELETE FROM transactions WHERE idempotency_key LIKE 'fuel401-test-%'`);

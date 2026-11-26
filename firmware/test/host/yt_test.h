@@ -18,3 +18,4 @@ void test_hmac(void);
 void test_flow(void);
 void test_session(void);
 void test_failopen(void);
+void test_persist(void);

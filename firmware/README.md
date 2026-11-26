@@ -8,12 +8,14 @@ ESP-IDF v5.3, hedef **ESP32** (4 MB flash, ör. ESP32-WROOM-32). Sunucuyla sözl
 |---|---|
 | FW-1301 iskelet, bölüm tablosu, CI derlemesi | ✅ bu dizin |
 | FW-1308 HMAC imzalama çekirdeği | ✅ şartname vektörleriyle test edildi. NVS'te şifreli secret saklama bekliyor |
-| FW-1304 akışmetre hesapları (K-faktörü, 64-bit totalizatör, debi) | ✅ çekirdek. PCNT sürücüsü bekliyor |
-| İkmal oturumu durum makinesi (rehber §9) + FW-1303 yazılım kilidi | ✅ çekirdek + röle sürücüsü |
+| FW-1304 akışmetre (K-faktörü, 64-bit totalizatör, debi) | ✅ çekirdek + PCNT sürücüsü (`yt_pcnt`), K-faktörü NVS'te |
+| FW-1314 güç kesintisinde totalizatör ve yarım ikmal | ✅ NVS commit politikası, oturum kaydı, açılışta kurtarma, opsiyonel güç kesintisi girişi |
+| İkmal oturumu durum makinesi (rehber §9) + FW-1303 yazılım kilidi | ✅ çekirdek + röle sürücüsü + acil durdurma girişi |
+| FW-1313 watchdog | ✅ ana döngü TWDT'ye bağlı (5 sn → panik → reset) |
 | FW-1310 fail-open kararı | ✅ çekirdek. Whitelist ve politika önbelleği bekliyor |
-| FW-1302 RFID, FW-1306/1307 ağ ve MQTT/TLS, FW-1309 kuyruk, FW-1312 RTC, FW-1314 NVS, FW-1311 OTA, FW-1313, 1315, 1316, 1317 | ⏳ sonraki adımlar |
+| FW-1302 RFID, FW-1306/1307 ağ ve MQTT/TLS, FW-1309 kuyruk, FW-1312 RTC, FW-1311 OTA, FW-1315, 1316, 1317 | ⏳ sonraki adımlar |
 
-Donanım henüz yok. Donanımdan bağımsız her şey `components/yt_core` altında saf C olarak yazıldı ve bilgisayarda test ediliyor. Sürücüler şartnameye göre yazılıp donanım gelince sahada doğrulanacak (TEST-1005).
+Donanım henüz yok. Donanımdan bağımsız her şey `components/yt_core` altında saf C olarak yazıldı ve bilgisayarda test ediliyor. İmajın kendisi ESP32 QEMU'sunda açılış testinden geçiyor (aşağıda). Sürücüler (PCNT, röle, girişler) şartnameye göre yazıldı; sinyal jeneratörü, referans kap ve güç kesme testleri donanım gelince yapılacak (TEST-1005).
 
 ## Derleme
 
@@ -43,6 +45,16 @@ Testler cihazdaki **aynı** mbedTLS kaynağıyla derlenir. Kapsam:
 - Akışmetre: K değişikliğinin ikmal bitene kadar ertelenmesi, 64-bit totalizatör, 60 L/dk debi.
 - İkmal durum makinesi: röle kapısı, FORCE_CUTOFF mandalı, yerel limit, acil durdurma, anormal yeniden başlatma, idempotency.
 - Fail-open kuralları.
+- Güç kesintisi: commit politikası (60 L/dk'da en fazla 5 L kayıp), oturum kaydının biçimi/CRC'si, kurtarma.
+
+## QEMU açılış testi (donanımsız)
+
+```bash
+docker run --rm -v "$PWD:/repo" -w /repo/firmware espressif/idf:v5.3.2 bash -c \
+  'git config --global --add safe.directory "*"; idf.py -B /tmp/b build && bash test/qemu/run.sh /tmp/b'
+```
+
+Derlenen imaj, hazırlanmış NVS içerikleriyle ESP32 QEMU'sunda başlatılır: ilk kurulum, ikmal sürerken güç kesilmesi, finalize gitmeden yeniden başlama ve bozuk kayıt senaryoları. Her biri iki kez açılır, böylece NVS'e yazılanların kalıcı olduğu da doğrulanır. CI her PR'da koşturur.
 
 ## Varsayılan pinler
 
@@ -50,7 +62,8 @@ Testler cihazdaki **aynı** mbedTLS kaynağıyla derlenir. Kapsam:
 |---|---|---|
 | Röle (pompa/solenoid) | 13 | **Fiziksel pull-down zorunlu**, aşağıya bakın |
 | Akışmetre pals girişi | 14 | PCNT çevre birimi (FW-1304) |
-| Acil durdurma girişi | 27 | Normalde kapalı kontak: tel koparsa da durur |
+| Acil durdurma girişi | 27 | Normalde kapalı kontak GPIO–GND: basılınca veya tel koparsa durur. **Geliştirme kartında pini GND'ye köprüleyin**, yoksa röle hiç açılmaz |
+| Güç kesintisi erken uyarısı | — | Opsiyonel (`menuconfig`). LOW = besleme düşüyor, aşağıya bakın |
 | PN532 RFID — I2C SDA / SCL | 21 / 22 | |
 
 Varsayılan K-faktörü 450 pals/L'dir (eski saha prototipindeki değer). Gerçek değer uzaktan kalibrasyonla (rehber §5) gelir.
@@ -61,6 +74,26 @@ Varsayılan K-faktörü 450 pals/L'dir (eski saha prototipindeki değer). Gerçe
 - Aktif-düşük bir röle modülü kullanılırsa (`menuconfig` → "HIGH ile çeker" kapalı) direnç **pull-up** olmalıdır.
 - Açılışta röle her şeyden önce kapalı seviyeye çekilir. Açabilmenin tek yolu `yt_relay_apply()`'dır; o da yalnızca `yt_session_relay_allowed()` izin verdiğinde (sunucu yetkisi + limit + kesme mandalı) ve acil durdurma aktif değilken açar.
 - Acil durdurma kontağı röle besleme hattını **donanımsal olarak da** kesmelidir. Yazılımın bunu görmesi kayıt içindir, güvenliğin kendisi değildir.
+
+## Güç kesintisi ve NVS (FW-1314)
+
+**Totalizatör.** NVS'e her palste değil, akış varken son yazmadan bu yana **5 L** birikince veya **10 sn** geçince yazılır. Rölantide hiç yazılmaz. İkmal başında ve sonunda ayrıca zorla yazılır. Güç bir anda kesilirse kayıp en fazla 5 L'dir; düşük debide 10 sn'lik akış kadardır. Değer tamsayı mL olarak (`u64`) tutulur.
+
+**Yarım ikmal.** Sunucu yetki verdiği anda oturum kaydı (oturum kimliği, idempotency anahtarı, başlangıç totalizatörü; sürümlü, CRC'li) NVS'e yazılır. İkmal bitince güncellenir, sunucu kabul edince silinir. Açılışta kayıt varsa:
+- İkmal sürerken kesilmişse oturum `ABNORMAL_RESTART` ile kesinleştirilir. Finalize `"recoveredAfterRestart": true` ile gider ve sunucu kaydı **operatör onayına** düşürür (rehber §9.3).
+- İkmal bitmiş ama finalize ulaşmamışsa aynı idempotency anahtarıyla yeniden gönderilir. Çift kayıt oluşmaz.
+- Her iki durumda röle kapalı başlar ve o oturumda bir daha açılmaz.
+
+**Flash ömrü.** NVS bölümü 6 × 4 KB sektördür ve yazmaları sektörler arasında döndürür. Bir sektör 126 kayıt alır, SPI flash sektör başına ≥ 100.000 silme döngüsü dayanır: ömür boyu ≈ 6 × 126 × 100.000 ≈ **75 milyon kayıt**. Bir ikmal 5 L başına 1 kayıt, artı oturum kaydı için ~15 kayıt yazar.
+
+| Senaryo | Kayıt/gün | Ömür |
+|---|---|---|
+| Yoğun saha: 20.000 L/gün, 100 ikmal | ≈ 4.000 + 1.500 = 5.500 | ≈ 37 yıl |
+| En kötü durum: 24 saat kesintisiz 60 L/dk (86.400 L/gün) | ≈ 17.300 + 4.300 = 21.600 | ≈ 9,5 yıl |
+
+**NVS açılamazsa otomatik silinmez.** ESP-IDF örneklerindeki "hata → `nvs_flash_erase()`" kalıbı totalizatörü, K-faktörünü ve secret'ı sessizce sıfırlar. Bunun yerine cihaz ikmal kabul etmez, röle kapalı kalır ve servis gerekir.
+
+**Brown-out.** ESP32'nin dahili brown-out dedektörü çipi doğrudan resetler; flash'a yazma fırsatı vermez. Son litreleri de kurtarmak isteyen kurulum, regülatör öncesindeki besleme hattını bir karşılaştırıcıyla izleyip `YT_PIN_POWER_FAIL` girişine bağlar ve en az 50 ms tutma kondansatörü ekler. Sinyal gelince röle kapanır ve totalizatör hemen yazılır. Bu giriş olmadan da 5 L sınırı geçerlidir.
 
 ## Bölüm tablosu (`partitions.csv`)
 

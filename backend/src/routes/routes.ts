@@ -8237,7 +8237,9 @@ router.post(
  *       karşılaştırılır, doğrudan güvenilmez. idempotencyKey ile aynı
  *       isteğin tekrarı yeni bir kayıt YARATMAZ. TIMED_OUT bir oturumdan
  *       gelen finalize (kurtarma yolu) her zaman verification_status'u
- *       DOĞRULAMA_BEKLIYOR olarak işaretler.
+ *       DOĞRULAMA_BEKLIYOR olarak işaretler; cihazın yeniden başlatma sonrası
+ *       NVS'ten kurtardığı yarım ikmal (recoveredAfterRestart = true, FW-1314)
+ *       de aynı şekilde işaretlenir.
  *     security: []
  *     responses:
  *       200:
@@ -8282,7 +8284,9 @@ router.post(
           reportedLiters: req.body.reportedLiters,
           flowRateLpm: session.currentFlowRateLpm,
           idempotencyKey: req.body.idempotencyKey,
-          forceManualVerification: wasTimedOut,
+          // TIMED_OUT kurtarması veya cihazın yeniden başlatma sonrası kurtardığı
+          // yarım ikmal (FW-1314) → operatör onayı.
+          forceManualVerification: wasTimedOut || req.body.recoveredAfterRestart === true,
           // IOT-307: finalize isteğinin HMAC X-Timestamp'i — cihazın "bu ikmal ne zaman
           // bitti" dediği an; server_received_at (DB DEFAULT) ayrıca sunucunun kaydı
           // GERÇEKTEN yazdığı anı tutar.

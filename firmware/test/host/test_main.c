@@ -10,6 +10,7 @@ int main(void)
         { "flow (FW-1304)", test_flow },
         { "session (FUEL-401 / FW-1303)", test_session },
         { "failopen (FW-1310)", test_failopen },
+        { "persist (FW-1314)", test_persist },
     };
     for (size_t i = 0; i < sizeof suites / sizeof suites[0]; i++) {
         int before = yt_test_failures;
