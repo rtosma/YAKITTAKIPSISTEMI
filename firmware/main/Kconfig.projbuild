@@ -52,6 +52,31 @@ menu "Yakıt Takip pompa ünitesi"
         int "PN532 RFID I2C SCL"
         default 22
 
+    config YT_NTP_SERVER
+        string "NTP sunucusu"
+        default "pool.ntp.org"
+        help
+            Saat ayrıca her sunucu yanıtındaki Date başlığından da eşitlenir (FW-1312).
+
+    config YT_NET_OPENETH
+        bool "QEMU: emüle Ethernet (openeth) — yalnızca test"
+        depends on ETH_USE_OPENETH
+        default n
+
+    config YT_DEV_ALLOW_PLAINTEXT_HTTP
+        bool "GELİŞTİRME: şifresiz http:// sunucu adresine izin ver"
+        default n
+        help
+            Yalnızca QEMU/yerel test içindir. Üretimde AÇILMAMALI: HMAC imzası gövdeyi korur
+            ama dinleyen biri kartları ve oturumları görür, sahte saat verebilir (FW-1307).
+
+    config YT_DEV_CONSOLE
+        bool "GELİŞTİRME: seri konsoldan kart okutma ve akış simülasyonu"
+        default n
+        help
+            Donanımsız test için: "kart <uid>", "akis <litre> <L/dk>", "durum".
+            Üretimde kapalı kalmalı.
+
     config YT_DEFAULT_K_FACTOR
         int "Varsayılan K-faktörü (pals/litre) — NVS'te değer yoksa"
         default 450

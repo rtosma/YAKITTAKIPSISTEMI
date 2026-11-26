@@ -12,6 +12,7 @@ static const char *TAG = "yt_store";
 
 static nvs_handle_t s_main = 0;
 static nvs_handle_t s_sec = 0;
+static nvs_handle_t s_cfg = 0;
 static bool s_ready = false;
 
 esp_err_t yt_store_init(void)
@@ -24,6 +25,7 @@ esp_err_t yt_store_init(void)
     }
     err = nvs_open("yt", NVS_READWRITE, &s_main);
     if (err == ESP_OK) err = nvs_open("yt_sec", NVS_READWRITE, &s_sec);
+    if (err == ESP_OK) err = nvs_open("yt_cfg", NVS_READWRITE, &s_cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "NVS ad alanı açılamadı: %s", esp_err_to_name(err));
         return err;
@@ -99,6 +101,15 @@ esp_err_t yt_store_clear_marker(void)
     esp_err_t err = nvs_erase_key(s_main, "sess");
     if (err == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;
     return commit(s_main, err);
+}
+
+esp_err_t yt_store_get_config(const char *key, char *buf, size_t cap)
+{
+    if (!s_ready) return ESP_ERR_INVALID_STATE;
+    size_t len = cap;
+    esp_err_t err = nvs_get_str(s_cfg, key, buf, &len);
+    if (err != ESP_OK && cap > 0) buf[0] = '\0';
+    return err;
 }
 
 esp_err_t yt_store_load_credentials(char *device_id, size_t id_cap, char *secret, size_t secret_cap)
