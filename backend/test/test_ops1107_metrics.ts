@@ -148,7 +148,17 @@ async function run() {
     // Taban: canlı gauge'ların DB gerçeğine oturması beklenir (önceki koşunun fixture'ı temizlenmiş ama gauge 30 sn'ye kadar bayat olabilir).
     let live0 = parse((await scrape()).text);
     const settle0 = Date.now();
-    while (Date.now() - settle0 < 45_000 && (val(live0, 'yakit_alarms_open', { severity: 'CRITICAL' }) !== (snap0.alarmsOpen.CRITICAL ?? 0) || val(live0, 'yakit_despatch_queue', { status: 'QUEUED' }) !== (snap0.despatchQueue.QUEUED ?? 0) || val(live0, 'yakit_devices', { state: 'offline' }) !== snap0.devices.offline)) {
+    // Taban: canlı /metrics, DB snapshot'ına AYNI değerlerde yetişene kadar beklenir — Test 4'ün
+    // ölçtüğü HER seri için. Önceden WARNING ve FAILED burada yoktu: önceki bir test sildiği bir
+    // FAILED satırı arka plan yenileyicisinin son değerinde hâlâ duruyorsa taban 1 fazla kalıyor
+    // ve fark 0 çıkıyordu (GitHub CI'da görüldü: Δsnapshot failed=1, Δcanlı failed=0).
+    const settled = (live: ReturnType<typeof parse>): boolean =>
+      val(live, 'yakit_alarms_open', { severity: 'CRITICAL' }) === (snap0.alarmsOpen.CRITICAL ?? 0) &&
+      val(live, 'yakit_alarms_open', { severity: 'WARNING' }) === (snap0.alarmsOpen.WARNING ?? 0) &&
+      val(live, 'yakit_despatch_queue', { status: 'QUEUED' }) === (snap0.despatchQueue.QUEUED ?? 0) &&
+      val(live, 'yakit_despatch_queue', { status: 'FAILED' }) === (snap0.despatchQueue.FAILED ?? 0) &&
+      val(live, 'yakit_devices', { state: 'offline' }) === snap0.devices.offline;
+    while (Date.now() - settle0 < 45_000 && !settled(live0)) {
       await sleep(2000);
       live0 = parse((await scrape()).text);
     }
