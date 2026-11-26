@@ -956,7 +956,8 @@ jobs:
         run: |
           . "$IDF_PATH/export.sh" > /dev/null
           git config --global --add safe.directory '*'
-          export YT_FW_VERSION="$(git describe --tags --always --dirty)"
+          YT_FW_VERSION="$(git describe --tags --always --dirty)"
+          export YT_FW_VERSION
           cd firmware
           idf.py -B /tmp/fw-build set-target esp32
           idf.py -B /tmp/fw-build build
@@ -965,7 +966,7 @@ jobs:
              /tmp/fw-build/partition_table/partition-table.bin /tmp/fw-build/ota_data_initial.bin \
              /tmp/fw-build/flash_args ../fw-artifact/
           echo "$YT_FW_VERSION" > ../fw-artifact/VERSION
-          (cd ../fw-artifact && sha256sum *.bin > SHA256SUMS && cat SHA256SUMS)
+          (cd ../fw-artifact && sha256sum -- *.bin > SHA256SUMS && cat SHA256SUMS)
           idf.py -B /tmp/fw-build size
 
       - name: Firmware artefaktı
