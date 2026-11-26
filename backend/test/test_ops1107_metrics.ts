@@ -191,14 +191,17 @@ async function run() {
     await refreshBusinessMetrics(); // süreç-içi kayıt defteri (test sürecindeki) snapshot ile birebir
     const inproc = (await registry.getMetricsAsJSON()).find((m) => m.name === 'yakit_alarms_open') as any;
     const inprocCrit = inproc?.values?.find((v: any) => v.labels.severity === 'CRITICAL')?.value;
+    // Süreç-içi değer, yenilemeyle AYNI anda alınan snapshot'la karşılaştırılır: snap1 ~30 sn'lik
+    // beklemeden ÖNCE alındı; arada (tam paket sırasında) başka bir alarm açılıp kapanırsa yanlış kırılıyordu.
+    const snapNow = await getBusinessMetricsSnapshot();
     check(
       'Test 4 (AC — iş metrikleri): fixture (1 açık CRITICAL + 1 çözülmüş + 1 WARNING, e-İrsaliye QUEUED 90 dk + FAILED, çevrimdışı cihaz) → snapshot farkları doğru (RESOLVED sayılmaz); çalışan backend\'in arka plan yenileyicisi ≤ 45 sn içinde /metrics\'e yansıtır (CRITICAL +1, WARNING +1, QUEUED +1, FAILED +1, offline +1); en eski QUEUED yaşı ≥ 5400 sn; tazelik zaman damgası taze; süreç-içi refresh aynı değeri verir',
       snap1.alarmsOpen.CRITICAL - (snap0.alarmsOpen.CRITICAL ?? 0) === 1 && snap1.alarmsOpen.WARNING - (snap0.alarmsOpen.WARNING ?? 0) === 1 &&
         snap1.despatchQueue.QUEUED - (snap0.despatchQueue.QUEUED ?? 0) === 1 && snap1.despatchQueue.FAILED - (snap0.despatchQueue.FAILED ?? 0) === 1 && snap1.devices.offline - snap0.devices.offline === 1 &&
         dl('yakit_alarms_open', { severity: 'CRITICAL' }) === 1 && dl('yakit_alarms_open', { severity: 'WARNING' }) === 1 && dl('yakit_despatch_queue', { status: 'QUEUED' }) === 1 &&
         dl('yakit_despatch_queue', { status: 'FAILED' }) === 1 && dl('yakit_devices', { state: 'offline' }) === 1 && val(live1, 'yakit_despatch_oldest_queued_age_seconds') >= 5400 &&
-        Date.now() / 1000 - val(live1, 'yakit_business_metrics_last_refresh_timestamp_seconds') < 90 && inprocCrit === snap1.alarmsOpen.CRITICAL,
-      `Δsnapshot crit=${snap1.alarmsOpen.CRITICAL - (snap0.alarmsOpen.CRITICAL ?? 0)}, Δcanlı crit=${dl('yakit_alarms_open', { severity: 'CRITICAL' })}, queued=${dl('yakit_despatch_queue', { status: 'QUEUED' })}, offline=${dl('yakit_devices', { state: 'offline' })}, oldest=${val(live1, 'yakit_despatch_oldest_queued_age_seconds')}s, süre=${Date.now() - t0}ms`
+        Date.now() / 1000 - val(live1, 'yakit_business_metrics_last_refresh_timestamp_seconds') < 90 && inprocCrit === snapNow.alarmsOpen.CRITICAL,
+      `Δsnapshot crit=${snap1.alarmsOpen.CRITICAL - (snap0.alarmsOpen.CRITICAL ?? 0)}, Δcanlı crit=${dl('yakit_alarms_open', { severity: 'CRITICAL' })}, queued=${dl('yakit_despatch_queue', { status: 'QUEUED' })}, offline=${dl('yakit_devices', { state: 'offline' })}, oldest=${val(live1, 'yakit_despatch_oldest_queued_age_seconds')}s, süre=${Date.now() - t0}ms; Δsnapshot warn=${snap1.alarmsOpen.WARNING - (snap0.alarmsOpen.WARNING ?? 0)} queued=${snap1.despatchQueue.QUEUED - (snap0.despatchQueue.QUEUED ?? 0)} failed=${snap1.despatchQueue.FAILED - (snap0.despatchQueue.FAILED ?? 0)} offline=${snap1.devices.offline - snap0.devices.offline}; Δcanlı warn=${dl('yakit_alarms_open', { severity: 'WARNING' })} failed=${dl('yakit_despatch_queue', { status: 'FAILED' })}; tazelik=${Math.round(Date.now() / 1000 - val(live1, 'yakit_business_metrics_last_refresh_timestamp_seconds'))}s; süreçİçi crit=${inprocCrit} snapshot(şimdi) crit=${snapNow.alarmsOpen.CRITICAL}`
     );
 
     // === Test 5: ikmal ve MQTT sayaçları (GERÇEK olaylarla) ===
