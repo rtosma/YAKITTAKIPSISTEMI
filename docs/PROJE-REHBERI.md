@@ -301,7 +301,7 @@ Tip denetimi: `npm run lint` (kökten: backend + frontend `tsc --noEmit`).
 - Tek test dosyası kuralı: `/auth/login` çağıran her test dosyası önce rate-limit anahtarlarını temizler (`check-test-rate-limit-hygiene`).
 
 ### 7.4 Firmware / cihaz
-Firmware bu depoda **yok** (FW-1301 iskeleti açık). Cihaz olmadan geliştirme: testler cihaz HMAC isteklerini **simüle eder** (`backend/test/test_fuel401_dispense_session.ts`, `test_test1007_chaos.ts` içindeki cihaz simülatörü). Protokol sözleşmesi [HARDWARE_INTEGRATION_GUIDE](HARDWARE_INTEGRATION_GUIDE.md); ekran mesajları `docs/operator/device-messages.json`; sahaya kurulum [SAHA_KURULUM](SAHA_KURULUM.md). Eski prototip: `hardware/esp32veriakışı.cpp` (referans değil, tarihsel).
+Firmware `firmware/` altında (ESP-IDF v5.3; derleme, pinler ve röle güvenliği: [firmware/README](../firmware/README.md)). Donanımdan bağımsız çekirdek (HMAC, akışmetre, ikmal durum makinesi, fail-open) bilgisayarda test edilir ve CI'da derlenir; sürücüler donanım geldiğinde doğrulanır. Sunucu tarafını cihaz olmadan geliştirmek için: testler cihaz HMAC isteklerini **simüle eder** (`backend/test/test_fuel401_dispense_session.ts`, `test_test1007_chaos.ts` içindeki cihaz simülatörü). Protokol sözleşmesi [HARDWARE_INTEGRATION_GUIDE](HARDWARE_INTEGRATION_GUIDE.md); ekran mesajları `docs/operator/device-messages.json`; sahaya kurulum [SAHA_KURULUM](SAHA_KURULUM.md). Eski Arduino prototipi: `hardware/esp32veriakışı.cpp` (tarihsel; pin ve [K-faktörü](SOZLUK.md#k-factor) varsayılanları buradan alındı).
 
 ### 7.5 Sık kurulum sorunları
 | Belirti | Çözüm |

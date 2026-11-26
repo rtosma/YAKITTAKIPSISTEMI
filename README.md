@@ -40,7 +40,8 @@ YAKITTAKIPSISTEMI/
 │   └── tsconfig.json        # React TypeScript konfigürasyonu
 │
 ├── hardware/                # ESP32 IoT donanım dosyaları
-│   └── esp32veriakışı.cpp   # ESP32 veri akış kontrol kodu
+│   └── esp32veriakışı.cpp   # Eski Arduino prototipi (tarihsel)
+├── firmware/                # ESP32 pompa ünitesi firmware'i (ESP-IDF) — bkz. firmware/README.md
 │
 ├── docker-compose.yml       # Tüm servisleri orkestre eder
 ├── .env.example             # Ortam değişkenleri şablonu

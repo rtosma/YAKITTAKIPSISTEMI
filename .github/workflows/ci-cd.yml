@@ -927,6 +927,55 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  # FW-1301 — ESP32 firmware: çekirdek birim testleri (host) + ESP-IDF imaj derlemesi.
+  # Donanım gerektirmez; imaj artefakt olarak (SHA-256 ile) saklanır. Host testleri
+  # cihazdaki AYNI mbedTLS kaynağıyla derlenir (HMAC şartname vektörleri dahil).
+  # Not: GitHub container adımlarında imajın entrypoint'i çalışmaz → export.sh açıkça.
+  firmware:
+    name: 🔧 FW-1301 Firmware — çekirdek testleri + ESP32 derlemesi
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    container:
+      image: espressif/idf:v5.3.2
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Firmware çekirdeği birim testleri (HMAC vektörleri, akışmetre, ikmal durum makinesi, fail-open)
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh" > /dev/null
+          cmake -S firmware/test/host -B /tmp/fw-host
+          cmake --build /tmp/fw-host -j"$(nproc)"
+          /tmp/fw-host/yt_core_tests
+
+      - name: ESP32 imajını derle (sürüm gömülü, SHA-256)
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh" > /dev/null
+          git config --global --add safe.directory '*'
+          YT_FW_VERSION="$(git describe --tags --always --dirty)"
+          export YT_FW_VERSION
+          cd firmware
+          idf.py -B /tmp/fw-build set-target esp32
+          idf.py -B /tmp/fw-build build
+          mkdir -p ../fw-artifact
+          cp /tmp/fw-build/yakittakip_pump.bin /tmp/fw-build/bootloader/bootloader.bin \
+             /tmp/fw-build/partition_table/partition-table.bin /tmp/fw-build/ota_data_initial.bin \
+             /tmp/fw-build/flash_args ../fw-artifact/
+          echo "$YT_FW_VERSION" > ../fw-artifact/VERSION
+          (cd ../fw-artifact && sha256sum -- *.bin > SHA256SUMS && cat SHA256SUMS)
+          idf.py -B /tmp/fw-build size
+
+      - name: Firmware artefaktı
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-esp32
+          path: fw-artifact/
+          retention-days: 30
+
   secret-scan:
     # DİKKAT: bu satırdaki iki nokta üst üste ("OPS-1105:") YAML'da bir mapping
     # ayırıcısı olarak yorumlanır — tırnaksız bırakılırsa TÜM workflow dosyası
