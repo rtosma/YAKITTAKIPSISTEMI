@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { FuelQuota } from '../../types';
+import { ModuleDisabledNotice } from '../../components/ModuleDisabledNotice';
 
 const PERIOD_LABELS: Record<FuelQuota['periodType'], string> = {
   DAILY: 'Günlük',
@@ -90,6 +91,11 @@ export const CrossSitePage: React.FC = () => {
 
     setIsModalOpen(false);
   };
+
+  // ARCH-106: modül kapalıysa (paket dışı) tablo yerine nedenini göster.
+  if (currentCompany?.modules?.crossSiteAuth === false) {
+    return <ModuleDisabledNotice moduleLabel="Çapraz Şantiye İkmal Yetkisi" />;
+  }
 
   return (
     <div className="space-y-6">

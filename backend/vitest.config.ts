@@ -31,7 +31,8 @@ export const OTHER_UNIT_FILES = [
   'src/utils/redaction.ts',
   'src/utils/id.ts',
   'src/utils/errors.ts',
-  'src/retention/retentionCatalog.ts'
+  'src/retention/retentionCatalog.ts',
+  'src/modules/moduleGate.ts'
 ];
 export const UNIT_SCOPE = [...ENGINE_FILES, ...OTHER_UNIT_FILES];
 

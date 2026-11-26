@@ -127,3 +127,15 @@ describe.each(PAGES)('$name', ({ load, heading, fetches = true }) => {
     if (fetches) await waitFor(() => expect(fetch).toHaveBeenCalled());
   });
 });
+
+// ARCH-106: paket dışı modülün ekranına doğrudan URL ile gelinirse tablo yerine nedeni gösterilir.
+describe('CrossSitePage — crossSiteAuth modülü kapalı', () => {
+  it('"modül etkin değil" bildirimini gösterir, çapraz yetki tablosunu göstermez', async () => {
+    appState.currentCompany = { ...INITIAL_COMPANIES[0], modules: { ...INITIAL_COMPANIES[0].modules, crossSiteAuth: false } };
+    const { CrossSitePage } = await import('./CrossSitePage');
+    renderPage(CrossSitePage);
+    expect(screen.getByTestId('module-disabled-notice')).toBeInTheDocument();
+    expect(screen.getByText(/Çapraz Şantiye İkmal Yetkisi/)).toBeInTheDocument();
+    expect(screen.queryByText('34 CTP 82')).toBeNull();
+  });
+});

@@ -36,6 +36,7 @@ import { areFuelTypesCompatible, resolveFuelType } from '../fuel/fuelTypes';
 import { checkMeterReading, resolveMeterType, type MeterType } from '../fleet/meterValidation';
 import { generateDespatchAdviceXml } from '../compliance/despatchAdviceXmlService';
 import { getIntegratorAdapter } from '../compliance/integratorAdapter';
+import { isModuleOn, MODULE_LABELS } from '../modules/moduleGate';
 
 /**
  * updateVehicle/updateTank (ve kısmen updateDriver) aynı deseni tekrarlıyordu:
@@ -216,6 +217,22 @@ export async function isTenantModuleEnabled(moduleName: string): Promise<boolean
     const modules: Record<string, boolean> = result.rows[0]?.modules || {};
     return modules[moduleName] !== false;
   });
+}
+
+/**
+ * ARCH-106: çapraz şantiye ikmali, yetki tanımları API'de kapatılsa bile
+ * cihaz/manuel ikmal yolunda MEVCUT izinlerle sürebilirdi — yetki kararının
+ * verildiği iki noktada (createTransactionCore, authorizeDispenseRequestCore)
+ * modül de sorulur. Kapalıysa "izin yok" yerine açık bir MODULE_DISABLED döner.
+ */
+async function assertCrossSiteModuleEnabled(client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }> }, tenantId: string, plate: string, targetSite: string): Promise<void> {
+  const r = await client.query('SELECT modules FROM companies WHERE id = $1', [tenantId]);
+  if (!isModuleOn(r.rows[0]?.modules, 'crossSiteAuth')) {
+    throw new ForbiddenError(
+      `'${plate}' plakalı araç '${targetSite}' şantiyesinden çapraz ikmal alamaz: "${MODULE_LABELS.crossSiteAuth}" modülü firmanız için etkin değil.`,
+      { error: 'MODULE_DISABLED', module: 'crossSiteAuth' }
+    );
+  }
 }
 
 export async function getTenantSites(): Promise<string[]> {
@@ -1350,6 +1367,7 @@ async function createTransactionCore(
       throw new ForbiddenError(`'${data.vehicle_plate}' plakalı araç aktif değil (durum: ${vehicleRes.rows[0].status}).`, { error: 'VEHICLE_BLOCKED' });
     }
     if (vehicleRes.rows.length > 0 && vehicleRes.rows[0].site_name !== data.site_name) {
+      await assertCrossSiteModuleEnabled(client, tenantId, data.vehicle_plate, data.site_name);
       const permRes = await client.query(
         `SELECT id, allowed_liters, used_liters FROM cross_site_permissions
          WHERE vehicle_plate = $1 AND target_site = $2 AND status = 'AKTİF' AND expiry_date >= CURRENT_DATE
@@ -1692,6 +1710,7 @@ async function authorizeDispenseRequestCore(input: {
     };
 
     if (vehicle.site_name !== input.deviceSiteName) {
+      await assertCrossSiteModuleEnabled(client, tenantId, vehicle.plate, input.deviceSiteName);
       const permRes = await client.query(
         `SELECT id, allowed_liters, used_liters FROM cross_site_permissions
          WHERE vehicle_plate = $1 AND target_site = $2 AND status = 'AKTİF' AND expiry_date >= CURRENT_DATE`,

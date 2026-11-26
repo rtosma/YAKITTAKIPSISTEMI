@@ -8,6 +8,7 @@ import { encryptTenantExport } from '../utils/tenantExportCrypto';
 import { generateTempPassword } from '../utils/tempCredentials';
 import type { FuelCostMethod } from '../fuel/fuelCostService';
 import { logger } from '../utils/logger';
+import type { ModuleName } from '../modules/moduleGate';
 
 /**
  * SUPER_ADMIN'e özel, tek bir tenant'a kısıtlı OLMAYAN sorgular. Diğer
@@ -50,7 +51,7 @@ const DEFAULT_MODULES = {
   maintenanceTrack: true,
   driverScore: true,
   crossSiteAuth: true
-};
+} satisfies Record<ModuleName, boolean>; // ARCH-106: moduleGate.ts MODULE_NAMES ile birebir (eksik/fazla anahtar derlemeyi kırar)
 
 // ============================================================================
 // BILL-1701 — Firma Paketleri ve Lisans Modeli
@@ -554,6 +555,9 @@ export interface CompanyLicenseSnapshot {
   // (authMiddleware zaten her istekte bunu çekiyor — ayrı bir round-trip
   // gerekmesin). 'AKTİF' | 'DONDURULDU' | 'SILME_BEKLIYOR'.
   accountStatus: string;
+  // ARCH-106: aynı sorguya eklendi — authenticateJWT modül kapısını bu
+  // değerle uygular (ek round-trip/önbellek yok; değişiklik anında etkili).
+  modules: Record<string, unknown>;
 }
 
 /**
@@ -564,13 +568,14 @@ export interface CompanyLicenseSnapshot {
  * `pool.query` güvenli.
  */
 export async function getCompanyLicenseSnapshot(companyId: string): Promise<CompanyLicenseSnapshot | null> {
-  const result = await pool.query('SELECT license_status, license_expiry, account_status FROM companies WHERE id = $1', [companyId]);
+  const result = await pool.query('SELECT license_status, license_expiry, account_status, modules FROM companies WHERE id = $1', [companyId]);
   if (result.rows.length === 0) return null;
   const row = result.rows[0];
   return {
     licenseStatus: row.license_status || 'AKTİF',
     licenseExpiry: row.license_expiry ? new Date(row.license_expiry).toISOString().slice(0, 10) : null,
-    accountStatus: row.account_status || 'AKTİF'
+    accountStatus: row.account_status || 'AKTİF',
+    modules: row.modules || {}
   };
 }
 
@@ -925,10 +930,46 @@ export async function getAllHardwareDevices(): Promise<AdminHardwareDeviceSummar
  * isTenantModuleEnabled'daki AYNI varsayılan-açık mantığı).
  */
 export async function getAllTenantIdsWithAiAnomalyEnabled(): Promise<string[]> {
+  return getAllTenantIdsWithModuleEnabled('aiAnomaly');
+}
+
+/**
+ * ARCH-106 Teknik Not: "Modül kapalıyken ilgili tekrarlı job'lar da durmalı;
+ * yalnızca API'yi kapatmak yetmez." Modüle özgü süpürücüler (index.ts) tenant
+ * listesini buradan alır. isModuleOn ile AYNI anlam: yalnızca açıkça `false`
+ * kapalı sayılır.
+ */
+export async function getAllTenantIdsWithModuleEnabled(module: ModuleName): Promise<string[]> {
   const result = await pool.query(
-    `SELECT id FROM companies WHERE (modules->>'aiAnomaly') IS DISTINCT FROM 'false'`
+    `SELECT id FROM companies WHERE (modules->>$1) IS DISTINCT FROM 'false'`,
+    [module]
   );
   return result.rows.map((r) => r.id);
+}
+
+/**
+ * ARCH-106 — HTTP isteği DIŞINDAKİ yüksek frekanslı yollar (MQTT telemetri →
+ * AI-501 hırsızlık motoru) için modül durumu. Her sensör mesajında DB'ye
+ * gitmemek için süreç içi kısa TTL'li önbellek: değişiklik en geç TTL kadar
+ * sonra etkili olur (AC: "60 saniye içinde tüm sunucu örneklerinde").
+ * Okuma hatasında önbellekteki son değer, o da yoksa "açık" kullanılır —
+ * geçici bir DB kesintisi hırsızlık tespitini sessizce kapatmasın.
+ */
+const MODULE_CACHE_TTL_MS = 30_000;
+const tenantModuleCache = new Map<string, { modules: Record<string, unknown>; at: number }>();
+
+export async function isModuleEnabledForTenantCached(tenantId: string, module: ModuleName): Promise<boolean> {
+  const hit = tenantModuleCache.get(tenantId);
+  if (hit && Date.now() - hit.at < MODULE_CACHE_TTL_MS) return hit.modules[module] !== false;
+  try {
+    const r = await pool.query('SELECT modules FROM companies WHERE id = $1', [tenantId]);
+    const modules = (r.rows[0]?.modules ?? {}) as Record<string, unknown>;
+    tenantModuleCache.set(tenantId, { modules, at: Date.now() });
+    return modules[module] !== false;
+  } catch (err) {
+    logger.warn({ err, tenantId, module }, '[ARCH-106] Modül durumu okunamadı; son bilinen değer / açık varsayıldı.');
+    return hit ? hit.modules[module] !== false : true;
+  }
 }
 
 /**

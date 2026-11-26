@@ -209,8 +209,11 @@ Akışmetrenin pals/litre katsayısı yanlışsa tüm ikmaller sapar. Akış: po
 ### 5.7 Şema değişikliği: expand-only
 `schema.sql` idempotent ve dağıtımda tek transaction'da uygulanır; eski replika yeni şemayla çalışmak zorundadır (blue/green). Bu yüzden **yalnızca genişleten** (yeni tablo/sütun/indeks) değişiklikler serbesttir; yıkıcı ifade `-- MIGRATION-CONTRACT: <gerekçe>` ister (`check-migration-safety`). Geri alma bu kurala dayanır ([DEPLOY_ROLLBACK §5](DEPLOY_ROLLBACK.md)).
 
-### 5.8 Diğer kararlar (kısa)
-Zero-downtime blue/green + [drain](SOZLUK.md#graceful-shutdown) ([DEPLOY_ROLLBACK](DEPLOY_ROLLBACK.md)) · PII: log/dış servis/Sentry'de kişisel veri yok ([KVKK](KVKK_ENVANTER.md)) · süpürücüler `setInterval` + advisory lock (BullMQ yok) · Socket.io yayınları tenant odasına (`tenant:{id}`).
+### 5.8 Modül kapısı (ARCH-106)
+`companies.modules` firmanın etkin modüllerinin tek kaynağıdır (paket varsayılanları + ek modüller). `authenticateJWT`, lisans kontrolüyle **aynı** firma satırı okumasıyla isteğin yolunu `backend/src/modules/moduleGate.ts` içindeki `MODULE_ROUTE_RULES` ile eşleştirir; kapalı modülde `403 MODULE_DISABLED` döner (ek sorgu/önbellek yok, değişiklik bir sonraki istekte etkili; SUPER_ADMIN muaf). Modüle özgü süpürücüler `getAllTenantIdsWithModuleEnabled`, MQTT hırsızlık motoru 30 sn önbellekli okuma, çapraz ikmal yetkisi ise yetki kararı noktasında kontrol eder. **Yeni bir modül ucu eklerken** kuralı ve `backend/unit/modules/moduleGate.test.ts`'teki `EXPECTED` listesini güncelleyin — test, `routes.ts`'teki tüm yolların ya beklenen modüle kapılı ya da hiç kapılı olmadığını doğrular.
+
+### 5.9 Diğer kararlar (kısa)
+Zero-downtime blue/green + [drain](SOZLUK.md#graceful-shutdown) ([DEPLOY_ROLLBACK](DEPLOY_ROLLBACK.md)) · PII: log/dış servis/Sentry'de kişisel veri yok ([KVKK](KVKK_ENVANTER.md)) · süpürücüler `setInterval` (BullMQ yok; çoklu örneğe karşı yalnızca e-İrsaliye gönderim/sorgulama `SKIP LOCKED` ve saklama işi advisory lock ile korumalı — yatay ölçeklemeden önce diğerleri ele alınmalı, bkz. #58) · Socket.io yayınları tenant odasına (`tenant:{id}`).
 
 ---
 
