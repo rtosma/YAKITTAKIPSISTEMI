@@ -3421,7 +3421,8 @@ router.post(
       });
 
       if (command.status === 'BEKLIYOR') {
-        mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
+        // new_k_factor NUMERIC → pg'den DİZE gelir ('459.0000'); cihaza sayı gönderilir (rehber §3.6).
+        mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: Number(command.new_k_factor) });
         await markCalibrationSent(command.id);
       }
 
@@ -3445,7 +3446,7 @@ router.post(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const command = await approveKFactorCalibration(req.params.commandId, req.user!.userId);
-      mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
+      mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: Number(command.new_k_factor) });
       await markCalibrationSent(command.id);
       res.json({ success: true, message: 'İkinci onay verildi, kalibrasyon komutu cihaza gönderildi.', data: command });
     } catch (error: any) {
@@ -3461,7 +3462,7 @@ router.post(
   async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
       const command = await rollbackKFactorCalibration(req.params.deviceId, req.user!.userId);
-      mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: command.new_k_factor });
+      mqttService.publishCommand(req.params.deviceId, 'SET_K_FACTOR', { commandId: command.id, newKFactor: Number(command.new_k_factor) });
       await markCalibrationSent(command.id);
       res.json({ success: true, message: 'Bir önceki onaylı kalibrasyona geri alma komutu gönderildi.', data: command });
     } catch (error: any) {
