@@ -94,9 +94,10 @@ async function run() {
       JSON.stringify(byCard.get('CARD-881204')));
     check('Test 2e: Aktif olmayan (İZİNLİ) sürücünün kartı listede YOK', !byCard.has('CARD-881205'),
       `kartlar=${[...byCard.keys()].join(',')}`);
-    check('Test 2f: Yanıtta sürüm ve üretim zamanı var',
-      typeof r.body?.data?.version === 'string' && r.body.data.version.length > 0 && !Number.isNaN(Date.parse(r.body?.data?.generatedAt)),
-      `version=${r.body?.data?.version}, generatedAt=${r.body?.data?.generatedAt}`);
+    check('Test 2f: Yanıtta sürüm, üretim zamanı ve cihazın şantiyesi var (sync-batch kaydı için)',
+      typeof r.body?.data?.version === 'string' && r.body.data.version.length > 0 &&
+        !Number.isNaN(Date.parse(r.body?.data?.generatedAt)) && r.body?.data?.siteName === SITE,
+      `version=${r.body?.data?.version}, generatedAt=${r.body?.data?.generatedAt}, siteName=${r.body?.data?.siteName}`);
 
     // === Test 3: sürüm yalnızca liste değişince değişir ===
     const again = await hwGet('/telemetry/rfid-whitelist');

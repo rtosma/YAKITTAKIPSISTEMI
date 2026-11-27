@@ -4683,7 +4683,7 @@ export interface DeviceWhitelistEntry {
  */
 export async function getRfidWhitelistForDevice(
   deviceSiteName: string
-): Promise<{ version: string; generatedAt: string; entries: DeviceWhitelistEntry[] }> {
+): Promise<{ version: string; generatedAt: string; siteName: string; entries: DeviceWhitelistEntry[] }> {
   return withTenant(async (client, tenantId) => {
     const mod = await client.query('SELECT modules FROM companies WHERE id = $1', [tenantId]);
     const crossSite = isModuleOn(mod.rows[0]?.modules, 'crossSiteAuth');
@@ -4711,7 +4711,9 @@ export async function getRfidWhitelistForDevice(
       : crypto.createHash('sha1')
         .update(entries.map((e) => `${e.cardUid}|${e.vehiclePlate}|${e.driverName}`).join('\n'))
         .digest('hex').slice(0, 16);
-    return { version, generatedAt: new Date().toISOString(), entries };
+    // siteName: cihaz kendi şantiyesinin adını bilmez (yalnızca tankını); çevrimdışı ikmalin
+    // sync-batch kaydında zorunlu olduğu için listeyle birlikte gönderilir.
+    return { version, generatedAt: new Date().toISOString(), siteName: deviceSiteName, entries };
   });
 }
 

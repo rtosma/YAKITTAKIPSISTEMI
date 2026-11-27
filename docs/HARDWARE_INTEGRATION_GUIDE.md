@@ -494,7 +494,7 @@ GET /telemetry/fail-open-policy       (HMAC — gövdesiz, "{}" imzala)
 ```
 GET /telemetry/rfid-whitelist
 → { "success": true, "data": {
-      "version": "800aacce8489dde7", "generatedAt": "<ISO>",
+      "version": "800aacce8489dde7", "generatedAt": "<ISO>", "siteName": "Gebze Ana Şantiye",
       "entries": [ { "cardUid": "04A1B2C3D4E5F6", "vehiclePlate": "34 CTP 82", "driverName": "Ahmet Yılmaz" } ]
 } }
 
@@ -507,8 +507,8 @@ GET /telemetry/rfid-denylist
   bu şantiyeye geçerli çapraz şantiye izni var (`crossSiteAuth` modülü açıksa). Kota,
   depo seviyesi gibi anlık kurallar listede yoktur. Çevrimdışıyken onların yerini
   politikanın araç başı litre ve günlük alım sınırları alır.
-- `vehiclePlate`, çevrimdışı ikmalin §7 `sync-batch` kaydı için gereklidir. Cihaz kart →
-  plaka eşlemesini buradan bilir.
+- `vehiclePlate` ve `siteName`, çevrimdışı ikmalin §7 `sync-batch` kaydı için gereklidir.
+  Cihaz kart → plaka eşlemesini ve kendi şantiyesinin adını buradan öğrenir.
 - `version` yalnızca liste değişince değişir; cihaz aynı sürümü yeniden yazmaz.
 - Denylist **whitelist'ten önce** uygulanır: kaybolan kart, cihaz çevrimdışıyken de çalışmaz.
 - Çevrimdışı ikmaller `sync-batch` ile `type = 'Çevrimdışı Senkron'` ve
