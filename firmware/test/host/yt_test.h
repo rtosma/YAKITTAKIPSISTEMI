@@ -20,3 +20,4 @@ void test_session(void);
 void test_failopen(void);
 void test_persist(void);
 void test_api(void);
+void test_cmd(void);

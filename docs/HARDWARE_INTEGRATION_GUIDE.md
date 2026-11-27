@@ -247,7 +247,7 @@ JSON: `{ "command": "<AD>", ...ek alanlar, "issuedAt": "<ISO>" }`. Bilinen komut
 | `command` | Ne zaman | Cihaz ne yapar |
 |---|---|---|
 | `FORCE_CUTOFF` | İkmal sırasında limit/süre aşımı ya da heartbeat zaman aşımı | Solenoidi/pompayı **derhal** kapat; `payload.reason`, `payload.sessionId` bilgi amaçlı |
-| (kalibrasyon) | Operatör K-faktör değişikliği talep etti | §5'teki ACK akışını çalıştır |
+| `SET_K_FACTOR` | Operatör K-faktör değişikliği talep etti (`commandId`, `newKFactor` sayı) | §5'teki ACK akışını çalıştır |
 | `TIME_SYNC` | Cihazın imzaladığı `X-Timestamp`, sunucu saatinden **5 saniyeden fazla** sapıyor (IOT-307; henüz `AUTH-202.2`'nin 30 sn'lik sert reddine ulaşmadan, erkenden) | RTC'yi `payload.serverTime` (ISO 8601) ile eşitle; `payload.driftMs` bilgi amaçlı (+ = cihaz geride). Aynı cihaza 60 sn içinde tekrar basılmaz — kayıp mesaj varsa bir sonraki sapan istekte yeniden gelir |
 
 **Komut protokolü — ack biçimi, zaman aşımı, idempotency (DOC-1202):** komutlar
@@ -282,6 +282,17 @@ sequenceDiagram
 ```
 
 - **Ack formatı:** `{ commandId, status: 'ACK' | 'NACK', appliedKFactor? (ACK zorunlu), reason? (NACK) }`.
+- **Referans firmware'in davranışı** (`firmware/`, FW-1307):
+  - İkmal sürerken K **değiştirilmez**: `NACK` + `reason: "DISPENSE_IN_PROGRESS"` döner; o ikmalin
+    litresi tutarsız olurdu. Operatör komutu ikmal bitince tekrar gönderir. Aralık dışı değerde
+    `INVALID_K_FACTOR`, kalıcı bellek yazılamazsa `STORAGE_WRITE_FAILED` / `STORAGE_UNAVAILABLE`.
+  - K önce uygulanıp kalıcı yazılır, sonra ACK gönderilir. ACK 5 dk içinde sunucuya hiç
+    ulaştırılamazsa veya 404 alınırsa cihaz **eski K'ye döner** (sunucuda da değişmedi). Önceki bir
+    deneme sunucuya ulaşıp yanıtı kaybolmuş olabilecekken gelen 404 ise "zaten işlendi" sayılır
+    ve yeni K korunur.
+  - `commandId` taşıyan `FORCE_CUTOFF`/`TIME_SYNC` (IOT-305 kuyruğu) için cihaz
+    `command/v1/{deviceId}/ack` topic'ine `{ "commandId", "status": "ACK" }` yayınlar; tanımadığı
+    komuta `NACK`.
 - **Zaman aşımı:** `BEKLIYOR` durumundaki bir komut `sent_at`'ten **5 dakika**
   sonra `ZAMAN_ASIMI`'na döner (30 sn'lik bir süpürücü kontrol eder). **Bu
   noktadan sonra gelen bir ACK/NACK artık kabul EDİLMEZ** — sunucu

@@ -14,6 +14,7 @@ typedef enum {
     LINK_AUTH,
     LINK_HEARTBEAT,
     LINK_FINALIZE,
+    LINK_CALIBRATION,   /* POST /telemetry/calibration-ack (FUEL-404.1) */
 } link_kind_t;
 
 void app_link_start(void);

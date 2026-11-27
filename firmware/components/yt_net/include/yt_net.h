@@ -12,7 +12,7 @@
  *
  * HTTP: her istek HMAC başlıklarıyla (rehber §2). HTTPS sertifikası ESP-IDF'in gömülü CA
  * paketiyle DOĞRULANIR; doğrulama kapatılamaz. Düz http:// yalnızca
- * CONFIG_YT_DEV_ALLOW_PLAINTEXT_HTTP ile (QEMU/geliştirme) kabul edilir.
+ * CONFIG_YT_DEV_ALLOW_PLAINTEXT ile (QEMU/geliştirme) kabul edilir.
  * TLS belleği nedeniyle istekler sıralıdır (tek görev, tek bağlantı).
  */
 #pragma once
@@ -28,6 +28,10 @@ extern "C" {
 
 #define YT_NET_URL_MAX 128
 #define YT_HTTP_RESP_MAX 4096
+
+#define YT_HTTP_NO_RESPONSE (-1)
+#define YT_HTTP_INSECURE (-2)
+#define YT_HTTP_NOT_SENT (-3)
 
 typedef struct {
     char base_url[YT_NET_URL_MAX];     /* ör. https://yakit.example.com/api/v1 */
@@ -60,7 +64,10 @@ void yt_time_observe_server(int64_t server_ms);
 /* ---------- HTTP ---------- */
 
 typedef struct {
-    int status;                        /* HTTP durum kodu; <= 0: yanıt yok (ağ/TLS/zaman aşımı) */
+    int status;                        /* HTTP durum kodu; <= 0: yanıt yok:
+                                        *   YT_HTTP_NO_RESPONSE — gönderildi ama yanıt alınamadı (sunucu
+                                        *     işlemiş OLABİLİR), YT_HTTP_NOT_SENT — hiç gönderilmedi
+                                        *     (ağ yok, saat yok), YT_HTTP_INSECURE — şifresiz adres */
     char body[YT_HTTP_RESP_MAX];       /* NUL sonlu, gerekirse kesilir */
 } yt_http_resp_t;
 

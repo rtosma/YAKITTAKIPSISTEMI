@@ -43,7 +43,7 @@ static bool is_https(const char *url)
 static bool url_allowed(const char *url)
 {
     if (is_https(url)) return true;
-#if CONFIG_YT_DEV_ALLOW_PLAINTEXT_HTTP
+#if CONFIG_YT_DEV_ALLOW_PLAINTEXT
     return strncmp(url, "http://", 7) == 0;
 #else
     return false;
@@ -72,7 +72,7 @@ static int perform(const char *url, const char *body, const yt_api_auth_t *auth,
         .keep_alive_enable = false,
     };
     esp_http_client_handle_t h = esp_http_client_init(&hc);
-    if (!h) return -1;
+    if (!h) return YT_HTTP_NOT_SENT;
     if (auth) {
         esp_http_client_set_header(h, "X-Device-ID", cfg->device_id);
         esp_http_client_set_header(h, "X-Timestamp", auth->timestamp);
@@ -84,7 +84,7 @@ static int perform(const char *url, const char *body, const yt_api_auth_t *auth,
         esp_http_client_set_post_field(h, body, (int)strlen(body));
     }
     esp_err_t err = esp_http_client_perform(h);
-    int status = err == ESP_OK ? esp_http_client_get_status_code(h) : -1;
+    int status = err == ESP_OK ? esp_http_client_get_status_code(h) : YT_HTTP_NO_RESPONSE;
     if (err != ESP_OK) ESP_LOGW(TAG, "%s: %s", url, esp_err_to_name(err));
     esp_http_client_cleanup(h);
     return status;
@@ -104,7 +104,7 @@ static bool ensure_time(void)
 
 void yt_http_signed(const char *path, const char *body, yt_http_resp_t *resp)
 {
-    resp->status = -1;
+    resp->status = YT_HTTP_NOT_SENT;
     resp->body[0] = '\0';
     const yt_net_config_t *cfg = yt_net_cfg();
 
@@ -112,7 +112,7 @@ void yt_http_signed(const char *path, const char *body, yt_http_resp_t *resp)
     snprintf(url, sizeof url, "%s%s", cfg->base_url, path);
     if (!url_allowed(url)) {
         ESP_LOGE(TAG, "şifresiz adres reddedildi (%s) — https:// gerekli", cfg->base_url);
-        resp->status = -2;
+        resp->status = YT_HTTP_INSECURE;
         return;
     }
     if (!yt_net_is_up()) return;

@@ -112,6 +112,15 @@ esp_err_t yt_store_get_config(const char *key, char *buf, size_t cap)
     return err;
 }
 
+esp_err_t yt_store_get_secret(const char *key, char *buf, size_t cap)
+{
+    if (!s_ready) return ESP_ERR_INVALID_STATE;
+    size_t len = cap;
+    esp_err_t err = nvs_get_str(s_sec, key, buf, &len);
+    if (err != ESP_OK && cap > 0) buf[0] = '\0';
+    return err;
+}
+
 esp_err_t yt_store_load_credentials(char *device_id, size_t id_cap, char *secret, size_t secret_cap)
 {
     if (!s_ready) return ESP_ERR_INVALID_STATE;

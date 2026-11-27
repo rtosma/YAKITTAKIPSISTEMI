@@ -12,6 +12,7 @@ int main(void)
         { "failopen (FW-1310)", test_failopen },
         { "persist (FW-1314)", test_persist },
         { "api (FW-1307 / FUEL-401)", test_api },
+        { "cmd (FW-1307 / FUEL-404.1)", test_cmd },
     };
     for (size_t i = 0; i < sizeof suites / sizeof suites[0]; i++) {
         int before = yt_test_failures;

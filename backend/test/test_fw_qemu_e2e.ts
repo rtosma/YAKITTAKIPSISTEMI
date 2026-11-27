@@ -1,5 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import crypto from 'crypto';
 import { StringDecoder } from 'string_decoder';
+import Redis from 'ioredis';
+import mqtt from 'mqtt';
 import { Client } from 'pg';
 
 /**
@@ -14,16 +17,24 @@ import { Client } from 'pg';
  *   A) Normal ikmal: kart → yetki → 30 L akış → akış durur → finalize → DOĞRULANDI
  *   B) İkmal ortasında güç kesintisi (QEMU anında kapatılır) → yeniden açılış → yarım oturum
  *      NVS'ten kurtarılır → finalize recoveredAfterRestart → DOĞRULAMA_BEKLIYOR; kayıp ≤ 5 L
+ *   D) MQTT (FW_E2E_MQTT_URL verilmişse; backend aynı broker'a bağlı olmalı):
+ *      presence ONLINE; portaldan kalibrasyon → cihaz uygular → HTTP ACK → sunucuda ONAYLANDI ve
+ *      yeniden açılışta K korunur; ikmal sürerken kalibrasyon → NACK (DISPENSE_IN_PROGRESS);
+ *      broker'dan FORCE_CUTOFF → röle kesilir, IOT-305 ack'i gelir, ikmal kaydedilir
  *
  * Girdiler (ortam):
  *   FW_E2E_FLASH  QEMU'nun göreceği flash imajı yolu (make_e2e_image.sh çıktısı)
  *   FW_QEMU_CMD   qemu-system-xtensa çağrısı (ör. CI'da `docker run -i --rm --network host …`)
+ *   FW_E2E_MQTT_URL  broker (test sürecinden görüldüğü haliyle, ör. mqtt://localhost:1883);
+ *                    kimlik MQTT_USERNAME / MQTT_PASSWORD
  */
 
 const FLASH = process.env.FW_E2E_FLASH;
 const QEMU_CMD = process.env.FW_QEMU_CMD || 'qemu-system-xtensa';
 const DEVICE_ID = 'ESP32-PUMP-01';
 const CARD = 'CARD-881201';
+const MQTT_URL = process.env.FW_E2E_MQTT_URL;
+const API_URL = 'http://localhost:5000/api/v1';
 
 // eslint-disable-next-line no-control-regex
 const ANSI = /\x1b\[[0-9;]*m/g;
@@ -53,6 +64,20 @@ class Device {
     this.proc.stdout.on('data', onData);
     this.proc.stderr.on('data', (chunk: Buffer) => process.stderr.write(chunk));
     this.proc.on('exit', () => { this.exited = true; });
+  }
+
+  /** Şimdiye kadarki TÜM satırlarda ara (sıra önemsizse — ör. arka planda bağlanan MQTT). */
+  async seen(re: RegExp, timeoutMs: number): Promise<RegExpMatchArray> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      for (const line of this.lines) {
+        const m = line.match(re);
+        if (m) return m;
+      }
+      if (this.exited) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error(`${timeoutMs / 1000} sn içinde görülmedi: ${re}`);
   }
 
   /** Bir sonraki eşleşen satırı bekler (daha önce okunanlar atlanır). */
@@ -125,7 +150,9 @@ async function run() {
   const tankBefore = await db.query(`SELECT current_level_liters FROM tanks WHERE id = 'tank-gebze-1'`);
   const levelBefore = Number(tankBefore.rows[0].current_level_liters);
   const keys: string[] = [];
+  const calibrationIds: string[] = [];
   let dev: Device | null = null;
+  await db.query('UPDATE hardware_devices SET k_factor = 450 WHERE device_id = $1', [DEVICE_ID]);
 
   const txOf = async (sessionId: string) => {
     const r = await db.query('SELECT amount_liters, verification_status FROM transactions WHERE idempotency_key = $1',
@@ -199,11 +226,17 @@ async function run() {
     dev.send('durum');
     const idle = await dev.waitFor(/durum: (\w+),/, 5000);
     check('C1: Finalize sonrası oturum kaydı silindi — yeni açılış boşta (IDLE)', idle[1] === 'IDLE', `durum=${idle[1]}`);
+
+    if (MQTT_URL) dev = await mqttScenarios(dev, db, check, keys, calibrationIds);
   } finally {
     if (dev) await dev.powerCut();
     if (keys.length) await db.query('DELETE FROM transactions WHERE idempotency_key = ANY($1)', [keys]);
     await db.query(`UPDATE tanks SET current_level_liters = $1, status = 'GÜVENLİ' WHERE id = 'tank-gebze-1'`, [levelBefore]);
     await db.query(`UPDATE vehicles SET assigned_driver_name = NULL WHERE id = 'veh-1'`);
+    if (calibrationIds.length) {
+      await db.query('DELETE FROM calibration_commands WHERE id = ANY($1)', [calibrationIds]).catch(() => undefined);
+    }
+    await db.query('UPDATE hardware_devices SET k_factor = 450 WHERE device_id = $1', [DEVICE_ID]);
     await db.end();
   }
 
@@ -211,6 +244,99 @@ async function run() {
   console.log(`📊 TEST SONUÇLARI: ${passed} / ${total} TEST BAŞARILI`);
   console.log('===========================================================');
   if (passed !== total) process.exit(1);
+}
+
+type Check = (name: string, condition: boolean, detail: string) => void;
+
+async function api(method: string, path: string, body?: object, token?: string) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${API_URL}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  return { status: res.status, body: (await res.json().catch(() => ({}))) as any };
+}
+
+async function mqttScenarios(dev: Device, db: Client, check: Check, keys: string[], calibrationIds: string[]): Promise<Device> {
+  const redis = new Redis({ host: process.env.REDIS_HOST || 'localhost', port: parseInt(process.env.REDIS_PORT || '6379', 10) });
+  const broker = await mqtt.connectAsync(MQTT_URL as string, {
+    username: process.env.MQTT_USERNAME || undefined,
+    password: process.env.MQTT_PASSWORD || undefined,
+    clientId: `fw-e2e-${crypto.randomBytes(4).toString('hex')}`
+  });
+  const acks: Array<{ commandId?: string; status?: string }> = [];
+  await broker.subscribeAsync(`command/v1/${DEVICE_ID}/ack`, { qos: 1 });
+  broker.on('message', (_topic, payload) => {
+    try { acks.push(JSON.parse(payload.toString())); } catch { /* yok say */ }
+  });
+
+  try {
+    // D1 — presence: cihaz LWT'li bağlanır ve ONLINE yayınlar; sunucu Redis'e yazar.
+    await dev.seen(/MQTT bağlandı/, 30000);
+    let state: string | null = null;
+    for (let i = 0; i < 30 && state !== 'ONLINE'; i++) {
+      state = await redis.get(`device:${DEVICE_ID}:state`);
+      if (state !== 'ONLINE') await new Promise((r) => setTimeout(r, 500));
+    }
+    check('D1: Cihaz MQTT\'ye bağlandı, sunucu presence\'ı ONLINE gördü', state === 'ONLINE', `device:${DEVICE_ID}:state=${state}`);
+
+    // D2 — uzaktan kalibrasyon: portal → MQTT SET_K_FACTOR → cihaz uygular → HTTP ACK → ONAYLANDI.
+    for (const k of await redis.keys('rl:auth-login:*')) await redis.del(k);
+    const login = await api('POST', '/auth/login', { username: 'camsa', password: '123456' });
+    const token = login.body.accessToken as string;
+    const cal = await api('POST', `/devices/${DEVICE_ID}/calibration`, { newKFactor: 459, reason: 'QEMU uçtan uca test' }, token);
+    if (cal.body?.data?.id) calibrationIds.push(cal.body.data.id);
+    await dev.waitFor(/kalibrasyon uygulandı: K=459\.0000/, 20000);
+    await dev.waitFor(/kalibrasyon sunucuda onaylandı: K=459\.0000/, 20000);
+    const calRow = await db.query(
+      `SELECT cc.status, hd.k_factor FROM calibration_commands cc JOIN hardware_devices hd ON hd.device_id = cc.device_id WHERE cc.id = $1`,
+      [cal.body?.data?.id]);
+    check('D2: Portal kalibrasyonu cihaza ulaştı, uygulandı, sunucuda ONAYLANDI ve k_factor=459',
+      calRow.rows[0]?.status === 'ONAYLANDI' && Number(calRow.rows[0]?.k_factor) === 459, JSON.stringify(calRow.rows[0]));
+
+    // D3 — yeni K kalıcı: güç kesilip açılınca 459 ile başlar.
+    await dev.powerCut();
+    dev = new Device('D');
+    const kLine = await dev.waitFor(/K-faktörü ([\d.]+) pals\/L/, 30000);
+    check('D3: Kalibre edilen K-faktörü yeniden başlatmada korundu (NVS)', Number(kLine[1]) === 459, `K=${kLine[1]}`);
+    await dev.waitFor(/ağ hazır, IP/, 30000);
+    await dev.seen(/MQTT bağlandı/, 30000);
+
+    // D4 — ikmal sürerken kalibrasyon REDDEDİLİR (o ikmalin litresi tutarsız olurdu).
+    dev.send(`kart ${CARD}`);
+    const auth = await dev.waitFor(/yetki verildi: oturum (\S+),/, 30000);
+    keys.push(`${DEVICE_ID}:${auth[1]}`);
+    dev.send('akis 100 120');
+    await dev.waitFor(/akış: /, 5000);
+    const busy = await api('POST', `/devices/${DEVICE_ID}/calibration`, { newKFactor: 455, reason: 'QEMU — ikmal sırasında' }, token);
+    if (busy.body?.data?.id) calibrationIds.push(busy.body.data.id);
+    await dev.waitFor(/kalibrasyon reddedildi \(DISPENSE_IN_PROGRESS\)/, 20000);
+    await dev.waitFor(/kalibrasyon reddi sunucuya iletildi/, 20000);
+    const busyRow = await db.query(
+      `SELECT cc.status, hd.k_factor FROM calibration_commands cc JOIN hardware_devices hd ON hd.device_id = cc.device_id WHERE cc.id = $1`,
+      [busy.body?.data?.id]);
+    check('D4: İkmal sürerken gelen kalibrasyon NACK edildi (REDDEDILDI), k_factor 459 kaldı',
+      busyRow.rows[0]?.status === 'REDDEDILDI' && Number(busyRow.rows[0]?.k_factor) === 459, JSON.stringify(busyRow.rows[0]));
+
+    // D5 — broker'dan FORCE_CUTOFF (IOT-305, commandId'li): röle kesilir, ack gelir, ikmal kaydedilir.
+    const commandId = `e2e-${crypto.randomBytes(6).toString('hex')}`;
+    await broker.publishAsync(`command/v1/${DEVICE_ID}`,
+      JSON.stringify({ command: 'FORCE_CUTOFF', reason: 'E2E_TEST', commandId, issuedAt: new Date().toISOString() }), { qos: 1 });
+    await dev.waitFor(/MQTT kesme emri: FORCE_CUTOFF \(E2E_TEST\)/, 10000);
+    const end = await dev.waitFor(/ikmal bitti \((\w+)\), ([\d.]+) L/, 10000);
+    let ack: { commandId?: string; status?: string } | undefined;
+    for (let i = 0; i < 50 && !ack; i++) {
+      ack = acks.find((a) => a.commandId === commandId);
+      if (!ack) await new Promise((r) => setTimeout(r, 100));
+    }
+    check('D5: MQTT FORCE_CUTOFF röleyi kesti ve IOT-305 ack\'i yayınlandı',
+      end[1] === 'FORCE_CUTOFF' && ack?.status === 'ACK', `sebep=${end[1]}, litre=${end[2]}, ack=${JSON.stringify(ack)}`);
+    const saved = await dev.waitFor(/ikmal kaydedildi: oturum (\S+), ([\d.]+) L, (\S+)/, 30000);
+    check('D6: Kesilen ikmal akan litreyle kaydedildi',
+      Math.abs(Number(saved[2]) - Number(end[2])) < 0.01, `kesilen=${end[2]} L, kaydedilen=${saved[2]} L, ${saved[3]}`);
+  } finally {
+    await broker.endAsync().catch(() => undefined);
+    redis.disconnect();
+  }
+  return dev;
 }
 
 run().catch((err) => {
