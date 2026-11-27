@@ -4665,6 +4665,56 @@ export async function getRfidDenylistForDevice(): Promise<{ version: string; den
   });
 }
 
+export interface DeviceWhitelistEntry {
+  cardUid: string;
+  vehiclePlate: string;
+  driverName: string;
+}
+
+/**
+ * FW-1310 / FUEL-410 — cihazın ÇEVRİMDIŞI yetki verebileceği kartlar (whitelist).
+ * authorizeDispenseRequest'in çevrimiçi kurallarıyla BİREBİR aynı süzgeç: sürücü
+ * AKTİF/SAHADA, atanmış araç AKTİF, kart kara listede DEĞİL (denylist ayrıca da
+ * gönderilir ve cihazda whitelist'ten ÖNCE uygulanır), araç bu şantiyenin ya da bu
+ * şantiyeye geçerli çapraz şantiye izni var (crossSiteAuth modülü açıksa).
+ * Kota ve depo seviyesi gibi ANLIK kurallar burada yok — çevrimdışıyken onların yerini
+ * fail-open politikasının araç başı litre / günlük alım sınırları alır.
+ * sync-batch kaydı araç plakası istediği için kart → plaka eşlemesi de verilir.
+ */
+export async function getRfidWhitelistForDevice(
+  deviceSiteName: string
+): Promise<{ version: string; generatedAt: string; entries: DeviceWhitelistEntry[] }> {
+  return withTenant(async (client, tenantId) => {
+    const mod = await client.query('SELECT modules FROM companies WHERE id = $1', [tenantId]);
+    const crossSite = isModuleOn(mod.rows[0]?.modules, 'crossSiteAuth');
+    const res = await client.query(
+      `SELECT DISTINCT ON (d.rfid_card_id) d.rfid_card_id AS card_uid, v.plate AS vehicle_plate, d.name AS driver_name
+         FROM drivers d
+         JOIN vehicles v ON v.assigned_driver_name = d.name AND v.status = 'AKTİF'
+        WHERE d.status IN ('AKTİF', 'SAHADA')
+          AND COALESCE(d.rfid_card_id, '') <> ''
+          AND NOT EXISTS (SELECT 1 FROM rfid_card_blacklist b WHERE b.card_uid = d.rfid_card_id)
+          AND (v.site_name = $1 OR ($2::boolean AND EXISTS (
+                SELECT 1 FROM cross_site_permissions p
+                 WHERE p.vehicle_plate = v.plate AND p.target_site = $1
+                   AND p.status = 'AKTİF' AND p.expiry_date >= CURRENT_DATE)))
+        ORDER BY d.rfid_card_id, v.plate`,
+      [deviceSiteName, crossSite]
+    );
+    const entries: DeviceWhitelistEntry[] = res.rows.map((r) => ({
+      cardUid: r.card_uid,
+      vehiclePlate: r.vehicle_plate,
+      driverName: r.driver_name
+    }));
+    const version = entries.length === 0
+      ? 'empty'
+      : crypto.createHash('sha1')
+        .update(entries.map((e) => `${e.cardUid}|${e.vehiclePlate}|${e.driverName}`).join('\n'))
+        .digest('hex').slice(0, 16);
+    return { version, generatedAt: new Date().toISOString(), entries };
+  });
+}
+
 /** Cihaz denylist'i çektiğinde sürüm + zaman damgası kaydedilir. */
 export async function recordRfidDenylistPull(deviceId: string, version: string): Promise<void> {
   return withTenant(async (client) => {

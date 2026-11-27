@@ -865,6 +865,9 @@ jobs:
       - name: Run HR-1801 Personnel Leave Tracking Tests
         run: cd backend && npx tsx test/test_hr1801_personnel_leave.ts
 
+      - name: Run FUEL-410 / FW-1310 Device RFID Whitelist Tests
+        run: cd backend && npx tsx test/test_fuel410_rfid_whitelist.ts
+
       # FW-1307/FW-1314 — gerçek firmware (ESP32 QEMU, emüle Ethernet) bu işte ayakta olan
       # backend'e gerçek HMAC istekleriyle bağlanır: kart → yetki → akış → finalize, ikmal
       # ortasında güç kesintisi → açılışta kurtarma; MQTT üzerinden presence, uzaktan

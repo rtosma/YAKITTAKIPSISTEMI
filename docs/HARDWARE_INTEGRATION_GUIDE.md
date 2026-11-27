@@ -489,6 +489,32 @@ GET /telemetry/fail-open-policy       (HMAC — gövdesiz, "{}" imzala)
   }
 ```
 
+Çevrimdışı yetki için kart listeleri (ikisi de HMAC, gövdesiz):
+
+```
+GET /telemetry/rfid-whitelist
+→ { "success": true, "data": {
+      "version": "800aacce8489dde7", "generatedAt": "<ISO>",
+      "entries": [ { "cardUid": "04A1B2C3D4E5F6", "vehiclePlate": "34 CTP 82", "driverName": "Ahmet Yılmaz" } ]
+} }
+
+GET /telemetry/rfid-denylist
+→ { "success": true, "data": { "version": "…", "deniedCardUids": [ "…" ] } }
+```
+
+- Whitelist, çevrimiçi yetkilendirmenin (§9.1) kurallarıyla **birebir** aynı süzülür:
+  sürücü aktif, atanmış araç aktif, kart kara listede değil, araç bu şantiyenin ya da
+  bu şantiyeye geçerli çapraz şantiye izni var (`crossSiteAuth` modülü açıksa). Kota,
+  depo seviyesi gibi anlık kurallar listede yoktur. Çevrimdışıyken onların yerini
+  politikanın araç başı litre ve günlük alım sınırları alır.
+- `vehiclePlate`, çevrimdışı ikmalin §7 `sync-batch` kaydı için gereklidir. Cihaz kart →
+  plaka eşlemesini buradan bilir.
+- `version` yalnızca liste değişince değişir; cihaz aynı sürümü yeniden yazmaz.
+- Denylist **whitelist'ten önce** uygulanır: kaybolan kart, cihaz çevrimdışıyken de çalışmaz.
+- Çevrimdışı ikmaller `sync-batch` ile `type = 'Çevrimdışı Senkron'` ve
+  `verification_status = DOĞRULAMA_BEKLIYOR` olarak kaydedilir. Raporlarda ayrı görünür
+  ve operatör onayına düşer.
+
 Uygulama kuralları (cihaz tarafında):
 - `failClose = true` → sunucu yokken **hiç ikmal yok**.
 - `offlineDispenseAllowed = true` ve whitelist önbelleği

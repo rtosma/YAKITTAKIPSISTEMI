@@ -132,7 +132,7 @@ Varsayılan K-faktörü 450 pals/L'dir (eski saha prototipindeki değer). Gerçe
 - PN532, I2C üzerinden (adres 0x24) kendi görevinde ~100 ms'de bir taranır. Yeni kart, ardından hemen yapılan **ikinci okumada da aynı** UID gelirse kabul edilir. Bu gürültü korumasıdır: tek seferlik bozuk okuma kart üretmez, sağlaması tutmayan çerçeve zaten reddedilir. Böylece kart ~100-200 ms'de bildirilir.
 - Kart sunucuya UID'nin büyük harf onaltılık yazımıyla gider (`04A1B2C3D4E5F6`). Yeni kart ilk okutulduğunda panelde "Tanımsız RFID Kartı" olarak çıkar, yönetici oradan sürücüye atar (rehber §9.1).
 - Okuyucuda duran kart tekrar tekrar okunmaz. Art arda 3 boş okumada "kart çekildi" olayı üretilir.
-- `menuconfig` → **Kart okuyucudan çekilince ikmali bitir** (`YT_RFID_REMOVAL_ENDS_DISPENSE`, varsayılan kapalı). Açıkken sürücü kartı ikmal boyunca okuyucuda tutar, çekince röle kesilir (`CARD_REMOVED`). Okuyucunun tabancaya göre konumuna göre **sahada karar verilmeli**.
+- `menuconfig` → **Kart okuyucudan çekilince ikmali bitir** (`YT_RFID_REMOVAL_ENDS_DISPENSE`, varsayılan kapalı). Açıkken sürücü kartı ikmal boyunca okuyucuda tutar, çekince röle kesilir (`CARD_REMOVED`). **Proje kararı (27.11.2026): kapalı.** Kart bir kez okutulur, ikmal tabanca kapanıp akış durunca biter.
 - Telefon/banka kartı gibi her okumada rastgele UID üreten kartlar yok sayılır.
 - Okuyucu yoksa veya yanıt vermiyorsa artan aralıklarla (1 → 30 sn) yeniden denenir; pompa kilitlenmez.
 
