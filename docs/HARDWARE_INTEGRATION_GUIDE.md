@@ -480,6 +480,7 @@ GET /telemetry/fail-open-policy       (HMAC — gövdesiz, "{}" imzala)
 → {
     "success": true,
     "data": {
+      "id": "failpolicy-…",                 // dağıtım takibi için (panelde "dağıtım bekliyor")
       "offlineDispenseAllowed": true,
       "failClose": false,                    // true ise offlineDispenseAllowed'ı EZER (tam fail-close)
       "maxLitersPerVehicle": 400,
@@ -488,6 +489,38 @@ GET /telemetry/fail-open-policy       (HMAC — gövdesiz, "{}" imzala)
     }
   }
 ```
+
+Çevrimdışı yetki için kart listeleri (ikisi de HMAC, gövdesiz):
+
+```
+GET /telemetry/rfid-whitelist?limit=40[&after=<son cardUid>]
+→ { "success": true, "data": {
+      "version": "800aacce8489dde7", "generatedAt": "<ISO>", "siteName": "Gebze Ana Şantiye",
+      "totalCount": 312,
+      "entries": [ { "cardUid": "04A1B2C3D4E5F6", "vehiclePlate": "34 CTP 82", "driverName": "Ahmet Yılmaz" } ],
+      "nextCursor": "04A1B2C3D4E5F6"            // son sayfada null
+} }
+
+GET /telemetry/rfid-denylist
+→ { "success": true, "data": { "version": "…", "deniedCardUids": [ "…" ] } }
+```
+
+- Whitelist, çevrimiçi yetkilendirmenin (§9.1) kurallarıyla **birebir** aynı süzülür:
+  sürücü aktif, atanmış araç aktif, kart kara listede değil, araç bu şantiyenin ya da
+  bu şantiyeye geçerli çapraz şantiye izni var (`crossSiteAuth` modülü açıksa). Kota,
+  depo seviyesi gibi anlık kurallar listede yoktur. Çevrimdışıyken onların yerini
+  politikanın araç başı litre ve günlük alım sınırları alır.
+- `vehiclePlate` ve `siteName`, çevrimdışı ikmalin §7 `sync-batch` kaydı için gereklidir.
+  Cihaz kart → plaka eşlemesini ve kendi şantiyesinin adını buradan öğrenir.
+- Liste `cardUid`'e göre sıralıdır ve sayfalanır (cihazın yanıt tamponu birkaç KB):
+  `nextCursor` null olana kadar `after` ile devam edilir. `version` TÜM listenin özetidir ve
+  her sayfada aynıdır. Sayfalar arasında değişirse cihaz baştan başlar. Parametresiz istek
+  tamamını döner.
+- `version` yalnızca liste değişince değişir; cihaz aynı sürümü yeniden yazmaz.
+- Denylist **whitelist'ten önce** uygulanır: kaybolan kart, cihaz çevrimdışıyken de çalışmaz.
+- Çevrimdışı ikmaller `sync-batch` ile `type = 'Çevrimdışı Senkron'` ve
+  `verification_status = DOĞRULAMA_BEKLIYOR` olarak kaydedilir. Raporlarda ayrı görünür
+  ve operatör onayına düşer.
 
 Uygulama kuralları (cihaz tarafında):
 - `failClose = true` → sunucu yokken **hiç ikmal yok**.

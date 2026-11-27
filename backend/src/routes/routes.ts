@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { getTenantStore } from '../context/tenantContext';
-import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getVehicleSiteAssignmentHistory, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, getTenantSiteDetails, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getTenantUsers, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, emergencyStopSite, emergencyResumeSite, getSiteEmergencyStatus, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant, createLabSample, getLabSamples, getLabSample, cancelLabSample, recordLabTestResult, getLabTestResults, getNonConformingLabResults, computeDriverBehaviorScores, getDriverBehaviorScores, getDriverBehaviorScoreHistory, getTankStockForecasts, runTankStockAlertSweepForCurrentTenant, computeDeviceHealthScores, getDeviceHealthScores, getDeviceHealthScoreHistory, getDeviceOnlineSla, getDeviceFirmwareInventory, createFireRecord, getFireRecords, approveFireRecord, rejectFireRecord, getFireRecordSiteComparison, getSmsMonthlyUsageForCurrentTenant, upsertTenantNotificationChannels, getTenantNotificationChannels, setUserNotificationPreference, getUserNotificationPreferencesForCurrentUser, createUserNotificationMute, getActiveUserNotificationMutes, createSupplier, updateSupplier, getSuppliers, getSupplier, createFuelPurchaseWaybill, getFuelPurchaseWaybill, getSupplierPurchaseHistory, getDespatchIntegratorCircuitStatus, runDespatchAdviceStatusPollForCurrentTenant, bulkResendFailedDespatchAdviceTransmissions, runDespatchAdviceStuckDetectionForCurrentTenant } from '../db/tenantDb';
+import { getTenantVehicles, createVehicle, updateVehicle, deleteVehicle, getVehicleSiteAssignmentHistory, getTenantDrivers, createDriver, updateDriver, deleteDriver, getTenantTanks, createTank, updateTank, deleteTank, getTenantSites, getTenantSiteDetails, createSiteWithManager, deleteTenantSite, getTenantCompanyProfile, getTenantTransactionsPaginated, createTransaction, getTenantCrossSitePermissions, createCrossSitePermission, updateCrossSitePermissionStatus, changeOwnPassword, getAuditLogs, authorizeDispenseRequest, finalizeDispenseSession, findTransactionByIdempotencyKey, createHardwareDevice, rotateHardwareDeviceSecret, blockHardwareDevice, unblockHardwareDevice, getTenantHardwareDevices, relocateHardwareDevice, createDeviceClaimCode, getTenantClaimCodes, syncOfflineDispenseBatch, requestKFactorCalibration, approveKFactorCalibration, rollbackKFactorCalibration, getCalibrationHistory, recordCalibrationAck, recordCalibrationNack, markCalibrationSent, recordCalibrationTestIntake, getCalibrationTestIntakes, setFailOpenPolicy, getFailOpenPolicies, getEffectiveFailOpenPolicy, recordFailOpenPolicyDelivery, getFailOpenPolicyDeploymentStatus, getOfflineDispenseRatioAlerts, getConsumptionAnomalyReports, prepareDespatchAdvice, getTankNameById, setTankStrappingTable, getTankStrappingTableHistory, getEffectiveTankVolumeModel, computeTankVolume, blockRfidCard, unblockRfidCard, replaceRfidCard, getRfidDenylist, getRfidDenylistForDevice, getRfidWhitelistForDevice, recordRfidDenylistPull, getRfidDenylistDeploymentStatus, createFuelQuota, getFuelQuotas, getFuelQuota, updateFuelQuota, getQuotaBalance, getQuotaHistory, resetDueQuotasForCurrentTenant, recordFuelIntake, getFuelIntakes, getFuelIntake, computeStockReconciliation, getStockReconciliations, getStockReconciliation, createManualDispenseRequest, getManualDispenseRequests, getManualDispenseRequest, approveManualDispenseRequest, rejectManualDispenseRequest, getManualDispenseRatio, auditSessionRevocation, setSiteWorkingHours, getSiteWorkingHours, runAnomalyDetectionForCurrentTenant, getAnomalyFlags, getAnomalyFlag, reviewAnomalyFlag, getTenantUsers, getAlarms, getAlarm, updateAlarm, snoozeAlarm, getFalsePositiveFeedback, runAlarmEscalationForCurrentTenant, upsertRecipientTaxpayer, getRecipientTaxpayers, getRecipientTaxpayer, refreshRecipientObligation, setHardwareDeviceTank, emergencyStopSite, emergencyResumeSite, getSiteEmergencyStatus, getFuelStockSummary, recordMeterReading, getVehicleMeterReadings, recordMeterReadingsBulk, getMissingMeterReadings, remindMissingMeterReadings, getFleetConsumptionReport, getFleetConsumptionComparison, getFleetConsumptionTrend, getVehicleConsumptionAnomaly, scanConsumptionAnomalies, setVehicleFuelLimit, getVehicleFuelLimitBalance, approveTemporaryFuelLimitIncrease, enqueueDespatchAdviceTransmission, getDespatchAdviceTransmissions, getDespatchAdviceTransmission, runDespatchAdviceTransmissionSweepForCurrentTenant, getDespatchAdviceStatus, rejectDespatchAdvice, cancelDespatchAdvice, resubmitDespatchAdvice, createVehicleMaintenanceRecord, getVehicleMaintenanceRecords, getVehicleMaintenanceRecord, getMaintenanceConsumptionImpact, getVehicleTotalCostOfOwnership, getUpcomingMaintenanceReminders, runMaintenanceReminderSweepForCurrentTenant, addVehicleComplianceDeadline, getVehicleComplianceDeadlines, getCurrentVehicleComplianceDeadlines, registerVehicleTire, getVehicleTires, recordTireTreadDepth, getVehicleTireStatus, getFleetComplianceDashboard, runFleetComplianceSweepForCurrentTenant, createInventoryItem, getInventoryItems, getInventoryItem, recordInventoryMovement, recordInventoryCount, getInventoryMovements, getCriticalStockItems, runInventoryCriticalStockSweepForCurrentTenant, createLabSample, getLabSamples, getLabSample, cancelLabSample, recordLabTestResult, getLabTestResults, getNonConformingLabResults, computeDriverBehaviorScores, getDriverBehaviorScores, getDriverBehaviorScoreHistory, getTankStockForecasts, runTankStockAlertSweepForCurrentTenant, computeDeviceHealthScores, getDeviceHealthScores, getDeviceHealthScoreHistory, getDeviceOnlineSla, getDeviceFirmwareInventory, createFireRecord, getFireRecords, approveFireRecord, rejectFireRecord, getFireRecordSiteComparison, getSmsMonthlyUsageForCurrentTenant, upsertTenantNotificationChannels, getTenantNotificationChannels, setUserNotificationPreference, getUserNotificationPreferencesForCurrentUser, createUserNotificationMute, getActiveUserNotificationMutes, createSupplier, updateSupplier, getSuppliers, getSupplier, createFuelPurchaseWaybill, getFuelPurchaseWaybill, getSupplierPurchaseHistory, getDespatchIntegratorCircuitStatus, runDespatchAdviceStatusPollForCurrentTenant, bulkResendFailedDespatchAdviceTransmissions, runDespatchAdviceStuckDetectionForCurrentTenant } from '../db/tenantDb';
 import { downloadDespatchAdviceDocument } from '../services/despatchAdviceDownloadService';
 import { recordDispenseCompleted, registry } from '../observability/metrics';
 import { getExecutiveDashboard } from '../services/executiveDashboardService';
@@ -4706,7 +4706,20 @@ router.get(
         await recordFailOpenPolicyDelivery(hw.deviceId, effective.id);
         return effective;
       });
-      res.json({ success: true, data: policy });
+      // Cihaz sözleşmesi (rehber §8) camelCase ve sayı; ham DB satırı (snake_case, NUMERIC → dize)
+      // gönderilseydi rehbere göre yazılmış firmware hiçbir alanı bulamaz, politikayı "yok"
+      // sayıp çevrimdışı ikmali sessizce kapatırdı.
+      res.json({
+        success: true,
+        data: {
+          id: policy.id,
+          offlineDispenseAllowed: policy.offline_dispense_allowed === true,
+          failClose: policy.fail_close === true,
+          maxLitersPerVehicle: Number(policy.max_liters_per_vehicle),
+          maxDailyDispensesPerVehicle: Number(policy.max_daily_dispenses_per_vehicle),
+          whitelistFreshnessHours: Number(policy.whitelist_freshness_hours)
+        }
+      });
     } catch (error: any) {
       next(error);
     }
@@ -4826,6 +4839,58 @@ router.get(
       const status = await getRfidDenylistDeploymentStatus();
       const staleCount = status.filter((s) => s.status === 'DAĞITIM_BEKLIYOR').length;
       res.json({ success: true, totalCount: status.length, staleCount, data: status });
+    } catch (error: any) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /telemetry/rfid-whitelist:
+ *   get:
+ *     summary: Cihazın Çevrimdışı Yetki Verebileceği Kart Listesini Çekmesi (FUEL-410 / FW-1310)
+ *     description: >
+ *       HMAC-doğrulamalı cihaz, kendi şantiyesinde çevrimiçi kurallarla ikmal
+ *       alabilecek kartları (kart uid → araç plakası, sürücü) çeker. Sunucuya
+ *       erişilemediğinde fail-open politikasının sınırlarıyla bu listeyi
+ *       uygular; denylist (/telemetry/rfid-denylist) whitelist'ten ÖNCE gelir.
+ *       Liste whitelistFreshnessHours'tan eskiyse cihaz çevrimdışı yetki vermez.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Güncel whitelist döndü.
+ */
+router.get(
+  '/telemetry/rfid-whitelist',
+  hardwareRateLimiter,
+  hardwareAuthMiddleware,
+  async (req: Request, res: Response, next: NextFunction) => {
+    const hw = (req as any).authenticatedHardware as { deviceId: string; siteName: string; tenantId: string };
+    try {
+      const full = await runWithTenant({ tenantId: hw.tenantId }, () => getRfidWhitelistForDevice(hw.siteName));
+      // Sayfalama: cihazın yanıt tamponu birkaç KB; yüzlerce kartlık liste tek yanıta sığmaz.
+      // Liste cardUid'e göre sıralı; ?after=<son cardUid>&limit=N ile sıradaki sayfa. version TÜM
+      // listenin özeti — sayfalar arasında değişirse cihaz baştan başlar. Parametresiz: tamamı.
+      const limitParam = Number(req.query.limit);
+      const after = typeof req.query.after === 'string' ? req.query.after : '';
+      // Sıra JS kod-birimi sırası (veritabanı collation'ı '-' gibi işaretleri yok sayabilir;
+      // sayfa sınırı karşılaştırması ile sıralama AYNI kurala dayanmalı).
+      const sorted = [...full.entries].sort((x, y) => (x.cardUid < y.cardUid ? -1 : x.cardUid > y.cardUid ? 1 : 0));
+      const rest = after ? sorted.filter((e) => e.cardUid > after) : sorted;
+      const limit = Number.isInteger(limitParam) && limitParam > 0 ? Math.min(limitParam, 500) : rest.length;
+      const page = rest.slice(0, limit);
+      res.json({
+        success: true,
+        data: {
+          version: full.version,
+          generatedAt: full.generatedAt,
+          siteName: full.siteName,
+          totalCount: full.entries.length,
+          entries: page,
+          nextCursor: rest.length > page.length && page.length > 0 ? page[page.length - 1].cardUid : null
+        }
+      });
     } catch (error: any) {
       next(error);
     }

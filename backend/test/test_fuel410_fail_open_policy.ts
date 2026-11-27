@@ -129,8 +129,11 @@ async function run() {
     const defaultPolicy = await hwGet('/telemetry/fail-open-policy');
     check(
       'Test 2: Politika hiç tanımlanmamışken sistem varsayılanı (200L/1 alım/24sa) dönüyor',
-      defaultPolicy.status === 200 && Number(defaultPolicy.body.data.max_liters_per_vehicle) === 200 &&
-        defaultPolicy.body.data.max_daily_dispenses_per_vehicle === 1 && defaultPolicy.body.data.offline_dispense_allowed === true,
+      // Cihaz sözleşmesi (rehber §8): camelCase alanlar, sayılar SAYI.
+      defaultPolicy.status === 200 && defaultPolicy.body.data.maxLitersPerVehicle === 200 &&
+        defaultPolicy.body.data.maxDailyDispensesPerVehicle === 1 && defaultPolicy.body.data.offlineDispenseAllowed === true &&
+        defaultPolicy.body.data.failClose === false && defaultPolicy.body.data.whitelistFreshnessHours === 24 &&
+        defaultPolicy.body.data.max_liters_per_vehicle === undefined,
       `body=${JSON.stringify(defaultPolicy.body)}`
     );
 
