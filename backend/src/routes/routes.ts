@@ -4855,8 +4855,29 @@ router.get(
   async (req: Request, res: Response, next: NextFunction) => {
     const hw = (req as any).authenticatedHardware as { deviceId: string; siteName: string; tenantId: string };
     try {
-      const payload = await runWithTenant({ tenantId: hw.tenantId }, () => getRfidWhitelistForDevice(hw.siteName));
-      res.json({ success: true, data: payload });
+      const full = await runWithTenant({ tenantId: hw.tenantId }, () => getRfidWhitelistForDevice(hw.siteName));
+      // Sayfalama: cihazın yanıt tamponu birkaç KB; yüzlerce kartlık liste tek yanıta sığmaz.
+      // Liste cardUid'e göre sıralı; ?after=<son cardUid>&limit=N ile sıradaki sayfa. version TÜM
+      // listenin özeti — sayfalar arasında değişirse cihaz baştan başlar. Parametresiz: tamamı.
+      const limitParam = Number(req.query.limit);
+      const after = typeof req.query.after === 'string' ? req.query.after : '';
+      // Sıra JS kod-birimi sırası (veritabanı collation'ı '-' gibi işaretleri yok sayabilir;
+      // sayfa sınırı karşılaştırması ile sıralama AYNI kurala dayanmalı).
+      const sorted = [...full.entries].sort((x, y) => (x.cardUid < y.cardUid ? -1 : x.cardUid > y.cardUid ? 1 : 0));
+      const rest = after ? sorted.filter((e) => e.cardUid > after) : sorted;
+      const limit = Number.isInteger(limitParam) && limitParam > 0 ? Math.min(limitParam, 500) : rest.length;
+      const page = rest.slice(0, limit);
+      res.json({
+        success: true,
+        data: {
+          version: full.version,
+          generatedAt: full.generatedAt,
+          siteName: full.siteName,
+          totalCount: full.entries.length,
+          entries: page,
+          nextCursor: rest.length > page.length && page.length > 0 ? page[page.length - 1].cardUid : null
+        }
+      });
     } catch (error: any) {
       next(error);
     }

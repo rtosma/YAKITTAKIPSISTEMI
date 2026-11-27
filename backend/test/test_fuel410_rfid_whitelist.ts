@@ -110,6 +110,18 @@ async function run() {
         changed.body?.data?.version !== r.body?.data?.version,
       `v1=${r.body?.data?.version}, v2=${again.body?.data?.version}, bakımda=${changed.body?.data?.version} [${changedCards.join(',')}]`);
 
+    // === Test 3b: sayfalama — cihaz tamponu küçük; sayfalar birleşince tam liste, sürüm her sayfada aynı ===
+    const p1 = await hwGet('/telemetry/rfid-whitelist?limit=1');
+    const p2 = await hwGet(`/telemetry/rfid-whitelist?limit=1&after=${encodeURIComponent(p1.body?.data?.nextCursor ?? '')}`);
+    const pageCards = [...(p1.body?.data?.entries ?? []), ...(p2.body?.data?.entries ?? [])].map((e: any) => e.cardUid);
+    check('Test 3b: Sayfalama (limit/after) tam listeyi verir; son sayfada nextCursor null; sürüm ve toplam her sayfada aynı',
+      p1.body?.data?.entries?.length === 1 && p1.body?.data?.nextCursor === 'CARD-881201' &&
+        p2.body?.data?.nextCursor === null && pageCards.join(',') === 'CARD-881201,CARD-881204' &&
+        p1.body?.data?.version === r.body?.data?.version && p2.body?.data?.version === r.body?.data?.version &&
+        p1.body?.data?.totalCount === 2 && p2.body?.data?.totalCount === 2,
+      `sayfa1=${JSON.stringify(p1.body?.data?.entries?.map((e: any) => e.cardUid))} next=${p1.body?.data?.nextCursor}, ` +
+        `sayfa2=${JSON.stringify(p2.body?.data?.entries?.map((e: any) => e.cardUid))} next=${p2.body?.data?.nextCursor}`);
+
     // === Test 4: çapraz şantiye modülü kapalıysa çapraz izinli kart da düşer (çevrimiçi MODULE_DISABLED ile aynı) ===
     await db.query(`UPDATE companies SET modules = modules || '{"crossSiteAuth": false}'::jsonb WHERE id = 'comp-camsa'`);
     const noCross = await hwGet('/telemetry/rfid-whitelist');
