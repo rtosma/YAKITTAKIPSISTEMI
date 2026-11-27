@@ -31,6 +31,7 @@
 #include "yt_mqtt.h"
 #include "yt_net.h"
 #include "yt_pcnt.h"
+#include "yt_reader.h"
 #include "yt_persist.h"
 #include "yt_relay.h"
 #include "yt_session.h"
@@ -64,6 +65,7 @@ static int64_t s_next_try_ms;
 
 static TaskHandle_t s_main_task;
 static QueueHandle_t s_card_q;
+static QueueHandle_t s_card_removed_q;
 
 /* MQTT'den gelen ham komutlar (MQTT görevi → denetim döngüsü). */
 #define CMD_PAYLOAD_MAX 384
@@ -156,6 +158,20 @@ static bool power_failing(void)
 #else
     return false;
 #endif
+}
+
+/* ---------- RFID (FW-1302) ---------- */
+
+static void on_reader_event(yt_rfid_event_t ev, const char *uid_hex)
+{
+    char uid[YT_CARD_ID_MAX];
+    strlcpy(uid, uid_hex, sizeof uid);
+    if (ev == YT_RFID_PRESENTED) {
+        xQueueSend(s_card_q, uid, 0);
+    } else if (ev == YT_RFID_REMOVED) {
+        xQueueSend(s_card_removed_q, uid, 0);
+    }
+    if (s_main_task) xTaskNotifyGive(s_main_task);
 }
 
 /* ---------- kalıcılık (FW-1314) ---------- */
@@ -401,7 +417,16 @@ static void handle_commands(int64_t t)
     cmd_msg_t m;
     while (s_cmd_q && xQueueReceive(s_cmd_q, &m, 0) == pdTRUE) {
         yt_cmd_t c;
-        switch (yt_cmd_parse(m.data, m.len, &c)) {
+        yt_cmd_parse(m.data, m.len, &c);
+        yt_cmd_verdict_t v = yt_cmd_freshness(&c, s_session.session_id, yt_time_now_ms());
+        if (v != YT_CMD_APPLY) {
+            ESP_LOGW(TAG, "%s komutu yok sayıldı (%s%s%s)", c.name, yt_cmd_verdict_name(v),
+                     c.session_id[0] ? ", oturum " : "", c.session_id);
+            /* IOT-305 kuyruğu yeniden göndermesin: alındı, ama uygulanmadı. */
+            if (c.command_id[0] && c.type != YT_CMD_SET_K_FACTOR) yt_mqtt_publish_ack(c.command_id, false);
+            continue;
+        }
+        switch (c.type) {
         case YT_CMD_FORCE_CUTOFF:
             /* Etkisiz-yinelemeli: zaten kapalı bir solenoidi kapatmak zararsız (§3.6). */
             ESP_LOGW(TAG, "MQTT kesme emri: FORCE_CUTOFF (%s)", c.reason[0] ? c.reason : "-");
@@ -659,8 +684,14 @@ void app_main(void)
     s_meter_ok = yt_pcnt_init(CONFIG_YT_PIN_FLOW, CONFIG_YT_FLOW_GLITCH_NS) == ESP_OK;
     if (!s_meter_ok) ESP_LOGE(TAG, "Akışmetre başlatılamadı — ikmal KAPALI (ölçemeyen cihaz ikmal yapmaz)");
     s_card_q = xQueueCreate(2, YT_CARD_ID_MAX);
+    s_card_removed_q = xQueueCreate(2, YT_CARD_ID_MAX);
 #if CONFIG_YT_DEV_CONSOLE
     app_console_start(s_card_q);
+#endif
+#if CONFIG_YT_RFID_ENABLE
+    if (yt_reader_start(CONFIG_YT_PIN_I2C_SDA, CONFIG_YT_PIN_I2C_SCL, on_reader_event) != ESP_OK) {
+        ESP_LOGE(TAG, "RFID okuyucu başlatılamadı — kart okunamaz");
+    }
 #endif
 
     /* 6) Sunucu bağlantısı (arka planda kurulur; yarım oturum varsa ağ gelince gönderilir). */
@@ -701,6 +732,14 @@ void app_main(void)
         }
 
         handle_commands(t);
+        if (xQueueReceive(s_card_removed_q, card, 0) == pdTRUE) {
+#if CONFIG_YT_RFID_REMOVAL_ENDS_DISPENSE
+            if (yt_session_on_card_removed(&s_session, card, t)) ESP_LOGW(TAG, "kart çekildi — ikmal bitiriliyor");
+#else
+            ESP_LOGI(TAG, "kart okuyucudan çekildi: %s", card);
+#endif
+        }
+
         drive_link(t);
         yt_session_tick(&s_session, yt_flow_session_liters(&s_flow), pulses > 0, t);
         if ((s_session.state == YT_S_COMPLETED || s_session.state == YT_S_ABORTED) &&

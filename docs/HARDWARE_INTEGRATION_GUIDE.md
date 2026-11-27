@@ -290,6 +290,11 @@ sequenceDiagram
     ulaştırılamazsa veya 404 alınırsa cihaz **eski K'ye döner** (sunucuda da değişmedi). Önceki bir
     deneme sunucuya ulaşıp yanıtı kaybolmuş olabilecekken gelen 404 ise "zaten işlendi" sayılır
     ve yeni K korunur.
+  - **Bayat komut filtresi:** cihaz kalıcı MQTT oturumu kullandığı için broker, cihaz
+    çevrimdışıyken gelen komutları saklayıp bağlanınca teslim eder. Bu yüzden `sessionId`
+    taşıyan `FORCE_CUTOFF` yalnızca o oturum sürüyorsa uygulanır. `sessionId`'siz olan
+    2 dk'dan, `TIME_SYNC` 60 sn'den, `SET_K_FACTOR` 5 dk'dan eskiyse (`issuedAt`'e göre)
+    yok sayılır. Bu yüzden sunucu her komuta `issuedAt` koymalıdır.
   - `commandId` taşıyan `FORCE_CUTOFF`/`TIME_SYNC` (IOT-305 kuyruğu) için cihaz
     `command/v1/{deviceId}/ack` topic'ine `{ "commandId", "status": "ACK" }` yayınlar; tanımadığı
     komuta `NACK`.
@@ -534,6 +539,13 @@ kurtarma denemesi bile reddedilir.
       "maxAllowedLiters": 320
 } }
 ```
+
+`rfidCardId` = kartın UID'i, **büyük harf onaltılık, ayraçsız** (4 bayt `922E5832`,
+7 bayt `04A1B2C3D4E5F6`). Örneklerdeki `CARD-881201` biçimi yalnızca seed/test verisidir.
+Yeni bir kart sahada ilk okutulduğunda sunucu `CARD_UNKNOWN` döner ve panele
+"Tanımsız RFID Kartı" uyarısını o UID ile düşürür; yönetici kartı oradan sürücüye
+atayınca kayıt tamamlanır (ayrı bir kart okuyucuya gerek yok). Her okuma rastgele UID
+üreten kartlar (telefon, banka kartı: 4 bayt, ilk bayt `08`) cihazda reddedilir.
 
 Reddedilirse `details.error` makine-okunur: `CARD_UNKNOWN`, `DRIVER_INACTIVE`,
 `NO_VEHICLE_ASSIGNED`, `VEHICLE_BLOCKED`, `NO_SITE_PERMISSION`,

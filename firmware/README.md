@@ -18,7 +18,8 @@ ESP-IDF v5.3, hedef **ESP32** (4 MB flash, ör. ESP32-WROOM-32). Sunucuyla sözl
 | FW-1306 WiFi istasyon + yeniden bağlanma (≤ 30 sn) | ✅ — GSM/PPPoS sonraki adım |
 | FW-1312 saat: SNTP + sunucu `Date`/`serverTime` | ✅ — DS3231 RTC sonraki adım |
 | FW-1310 fail-open kararı | ✅ çekirdek. Whitelist ve politika önbelleği bekliyor; çevrimdışıyken kart şimdilik reddedilir |
-| FW-1302 RFID, FW-1309 kuyruk, FW-1311 OTA, FW-1315, 1316, 1317 | ⏳ sonraki adımlar |
+| FW-1302 RFID (PN532, I2C) | ✅ sürücü + çerçeve/UID/izleyici çekirdeği (kılavuz örnek çerçeveleriyle test). Okuyucuyla saha testi bekliyor |
+| FW-1309 kuyruk, FW-1311 OTA, FW-1315, 1316, 1317 | ⏳ sonraki adımlar |
 
 Donanım henüz yok. Donanımdan bağımsız her şey `components/yt_core` altında saf C olarak yazıldı ve bilgisayarda test ediliyor. İmajın kendisi ESP32 QEMU'sunda açılış testinden geçiyor (aşağıda). Sürücüler (PCNT, röle, girişler) şartnameye göre yazıldı; sinyal jeneratörü, referans kap ve güç kesme testleri donanım gelince yapılacak (TEST-1005).
 
@@ -122,9 +123,18 @@ Bugün üretim hattında `nvs_partition_gen.py` ile hazırlanan NVS imajı 0x900
 | Akışmetre pals girişi | 14 | PCNT çevre birimi (FW-1304) |
 | Acil durdurma girişi | 27 | Normalde kapalı kontak GPIO–GND: basılınca veya tel koparsa durur. **Geliştirme kartında pini GND'ye köprüleyin**, yoksa röle hiç açılmaz |
 | Güç kesintisi erken uyarısı | — | Opsiyonel (`menuconfig`). LOW = besleme düşüyor, aşağıya bakın |
-| PN532 RFID — I2C SDA / SCL | 21 / 22 | |
+| PN532 RFID — I2C SDA / SCL | 21 / 22 | Modül I2C moduna alınmalı (SEL0=1, SEL1=0); 4,7 kΩ harici pull-up önerilir |
 
 Varsayılan K-faktörü 450 pals/L'dir (eski saha prototipindeki değer). Gerçek değer uzaktan kalibrasyonla (rehber §5) gelir.
+
+## RFID okuyucu (FW-1302)
+
+- PN532, I2C üzerinden (adres 0x24) kendi görevinde ~100 ms'de bir taranır. Yeni kart, ardından hemen yapılan **ikinci okumada da aynı** UID gelirse kabul edilir. Bu gürültü korumasıdır: tek seferlik bozuk okuma kart üretmez, sağlaması tutmayan çerçeve zaten reddedilir. Böylece kart ~100-200 ms'de bildirilir.
+- Kart sunucuya UID'nin büyük harf onaltılık yazımıyla gider (`04A1B2C3D4E5F6`). Yeni kart ilk okutulduğunda panelde "Tanımsız RFID Kartı" olarak çıkar, yönetici oradan sürücüye atar (rehber §9.1).
+- Okuyucuda duran kart tekrar tekrar okunmaz. Art arda 3 boş okumada "kart çekildi" olayı üretilir.
+- `menuconfig` → **Kart okuyucudan çekilince ikmali bitir** (`YT_RFID_REMOVAL_ENDS_DISPENSE`, varsayılan kapalı). Açıkken sürücü kartı ikmal boyunca okuyucuda tutar, çekince röle kesilir (`CARD_REMOVED`). Okuyucunun tabancaya göre konumuna göre **sahada karar verilmeli**.
+- Telefon/banka kartı gibi her okumada rastgele UID üreten kartlar yok sayılır.
+- Okuyucu yoksa veya yanıt vermiyorsa artan aralıklarla (1 → 30 sn) yeniden denenir; pompa kilitlenmez.
 
 ## Röle güvenliği (FW-1303 — en kritik donanım kararı)
 
@@ -162,4 +172,4 @@ Varsayılan K-faktörü 450 pals/L'dir (eski saha prototipindeki değer). Gerçe
 | `otadata` + `ota_0` / `ota_1` | 2 × 1,75 MB | A/B OTA + bootloader rollback (FW-1311) |
 | `storage` | 384 KB | Çevrimdışı ikmal kuyruğu (FW-1309) |
 
-"factory" bölümü 4 MB'a sığmadığı için yoktur; geri dönüş A/B yuvalarıyla yapılır. Bölüm tablosu OTA ile değiştirilemez, bu yüzden yuva boyutları baştan geniş seçildi (bugünkü imaj ~200 KB). Flash şifreleme ve secure boot **üretim** yapılandırmasında açılmalı, geliştirmede kapalı kalır.
+"factory" bölümü 4 MB'a sığmadığı için yoktur; geri dönüş A/B yuvalarıyla yapılır. Bölüm tablosu OTA ile değiştirilemez, bu yüzden yuva boyutları baştan geniş seçildi (bugünkü imaj ~0,9 MB: WiFi, TLS, MQTT dahil). Flash şifreleme ve secure boot **üretim** yapılandırmasında açılmalı, geliştirmede kapalı kalır.

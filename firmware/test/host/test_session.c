@@ -126,6 +126,18 @@ void test_session(void)
     CHECK(s.state == YT_S_FINALIZING && s.end_reason == YT_END_NO_FLOW_STARTED);
     CHECK(!yt_session_relay_allowed(&s));
 
+    /* Kart çekilince kes (yalnızca oturumu açan kart). */
+    {
+        yt_session_t c = granted(0);
+        CHECK(!yt_session_on_card_removed(&c, "BASKA-KART", 100));
+        CHECK(yt_session_relay_allowed(&c));
+        CHECK(yt_session_on_card_removed(&c, c.card_id, 200));
+        CHECK(c.state == YT_S_FINALIZING && c.end_reason == YT_END_CARD_REMOVED);
+        CHECK(!yt_session_relay_allowed(&c));
+        CHECK(!yt_session_on_card_removed(&c, c.card_id, 300));   /* bir kez */
+        CHECK_STR(yt_end_reason_name(YT_END_CARD_REMOVED), "CARD_REMOVED");
+    }
+
     /* Sunucuya 15 sn ulaşılamadı → sunucu zaten TIMED_OUT yaptı; cihaz da keser. */
     {
         yt_session_t l = granted(0);

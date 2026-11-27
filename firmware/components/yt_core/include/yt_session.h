@@ -54,6 +54,7 @@ typedef enum {
     YT_END_NO_FLOW_STARTED,    /* yetki alındı, akış hiç başlamadı */
     YT_END_ABNORMAL_RESTART,   /* ikmal sürerken cihaz yeniden başladı (FW-1303) */
     YT_END_LINK_LOST,          /* 15 sn sunucudan yanıt alınamadı */
+    YT_END_CARD_REMOVED,       /* kart okuyucudan çekildi (CONFIG_YT_RFID_REMOVAL_ENDS_DISPENSE) */
     YT_END__COUNT              /* sınır (kalıcı kayıt doğrulaması için) — yeni değerler bunun ÖNÜNE */
 } yt_end_reason_t;
 
@@ -90,6 +91,8 @@ bool yt_session_on_heartbeat_ack(yt_session_t *s, bool force_cutoff, int64_t now
 /** MQTT command/v1/{deviceId} FORCE_CUTOFF. session_id NULL/boşsa aktif oturuma uygulanır. */
 bool yt_session_on_force_cutoff(yt_session_t *s, const char *session_id, int64_t now_ms);
 bool yt_session_on_emergency_stop(yt_session_t *s, int64_t now_ms);
+/** Oturumu başlatan kart okuyucudan çekildi: AUTHORIZED/PUMPING'de kes. Başka kart → etkisiz. */
+bool yt_session_on_card_removed(yt_session_t *s, const char *card_id, int64_t now_ms);
 bool yt_session_on_finalize_ok(yt_session_t *s, int64_t now_ms);
 /** Geçici hata (ağ): FINALIZING'de kalınır, AYNI idempotency anahtarıyla yeniden denenir. */
 bool yt_session_on_finalize_failed(yt_session_t *s, int64_t now_ms);

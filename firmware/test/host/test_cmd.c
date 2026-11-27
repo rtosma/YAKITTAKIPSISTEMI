@@ -50,6 +50,36 @@ void test_cmd(void)
     const char *two = "{\"command\":\"TIME_SYNC\",\"serverTime\":\"2026-11-26T13:10:36Z\"}GARBAGE";
     CHECK(yt_cmd_parse(two, strlen(two) - 7, &c) == YT_CMD_TIME_SYNC);
 
+    /* --- bayat / başka oturuma ait komutlar (kalıcı MQTT oturumu kuyruğu) --- */
+    const int64_t now = 1795698636000LL; /* 2026-11-26T13:10:36Z */
+    CHECK(PARSE("{\"command\":\"FORCE_CUTOFF\",\"reason\":\"MAX_LITERS_EXCEEDED\",\"sessionId\":\"dsess-OLD\","
+                "\"issuedAt\":\"2026-11-26T09:00:00.000Z\"}", &c) == YT_CMD_FORCE_CUTOFF);
+    CHECK(c.issued_ms == 1795683600000LL);
+    CHECK(yt_cmd_freshness(&c, "dsess-NEW", now) == YT_CMD_IGNORE_OTHER_SESSION);   /* QEMU testinin yakaladığı */
+    CHECK(yt_cmd_freshness(&c, "", now) == YT_CMD_IGNORE_OTHER_SESSION);            /* oturum yok: röle zaten kapalı */
+    CHECK(yt_cmd_freshness(&c, "dsess-OLD", now) == YT_CMD_APPLY);                  /* aynı oturum: yaşı ne olursa olsun */
+    CHECK(yt_cmd_freshness(&c, "dsess-OLD", 0) == YT_CMD_APPLY);
+    /* sessionId'siz kesme (yetkisiz akış): taze ise uygulanır, 2 dk'dan eskiyse yok sayılır. */
+    CHECK(PARSE("{\"command\":\"FORCE_CUTOFF\",\"reason\":\"UNAUTHORIZED_FLOW\",\"commandId\":\"u-1\","
+                "\"issuedAt\":\"2026-11-26T13:10:30.000Z\"}", &c) == YT_CMD_FORCE_CUTOFF);
+    CHECK(yt_cmd_freshness(&c, "dsess-NEW", now) == YT_CMD_APPLY);
+    CHECK(yt_cmd_freshness(&c, "dsess-NEW", now + YT_CMD_CUTOFF_MAX_AGE_MS) == YT_CMD_IGNORE_STALE);
+    CHECK(yt_cmd_freshness(&c, "dsess-NEW", 0) == YT_CMD_APPLY);                    /* saat yok: güvenli taraf, kes */
+    /* TIME_SYNC: bayatsa saati geri ALMAZ; saat güvenilmezken uygulanmaz. */
+    CHECK(PARSE("{\"command\":\"TIME_SYNC\",\"serverTime\":\"2026-11-26T09:00:00.000Z\","
+                "\"issuedAt\":\"2026-11-26T09:00:00.000Z\"}", &c) == YT_CMD_TIME_SYNC);
+    CHECK(yt_cmd_freshness(&c, "", now) == YT_CMD_IGNORE_STALE);
+    CHECK(yt_cmd_freshness(&c, "", 0) == YT_CMD_IGNORE_CLOCK_UNTRUSTED);
+    CHECK(PARSE("{\"command\":\"TIME_SYNC\",\"serverTime\":\"2026-11-26T13:10:30.000Z\","
+                "\"issuedAt\":\"2026-11-26T13:10:30.000Z\"}", &c) == YT_CMD_TIME_SYNC);
+    CHECK(yt_cmd_freshness(&c, "", now) == YT_CMD_APPLY);
+    /* SET_K_FACTOR: sunucunun 5 dk'lık penceresi geçtiyse yok sayılır. */
+    CHECK(PARSE("{\"command\":\"SET_K_FACTOR\",\"commandId\":\"cal-1\",\"newKFactor\":460,"
+                "\"issuedAt\":\"2026-11-26T13:00:00.000Z\"}", &c) == YT_CMD_SET_K_FACTOR);
+    CHECK(yt_cmd_freshness(&c, "", now) == YT_CMD_IGNORE_STALE);
+    CHECK(yt_cmd_freshness(&c, "", c.issued_ms + 60000) == YT_CMD_APPLY);
+    CHECK_STR(yt_cmd_verdict_name(YT_CMD_IGNORE_OTHER_SESSION), "BASKA_OTURUM");
+
     /* --- gövdeler --- */
     char b[160];
     yt_cmd_ack_body(b, sizeof b, "cmd-1", true);

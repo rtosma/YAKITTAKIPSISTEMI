@@ -122,6 +122,14 @@ bool yt_session_on_emergency_stop(yt_session_t *s, int64_t now_ms)
     return false;
 }
 
+bool yt_session_on_card_removed(yt_session_t *s, const char *card_id, int64_t now_ms)
+{
+    if (s->state != YT_S_AUTHORIZED && s->state != YT_S_PUMPING) return false;
+    if (!card_id || strcmp(card_id, s->card_id) != 0) return false;
+    cut_and_finalize(s, YT_END_CARD_REMOVED, now_ms);
+    return true;
+}
+
 bool yt_session_on_finalize_ok(yt_session_t *s, int64_t now_ms)
 {
     if (s->state != YT_S_FINALIZING) return false;
@@ -236,6 +244,7 @@ const char *yt_end_reason_name(yt_end_reason_t r)
     case YT_END_NO_FLOW_STARTED: return "NO_FLOW_STARTED";
     case YT_END_ABNORMAL_RESTART: return "ABNORMAL_RESTART";
     case YT_END_LINK_LOST: return "LINK_LOST";
+    case YT_END_CARD_REMOVED: return "CARD_REMOVED";
     case YT_END__COUNT: break;
     }
     return "?";

@@ -44,6 +44,19 @@ menu "Yakıt Takip pompa ünitesi"
             röle kapatılır ve totalizatör hemen NVS'e yazılır (FW-1314). ESP32'nin dahili
             brown-out dedektörü çipi doğrudan resetler, yazma fırsatı vermez.
 
+    config YT_RFID_ENABLE
+        bool "PN532 RFID okuyucu (I2C)"
+        default y
+
+    config YT_RFID_REMOVAL_ENDS_DISPENSE
+        bool "Kart okuyucudan çekilince ikmali bitir"
+        depends on YT_RFID_ENABLE
+        default n
+        help
+            Açıkken sürücü kartı ikmal boyunca okuyucuda tutmalıdır; çekince röle kesilir
+            (CARD_REMOVED). Kapalıyken kart bir kez okutulur, ikmal akış durunca biter.
+            Okuyucunun tabancaya göre konumuna göre sahada karar verilir (FW-1302).
+
     config YT_PIN_I2C_SDA
         int "PN532 RFID I2C SDA"
         default 21

@@ -41,9 +41,35 @@ typedef struct {
     char reason[YT_CMD_TEXT_MAX];        /* FORCE_CUTOFF: bilgi amaçlı */
     double k_factor;                     /* SET_K_FACTOR: newKFactor */
     int64_t server_time_ms;              /* TIME_SYNC: serverTime */
+    int64_t issued_ms;                   /* issuedAt (yoksa 0) */
 } yt_cmd_t;
 
 yt_cmd_type_t yt_cmd_parse(const char *json, size_t len, yt_cmd_t *out);
+
+/*
+ * Bayat / başka oturuma ait komut filtresi. Kalıcı MQTT oturumunda broker, cihaz
+ * çevrimdışıyken gelen QoS 1 komutları SAKLAR ve bağlanınca teslim eder — saatler önceki bir
+ * komut o an süren alakasız bir ikmali kesmemeli, saati geri almamalı (QEMU uçtan uca testi
+ * yakaladı).
+ *  - FORCE_CUTOFF sessionId'li: yalnızca aktif oturum O ise uygulanır (eski oturuma ait emir).
+ *    sessionId'siz (ör. yetkisiz akış alarmı): YT_CMD_CUTOFF_MAX_AGE_MS'den eskiyse yok sayılır.
+ *  - TIME_SYNC: YT_CMD_TIME_SYNC_MAX_AGE_MS'den eskiyse ya da cihaz saati henüz güvenilir
+ *    değilse yok sayılır (o durumda ilk HTTP yanıtının Date başlığı eşitler).
+ *  - SET_K_FACTOR: sunucunun 5 dk'lık penceresi geçtiyse yok sayılır (zaten ZAMAN_ASIMI).
+ * now_ms = 0 → saat güvenilir değil (yaş hesaplanamaz).
+ */
+#define YT_CMD_CUTOFF_MAX_AGE_MS (2 * 60 * 1000)
+#define YT_CMD_TIME_SYNC_MAX_AGE_MS (60 * 1000)
+
+typedef enum {
+    YT_CMD_APPLY = 0,
+    YT_CMD_IGNORE_OTHER_SESSION,
+    YT_CMD_IGNORE_STALE,
+    YT_CMD_IGNORE_CLOCK_UNTRUSTED,
+} yt_cmd_verdict_t;
+
+yt_cmd_verdict_t yt_cmd_freshness(const yt_cmd_t *c, const char *active_session_id, int64_t now_ms);
+const char *yt_cmd_verdict_name(yt_cmd_verdict_t v);
 
 /** command/v1/{deviceId}/ack gövdesi. Dönüş: uzunluk (0 = sığmadı). */
 size_t yt_cmd_ack_body(char *buf, size_t cap, const char *command_id, bool ack);
