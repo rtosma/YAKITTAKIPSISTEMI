@@ -4706,7 +4706,20 @@ router.get(
         await recordFailOpenPolicyDelivery(hw.deviceId, effective.id);
         return effective;
       });
-      res.json({ success: true, data: policy });
+      // Cihaz sözleşmesi (rehber §8) camelCase ve sayı; ham DB satırı (snake_case, NUMERIC → dize)
+      // gönderilseydi rehbere göre yazılmış firmware hiçbir alanı bulamaz, politikayı "yok"
+      // sayıp çevrimdışı ikmali sessizce kapatırdı.
+      res.json({
+        success: true,
+        data: {
+          id: policy.id,
+          offlineDispenseAllowed: policy.offline_dispense_allowed === true,
+          failClose: policy.fail_close === true,
+          maxLitersPerVehicle: Number(policy.max_liters_per_vehicle),
+          maxDailyDispensesPerVehicle: Number(policy.max_daily_dispenses_per_vehicle),
+          whitelistFreshnessHours: Number(policy.whitelist_freshness_hours)
+        }
+      });
     } catch (error: any) {
       next(error);
     }

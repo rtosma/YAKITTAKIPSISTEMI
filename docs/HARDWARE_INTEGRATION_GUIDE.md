@@ -480,6 +480,7 @@ GET /telemetry/fail-open-policy       (HMAC — gövdesiz, "{}" imzala)
 → {
     "success": true,
     "data": {
+      "id": "failpolicy-…",                 // dağıtım takibi için (panelde "dağıtım bekliyor")
       "offlineDispenseAllowed": true,
       "failClose": false,                    // true ise offlineDispenseAllowed'ı EZER (tam fail-close)
       "maxLitersPerVehicle": 400,
