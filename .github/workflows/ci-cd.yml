@@ -866,17 +866,31 @@ jobs:
         run: cd backend && npx tsx test/test_hr1801_personnel_leave.ts
 
       # FW-1307/FW-1314 — gerçek firmware (ESP32 QEMU, emüle Ethernet) bu işte ayakta olan
-      # backend'e gerçek HMAC istekleriyle bağlanır: kart → yetki → akış → finalize, ve ikmal
-      # ortasında güç kesintisi → açılışta kurtarma. QEMU kullanıcı ağında 10.0.2.2 = runner.
-      - name: FW-1307/FW-1314 Firmware (QEMU) ↔ Backend Uçtan Uca Testi
+      # backend'e gerçek HMAC istekleriyle bağlanır: kart → yetki → akış → finalize, ikmal
+      # ortasında güç kesintisi → açılışta kurtarma; MQTT üzerinden presence, uzaktan
+      # kalibrasyon (ACK/NACK) ve FORCE_CUTOFF. QEMU kullanıcı ağında 10.0.2.2 = runner.
+      # Bu iş backend'i MQTT'siz koşturur (__CI_SKIP__); bu SON test adımı için EMQX başlatılıp
+      # backend MQTT ile yeniden başlatılır.
+      - name: FW-1307/FW-1314 Firmware (QEMU) ↔ Backend Uçtan Uca Testi (HTTP + MQTT)
         env:
           FW_E2E_FLASH: /fw/fw-e2e.bin
           FW_QEMU_CMD: docker run -i --rm --network host -v /tmp/fw-e2e:/fw espressif/idf:v5.3.2 qemu-system-xtensa
+          FW_E2E_MQTT_URL: mqtt://localhost:1883
         run: |
+          docker run -d --name fw-emqx --network host emqx:5.8.0
+          for _ in $(seq 1 90); do docker exec fw-emqx emqx ctl status > /dev/null 2>&1 && break; sleep 1; done
+          pgrep -f "tsx src/bootstrap.ts" | xargs -r kill
+          sleep 2
+          (cd backend && MQTT_URL=mqtt://localhost:1883 nohup npx tsx src/bootstrap.ts > /tmp/backend-ci.log 2>&1 &)
+          for _ in $(seq 1 30); do curl -sf http://localhost:5000/api/v1/health > /dev/null && break; sleep 1; done
+          grep -q "Broker bağlantısı başarılı" /tmp/backend-ci.log || { echo "backend MQTT'ye bağlanmadı"; tail -50 /tmp/backend-ci.log; exit 1; }
+
           mkdir -p /tmp/fw-e2e
           docker run --rm -v "$PWD:/repo" -v /tmp/fw-e2e:/fw -w /repo/firmware \
             -e YT_FW_VERSION=e2e -e E2E_DEVICE_ID=ESP32-PUMP-01 -e E2E_DEVICE_SECRET="$HW_SECRET_ESP32_PUMP_01" \
             -e E2E_SERVER_URL=http://10.0.2.2:5000/api/v1 -e E2E_TANK_NAME="Gebze Ana Tank (T-1)" \
+            -e E2E_MQTT_URL=mqtt://10.0.2.2:1883 -e E2E_MQTT_USER="$MQTT_USERNAME" -e E2E_MQTT_PASS="$MQTT_PASSWORD" \
+            -e E2E_TENANT_ID=comp-camsa -e E2E_SITE_ID=gebze \
             espressif/idf:v5.3.2 bash -c '
               git config --global --add safe.directory "*"
               Q="-B /tmp/bq -D SDKCONFIG=/tmp/bq/sdkconfig -D SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu"

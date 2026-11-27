@@ -13,11 +13,12 @@ ESP-IDF v5.3, hedef **ESP32** (4 MB flash, ör. ESP32-WROOM-32). Sunucuyla sözl
 | İkmal oturumu durum makinesi (rehber §9) + FW-1303 yazılım kilidi | ✅ çekirdek + röle sürücüsü + acil durdurma girişi |
 | FW-1313 watchdog | ✅ ana döngü TWDT'ye bağlı (5 sn → panik → reset) |
 | FUEL-401 cihaz akışı (kart → yetki → heartbeat → finalize) | ✅ QEMU'da gerçek backend'e karşı uçtan uca test ediliyor |
-| FW-1307 HMAC imzalı HTTPS istemcisi (CA paketiyle sertifika doğrulama) | ✅ — MQTT kanalı sonraki adım |
+| FW-1307 HMAC imzalı HTTPS istemcisi (CA paketiyle sertifika doğrulama) | ✅ |
+| FW-1307 MQTT: komut kanalı (`FORCE_CUTOFF`, `SET_K_FACTOR`, `TIME_SYNC`), presence + LWT, IOT-305 ack | ✅ QEMU'da gerçek backend + broker ile uçtan uca. Sertifika süre uyarısı sonraki adım |
 | FW-1306 WiFi istasyon + yeniden bağlanma (≤ 30 sn) | ✅ — GSM/PPPoS sonraki adım |
 | FW-1312 saat: SNTP + sunucu `Date`/`serverTime` | ✅ — DS3231 RTC sonraki adım |
 | FW-1310 fail-open kararı | ✅ çekirdek. Whitelist ve politika önbelleği bekliyor; çevrimdışıyken kart şimdilik reddedilir |
-| FW-1302 RFID, MQTT (komut kanalı, FORCE_CUTOFF), FW-1309 kuyruk, FW-1311 OTA, FW-1315, 1316, 1317 | ⏳ sonraki adımlar |
+| FW-1302 RFID, FW-1309 kuyruk, FW-1311 OTA, FW-1315, 1316, 1317 | ⏳ sonraki adımlar |
 
 Donanım henüz yok. Donanımdan bağımsız her şey `components/yt_core` altında saf C olarak yazıldı ve bilgisayarda test ediliyor. İmajın kendisi ESP32 QEMU'sunda açılış testinden geçiyor (aşağıda). Sürücüler (PCNT, röle, girişler) şartnameye göre yazıldı; sinyal jeneratörü, referans kap ve güç kesme testleri donanım gelince yapılacak (TEST-1005).
 
@@ -66,8 +67,13 @@ Firmware, `sdkconfig.qemu` ile (emüle Ethernet, geliştirme konsolu, yerel düz
 
 - **Normal ikmal:** 30 L → `FLOW_STOPPED` → veritabanında tek kayıt, `DOĞRULANDI`.
 - **İkmal ortasında güç kesintisi:** QEMU anında kapatılır. Açılışta oturum kurtarılır ve `DOĞRULAMA_BEKLIYOR` olarak kaydedilir; kayıp ≤ 5 L.
+- **MQTT** (`FW_E2E_MQTT_URL` verilince, backend aynı broker'a bağlı):
+  - Presence `ONLINE` olur.
+  - Portaldan kalibrasyon → cihaz uygular → HTTP ACK → sunucuda `ONAYLANDI`; yeni K yeniden başlatmada korunur.
+  - İkmal sürerken gelen kalibrasyon `NACK` (`DISPENSE_IN_PROGRESS`) ile reddedilir.
+  - Broker'dan gelen `FORCE_CUTOFF` röleyi keser, IOT-305 ack'i yayınlanır ve ikmal kaydedilir.
 
-CI'da `auth-integration-test` işinde koşar. Yerelde backend 5000 portunda ayaktayken:
+CI'da `auth-integration-test` işinin son adımında koşar; o adım EMQX 5.8.0'ı başlatıp backend'i MQTT ile yeniden başlatır. Yerelde backend 5000 portunda ayaktayken:
 
 ```bash
 # 1) imaj (sunucu, QEMU içinden ana makineye 10.0.2.2 ile ulaşır)
@@ -92,6 +98,9 @@ Konsol komutları (`CONFIG_YT_DEV_CONSOLE`, yalnızca geliştirme): `kart <uid>`
 | `yt_cfg` / `srv_url` | Sunucu, ör. `https://yakit.example.com/api/v1`. **`https://` zorunlu**: düz `http://` yalnızca geliştirme yapılandırmasında kabul edilir |
 | `yt_cfg` / `tank_name` | Bu pompanın bağlı olduğu tank (sunucudaki adıyla) |
 | `yt_cfg` / `wifi_ssid`, `wifi_pass` | WiFi |
+| `yt_cfg` / `mqtt_url` | Broker, ör. `mqtts://yakit.example.com:8883`. **`mqtts://` zorunlu**: `mqtt://` yalnızca geliştirmede. Yoksa cihaz MQTT'siz çalışır; komutlar yalnızca heartbeat yanıtıyla gelir |
+| `yt_cfg` / `mqtt_user`, `yt_sec` / `mqtt_pass` | Broker kimliği (rehber §3.1: bugün ortak kimlik) |
+| `yt_cfg` / `tenant_id`, `site_id` | Topic'teki kiracı ve şantiye (`telemetry/v1/{tenant}/{site}/pump/{cihaz}/status`). Kiracı, cihazın sunucudaki kaydıyla **aynı** olmalı, yoksa sunucu paketleri düşürür |
 
 Bugün üretim hattında `nvs_partition_gen.py` ile hazırlanan NVS imajı 0x9000'e yazılır; örnek: `test/qemu/make_e2e_image.sh`. Cihaz üzerinde claim ve kurulum portalı (FW-1317) sonraki adımda. Yapılandırma eksikse cihaz sunucuya bağlanmaz ve kart kabul etmez.
 
@@ -101,6 +110,8 @@ Bugün üretim hattında `nvs_partition_gen.py` ile hazırlanan NVS imajı 0x900
 - Heartbeat 5 sn'de bir gider. Sunucudan 15 sn yanıt alınamazsa cihaz röleyi keser (`LINK_LOST`); sunucu da o oturumu `TIMED_OUT` yapmıştır. Finalize, ağ gelince aynı idempotency anahtarıyla gider. Geri çekilme 2 sn'den başlar, en fazla 60 sn'dir.
 - Sunucu oturumu tanımıyorsa (heartbeat'e 404/409) röle hemen kesilir. `FORCE_CUTOFF` ve tanınmayan komut da kesme demektir.
 - Çevrimdışıyken okutulan kart şimdilik reddedilir (`OFFLINE`). Sınırlı çevrimdışı ikmal FW-1310 ile gelecek.
+- **MQTT:** kalıcı oturum (clean session kapalı) ve QoS 1 kullanılır; kısa kopmalarda kaçırılan komutlar yeniden bağlanınca gelir. LWT `OFFLINE`'dır; bağlıyken 8 sn'de bir `ONLINE` yayınlanır (sunucu TTL'i 10 sn). Komutlar denetim döngüsüne kuyrukla iletilir ve döngü hemen uyandırılır, böylece `FORCE_CUTOFF` 100 ms'lik turu beklemez.
+- **Kalibrasyon (`SET_K_FACTOR`):** ikmal sürerken reddedilir (`NACK`). Kabul edilirse K uygulanıp kalıcı yazılır, sonra HTTP ACK gönderilir. Sunucu ACK'i 5 dk içinde kayda geçiremezse cihaz eski K'ye döner (ayrıntı: rehber §3.6).
 - Saat: sunucu ±30 sn dışındaki imzayı reddeder. Cihaz SNTP'nin yanında her sunucu yanıtındaki `Date` başlığından ve heartbeat'teki `serverTime`'dan da eşitlenir. Saat güvenilir olmadan imzalı istek gönderilmez.
 
 ## Varsayılan pinler

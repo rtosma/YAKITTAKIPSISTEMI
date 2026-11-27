@@ -25,8 +25,10 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "yt_api.h"
+#include "yt_cmd.h"
 #include "yt_flow.h"
 #include "yt_hmac.h"
+#include "yt_mqtt.h"
 #include "yt_net.h"
 #include "yt_pcnt.h"
 #include "yt_persist.h"
@@ -62,6 +64,28 @@ static int64_t s_next_try_ms;
 
 static TaskHandle_t s_main_task;
 static QueueHandle_t s_card_q;
+
+/* MQTT'den gelen ham komutlar (MQTT görevi → denetim döngüsü). */
+#define CMD_PAYLOAD_MAX 384
+typedef struct {
+    uint16_t len;
+    char data[CMD_PAYLOAD_MAX];
+} cmd_msg_t;
+static QueueHandle_t s_cmd_q;
+
+/* FUEL-404.1 kalibrasyon yanıtı: HTTP ile gönderilene (veya pencere kapanana) kadar bekler. */
+static struct {
+    bool pending;
+    char command_id[YT_CMD_ID_MAX];
+    bool ack;                 /* ACK: K uygulandı; NACK: reddedildi */
+    double applied_k;
+    double previous_k;        /* sunucu kabul etmezse geri dönülecek değer */
+    char reason[40];
+    int64_t received_ms;
+    int attempts;
+    int64_t next_try_ms;
+    bool maybe_delivered;     /* önceki bir deneme sunucuya ulaşmış ama yanıtı kaybolmuş olabilir */
+} s_cal;
 
 /* docs/HARDWARE_INTEGRATION_GUIDE.md §2.5 — sunucuyla birebir aynı imza üretilmeli. */
 static bool hmac_self_test(void)
@@ -230,6 +254,180 @@ static void sync_marker(int64_t t)
 
 /* ---------- sunucu (FUEL-401) ---------- */
 
+/* ---------- sunucu komutları (MQTT, FW-1307) ---------- */
+
+static void on_mqtt_command(const char *payload, size_t len)
+{
+    cmd_msg_t m;
+    if (len >= sizeof m.data) {
+        ESP_LOGW(TAG, "komut çok uzun (%u bayt) — yok sayıldı", (unsigned)len);
+        return;
+    }
+    memcpy(m.data, payload, len);
+    m.data[len] = '\0';
+    m.len = (uint16_t)len;
+    if (xQueueSend(s_cmd_q, &m, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "komut kuyruğu dolu — komut yok sayıldı");
+        return;
+    }
+    if (s_main_task) xTaskNotifyGive(s_main_task); /* FORCE_CUTOFF beklemesin */
+}
+
+static void mqtt_init(void)
+{
+    yt_mqtt_config_t mc = { 0 };
+    yt_store_get_config("mqtt_url", mc.url, sizeof mc.url);
+    yt_store_get_config("mqtt_user", mc.user, sizeof mc.user);
+    yt_store_get_secret("mqtt_pass", mc.pass, sizeof mc.pass);
+    yt_store_get_config("tenant_id", mc.tenant_id, sizeof mc.tenant_id);
+    yt_store_get_config("site_id", mc.site_id, sizeof mc.site_id);
+    strlcpy(mc.device_id, s_net.device_id, sizeof mc.device_id);
+    if (!mc.url[0]) {
+        ESP_LOGW(TAG, "MQTT yapılandırılmamış — sunucu komutları yalnızca heartbeat yanıtıyla gelir");
+        return;
+    }
+    s_cmd_q = xQueueCreate(4, sizeof(cmd_msg_t));
+    if (yt_mqtt_start(&mc, on_mqtt_command) != ESP_OK) ESP_LOGE(TAG, "MQTT başlatılamadı");
+}
+
+static bool session_busy(void)
+{
+    return s_session.state != YT_S_IDLE && s_session.state != YT_S_COMPLETED && s_session.state != YT_S_ABORTED;
+}
+
+static void calibration_reply(const char *command_id, bool ack, double applied_k, double previous_k,
+                              const char *reason, int64_t t)
+{
+    s_cal.pending = true;
+    strlcpy(s_cal.command_id, command_id, sizeof s_cal.command_id);
+    s_cal.ack = ack;
+    s_cal.applied_k = applied_k;
+    s_cal.previous_k = previous_k;
+    strlcpy(s_cal.reason, reason ? reason : "", sizeof s_cal.reason);
+    s_cal.received_ms = t;
+    s_cal.attempts = 0;
+    s_cal.next_try_ms = 0;
+    s_cal.maybe_delivered = false;
+}
+
+/* K-faktörü değiştirip kalıcı yazar. Oturum sürüyorsa yt_flow değişikliği erteler; o zaman
+ * NVS'e oturum bitince on_state_change yazar. */
+static bool set_k_factor(double k)
+{
+    yt_flow_k_result_t r = yt_flow_set_k_factor(&s_flow, k);
+    if (r == YT_FLOW_K_INVALID) return false;
+    if (r == YT_FLOW_K_APPLIED && s_store_ok && yt_store_save_k_factor(s_flow.k_factor) != ESP_OK) return false;
+    return true;
+}
+
+/* FUEL-404.1: ikmal sürerken K değişmez (o ikmalin litresi tutarsız olur) → NACK; operatör
+ * tekrar gönderir. Böylece sunucudaki k_factor her zaman cihazın ölçtüğüyle aynı kalır. */
+static void on_set_k_factor(const yt_cmd_t *c, int64_t t)
+{
+    if (s_cal.pending) {
+        ESP_LOGW(TAG, "önceki kalibrasyon yanıtı bekleniyor — %s yok sayıldı (sunucuda zaman aşımına düşer)",
+                 c->command_id);
+        return;
+    }
+    const char *nack = NULL;
+    if (session_busy()) nack = "DISPENSE_IN_PROGRESS";
+    else if (!(c->k_factor >= YT_FLOW_K_MIN && c->k_factor <= YT_FLOW_K_MAX)) nack = "INVALID_K_FACTOR";
+    else if (!s_store_ok) nack = "STORAGE_UNAVAILABLE";
+    if (nack) {
+        ESP_LOGW(TAG, "kalibrasyon reddedildi (%s): K=%.4f", nack, c->k_factor);
+        calibration_reply(c->command_id, false, 0, 0, nack, t);
+        return;
+    }
+    double previous = s_flow.k_factor;
+    if (!set_k_factor(c->k_factor)) {
+        set_k_factor(previous);
+        ESP_LOGE(TAG, "kalibrasyon kalıcı yazılamadı — reddedildi");
+        calibration_reply(c->command_id, false, 0, 0, "STORAGE_WRITE_FAILED", t);
+        return;
+    }
+    ESP_LOGI(TAG, "kalibrasyon uygulandı: K=%.4f (önceki %.4f), sunucuya bildiriliyor", s_flow.k_factor, previous);
+    calibration_reply(c->command_id, true, s_flow.k_factor, previous, NULL, t);
+}
+
+static void calibration_revert(const char *why)
+{
+    if (s_cal.ack) {
+        set_k_factor(s_cal.previous_k);
+        ESP_LOGW(TAG, "kalibrasyon sunucuda kayda geçmedi (%s) — K %.4f'e geri alındı", why, s_cal.previous_k);
+    } else {
+        ESP_LOGW(TAG, "kalibrasyon reddi sunucuya iletilemedi (%s)", why);
+    }
+    s_cal.pending = false;
+}
+
+static void on_calibration_ack(const yt_http_resp_t *r, int64_t t)
+{
+    switch (yt_cmd_parse_calibration_ack(r->status, r->body)) {
+    case YT_CAL_ACK_DONE:
+        if (s_cal.ack) ESP_LOGI(TAG, "kalibrasyon sunucuda onaylandı: K=%.4f", s_cal.applied_k);
+        else ESP_LOGI(TAG, "kalibrasyon reddi sunucuya iletildi (%s)", s_cal.reason);
+        s_cal.pending = false;
+        break;
+    case YT_CAL_ACK_EXPIRED:
+        /* Rehber §3.6: 404 ya komut zaman aşımına uğradı (sunucuda k_factor DEĞİŞMEDİ) ya da AYNI
+         * yanıt daha önce işlendi demek. Önceki bir deneme sunucuya ulaşıp yanıtı kaybolduysa
+         * ikincisi: yeni K kalır. Hiç ulaşmadıysa birincisi: eski K'ye dönülür. */
+        if (s_cal.maybe_delivered) {
+            ESP_LOGI(TAG, "kalibrasyon yanıtı muhtemelen zaten işlenmişti (404 tekrar) — K=%.4f korunuyor",
+                     s_cal.applied_k);
+            s_cal.pending = false;
+        } else {
+            calibration_revert("komut sunucuda yok/zaman aşımı");
+        }
+        break;
+    case YT_CAL_ACK_REJECTED:
+        calibration_revert("sunucu reddetti");
+        break;
+    default:
+        if (r->status == YT_HTTP_NO_RESPONSE || r->status >= 500) s_cal.maybe_delivered = true;
+        if (!s_cal.maybe_delivered && t - s_cal.received_ms >= YT_CALIBRATION_WINDOW_MS) {
+            calibration_revert("5 dk içinde ulaşılamadı");
+        } else {
+            int64_t wait = 2000LL << (s_cal.attempts < 4 ? s_cal.attempts : 4);
+            s_cal.attempts++;
+            s_cal.next_try_ms = t + wait;
+        }
+        break;
+    }
+}
+
+static void handle_commands(int64_t t)
+{
+    cmd_msg_t m;
+    while (s_cmd_q && xQueueReceive(s_cmd_q, &m, 0) == pdTRUE) {
+        yt_cmd_t c;
+        switch (yt_cmd_parse(m.data, m.len, &c)) {
+        case YT_CMD_FORCE_CUTOFF:
+            /* Etkisiz-yinelemeli: zaten kapalı bir solenoidi kapatmak zararsız (§3.6). */
+            ESP_LOGW(TAG, "MQTT kesme emri: FORCE_CUTOFF (%s)", c.reason[0] ? c.reason : "-");
+            yt_session_on_force_cutoff(&s_session, c.session_id, t);
+            yt_relay_apply(&s_session, true); /* döngünün sonunu beklemeden */
+            if (c.command_id[0]) yt_mqtt_publish_ack(c.command_id, true);
+            break;
+        case YT_CMD_TIME_SYNC:
+            ESP_LOGI(TAG, "MQTT saat eşitleme");
+            yt_time_observe_server(c.server_time_ms);
+            if (c.command_id[0]) yt_mqtt_publish_ack(c.command_id, true);
+            break;
+        case YT_CMD_SET_K_FACTOR:
+            on_set_k_factor(&c, t);
+            break;
+        case YT_CMD_UNKNOWN:
+            ESP_LOGW(TAG, "bilinmeyen komut: %s", c.name);
+            if (c.command_id[0]) yt_mqtt_publish_ack(c.command_id, false);
+            break;
+        default:
+            ESP_LOGW(TAG, "geçersiz komut yükü yok sayıldı");
+            break;
+        }
+    }
+}
+
 static void link_init(void)
 {
     if (!s_store_ok) return;
@@ -253,6 +451,7 @@ static void link_init(void)
     }
     app_link_start();
     s_link_ok = true;
+    mqtt_init();
 }
 
 static void on_auth(const yt_http_resp_t *r, int64_t t)
@@ -329,31 +528,9 @@ static void on_finalize(const yt_http_resp_t *r, int64_t t)
     }
 }
 
-static void drive_link(int64_t t)
+/* Oturumun durumuna göre sunucuya sıradaki istek (yetki / heartbeat / finalize). */
+static void submit_session_request(int64_t t)
 {
-    if (!s_link_ok) return;
-
-    link_kind_t done;
-    const yt_http_resp_t *resp;
-    if (app_link_poll(&done, &resp)) {
-        if (done == LINK_AUTH && s_session.state == YT_S_REQUESTING) on_auth(resp, t);
-        else if (done == LINK_HEARTBEAT) on_heartbeat(resp, t);
-        else if (done == LINK_FINALIZE && s_session.state == YT_S_FINALIZING) on_finalize(resp, t);
-        app_link_release();
-    }
-    if (app_link_busy() || t < s_next_try_ms) return;
-
-    if (!yt_net_is_up()) {
-        /* Çevrimdışı beklenen bir durum: istek denenmez (deneme hakkı ve geri çekilme harcanmaz).
-         * Bekleyen finalize ağ gelince gider; heartbeat'siz 15 sn'de oturum kendisi keser.
-         * Yeni kart şimdilik reddedilir — sınırlı çevrimdışı ikmal FW-1310 ile gelecek. */
-        if (s_session.state == YT_S_REQUESTING) {
-            ESP_LOGW(TAG, "çevrimdışı — kart reddedildi");
-            yt_session_on_auth_denied(&s_session, "OFFLINE", t);
-        }
-        return;
-    }
-
     char body[YT_API_BODY_MAX];
     switch (s_session.state) {
     case YT_S_REQUESTING:
@@ -378,6 +555,47 @@ static void drive_link(int64_t t)
         break;
     default:
         break;
+    }
+}
+
+static void drive_link(int64_t t)
+{
+    if (!s_link_ok) return;
+
+    link_kind_t done;
+    const yt_http_resp_t *resp;
+    if (app_link_poll(&done, &resp)) {
+        if (done == LINK_AUTH && s_session.state == YT_S_REQUESTING) on_auth(resp, t);
+        else if (done == LINK_HEARTBEAT) on_heartbeat(resp, t);
+        else if (done == LINK_FINALIZE && s_session.state == YT_S_FINALIZING) on_finalize(resp, t);
+        else if (done == LINK_CALIBRATION && s_cal.pending) on_calibration_ack(resp, t);
+        app_link_release();
+    }
+    if (app_link_busy()) return;
+
+    /* Kalibrasyon yanıtı 5 dk'da hiç ulaştırılamadıysa sunucu komutu zaman aşımına düşürdü. */
+    if (s_cal.pending && !s_cal.maybe_delivered && t - s_cal.received_ms >= YT_CALIBRATION_WINDOW_MS) {
+        calibration_revert("5 dk içinde ulaştırılamadı");
+    }
+
+    if (!yt_net_is_up()) {
+        /* Çevrimdışı beklenen bir durum: istek denenmez (deneme hakkı ve geri çekilme harcanmaz).
+         * Bekleyen finalize ağ gelince gider; heartbeat'siz 15 sn'de oturum kendisi keser.
+         * Yeni kart şimdilik reddedilir — sınırlı çevrimdışı ikmal FW-1310 ile gelecek. */
+        if (s_session.state == YT_S_REQUESTING) {
+            ESP_LOGW(TAG, "çevrimdışı — kart reddedildi");
+            yt_session_on_auth_denied(&s_session, "OFFLINE", t);
+        }
+        return;
+    }
+
+    if (t >= s_next_try_ms) submit_session_request(t);
+
+    /* Oturum isteği yoksa sırada kalibrasyon yanıtı. */
+    char body[YT_API_BODY_MAX];
+    if (!app_link_busy() && s_cal.pending && t >= s_cal.next_try_ms &&
+        yt_cmd_calibration_ack_body(body, sizeof body, s_cal.command_id, s_cal.ack, s_cal.applied_k, s_cal.reason)) {
+        app_link_submit(LINK_CALIBRATION, "/telemetry/calibration-ack", body);
     }
 }
 
@@ -482,6 +700,7 @@ void app_main(void)
             }
         }
 
+        handle_commands(t);
         drive_link(t);
         yt_session_tick(&s_session, yt_flow_session_liters(&s_flow), pulses > 0, t);
         if ((s_session.state == YT_S_COMPLETED || s_session.state == YT_S_ABORTED) &&

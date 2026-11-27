@@ -42,12 +42,14 @@ add_executable(yt_core_tests
   test_failopen.c
   test_persist.c
   test_api.c
+  test_cmd.c
   ${CORE}/yt_hmac.c
   ${CORE}/yt_flow.c
   ${CORE}/yt_session.c
   ${CORE}/yt_failopen.c
   ${CORE}/yt_persist.c
   ${CORE}/yt_api.c
+  ${CORE}/yt_cmd.c
 )
 target_include_directories(yt_core_tests PRIVATE ${CORE}/include)
 target_compile_options(yt_core_tests PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter)

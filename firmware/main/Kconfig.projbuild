@@ -63,12 +63,13 @@ menu "Yakıt Takip pompa ünitesi"
         depends on ETH_USE_OPENETH
         default n
 
-    config YT_DEV_ALLOW_PLAINTEXT_HTTP
-        bool "GELİŞTİRME: şifresiz http:// sunucu adresine izin ver"
+    config YT_DEV_ALLOW_PLAINTEXT
+        bool "GELİŞTİRME: şifresiz http:// ve mqtt:// sunucu adreslerine izin ver"
         default n
         help
-            Yalnızca QEMU/yerel test içindir. Üretimde AÇILMAMALI: HMAC imzası gövdeyi korur
-            ama dinleyen biri kartları ve oturumları görür, sahte saat verebilir (FW-1307).
+            Yalnızca QEMU/yerel test içindir. Üretimde AÇILMAMALI: HMAC imzası HTTP gövdesini
+            korur ama dinleyen biri kartları ve oturumları görür, sahte saat verebilir; MQTT'de
+            ise sahte FORCE_CUTOFF/kalibrasyon komutu enjekte edebilir (FW-1307).
 
     config YT_DEV_CONSOLE
         bool "GELİŞTİRME: seri konsoldan kart okutma ve akış simülasyonu"

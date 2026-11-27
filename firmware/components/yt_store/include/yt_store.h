@@ -2,8 +2,8 @@
  * FW-1314 / FW-1304 / FW-1308 — Kalıcı cihaz durumu (NVS).
  *
  * Ad alanı "yt":     tot_ml (u64, totalizatör mL), k_factor (double), sess (oturum kaydı)
- * Ad alanı "yt_sec": dev_id, secret (claim ile gelen HMAC secret'ı)
- * Ad alanı "yt_cfg": srv_url, tank_name, wifi_ssid, wifi_pass
+ * Ad alanı "yt_sec": dev_id, secret (claim ile gelen HMAC secret'ı), mqtt_pass
+ * Ad alanı "yt_cfg": srv_url, tank_name, wifi_ssid, wifi_pass, mqtt_url, mqtt_user, tenant_id, site_id
  *
  * NVS AÇILAMAZSA OTOMATİK SİLİNMEZ. ESP-IDF örneklerindeki "hata → nvs_flash_erase()"
  * kalıbı burada yanlış olur: totalizatör, K-faktörü ve secret sessizce sıfırlanır,
@@ -51,6 +51,9 @@ esp_err_t yt_store_clear_marker(void);
  * Bugün üretim hattında NVS imajıyla yazılır; FW-1317 kurulum portalı da buraya yazacak.
  */
 esp_err_t yt_store_get_config(const char *key, char *buf, size_t cap);
+
+/** "yt_sec" ad alanından gizli metin (ör. mqtt_pass). */
+esp_err_t yt_store_get_secret(const char *key, char *buf, size_t cap);
 
 /** Claim (IOT-304) sonrası cihaz kimliği ve HMAC secret'ı. */
 esp_err_t yt_store_load_credentials(char *device_id, size_t id_cap, char *secret, size_t secret_cap);
