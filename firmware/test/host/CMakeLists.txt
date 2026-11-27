@@ -43,6 +43,7 @@ add_executable(yt_core_tests
   test_persist.c
   test_api.c
   test_cmd.c
+  test_rfid.c
   ${CORE}/yt_hmac.c
   ${CORE}/yt_flow.c
   ${CORE}/yt_session.c
@@ -50,6 +51,8 @@ add_executable(yt_core_tests
   ${CORE}/yt_persist.c
   ${CORE}/yt_api.c
   ${CORE}/yt_cmd.c
+  ${CORE}/yt_pn532.c
+  ${CORE}/yt_rfid.c
 )
 target_include_directories(yt_core_tests PRIVATE ${CORE}/include)
 target_compile_options(yt_core_tests PRIVATE -Wall -Wextra -Werror -Wno-unused-parameter)

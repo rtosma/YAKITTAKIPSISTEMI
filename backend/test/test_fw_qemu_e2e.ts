@@ -316,6 +316,18 @@ async function mqttScenarios(dev: Device, db: Client, check: Check, keys: string
     check('D4: İkmal sürerken gelen kalibrasyon NACK edildi (REDDEDILDI), k_factor 459 kaldı',
       busyRow.rows[0]?.status === 'REDDEDILDI' && Number(busyRow.rows[0]?.k_factor) === 459, JSON.stringify(busyRow.rows[0]));
 
+    // D5a — kalıcı MQTT oturumunun kuyruğundan gelebilecek BAYAT, BAŞKA oturuma ait kesme emri
+    // (saatler önce, eski bir oturum için) süren ikmali KESMEMELİ.
+    await broker.publishAsync(`command/v1/${DEVICE_ID}`, JSON.stringify({
+      command: 'FORCE_CUTOFF', reason: 'MAX_LITERS_EXCEEDED', sessionId: 'dsess-eski-oturum',
+      issuedAt: new Date(Date.now() - 3 * 3600 * 1000).toISOString()
+    }), { qos: 1 });
+    await dev.waitFor(/FORCE_CUTOFF komutu yok sayıldı \(BASKA_OTURUM/, 10000);
+    dev.send('durum');
+    const still = await dev.waitFor(/durum: (\w+),.*röle (\S+),/, 5000);
+    check('D5a: Eski oturuma ait bayat FORCE_CUTOFF yok sayıldı, ikmal sürüyor',
+      still[1] === 'PUMPING' && still[2] === 'AÇIK', `durum=${still[1]}, röle=${still[2]}`);
+
     // D5 — broker'dan FORCE_CUTOFF (IOT-305, commandId'li): röle kesilir, ack gelir, ikmal kaydedilir.
     const commandId = `e2e-${crypto.randomBytes(6).toString('hex')}`;
     await broker.publishAsync(`command/v1/${DEVICE_ID}`,

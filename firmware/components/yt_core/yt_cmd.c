@@ -48,6 +48,10 @@ yt_cmd_type_t yt_cmd_parse(const char *json, size_t len, yt_cmd_t *out)
     if (!safe_id(out->command_id)) out->command_id[0] = '\0';
     copy_str(root, "sessionId", out->session_id, sizeof out->session_id);
     copy_str(root, "reason", out->reason, sizeof out->reason);
+    char issued[40];
+    copy_str(root, "issuedAt", issued, sizeof issued);
+    int64_t it = issued[0] ? yt_api_parse_iso8601(issued) : -1;
+    out->issued_ms = it > 0 ? it : 0;
 
     if (strcmp(out->name, "FORCE_CUTOFF") == 0) {
         out->type = YT_CMD_FORCE_CUTOFF;
@@ -75,6 +79,42 @@ yt_cmd_type_t yt_cmd_parse(const char *json, size_t len, yt_cmd_t *out)
     }
     cJSON_Delete(root);
     return out->type;
+}
+
+static bool older_than(const yt_cmd_t *c, int64_t now_ms, int64_t max_age_ms)
+{
+    return now_ms > 0 && c->issued_ms > 0 && now_ms - c->issued_ms > max_age_ms;
+}
+
+yt_cmd_verdict_t yt_cmd_freshness(const yt_cmd_t *c, const char *active_session_id, int64_t now_ms)
+{
+    switch (c->type) {
+    case YT_CMD_FORCE_CUTOFF:
+        if (c->session_id[0]) {
+            /* Oturuma özel emir: yalnızca o oturum sürüyorsa anlamlı (yoksa röle zaten kapalı). */
+            bool same = active_session_id && active_session_id[0] && strcmp(c->session_id, active_session_id) == 0;
+            return same ? YT_CMD_APPLY : YT_CMD_IGNORE_OTHER_SESSION;
+        }
+        return older_than(c, now_ms, YT_CMD_CUTOFF_MAX_AGE_MS) ? YT_CMD_IGNORE_STALE : YT_CMD_APPLY;
+    case YT_CMD_TIME_SYNC:
+        if (now_ms <= 0) return YT_CMD_IGNORE_CLOCK_UNTRUSTED;
+        return older_than(c, now_ms, YT_CMD_TIME_SYNC_MAX_AGE_MS) ? YT_CMD_IGNORE_STALE : YT_CMD_APPLY;
+    case YT_CMD_SET_K_FACTOR:
+        return older_than(c, now_ms, YT_CALIBRATION_WINDOW_MS) ? YT_CMD_IGNORE_STALE : YT_CMD_APPLY;
+    default:
+        return YT_CMD_APPLY;
+    }
+}
+
+const char *yt_cmd_verdict_name(yt_cmd_verdict_t v)
+{
+    switch (v) {
+    case YT_CMD_APPLY: return "APPLY";
+    case YT_CMD_IGNORE_OTHER_SESSION: return "BASKA_OTURUM";
+    case YT_CMD_IGNORE_STALE: return "BAYAT";
+    case YT_CMD_IGNORE_CLOCK_UNTRUSTED: return "SAAT_GUVENILMEZ";
+    }
+    return "?";
 }
 
 static size_t done(int n, size_t cap)
